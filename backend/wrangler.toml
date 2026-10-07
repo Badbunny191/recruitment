@@ -14,15 +14,14 @@ database_id = "c8c9e923-0b64-4203-880b-ea5af58d316f" # ใส่ ID จริง
 binding = "R2_BUCKET"
 bucket_name = "sao-storage"
 
-# Queues Binding
-[[queues.producers]]
-binding = "PDF_QUEUE"
-queue = "sao-pdf-queue"
+# [[queues.producers]]
+# binding = "PDF_QUEUE"
+# queue = "sao-pdf-queue"
 
-[[queues.consumers]]
-queue = "sao-pdf-queue"
-max_batch_size = 10
-max_batch_timeout = 5
+# [[queues.consumers]]
+# queue = "sao-pdf-queue"
+# max_batch_size = 10
+# max_batch_timeout = 5
 
 [vars]
 # ตัวแปรเหล่านี้ตั้งค่าผ่าน .env หรือ Cloudflare Dashboard สำหรับ Production
