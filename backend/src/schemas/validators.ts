@@ -18,10 +18,14 @@ export const FieldMasterCreateSchema = z.object({
   isActive: z.boolean().default(true),
 });
 
+export const FieldMasterUpdateSchema = FieldMasterCreateSchema.partial();
+
 export const TemplateCreateSchema = z.object({
   name: z.string().min(1),
   description: z.string().nullable().optional(),
 });
+
+export const TemplateUpdateSchema = TemplateCreateSchema.partial();
 
 export const TemplateFieldCreateSchema = z.object({
   fieldId: z.string(),
@@ -48,6 +52,19 @@ export const RecruitmentRoundCreateSchema = z.object({
   message: "closeDate must be after openDate",
   path: ["closeDate"],
 });
+
+export const RecruitmentRoundUpdateSchema = z.object({
+  title: z.string().min(1).optional(),
+  positionLevel: z.string().min(1).optional(),
+  openDate: z.number().int().positive().optional(),
+  closeDate: z.number().int().positive().optional(),
+  status: RoundStatusEnum.optional(),
+}).refine(data => {
+  if (data.openDate !== undefined && data.closeDate !== undefined) {
+    return data.closeDate > data.openDate;
+  }
+  return true;
+}, { message: "closeDate must be after openDate", path: ["closeDate"] });
 
 export const ApplicationAttachmentSchema = z.object({
   fieldId: z.string(),
