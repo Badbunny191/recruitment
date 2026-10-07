@@ -54,7 +54,7 @@ export default function HomePage() {
                 </span></div>
               </CardContent>
               <CardFooter>
-                <Link href={`/apply/${round.id}`} className="w-full">
+                <Link href={`/apply?id=${round.id}`} className="w-full">
                   <Button className="w-full bg-blue-600 hover:bg-blue-700">สมัครเข้ารับการคัดเลือก</Button>
                 </Link>
               </CardFooter>

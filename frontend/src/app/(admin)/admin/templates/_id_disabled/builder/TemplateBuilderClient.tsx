@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 
-export default function TemplateBuilderPage() {
+export default function TemplateBuilderClient() {
   const params = useParams();
   const [masterFields, setMasterFields] = useState<any[]>([]);
   const { register, control, handleSubmit } = useForm({ defaultValues: { fields: [] as any[] } });

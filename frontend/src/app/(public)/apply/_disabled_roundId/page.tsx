@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useForm, Controller } from 'react-hook-form';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
@@ -21,7 +21,7 @@ interface SchemaField {
   isRequired: boolean;
 }
 
-export default function ApplicationFormPage() {
+function FormInner() {
   const params = useParams();
   const router = useRouter();
   const [schema, setSchema] = useState<SchemaField[]>([]);
@@ -31,12 +31,14 @@ export default function ApplicationFormPage() {
   const { register, handleSubmit, control } = useForm();
 
   useEffect(() => {
+    if (!params.roundId) return;
     fetch(`${process.env.NEXT_PUBLIC_API_URL}/public/rounds/${params.roundId}/schema`)
       .then(res => res.json())
       .then(res => {
         setSchema(res.data || []);
         setLoading(false);
-      });
+      })
+      .catch(() => setLoading(false));
   }, [params.roundId]);
 
   const onSubmit = async (data: any) => {
@@ -88,7 +90,6 @@ export default function ApplicationFormPage() {
         </CardHeader>
         <CardContent className="pt-6">
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-8">
-            
             <div className="space-y-4">
               <h3 className="font-semibold text-lg border-b pb-2">ข้อมูลส่วนบุคคล</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -113,7 +114,6 @@ export default function ApplicationFormPage() {
                 {schema.map((field) => {
                   const label = field.overrideLabel || field.label;
                   const options = field.overrideOptions || field.options || [];
-
                   return (
                     <div key={field.fieldId} className="space-y-2">
                       <Label>{label} {field.isRequired && <span className="text-red-500">*</span>}</Label>
@@ -159,5 +159,13 @@ export default function ApplicationFormPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+export default function ApplicationFormPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center">กำลังโหลดแบบฟอร์ม...</div>}>
+      <FormInner />
+    </Suspense>
   );
 }
