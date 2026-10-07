@@ -2,9 +2,16 @@
 
 import { useAdminAuth } from '@/lib/useAdminAuth';
 
+/**
+ * AdminGuard - Client-side route protection for /admin/* pages
+ *
+ * Usage: Wrap children with <AdminGuard>...</AdminGuard>
+ * The login page (/admin/login) should NOT use this component.
+ */
 export function AdminGuard({ children }: { children: React.ReactNode }) {
   const { isChecking, isAuthenticated } = useAdminAuth();
 
+  // Show loading while checking auth
   if (isChecking) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50">
@@ -13,8 +20,8 @@ export function AdminGuard({ children }: { children: React.ReactNode }) {
     );
   }
 
+  // Auth failed - redirect will happen via the hook
   if (!isAuthenticated) {
-    // กำลัง redirect อยู่ — แสดง loading ป้องกัน flash content
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50">
         <div className="text-slate-500">กำลังเข้าสู่ระบบ...</div>
@@ -22,5 +29,6 @@ export function AdminGuard({ children }: { children: React.ReactNode }) {
     );
   }
 
+  // Auth successful - render children
   return <>{children}</>;
 }

@@ -1,8 +1,22 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { usePathname, useRouter } from 'next/navigation';
-import { AdminGuard } from '@/components/AdminGuard';
 import { useAdminAuth } from '@/lib/useAdminAuth';
+
+// Dynamically import AdminGuard with SSR disabled to prevent
+// it from being pre-rendered as "loading" state in static HTML
+const AdminGuard = dynamic(
+  () => import('@/components/AdminGuard').then((mod) => mod.AdminGuard),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-screen items-center justify-center bg-slate-50">
+        <div className="text-slate-500">กำลังโหลด...</div>
+      </div>
+    ),
+  }
+);
 
 export default function AdminLayout({
   children,

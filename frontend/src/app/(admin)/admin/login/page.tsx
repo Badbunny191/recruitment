@@ -14,20 +14,30 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [checked, setChecked] = useState(false);
 
-  // ถ้ามี token ที่ยังไม่หมดอายุอยู่แล้ว ให้ redirect ไป dashboard
+  // ตรวจสอบ token ตอน mount — ถ้ามี token ที่ยังไม่หมดอายุ redirect ไป dashboard
   useEffect(() => {
     const token = localStorage.getItem(STORAGE_KEY);
     if (token) {
       try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        if (payload.exp && payload.exp * 1000 > Date.now()) {
-          router.replace('/admin/dashboard');
+        const parts = token.split('.');
+        if (parts.length === 3) {
+          const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+          const decoded = JSON.parse(atob(payload));
+          if (decoded.exp && decoded.exp * 1000 > Date.now()) {
+            // Token ยังไม่หมดอายุ → redirect ไป dashboard
+            router.replace('/admin/dashboard');
+            return;
+          }
         }
+        // Token หมดอายุหรือผิด format → ลบทิ้ง
+        localStorage.removeItem(STORAGE_KEY);
       } catch {
         localStorage.removeItem(STORAGE_KEY);
       }
     }
+    setChecked(true);
   }, [router]);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -46,10 +56,21 @@ export default function LoginPage() {
       } else {
         alert('อีเมลหรือรหัสผ่านไม่ถูกต้อง');
       }
+    } catch {
+      alert('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้');
     } finally {
       setLoading(false);
     }
   };
+
+  // ป้องกัน flash content ก่อนตรวจ token เสร็จ
+  if (!checked) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-50">
+        <div className="text-slate-500">กำลังโหลด...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen items-center justify-center bg-slate-50">
