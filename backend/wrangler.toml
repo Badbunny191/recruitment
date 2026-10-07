@@ -1,17 +1,20 @@
 name = "sao-recruitment-backend"
 main = "src/index.ts"
-compatibility_date = "2024-03-20"
+compatibility_date = "2026-10-07"
 node_compat = true
 
+# D1 Database Binding
 [[d1_databases]]
 binding = "DB"
 database_name = "sao-db"
-database_id = "YOUR-D1-DATABASE-ID" 
+database_id = "c8c9e923-0b64-4203-880b-ea5af58d316f" # ใส่ ID จริงหลังจากสร้างด้วยคำสั่ง wrangler d1 create
 
+# R2 Bucket Binding
 [[r2_buckets]]
 binding = "R2_BUCKET"
 bucket_name = "sao-storage"
 
+# Queues Binding
 [[queues.producers]]
 binding = "PDF_QUEUE"
 queue = "sao-pdf-queue"
@@ -22,8 +25,5 @@ max_batch_size = 10
 max_batch_timeout = 5
 
 [vars]
-JWT_SECRET = "DEV_SECRET_KEY_12345"
-R2_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
-R2_ACCESS_KEY_ID = "YOUR_ACCESS_KEY"
-R2_SECRET_ACCESS_KEY = "YOUR_SECRET_KEY"
-R2_BUCKET_NAME = "sao-storage"
+# ตัวแปรเหล่านี้ตั้งค่าผ่าน .env หรือ Cloudflare Dashboard สำหรับ Production
+JWT_SECRET = "REPLACE_WITH_SUPER_SECRET_KEY"
