@@ -1,15 +1,24 @@
+# dependencies
 node_modules/
 **/node_modules/
 
+# cloudflare
 .wrangler/
 
+# env
 .env
 .env.local
 
-.next/
+# frontend build
+frontend/out/
+frontend/.next/
+
+# generic build
 dist/
 build/
 
+# mac
 .DS_Store
 
+# logs
 *.log
