@@ -10,7 +10,8 @@ export const authMiddleware = createMiddleware<{ Bindings: Bindings; Variables: 
 
   const token = authHeader.split(' ')[1];
   try {
-    const payload = await verify(token, c.env.JWT_SECRET);
+    // verify(token, secret, options?) - ใช้ overload ที่มี 3 arguments
+    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     c.set('jwtPayload', payload as any);
     await next();
   } catch (error) {

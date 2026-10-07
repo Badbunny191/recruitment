@@ -65,10 +65,11 @@ publicRoutes.post('/applications/submit', zValidator('json', ApplicationSubmitSc
     ) : [])
   ]);
 
-  // ส่งงานไปเข้าคิวทำ PDF เบื้องหลัง
-//  await c.env.PDF_QUEUE.send({ applicationId, roundId: data.roundId });
-//
-//  return c.json({ success: true, data: { applicationNo } }, 201);
-//});
+  // ส่งงานไปเข้าคิวทำ PDF เบื้องหลัง (ปิดชั่วคราวสำหรับ Demo)
+  // TODO: เปิดใช้งานเมื่อพร้อม PDF Queue
+  // await c.env.PDF_QUEUE.send({ applicationId, roundId: data.roundId });
+
+  return c.json({ success: true, data: { applicationNo } }, 201);
+});
 
 export { publicRoutes };

@@ -1,7 +1,7 @@
 name = "sao-recruitment-backend"
 main = "src/index.ts"
 compatibility_date = "2026-10-07"
-node_compat = true
+compatibility_flags = ["nodejs_compat"]
 
 # D1 Database Binding
 [[d1_databases]]
@@ -14,10 +14,17 @@ database_id = "c8c9e923-0b64-4203-880b-ea5af58d316f" # ใส่ ID จริง
 binding = "R2_BUCKET"
 bucket_name = "sao-storage"
 
+# ===========================================
+# OPTIONAL: Cloudflare Queue (ปิดไว้ชั่วคราว)
+# หากต้องการเปิดใช้งาน Queue สำหรับ PDF Generation:
+# 1. สร้าง Queue: wrangler queues create sao-pdf-queue
+# 2. Uncomment config ด้านล่าง
+# 3. เพิ่ม PDF_QUEUE กลับเข้าไปใน Bindings type
+# ===========================================
 # [[queues.producers]]
 # binding = "PDF_QUEUE"
 # queue = "sao-pdf-queue"
-
+#
 # [[queues.consumers]]
 # queue = "sao-pdf-queue"
 # max_batch_size = 10

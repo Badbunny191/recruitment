@@ -25,7 +25,7 @@ app.get('/health', (c) => c.json({ status: 'ok', timestamp: Math.floor(Date.now(
 // ==========================================
 export default {
   // รับ Request แบบ HTTP
-  fetch: app.fetch,
+  fetch: app.fetch
 
   // รับ Request แบบ Queue (Background Job สร้าง PDF)
   //async queue(batch: MessageBatch<any>, env: Bindings): Promise<void> {

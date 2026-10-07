@@ -73,8 +73,19 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
 
 adminRoutes.get('/rounds', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(recruitmentRounds) }));
 adminRoutes.post('/rounds', auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundCreateSchema), async (c) => {
+  const db = drizzle(c.env.DB);
+  const data = c.req.valid('json');
   const id = uuidv4();
-  await drizzle(c.env.DB).insert(recruitmentRounds).values({ id, ...c.req.valid('json') });
+  
+  await db.insert(recruitmentRounds).values({
+    id,
+    templateVersionId: data.templateVersionId,
+    title: data.title,
+    positionLevel: data.positionLevel,
+    openDate: new Date(data.openDate * 1000), // Convert Unix timestamp to Date
+    closeDate: new Date(data.closeDate * 1000), // Convert Unix timestamp to Date
+    status: data.status,
+  });
   return c.json({ success: true, id }, 201);
 });
 

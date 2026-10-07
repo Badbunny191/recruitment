@@ -22,6 +22,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240320.0",
+    "@types/uuid": "^10.0.0",
     "drizzle-kit": "^0.31.11",
     "typescript": "^5.0.0",
     "wrangler": "^3.0.0"

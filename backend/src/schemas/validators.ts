@@ -41,9 +41,12 @@ export const RecruitmentRoundCreateSchema = z.object({
   templateVersionId: z.string(),
   title: z.string().min(1),
   positionLevel: z.string().min(1),
-  openDate: z.number().int().positive(),
-  closeDate: z.number().int().positive(),
+  openDate: z.number().int().positive(), // Unix timestamp (seconds)
+  closeDate: z.number().int().positive(), // Unix timestamp (seconds)
   status: RoundStatusEnum.default('DRAFT'),
+}).refine(data => data.closeDate > data.openDate, {
+  message: "closeDate must be after openDate",
+  path: ["closeDate"],
 });
 
 export const ApplicationAttachmentSchema = z.object({
