@@ -1,0 +1,15 @@
+node_modules/
+**/node_modules/
+
+.wrangler/
+
+.env
+.env.local
+
+.next/
+dist/
+build/
+
+.DS_Store
+
+*.log
