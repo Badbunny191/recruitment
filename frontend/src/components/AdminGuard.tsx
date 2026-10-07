@@ -5,13 +5,12 @@ import { useAdminAuth } from '@/lib/useAdminAuth';
 /**
  * AdminGuard - Client-side route protection for /admin/* pages
  *
- * Usage: Wrap children with <AdminGuard>...</AdminGuard>
- * The login page (/admin/login) should NOT use this component.
+ * This component MUST be rendered AFTER the layout-level pathname check.
+ * The layout is responsible for not rendering this on /admin/login.
  */
 export function AdminGuard({ children }: { children: React.ReactNode }) {
   const { isChecking, isAuthenticated } = useAdminAuth();
 
-  // Show loading while checking auth
   if (isChecking) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50">
@@ -20,7 +19,6 @@ export function AdminGuard({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Auth failed - redirect will happen via the hook
   if (!isAuthenticated) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50">
@@ -29,6 +27,5 @@ export function AdminGuard({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Auth successful - render children
   return <>{children}</>;
 }

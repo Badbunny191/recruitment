@@ -1,22 +1,8 @@
 'use client';
 
-import dynamic from 'next/dynamic';
 import { usePathname, useRouter } from 'next/navigation';
+import { AdminGuard } from '@/components/AdminGuard';
 import { useAdminAuth } from '@/lib/useAdminAuth';
-
-// Dynamically import AdminGuard with SSR disabled to prevent
-// it from being pre-rendered as "loading" state in static HTML
-const AdminGuard = dynamic(
-  () => import('@/components/AdminGuard').then((mod) => mod.AdminGuard),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-screen items-center justify-center bg-slate-50">
-        <div className="text-slate-500">กำลังโหลด...</div>
-      </div>
-    ),
-  }
-);
 
 export default function AdminLayout({
   children,
@@ -27,7 +13,7 @@ export default function AdminLayout({
   const router = useRouter();
   const { logout } = useAdminAuth();
 
-  // หน้า login ไม่ต้องห่อด้วย AdminGuard
+  // Safety net: /admin/login should be in (admin-auth) route group
   if (pathname === '/admin/login') {
     return <>{children}</>;
   }
