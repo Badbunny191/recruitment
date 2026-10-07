@@ -1,0 +1,7 @@
+[admin_users] 1 ----- * [audit_logs]
+[field_master] 1 ----- * [template_fields]
+[templates] 1 ----- * [template_versions]
+[template_versions] 1 ----- * [template_fields]
+[template_versions] 1 ----- * [recruitment_rounds]
+[recruitment_rounds] 1 ----- * [applications]
+[applications] 1 ----- * [application_attachments]

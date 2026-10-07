@@ -1,0 +1,29 @@
+name = "sao-recruitment-backend"
+main = "src/index.ts"
+compatibility_date = "2024-03-20"
+node_compat = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sao-db"
+database_id = "YOUR-D1-DATABASE-ID" 
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "sao-storage"
+
+[[queues.producers]]
+binding = "PDF_QUEUE"
+queue = "sao-pdf-queue"
+
+[[queues.consumers]]
+queue = "sao-pdf-queue"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[vars]
+JWT_SECRET = "DEV_SECRET_KEY_12345"
+R2_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
+R2_ACCESS_KEY_ID = "YOUR_ACCESS_KEY"
+R2_SECRET_ACCESS_KEY = "YOUR_SECRET_KEY"
+R2_BUCKET_NAME = "sao-storage"
