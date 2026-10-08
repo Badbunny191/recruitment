@@ -30,6 +30,7 @@ interface Application {
   status: string;
   formData: Record<string, any>;
   submittedAt: number;
+  createdAt?: number;
   attachments: ApplicationAttachment[];
   schema: FormField[];
 }
@@ -66,12 +67,14 @@ export default function ApplicationDetailClient() {
 
   const handleViewFile = (fileUrl: string) => {
     const key = getFileKey(fileUrl);
+    // URL format: NEXT_PUBLIC_API_URL (รวม /api/v1 แล้ว) + /public/uploads/files/:key
     const url = `${process.env.NEXT_PUBLIC_API_URL}/public/uploads/files/${encodeURIComponent(key)}`;
     window.open(url, '_blank');
   };
 
   const handleDownloadFile = (fileUrl: string, filename: string) => {
     const key = getFileKey(fileUrl);
+    // URL format: NEXT_PUBLIC_API_URL (รวม /api/v1 แล้ว) + /public/uploads/files/:key
     const url = `${process.env.NEXT_PUBLIC_API_URL}/public/uploads/files/${encodeURIComponent(key)}`;
     const a = document.createElement('a');
     a.href = url;
@@ -98,8 +101,18 @@ export default function ApplicationDetailClient() {
     );
   }
 
-  const formatDate = (timestamp: number) => {
-    return new Date(timestamp * 1000).toLocaleDateString('th-TH', {
+  const formatDate = (timestamp: number | string | null | undefined) => {
+    if (!timestamp) return '-';
+    let date: Date;
+    if (typeof timestamp === 'number') {
+      // รองรับทั้ง Unix timestamp (seconds) และ milliseconds
+      const ms = timestamp < 1e12 ? timestamp * 1000 : timestamp;
+      date = new Date(ms);
+    } else {
+      date = new Date(timestamp);
+    }
+    if (isNaN(date.getTime())) return 'วันที่ไม่ถูกต้อง';
+    return date.toLocaleDateString('th-TH', {
       year: 'numeric',
       month: 'long',
       day: 'numeric',
@@ -146,17 +159,60 @@ export default function ApplicationDetailClient() {
           <CardTitle>ข้อมูลที่กรอก</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {Object.entries(app.formData || {}).map(([key, value]) => {
-            if (key.includes('fileUrl') || key.includes('file')) return null;
-            return (
+          {(() => {
+            // formData จาก API อาจมาได้หลายรูปแบบ:
+            // 1. Object ตรงๆ (Drizzle mode: 'json' parse แล้ว)
+            // 2. String JSON (e.g. '{"field":"value"}')
+            // 3. Double-escaped string (legacy data ที่เก็บด้วย JSON.stringify ซ้อน)
+            const parseFormData = (raw: any): Record<string, any> => {
+              if (!raw) return {};
+              if (typeof raw === 'object') return raw;
+              if (typeof raw !== 'string') return {};
+
+              // ลอง parse ตรงๆ ก่อน
+              let parsed: any;
+              try {
+                parsed = JSON.parse(raw);
+              } catch {
+                return {};
+              }
+
+              // ถ้า parse ได้ object แล้ว → ใช้เลย
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                return parsed;
+              }
+
+              // ถ้า parse ได้ string อีกชั้น (double-encoded) → parse ซ้อน
+              if (typeof parsed === 'string') {
+                try {
+                  const second = JSON.parse(parsed);
+                  if (second && typeof second === 'object') return second;
+                } catch {
+                  // ignore
+                }
+              }
+
+              return {};
+            };
+
+            const parsedFormData = parseFormData(app.formData);
+            const entries = Object.entries(parsedFormData).filter(
+              ([key]) => !key.includes('fileUrl') && !key.includes('file')
+            );
+
+            if (entries.length === 0) {
+              return <p className="text-gray-500">ไม่มีข้อมูลที่กรอก</p>;
+            }
+
+            return entries.map(([key, value]) => (
               <div key={key}>
                 <p className="text-gray-500 text-sm">{getFieldLabel(key)}</p>
                 <p className="font-medium whitespace-pre-wrap">
-                  {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                  {typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value)}
                 </p>
               </div>
-            );
-          })}
+            ));
+          })()}
         </CardContent>
       </Card>
 
