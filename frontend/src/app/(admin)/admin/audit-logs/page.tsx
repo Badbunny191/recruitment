@@ -30,7 +30,7 @@ export default function AuditLogsPage() {
           <TableBody>
             {logs.map((log) => (
               <TableRow key={log.id}>
-                <TableCell>{new Date(log.createdAt * 1000).toLocaleString('th-TH')}</TableCell>
+                <TableCell>{new Date(log.createdAt).toLocaleString('th-TH')}</TableCell>
                 <TableCell className="font-mono text-xs">{log.adminId}</TableCell>
                 <TableCell>
                    <Badge variant={log.action === 'DELETE' ? 'destructive' : 'outline'}>{log.action}</Badge>

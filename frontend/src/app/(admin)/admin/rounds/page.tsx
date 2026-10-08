@@ -15,10 +15,10 @@ interface Round {
   templateVersionId: string;
   title: string;
   positionLevel: string;
-  openDate: number;
-  closeDate: number;
+  openDate: string | number | Date;
+  closeDate: string | number | Date;
   status: 'DRAFT' | 'ACTIVE' | 'CLOSED';
-  createdAt: number;
+  createdAt: string | number | Date;
 }
 
 interface Template {
@@ -52,10 +52,10 @@ const EMPTY_FORM: FormState = {
   status: 'DRAFT',
 };
 
-const toLocalInput = (timestamp: number) => {
-  if (!timestamp) return '';
-  const d = new Date(timestamp * 1000);
-  // Format for datetime-local: YYYY-MM-DDTHH:MM
+const toLocalInput = (value: string | number | Date) => {
+  if (!value) return '';
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return '';
   const pad = (n: number) => n.toString().padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
@@ -185,12 +185,15 @@ export default function RoundsPage() {
     }
   };
 
-  const formatDate = (ts: number) =>
-    new Date(ts * 1000).toLocaleDateString('th-TH', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
+  const formatDate = (value: string | number | Date) => {
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return '-';
+  return d.toLocaleDateString('th-TH', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+};
 
   const versionLabel = (templateVersionId: string) => {
     const v = versions.find((x) => x.id === templateVersionId);

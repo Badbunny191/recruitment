@@ -9,8 +9,8 @@ interface RecruitmentRound {
   id: string;
   title: string;
   positionLevel: string;
-  openDate: number;
-  closeDate: number;
+  openDate: string | number | Date;
+  closeDate: string | number | Date;
 }
 
 export default function HomePage() {
@@ -50,7 +50,7 @@ export default function HomePage() {
               <CardContent className="space-y-3 text-sm text-slate-600">
                 <div>ระดับตำแหน่ง: <span className="font-semibold">{round.positionLevel}</span></div>
                 <div>ปิดรับสมัคร: <span className="font-semibold text-red-600">
-                  {new Date(round.closeDate * 1000).toLocaleDateString('th-TH')}
+                  {new Date(round.closeDate).toLocaleDateString('th-TH')}
                 </span></div>
               </CardContent>
               <CardFooter>

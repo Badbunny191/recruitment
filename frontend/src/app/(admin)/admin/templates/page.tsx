@@ -13,7 +13,7 @@ interface Template {
   id: string;
   name: string;
   description: string | null;
-  createdAt: number;
+  createdAt: string | number | Date;
 }
 
 export default function TemplatesPage() {
@@ -122,7 +122,7 @@ export default function TemplatesPage() {
                   <TableCell className="font-medium">{tpl.name}</TableCell>
                   <TableCell className="text-slate-500">{tpl.description || '-'}</TableCell>
                   <TableCell className="text-slate-500 text-sm">
-                    {tpl.createdAt ? new Date(tpl.createdAt * 1000).toLocaleDateString('th-TH') : '-'}
+                    {tpl.createdAt ? new Date(tpl.createdAt).toLocaleDateString('th-TH') : '-'}
                   </TableCell>
                   <TableCell className="text-right space-x-2">
                     <Button
