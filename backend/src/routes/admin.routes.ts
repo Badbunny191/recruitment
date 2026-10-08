@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
 import { sign } from 'hono/jwt';
 import { v4 as uuidv4 } from 'uuid';
-import { eq, and, ne, isNull, count, or, like } from 'drizzle-orm';
+import { eq, and, ne, isNull, count, or, like, inArray } from 'drizzle-orm';
 import { Bindings, AppVariables } from '../types';
 import { authMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
@@ -388,6 +388,63 @@ adminRoutes.get('/applications/:id/history', async (c) => {
   }));
 
   return c.json({ data: history });
+});
+
+// POST /admin/applications/bulk-status - Bulk update application status
+adminRoutes.post('/applications/bulk-status', auditMiddleware('APPLICATION'), async (c) => {
+  const db = drizzle(c.env.DB);
+  const { ids, status, reason } = await c.req.json();
+  const adminId = c.get('jwtPayload').id;
+
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    return c.json({ error: 'กรุณาเลือกอย่างน้อย 1 รายการ' }, 400);
+  }
+
+  if (!status) {
+    return c.json({ error: 'กรุณาเลือกสถานะ' }, 400);
+  }
+
+  // Require reason for REJECTED status
+  if (status === 'REJECTED' && !reason) {
+    return c.json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' }, 400);
+  }
+
+  const now = new Date();
+  
+  try {
+    // Update all applications with matching IDs (not deleted)
+    await db
+      .update(applications)
+      .set({
+        status,
+        statusReason: reason || null,
+        verifiedBy: adminId,
+        verifiedAt: now
+      })
+      .where(
+        and(
+          isNull(applications.deletedAt),
+          inArray(applications.id, ids)
+        )
+      );
+
+    return c.json({
+      success: true,
+      updated: ids.length,
+      data: {
+        status,
+        reason: reason || null,
+        verifiedBy: adminId,
+        verifiedAt: Math.floor(now.getTime() / 1000)
+      }
+    });
+  } catch (error: any) {
+    console.error('Bulk status update error:', error);
+    return c.json({ 
+      error: error?.message || 'เกิดข้อผิดพลาดในการอัปเดตสถานะ',
+      details: error?.cause?.message || null
+    }, 500);
+  }
 });
 
 adminRoutes.get('/audit-logs', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(auditLogs) }));
