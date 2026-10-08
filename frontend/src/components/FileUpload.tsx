@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useId } from 'react';
 import { Button } from '@/components/ui/button';
 
 interface FileUploadProps {
@@ -11,6 +11,9 @@ interface FileUploadProps {
 export function FileUpload({ onUploadSuccess, accept = 'application/pdf' }: FileUploadProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
+  
+  // Generate unique ID for this component instance
+  const inputId = useId();
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -99,14 +102,14 @@ export function FileUpload({ onUploadSuccess, accept = 'application/pdf' }: File
           <Button 
             type="button" 
             variant="outline" 
-            onClick={() => document.getElementById('file-upload')?.click()}
+            onClick={() => document.getElementById(inputId)?.click()}
           >
             เลือกไฟล์
           </Button>
         </>
       )}
       <input
-        id="file-upload"
+        id={inputId}
         type="file"
         accept={accept}
         className="hidden"

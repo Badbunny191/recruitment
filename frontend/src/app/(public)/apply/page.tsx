@@ -31,18 +31,27 @@ function FormInner() {
 
   const { register, handleSubmit, control } = useForm();
 
-  useEffect(() => {
+useEffect(() => {
     if (!roundId) {
       setLoading(false);
       return;
     }
-    fetch(`${process.env.NEXT_PUBLIC_API_URL}/public/rounds/${roundId}/schema`)
-      .then(res => res.json())
-      .then(res => {
-        setSchema(res.data || []);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
+    fetch(`${apiUrl}/public/rounds/${roundId}/schema`)
+    .then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then(res => {
+      console.log('Schema loaded:', res.data);
+      setSchema(res.data || []);
+      setLoading(false);
+    })
+    .catch(err => {
+      console.error('Failed to load schema:', err);
+      alert('ไม่สามารถโหลดแบบฟอร์มได้: ' + err.message);
+      setLoading(false);
+    });
   }, [roundId]);
 
   const onSubmit = async (data: any) => {
@@ -67,7 +76,8 @@ function FormInner() {
     });
 
     try {
-      const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/public/applications/submit', {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
+      const res = await fetch(`${apiUrl}/public/applications/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...coreData, formData, attachments }),
@@ -77,8 +87,11 @@ function FormInner() {
       if (result.success) {
         router.push(`/apply/success?appNo=${result.data.applicationNo}`);
       } else {
-        alert('เกิดข้อผิดพลาด กรุณาตรวจสอบข้อมูล');
+        alert('เกิดข้อผิดพลาด: ' + (result.error || 'กรุณาตรวจสอบข้อมูล'));
       }
+    } catch (error) {
+      console.error('Submit error:', error);
+      alert('เกิดข้อผิดพลาดในการส่งใบสมัคร: ' + (error instanceof Error ? error.message : 'ไม่ทราบสาเหตุ'));
     } finally {
       setIsSubmitting(false);
     }
