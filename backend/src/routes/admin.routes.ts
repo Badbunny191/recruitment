@@ -7,7 +7,7 @@ import { eq, and, ne, isNull, count } from 'drizzle-orm';
 import { Bindings, AppVariables } from '../types';
 import { authMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
-import { adminUsers, fieldMaster, templates, templateVersions, templateFields, recruitmentRounds, applications, auditLogs } from '../db/schema';
+import { adminUsers, fieldMaster, templates, templateVersions, templateFields, recruitmentRounds, applications, applicationAttachments, auditLogs } from '../db/schema';
 import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema } from '../schemas/validators';
 
 const adminRoutes = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
@@ -138,6 +138,48 @@ adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidato
 });
 
 adminRoutes.get('/applications', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(applications) }));
+
+// GET /admin/applications/:id - Get full application detail with attachments
+adminRoutes.get('/applications/:id', async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+
+  // Get application
+  const app = await db.select().from(applications).where(eq(applications.id, id)).get();
+  if (!app) {
+    return c.json({ error: 'Application not found' }, 404);
+  }
+
+  // Get attachments
+  const attachments = await db.select().from(applicationAttachments).where(eq(applicationAttachments.applicationId, id));
+
+  // Get round info for schema
+  const round = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.id, app.roundId)).get();
+  let schema: any[] = [];
+  if (round) {
+    const fields = await db.select({
+      fieldId: templateFields.fieldId,
+      type: fieldMaster.fieldType,
+      label: fieldMaster.labelTh,
+      overrideLabel: templateFields.overrideLabelTh,
+      isRequired: templateFields.isRequired,
+    })
+    .from(templateFields)
+    .innerJoin(fieldMaster, eq(templateFields.fieldId, fieldMaster.id))
+    .where(eq(templateFields.templateVersionId, round.templateVersionId));
+
+    schema = fields;
+  }
+
+  return c.json({
+    data: {
+      ...app,
+      attachments,
+      schema
+    }
+  });
+});
+
 adminRoutes.get('/audit-logs', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(auditLogs) }));
 
 export { adminRoutes };

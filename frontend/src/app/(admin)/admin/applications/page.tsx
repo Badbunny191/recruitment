@@ -1,12 +1,14 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
 export default function ApplicationsPage() {
   const [apps, setApps] = useState<any[]>([]);
+  const router = useRouter();
 
   useEffect(() => {
     fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/applications', {
@@ -34,6 +36,7 @@ export default function ApplicationsPage() {
               <TableHead>ชื่อ-นามสกุล</TableHead>
               <TableHead>เลขบัตรประชาชน</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -43,6 +46,11 @@ export default function ApplicationsPage() {
                 <TableCell>{app.fullname}</TableCell>
                 <TableCell>{app.nationalId}</TableCell>
                 <TableCell><Badge>{app.status}</Badge></TableCell>
+                <TableCell className="text-right">
+                  <Button variant="outline" size="sm" onClick={() => router.push(`/admin/applications/${app.id}`)}>
+                    ดูรายละเอียด
+                  </Button>
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
