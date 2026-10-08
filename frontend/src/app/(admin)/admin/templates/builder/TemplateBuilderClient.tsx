@@ -17,6 +17,11 @@ interface MasterField {
   labelTh: string;
   defaultOptions: string[] | null;
   isActive: boolean;
+  helpText?: string;
+  placeholder?: string;
+  validationType?: string;
+  validationMessage?: string;
+  fileConfig?: any;
 }
 
 interface TemplateVersion {
@@ -26,21 +31,54 @@ interface TemplateVersion {
   createdAt: number;
 }
 
+interface VersionField {
+  id: string;
+  fieldId: string;
+  displayOrder: number;
+  isRequired: boolean;
+  overrideLabelTh: string | null;
+  overrideOptions: string[] | null;
+  helpText: string | null;
+  placeholder: string | null;
+  validationRules: Record<string, any> | null;
+}
+
 interface BuilderField {
   fieldId: string;
   displayOrder: number;
   isRequired: boolean;
   overrideLabelTh: string;
   overrideOptionsText: string;
+  helpText: string;
+  placeholder: string;
+  validationRulesText: string;
   // metadata for UI
   fieldType?: string;
   label?: string;
   defaultOptions?: string[] | null;
+  helpTextOriginal?: string;
+  placeholderOriginal?: string;
+  validationTypeOriginal?: string;
 }
 
 interface FormValues {
   fields: BuilderField[];
 }
+
+// Helper to parse options from various formats
+const parseOptions = (input: any): string[] => {
+  if (!input) return [];
+  if (Array.isArray(input)) return input;
+  if (typeof input === 'string') {
+    try {
+      const parsed = JSON.parse(input);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
 
 function BuilderInner() {
   const searchParams = useSearchParams();
@@ -50,15 +88,16 @@ function BuilderInner() {
   const [masterFields, setMasterFields] = useState<MasterField[]>([]);
   const [template, setTemplate] = useState<{ id: string; name: string; description: string | null } | null>(null);
   const [versions, setVersions] = useState<TemplateVersion[]>([]);
+  const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
 
-  const { control, register, handleSubmit, watch, setValue } = useForm<FormValues>({
+  const { control, register, handleSubmit, watch, reset, setValue } = useForm<FormValues>({
     defaultValues: { fields: [] },
   });
-  const { fields, append, remove } = useFieldArray({ control, name: 'fields' });
-
+  const { fields, append, remove, replace } = useFieldArray({ control, name: 'fields' });
+  
   const watchedFields = watch('fields');
 
   const loadAll = async () => {
@@ -75,10 +114,56 @@ function BuilderInner() {
           headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
         }).then((r) => r.json()),
       ]);
+      
       setMasterFields((fieldsRes.data || []).filter((f: MasterField) => f.isActive));
-      setVersions(versionsRes.data || []);
       const t = (templatesRes.data || []).find((x: any) => x.id === templateId);
       setTemplate(t || null);
+      
+      const allVersions: TemplateVersion[] = versionsRes.data || [];
+      setVersions(allVersions);
+      
+      // Find the current/last published version
+      const publishedVersions = allVersions
+        .filter(v => v.status === 'PUBLISHED')
+        .sort((a, b) => b.versionNumber - a.versionNumber);
+      
+      if (publishedVersions.length > 0) {
+        const currentVer = publishedVersions[0];
+        setCurrentVersionId(currentVer.id);
+        
+        // Load fields for this version
+        const fieldsDataRes = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL}/admin/template-fields/${currentVer.id}`,
+          { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
+        ).then(r => r.json()).catch(() => ({ data: [] }));
+        
+        // Populate form with existing fields
+        const existingFields: VersionField[] = fieldsDataRes.data || [];
+        
+        const formFields: BuilderField[] = existingFields.map((vf: VersionField) => {
+          const mf = fieldsRes.data?.find((m: MasterField) => m.id === vf.fieldId);
+          const opts = parseOptions(vf.overrideOptions);
+          return {
+            fieldId: vf.fieldId,
+            displayOrder: vf.displayOrder,
+            isRequired: vf.isRequired,
+            overrideLabelTh: vf.overrideLabelTh || '',
+            overrideOptionsText: opts.join('\n'),
+            helpText: vf.helpText || '',
+            placeholder: vf.placeholder || '',
+            validationRulesText: vf.validationRules ? JSON.stringify(vf.validationRules) : '',
+            fieldType: mf?.fieldType,
+            label: vf.overrideLabelTh || mf?.labelTh || '',
+            defaultOptions: parseOptions(mf?.defaultOptions),
+            helpTextOriginal: mf?.helpText,
+            placeholderOriginal: mf?.placeholder,
+            validationTypeOriginal: mf?.validationType,
+          };
+        });
+        
+        // Use replace instead of reset to directly replace the array
+        replace(formFields);
+      }
     } finally {
       setLoading(false);
     }
@@ -89,26 +174,34 @@ function BuilderInner() {
   }, [templateId]);
 
   const addField = (mf: MasterField) => {
+    const opts = parseOptions(mf.defaultOptions);
+    const currentFields = watch('fields');
     append({
       fieldId: mf.id,
-      displayOrder: fields.length + 1,
+      displayOrder: currentFields.length + 1,
       isRequired: true,
       overrideLabelTh: '',
-      overrideOptionsText: '',
+      overrideOptionsText: opts.join('\n'),
+      helpText: mf.helpText || '',
+      placeholder: mf.placeholder || '',
+      validationRulesText: '',
       fieldType: mf.fieldType,
       label: mf.labelTh,
-      defaultOptions: mf.defaultOptions,
+      defaultOptions: opts,
+      helpTextOriginal: mf.helpText,
+      placeholderOriginal: mf.placeholder,
+      validationTypeOriginal: mf.validationType,
     });
   };
 
   const moveField = (index: number, direction: -1 | 1) => {
+    const currentFields = watch('fields');
     const newIndex = index + direction;
-    if (newIndex < 0 || newIndex >= fields.length) return;
-    const current = [...fields];
+    if (newIndex < 0 || newIndex >= currentFields.length) return;
+    const current = [...currentFields];
     [current[index], current[newIndex]] = [current[newIndex], current[index]];
-    const formValues = current.map((f) => ({ ...f, displayOrder: current.indexOf(f) + 1 }));
-    fields.forEach(() => remove(0));
-    formValues.forEach((f) => append(f));
+    const formValues = current.map((f, i) => ({ ...f, displayOrder: i + 1 }));
+    replace(formValues);
   };
 
   const onSubmit = async (data: FormValues) => {
@@ -120,15 +213,33 @@ function BuilderInner() {
     try {
       const payload = {
         templateId,
-        fields: data.fields.map((f) => ({
-          fieldId: f.fieldId,
-          displayOrder: f.displayOrder,
-          isRequired: f.isRequired,
-          overrideLabelTh: f.overrideLabelTh || null,
-          overrideOptions: f.overrideOptionsText
-            ? f.overrideOptionsText.split('\n').map((s) => s.trim()).filter(Boolean)
-            : null,
-        })),
+        fields: data.fields.map((f) => {
+          const fieldData: any = {
+            fieldId: f.fieldId,
+            displayOrder: f.displayOrder,
+            isRequired: f.isRequired,
+            overrideLabelTh: f.overrideLabelTh || null,
+            overrideOptions: f.overrideOptionsText
+              ? f.overrideOptionsText.split('\n').map((s) => s.trim()).filter(Boolean)
+              : null,
+          };
+          // Include helpText and placeholder if different from original
+          if (f.helpText && f.helpText !== f.helpTextOriginal) {
+            fieldData.helpText = f.helpText;
+          }
+          if (f.placeholder && f.placeholder !== f.placeholderOriginal) {
+            fieldData.placeholder = f.placeholder;
+          }
+          // Parse validation rules if provided
+          if (f.validationRulesText) {
+            try {
+              fieldData.validationRules = JSON.parse(f.validationRulesText);
+            } catch {
+              // Ignore invalid JSON
+            }
+          }
+          return fieldData;
+        }),
       };
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/templates/${templateId}/versions`, {
         method: 'POST',
@@ -167,6 +278,8 @@ function BuilderInner() {
     );
   }
 
+  const currentVersion = versions.find(v => v.id === currentVersionId);
+
   return (
     <div className="p-8 space-y-6">
       <div className="flex justify-between items-start">
@@ -181,16 +294,21 @@ function BuilderInner() {
             <p className="text-slate-500 text-sm mt-1">{template.description}</p>
           )}
         </div>
-        <Button onClick={handleSubmit(onSubmit)} disabled={submitting || fields.length === 0}>
-          {submitting ? 'กำลังบันทึก...' : 'Publish New Version'}
-        </Button>
+        <div className="text-right">
+          {currentVersion && (
+            <Badge variant="default" className="mr-2">v{currentVersion.versionNumber} (ปัจจุบัน)</Badge>
+          )}
+          <Button onClick={handleSubmit(onSubmit)} disabled={submitting || fields.length === 0}>
+            {submitting ? 'กำลังบันทึก...' : 'Publish New Version'}
+          </Button>
+        </div>
       </div>
 
       {/* Versions history */}
       {versions.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">ประวัติ Version ที่เผยแพร่แล้ว ({versions.length})</CardTitle>
+            <CardTitle className="text-base">ประวัติ Version ({versions.length})</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex flex-wrap gap-2">
@@ -208,7 +326,7 @@ function BuilderInner() {
 
       <div className="grid grid-cols-3 gap-6">
         {/* Master fields pool */}
-        <Card className="col-span-1 h-[70vh] overflow-auto">
+        <Card className="col-span-1 h-[60vh] overflow-auto">
           <CardHeader>
             <CardTitle className="text-base">คลังคำถาม ({masterFields.length})</CardTitle>
           </CardHeader>
@@ -221,7 +339,7 @@ function BuilderInner() {
             <div className="space-y-2">
               {filteredMasterFields.length === 0 ? (
                 <p className="text-sm text-slate-500 text-center py-4">
-                  ไม่มี Field ที่ใช้งาน — ไปสร้างที่หน้า Field Master ก่อน
+                  ไม่มี Field ที่ใช้งาน
                 </p>
               ) : (
                 filteredMasterFields.map((mf) => {
@@ -256,10 +374,15 @@ function BuilderInner() {
         </Card>
 
         {/* Selected fields */}
-        <Card className="col-span-2 h-[70vh] overflow-auto">
+        <Card className="col-span-2 h-[60vh] overflow-auto">
           <CardHeader>
             <CardTitle className="text-base">
-              ฟิลด์ที่เลือกใช้งาน ({fields.length})
+              ฟิลด์ใน Template ({fields.length})
+              {currentVersion && (
+                <span className="text-sm font-normal text-slate-500 ml-2">
+                  (จาก v{currentVersion.versionNumber})
+                </span>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -268,17 +391,26 @@ function BuilderInner() {
                 ยังไม่มีฟิลด์ — คลิก "เพิ่ม" จากคลังคำถามทางซ้าย
               </p>
             ) : (
-              fields.map((field, index) => {
-                const opts = watchedFields[index]?.defaultOptions;
-                return (
+              <>
+                {fields.map((field, index) => {
+                  const opts = watchedFields[index]?.defaultOptions;
+                  const hasValidation = watchedFields[index]?.validationTypeOriginal && watchedFields[index]?.validationTypeOriginal !== 'NONE';
+                  return (
                   <div key={field.id} className="p-4 border rounded bg-slate-50 space-y-3">
                     <div className="flex items-center gap-3">
                       <span className="font-bold text-lg w-8">{index + 1}</span>
                       <div className="flex-1">
                         <div className="font-medium">{field.label}</div>
-                        <Badge variant="outline" className="text-xs mt-1">
-                          {field.fieldType}
-                        </Badge>
+                        <div className="flex items-center gap-2 mt-1">
+                          <Badge variant="outline" className="text-xs">
+                            {field.fieldType}
+                          </Badge>
+                          {hasValidation && (
+                            <Badge variant="outline" className="text-xs text-orange-600 border-orange-200">
+                              {watchedFields[index].validationTypeOriginal}
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                       <div className="flex gap-1">
                         <Button
@@ -319,15 +451,38 @@ function BuilderInner() {
                       </div>
                       {(field.fieldType === 'DROPDOWN' || field.fieldType === 'RADIO') && (
                         <div className="space-y-1 col-span-2">
-                          <Label className="text-xs">ตัวเลือกใหม่ (ไม่บังคับ — หนึ่งบรรทัดต่อหนึ่งตัวเลือก)</Label>
+                          <Label className="text-xs">ตัวเลือกใหม่ (ไม่บังคับ)</Label>
                           <Textarea
                             {...register(`fields.${index}.overrideOptionsText`)}
                             rows={3}
                             placeholder={
-                              opts
+                              opts && opts.length > 0
                                 ? `ใช้ค่าเดิม:\n${opts.join('\n')}`
                                 : 'ตัวเลือก 1\nตัวเลือก 2'
                             }
+                          />
+                        </div>
+                      )}
+                      <div className="space-y-1 col-span-2">
+                        <Label className="text-xs">Help Text ใหม่ (ไม่บังคับ)</Label>
+                        <Input
+                          {...register(`fields.${index}.helpText`)}
+                          placeholder={field.helpTextOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
+                        />
+                      </div>
+                      <div className="space-y-1 col-span-2">
+                        <Label className="text-xs">Placeholder ใหม่ (ไม่บังคับ)</Label>
+                        <Input
+                          {...register(`fields.${index}.placeholder`)}
+                          placeholder={field.placeholderOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
+                        />
+                      </div>
+                      {hasValidation && (
+                        <div className="space-y-1 col-span-2">
+                          <Label className="text-xs">Validation Rules JSON (ไม่บังคับ)</Label>
+                          <Input
+                            {...register(`fields.${index}.validationRulesText`)}
+                            placeholder='{"minLength": 5, "maxLength": 100}'
                           />
                         </div>
                       )}
@@ -335,14 +490,14 @@ function BuilderInner() {
                         control={control}
                         name={`fields.${index}.isRequired`}
                         render={({ field: f }) => (
-                          <div className="flex items-center space-x-2 col-span-2">
+                          <div className="flex items-center space-x-2 col-span-2 bg-blue-50 p-3 rounded border border-blue-100">
                             <Checkbox
                               id={`req-${index}`}
                               checked={f.value}
                               onChange={(e) => f.onChange(e.target.checked)}
                             />
-                            <Label htmlFor={`req-${index}`} className="cursor-pointer">
-                              บังคับตอบ
+                            <Label htmlFor={`req-${index}`} className="cursor-pointer font-medium text-blue-800">
+                              ต้องตอบ (Required)
                             </Label>
                           </div>
                         )}
@@ -350,7 +505,8 @@ function BuilderInner() {
                     </div>
                   </div>
                 );
-              })
+                })}
+              </>
             )}
           </CardContent>
         </Card>

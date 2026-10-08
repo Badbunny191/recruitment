@@ -13,6 +13,14 @@ interface RecruitmentRound {
   closeDate: string | number | Date;
 }
 
+// Helper to safely format dates
+const formatDate = (value: string | number | Date | null | undefined): string => {
+  if (!value) return 'ไม่กำหนด';
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return 'ไม่กำหนด';
+  return d.toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' });
+};
+
 export default function HomePage() {
   const [rounds, setRounds] = useState<RecruitmentRound[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,7 +58,7 @@ export default function HomePage() {
               <CardContent className="space-y-3 text-sm text-slate-600">
                 <div>ระดับตำแหน่ง: <span className="font-semibold">{round.positionLevel}</span></div>
                 <div>ปิดรับสมัคร: <span className="font-semibold text-red-600">
-                  {new Date(round.closeDate).toLocaleDateString('th-TH')}
+                  {formatDate(round.closeDate)}
                 </span></div>
               </CardContent>
               <CardFooter>

@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useForm, Controller } from 'react-hook-form';
+import { useForm, Controller, SubmitHandler } from 'react-hook-form';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -11,15 +11,56 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { FileUpload } from '@/components/FileUpload';
 
+type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE';
+type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_ID' | 'REGEX';
+
+interface FileConfig {
+  allowedFileTypes?: string[];
+  maxFiles?: number;
+  maxSizeMB?: number;
+}
+
 interface SchemaField {
   fieldId: string;
-  type: 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE';
+  type: FieldType;
   label: string;
   overrideLabel: string | null;
   options: string[] | null;
   overrideOptions: string[] | null;
   isRequired: boolean;
+  helpText?: string;
+  placeholder?: string;
+  validationType?: ValidationType;
+  validationMessage?: string;
+  fileConfig?: FileConfig;
+  section?: string;
 }
+
+interface FormValues {
+  [key: string]: any;
+}
+
+// Validation patterns
+const VALIDATION_PATTERNS: Record<ValidationType, RegExp | null> = {
+  NONE: null,
+  EMAIL: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
+  PHONE: /^(0[0-9]{2}-?[0-9]{3}-?[0-9]{4}|0[0-9]{9})$/,
+  NUMBER: /^[0-9]+$/,
+  URL: /^https?:\/\/.+/i,
+  CITIZEN_ID: /^[0-9]{13}$/,
+  REGEX: null, // Custom, handled separately
+};
+
+// Default validation messages
+const DEFAULT_MESSAGES: Record<ValidationType, string> = {
+  NONE: '',
+  EMAIL: 'รูปแบบอีเมลไม่ถูกต้อง',
+  PHONE: 'รูปแบบเบอร์โทรศัพท์ไม่ถูกต้อง (ตัวอย่าง: 0812345678)',
+  NUMBER: 'กรุณากรอกตัวเลขเท่านั้น',
+  URL: 'รูปแบบ URL ไม่ถูกต้อง',
+  CITIZEN_ID: 'เลขบัตรประชาชนต้องเป็นตัวเลข 13 หลัก',
+  REGEX: 'รูปแบบไม่ถูกต้อง',
+};
 
 function FormInner() {
   const searchParams = useSearchParams();
@@ -28,10 +69,11 @@ function FormInner() {
   const [schema, setSchema] = useState<SchemaField[]>([]);
   const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [sections, setSections] = useState<string[]>([]);
 
-  const { register, handleSubmit, control } = useForm();
+  const { register, handleSubmit, control, formState: { errors } } = useForm<FormValues>();
 
-useEffect(() => {
+  useEffect(() => {
     if (!roundId) {
       setLoading(false);
       return;
@@ -44,7 +86,61 @@ useEffect(() => {
     })
     .then(res => {
       console.log('Schema loaded:', res.data);
-      setSchema(res.data || []);
+      
+      // Parse and normalize schema data
+      const parseSchemaField = (field: any): SchemaField => {
+        // Parse options
+        let options: string[] = [];
+        if (field.options) {
+          if (Array.isArray(field.options)) options = field.options;
+          else if (typeof field.options === 'string') {
+            try { options = JSON.parse(field.options); } catch { options = []; }
+          }
+        }
+        
+        let overrideOptions: string[] = [];
+        if (field.overrideOptions) {
+          if (Array.isArray(field.overrideOptions)) overrideOptions = field.overrideOptions;
+          else if (typeof field.overrideOptions === 'string') {
+            try { overrideOptions = JSON.parse(field.overrideOptions); } catch { overrideOptions = []; }
+          }
+        }
+        
+        // Parse fileConfig
+        let fileConfig: FileConfig | undefined;
+        if (field.fileConfig) {
+          if (typeof field.fileConfig === 'string') {
+            try { fileConfig = JSON.parse(field.fileConfig); } catch { fileConfig = undefined; }
+          } else {
+            fileConfig = field.fileConfig;
+          }
+        }
+        
+        return {
+          fieldId: field.fieldId,
+          type: field.type,
+          label: field.label || '',
+          overrideLabel: field.overrideLabel,
+          options: options.length > 0 ? options : null,
+          overrideOptions: overrideOptions.length > 0 ? overrideOptions : null,
+          isRequired: field.isRequired || false,
+          helpText: field.helpText,
+          placeholder: field.placeholder,
+          validationType: field.validationType,
+          validationMessage: field.validationMessage,
+          fileConfig,
+          section: field.section,
+        };
+      };
+      
+      // Group fields by section
+      const fields: SchemaField[] = (res.data || []).map(parseSchemaField);
+      const sectionSet = new Set<string>();
+      fields.forEach(f => {
+        if (f.section) sectionSet.add(f.section);
+      });
+      setSections(Array.from(sectionSet));
+      setSchema(fields);
       setLoading(false);
     })
     .catch(err => {
@@ -54,33 +150,30 @@ useEffect(() => {
     });
   }, [roundId]);
 
-  const onSubmit = async (data: any) => {
+  const onSubmit: SubmitHandler<FormValues> = async (data) => {
     setIsSubmitting(true);
 
-    const coreData = {
-      roundId,
-      email: data.email,
-      fullname: data.fullname,
-      nationalId: data.nationalId,
-    };
-
+    // NEW MODE: Send formData only (no root fields)
+    // Core fields are already included in formData from schema
     const formData: Record<string, any> = {};
     const attachments: { fieldId: string; fileUrl: string }[] = [];
 
     schema.forEach(field => {
       if (field.type === 'FILE') {
         if (data[field.fieldId]) attachments.push({ fieldId: field.fieldId, fileUrl: data[field.fieldId] });
+      } else if (field.type === 'CHECKBOX') {
+        formData[field.fieldId] = data[field.fieldId] === true;
       } else {
         formData[field.fieldId] = data[field.fieldId];
       }
     });
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8788/api/v1';
       const res = await fetch(`${apiUrl}/public/applications/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...coreData, formData, attachments }),
+        body: JSON.stringify({ roundId, formData, attachments }),
       });
       const result = await res.json();
 
@@ -97,69 +190,314 @@ useEffect(() => {
     }
   };
 
-  if (loading) return <div className="p-8 text-center">กำลังโหลดแบบฟอร์ม...</div>;
+  // Validate field value based on validationType
+  const validateField = (value: any, validationType?: ValidationType): boolean => {
+    // If empty/null, let required handle it
+    if (!value || (typeof value === 'string' && !value.trim())) {
+      return true;
+    }
+
+    const strValue = String(value);
+    const pattern = VALIDATION_PATTERNS[validationType || 'NONE'];
+    
+    if (!pattern) return true;
+    
+    return pattern.test(strValue);
+  };
+
+  // Get validation message
+  const getValidationMessage = (validationType?: ValidationType, customMessage?: string): string => {
+    if (customMessage) return customMessage;
+    return DEFAULT_MESSAGES[validationType || 'NONE'];
+  };
+
+  // Build validation rules for react-hook-form
+  const getValidationRules = (field: SchemaField) => {
+    const rules: any = {};
+    
+    if (field.isRequired) {
+      if (field.type === 'CHECKBOX') {
+        rules.validate = (value: boolean) => value === true || 'กรุณายอมรับเงื่อนไข';
+      } else {
+        rules.required = 'กรุณากรอกข้อมูล';
+      }
+    }
+    
+    // Add validation type check
+    if (field.validationType && field.validationType !== 'NONE') {
+      rules.validate = {
+        ...(rules.validate || {}),
+        validationType: (value: any) => {
+          // If not required and empty, skip validation
+          if (!field.isRequired && (!value || (typeof value === 'string' && !value.trim()))) {
+            return true;
+          }
+          return validateField(value, field.validationType) || getValidationMessage(field.validationType, field.validationMessage);
+        }
+      };
+    }
+    
+    return rules;
+  };
+
+  // Get placeholder text
+  const getPlaceholder = (field: SchemaField) => {
+    return field.placeholder || '';
+  };
+
+  // Get file accept types
+  const getFileAccept = (field: SchemaField) => {
+    const fileTypes = parseOptions(field.fileConfig?.allowedFileTypes as any);
+    if (!fileTypes || fileTypes.length === 0) return 'application/pdf';
+    return fileTypes.map(t => {
+      switch(t.toLowerCase()) {
+        case 'pdf': return 'application/pdf';
+        case 'jpg':
+        case 'jpeg': return 'image/jpeg';
+        case 'png': return 'image/png';
+        case 'doc':
+        case 'docx': return 'application/msword';
+        default: return t;
+      }
+    }).join(',');
+  };
+
+  // Parse options from API - could be array, JSON string, or null
+  const parseOptions = (input: string[] | string | null | undefined): string[] => {
+    if (!input) return [];
+    if (Array.isArray(input)) return input;
+    if (typeof input === 'string') {
+      try {
+        const parsed = JSON.parse(input);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  };
+
+  // Render a single field
+  const renderField = (field: SchemaField) => {
+    const label = field.overrideLabel || field.label;
+    const options = parseOptions(field.overrideOptions) || parseOptions(field.options);
+    const validationRules = getValidationRules(field);
+    const placeholder = getPlaceholder(field);
+    
+    return (
+      <div key={field.fieldId} className="space-y-2">
+        <Label htmlFor={field.fieldId}>
+          {label} 
+          {field.isRequired && <span className="text-red-500 ml-1">*</span>}
+        </Label>
+        
+        {field.helpText && (
+          <p className="text-xs text-gray-500 -mt-1">{field.helpText}</p>
+        )}
+        
+        {field.type === 'TEXT' && (
+          <Input 
+            id={field.fieldId}
+            {...register(field.fieldId, validationRules)}
+            placeholder={placeholder}
+            className={errors[field.fieldId] ? 'border-red-500' : ''}
+          />
+        )}
+        
+        {field.type === 'NUMBER' && (
+          <Input 
+            id={field.fieldId}
+            type="number"
+            {...register(field.fieldId, {
+              ...validationRules,
+              valueAsNumber: true,
+            })}
+            placeholder={placeholder}
+            className={errors[field.fieldId] ? 'border-red-500' : ''}
+          />
+        )}
+        
+        {field.type === 'DATE' && (
+          <Input 
+            id={field.fieldId}
+            type="date"
+            {...register(field.fieldId, validationRules)}
+            className={errors[field.fieldId] ? 'border-red-500' : ''}
+          />
+        )}
+        
+        {field.type === 'TEXTAREA' && (
+          <Textarea 
+            id={field.fieldId}
+            rows={4}
+            {...register(field.fieldId, validationRules)}
+            placeholder={placeholder}
+            className={errors[field.fieldId] ? 'border-red-500' : ''}
+          />
+        )}
+        
+        {field.type === 'DROPDOWN' && (
+          <select 
+            id={field.fieldId}
+            {...register(field.fieldId, validationRules)}
+            className={`flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ${errors[field.fieldId] ? 'border-red-500' : ''}`}
+          >
+            <option value="">{placeholder || '-- กรุณาเลือก --'}</option>
+            {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          </select>
+        )}
+        
+        {field.type === 'RADIO' && (
+          <div className="space-y-2">
+            {options.map(opt => (
+              <div key={opt} className="flex items-center space-x-2">
+                <input 
+                  type="radio" 
+                  id={`${field.fieldId}-${opt}`}
+                  value={opt}
+                  {...register(field.fieldId, validationRules)}
+                  className="w-4 h-4"
+                />
+                <Label htmlFor={`${field.fieldId}-${opt}`} className="font-normal cursor-pointer">
+                  {opt}
+                </Label>
+              </div>
+            ))}
+          </div>
+        )}
+        
+        {field.type === 'CHECKBOX' && (
+          <div className="flex items-start space-x-2">
+            <Checkbox 
+              id={field.fieldId}
+              {...register(field.fieldId, validationRules)}
+            />
+            <Label htmlFor={field.fieldId} className="font-normal cursor-pointer">
+              {field.helpText || placeholder || label}
+            </Label>
+          </div>
+        )}
+        
+        {field.type === 'FILE' && (
+          <Controller
+            name={field.fieldId}
+            control={control}
+            rules={validationRules}
+            render={({ field: { onChange, value } }) => (
+              <FileUpload 
+                onUploadSuccess={onChange} 
+                accept={getFileAccept(field)}
+                maxSizeMB={field.fileConfig?.maxSizeMB}
+                maxFiles={field.fileConfig?.maxFiles || 1}
+              />
+            )}
+          />
+        )}
+        
+        {errors[field.fieldId] && (
+          <p className="text-xs text-red-500 mt-1">
+            {(() => {
+              const err = errors[field.fieldId];
+              if (typeof err?.message === 'string') return err.message;
+              if (err?.type === 'required') return 'กรุณากรอกข้อมูล';
+              return 'กรุณากรอกข้อมูลให้ถูกต้อง';
+            })()}
+          </p>
+        )}
+      </div>
+    );
+  };
+
+  // Group fields by section
+  const getFieldsBySection = () => {
+    const grouped: Record<string, SchemaField[]> = {};
+    const ungrouped: SchemaField[] = [];
+    
+    schema.forEach(field => {
+      if (field.section) {
+        if (!grouped[field.section]) grouped[field.section] = [];
+        grouped[field.section].push(field);
+      } else {
+        ungrouped.push(field);
+      }
+    });
+    
+    return { grouped, ungrouped };
+  };
+
+  if (loading) {
+    return (
+      <div className="p-8 flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <svg className="animate-spin h-8 w-8 text-blue-500 mx-auto mb-4" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <p className="text-gray-500">กำลังโหลดแบบฟอร์ม...</p>
+        </div>
+      </div>
+    );
+  }
+  
   if (!roundId) return <div className="p-8 text-center text-red-500">ไม่พบรหัสรอบรับสมัคร</div>;
 
+  const { grouped, ungrouped } = getFieldsBySection();
+  
+  // Check if there are any fields in the schema
+  const hasSchemaFields = schema.length > 0;
+
   return (
-    <div className="max-w-3xl mx-auto p-8">
+    <div className="max-w-3xl mx-auto p-4 md:p-8">
       <Card>
         <CardHeader className="bg-slate-50 border-b">
           <CardTitle className="text-xl">ใบสมัครคัดเลือกบุคลากร</CardTitle>
         </CardHeader>
         <CardContent className="pt-6">
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-8">
-            <div className="space-y-4">
-              <h3 className="font-semibold text-lg border-b pb-2">ข้อมูลส่วนบุคคล</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>ชื่อ - นามสกุล <span className="text-red-500">*</span></Label>
-                  <Input {...register('fullname', { required: true })} placeholder="เช่น นายสมชาย ใจดี" />
-                </div>
-                <div className="space-y-2">
-                  <Label>เลขประจำตัวประชาชน <span className="text-red-500">*</span></Label>
-                  <Input {...register('nationalId', { required: true, minLength: 13, maxLength: 13 })} placeholder="13 หลัก" />
-                </div>
-                <div className="space-y-2 md:col-span-2">
-                  <Label>อีเมล <span className="text-red-500">*</span></Label>
-                  <Input type="email" {...register('email', { required: true })} placeholder="email@example.com" />
-                </div>
-              </div>
-            </div>
-
-            {schema.length > 0 && (
-              <div className="space-y-6">
-                <h3 className="font-semibold text-lg border-b pb-2">ข้อมูลประกอบการพิจารณา</h3>
-                {schema.map((field) => {
-                  const label = field.overrideLabel || field.label;
-                  const options = field.overrideOptions || field.options || [];
-                  return (
-                    <div key={field.fieldId} className="space-y-2">
-                      <Label>{label} {field.isRequired && <span className="text-red-500">*</span>}</Label>
-                      {field.type === 'TEXT' && <Input {...register(field.fieldId, { required: field.isRequired })} />}
-                      {field.type === 'TEXTAREA' && <Textarea rows={4} {...register(field.fieldId, { required: field.isRequired })} />}
-                      {field.type === 'DROPDOWN' && (
-                        <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" {...register(field.fieldId, { required: field.isRequired })}>
-                          <option value="">-- กรุณาเลือก --</option>
-                          {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                        </select>
-                      )}
-                      {field.type === 'FILE' && (
-                        <Controller
-                          name={field.fieldId}
-                          control={control}
-                          rules={{ required: field.isRequired }}
-                          render={({ field: { onChange } }) => (
-                            <FileUpload onUploadSuccess={onChange} accept="application/pdf" />
-                          )}
-                        />
-                      )}
+            {/* NO MORE HARDCODED PERSONAL INFO SECTION */}
+            {/* All fields are rendered from Schema via Round Snapshot */}
+            
+            {/* Fields grouped by section */}
+            {hasSchemaFields ? (
+              <div className="space-y-8">
+                {/* Ungrouped fields */}
+                {ungrouped.length > 0 && (
+                  <div className="space-y-6">
+                    <h3 className="font-semibold text-lg border-b pb-2 flex items-center gap-2">
+                      <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      ข้อมูลประกอบการพิจารณา
+                    </h3>
+                    <div className="grid grid-cols-1 gap-6">
+                      {ungrouped.map(renderField)}
                     </div>
-                  );
-                })}
+                  </div>
+                )}
+                
+                {/* Grouped fields by section */}
+                {Object.entries(grouped).map(([section, fields]) => (
+                  <div key={section} className="space-y-6">
+                    <h3 className="font-semibold text-lg border-b pb-2 flex items-center gap-2">
+                      <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                      </svg>
+                      {section}
+                    </h3>
+                    <div className="grid grid-cols-1 gap-6">
+                      {fields.map(renderField)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-gray-500">
+                <p>ไม่พบฟิลด์ในแบบฟอร์ม กรุณาติดต่อผู้ดูแลระบบ</p>
               </div>
             )}
 
-            <div className="space-y-4 bg-blue-50 p-4 rounded-md">
+            {/* Consent Section */}
+            <div className="space-y-4 bg-blue-50 p-4 rounded-md border border-blue-100">
               <div className="flex items-start space-x-2">
                 <Checkbox id="consent1" required />
                 <label htmlFor="consent1" className="text-sm font-medium leading-none">ข้าพเจ้าได้ตรวจสอบความถูกต้องครบถ้วนของข้อมูลในใบสมัครแล้ว</label>
@@ -170,8 +508,20 @@ useEffect(() => {
               </div>
             </div>
 
-            <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 h-12 text-lg" disabled={isSubmitting}>
-              {isSubmitting ? 'กำลังส่งข้อมูล...' : 'ยืนยันการส่งใบสมัคร'}
+            <Button 
+              type="submit" 
+              className="w-full bg-blue-600 hover:bg-blue-700 h-12 text-lg"
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? (
+                <span className="flex items-center gap-2">
+                  <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  กำลังส่งข้อมูล...
+                </span>
+              ) : 'ยืนยันการส่งใบสมัคร'}
             </Button>
           </form>
         </CardContent>

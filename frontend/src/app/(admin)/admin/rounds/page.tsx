@@ -185,15 +185,16 @@ export default function RoundsPage() {
     }
   };
 
-  const formatDate = (value: string | number | Date) => {
-  const d = new Date(value);
-  if (isNaN(d.getTime())) return '-';
-  return d.toLocaleDateString('th-TH', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-};
+  const formatDate = (value: string | number | Date | null | undefined): string => {
+    if (!value) return 'ไม่กำหนด';
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return 'ไม่กำหนด';
+    return d.toLocaleDateString('th-TH', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  };
 
   const versionLabel = (templateVersionId: string) => {
     const v = versions.find((x) => x.id === templateVersionId);
