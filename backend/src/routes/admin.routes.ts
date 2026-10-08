@@ -173,7 +173,16 @@ adminRoutes.get('/applications/:id', async (c) => {
 
   return c.json({
     data: {
-      ...app,
+      // แปลง Date object เป็น Unix timestamp (seconds) สำหรับ frontend
+      id: app.id,
+      applicationNo: app.applicationNo,
+      roundId: app.roundId,
+      email: app.email,
+      fullname: app.fullname,
+      nationalId: app.nationalId,
+      status: app.status,
+      formData: app.formData,
+      submittedAt: app.submittedAt ? Math.floor(new Date(app.submittedAt).getTime() / 1000) : null,
       attachments,
       schema
     }

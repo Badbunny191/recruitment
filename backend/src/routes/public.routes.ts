@@ -52,7 +52,7 @@ publicRoutes.post('/applications/submit', zValidator('json', ApplicationSubmitSc
       email: data.email,
       fullname: data.fullname,
       nationalId: data.nationalId,
-      formData: JSON.stringify(data.formData),
+      formData: data.formData, // data.formData เป็น parsed object แล้ว (Zod parse) - Drizzle จะจัดการ JSON conversion เอง
       status: 'SUBMITTED',
     }),
     ...(data.attachments?.length ? data.attachments.map(att => 
