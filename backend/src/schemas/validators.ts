@@ -68,7 +68,7 @@ export const RecruitmentRoundUpdateSchema = z.object({
 
 export const ApplicationAttachmentSchema = z.object({
   fieldId: z.string(),
-  fileUrl: z.string().url(),
+  fileUrl: z.string().min(1), // Accept relative or absolute URL
 });
 
 export const ApplicationSubmitSchema = z.object({
