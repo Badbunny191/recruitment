@@ -3,12 +3,12 @@ import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
 import { sign } from 'hono/jwt';
 import { v4 as uuidv4 } from 'uuid';
-import { eq, and, ne, isNull, count } from 'drizzle-orm';
+import { eq, and, ne, isNull, count, or, like } from 'drizzle-orm';
 import { Bindings, AppVariables } from '../types';
 import { authMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, recruitmentRounds, applications, applicationAttachments, auditLogs } from '../db/schema';
-import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema } from '../schemas/validators';
+import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema } from '../schemas/validators';
 
 const adminRoutes = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
 
@@ -137,7 +137,138 @@ adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidato
   return c.json({ success: true, applicationsCount: appCount?.c ?? 0 });
 });
 
-adminRoutes.get('/applications', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(applications) }));
+adminRoutes.get('/applications', async (c) => {
+  const db = drizzle(c.env.DB);
+  const roundId = c.req.query('roundId');
+  const status = c.req.query('status');
+  const search = c.req.query('search');
+
+  let whereClause = isNull(applications.deletedAt);
+
+  if (roundId) {
+    whereClause = and(whereClause, eq(applications.roundId, roundId))!;
+  }
+
+  if (status) {
+    whereClause = and(whereClause, eq(applications.status, status))!;
+  }
+
+  if (search) {
+    const searchLower = `%${search.toLowerCase()}%`;
+    whereClause = and(
+      whereClause,
+      or(
+        like(applications.applicationNo, searchLower),
+        like(applications.fullname, searchLower),
+        like(applications.email, searchLower)
+      )
+    )!;
+  }
+
+  const results = await db
+    .select()
+    .from(applications)
+    .where(whereClause)
+    .orderBy(applications.submittedAt);
+
+  return c.json({ data: results });
+});
+
+// GET /admin/applications/summary - Get application counts by status
+adminRoutes.get('/applications/summary', async (c) => {
+  const db = drizzle(c.env.DB);
+  const roundId = c.req.query('roundId');
+
+  const whereClause = roundId
+    ? and(isNull(applications.deletedAt), eq(applications.roundId, roundId))
+    : isNull(applications.deletedAt);
+
+  const [totalResult] = await db
+    .select({ count: count() })
+    .from(applications)
+    .where(whereClause);
+
+  const statusGroups = await db
+    .select({
+      status: applications.status,
+      count: count()
+    })
+    .from(applications)
+    .where(whereClause)
+    .groupBy(applications.status);
+
+  const byStatus: Record<string, number> = {
+    SUBMITTED: 0,
+    UNDER_REVIEW: 0,
+    QUALIFIED: 0,
+    REJECTED: 0,
+    CANCELED: 0,
+    ARCHIVED: 0
+  };
+
+  statusGroups.forEach(group => {
+    if (group.status && byStatus.hasOwnProperty(group.status)) {
+      byStatus[group.status] = Number(group.count);
+    }
+  });
+
+  return c.json({
+    data: {
+      total: Number(totalResult?.count ?? 0),
+      byStatus
+    }
+  });
+});
+
+// PATCH /admin/applications/:id/status - Update application status
+adminRoutes.patch('/applications/:id/status', auditMiddleware('APPLICATION'), zValidator('json', ApplicationStatusUpdateSchema), async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+  const { status, reason } = c.req.valid('json');
+  const adminId = c.get('jwtPayload').id;
+
+  // Check if application exists
+  const app = await db.select().from(applications).where(eq(applications.id, id)).get();
+  if (!app) {
+    return c.json({ error: 'Application not found' }, 404);
+  }
+
+  // Require reason for REJECTED status
+  if (status === 'REJECTED' && !reason) {
+    return c.json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' }, 400);
+  }
+
+  const now = new Date();
+  
+  try {
+    await db
+      .update(applications)
+      .set({
+        status,
+        statusReason: reason || null,
+        verifiedBy: adminId,
+        verifiedAt: now
+      })
+      .where(eq(applications.id, id));
+
+    return c.json({
+      success: true,
+      data: {
+        id,
+        status,
+        statusReason: reason || null,
+        verifiedBy: adminId,
+        verifiedAt: Math.floor(now.getTime() / 1000)
+      }
+    });
+  } catch (error: any) {
+    console.error('Status update error:', error);
+    return c.json({ 
+      error: error?.message || 'เกิดข้อผิดพลาดในการอัปเดตสถานะ',
+      details: error?.cause?.message || null
+    }, 500);
+  }
+});
 
 // GET /admin/applications/:id - Get full application detail with attachments
 adminRoutes.get('/applications/:id', async (c) => {
@@ -171,9 +302,19 @@ adminRoutes.get('/applications/:id', async (c) => {
     schema = fields;
   }
 
+  // Get reviewer email
+  let reviewerEmail: string | null = null;
+  if (app.verifiedBy) {
+    const reviewer = await db
+      .select({ email: adminUsers.email })
+      .from(adminUsers)
+      .where(eq(adminUsers.id, app.verifiedBy))
+      .get();
+    reviewerEmail = reviewer?.email || null;
+  }
+
   return c.json({
     data: {
-      // แปลง Date object เป็น Unix timestamp (seconds) สำหรับ frontend
       id: app.id,
       applicationNo: app.applicationNo,
       roundId: app.roundId,
@@ -181,12 +322,72 @@ adminRoutes.get('/applications/:id', async (c) => {
       fullname: app.fullname,
       nationalId: app.nationalId,
       status: app.status,
+      statusReason: app.statusReason,
+      verifiedBy: app.verifiedBy,
+      verifiedByEmail: reviewerEmail,
+      verifiedAt: app.verifiedAt ? Math.floor(new Date(app.verifiedAt).getTime() / 1000) : null,
       formData: app.formData,
       submittedAt: app.submittedAt ? Math.floor(new Date(app.submittedAt).getTime() / 1000) : null,
       attachments,
       schema
     }
   });
+});
+
+// GET /admin/applications/:id/history - Get status change history
+adminRoutes.get('/applications/:id/history', async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+
+  // Check application exists
+  const app = await db.select().from(applications).where(eq(applications.id, id)).get();
+  if (!app) {
+    return c.json({ error: 'Application not found' }, 404);
+  }
+
+  // Get audit logs for this application
+  const logs = await db
+    .select({
+      id: auditLogs.id,
+      action: auditLogs.action,
+      adminId: auditLogs.adminId,
+      payload: auditLogs.payload,
+      createdAt: auditLogs.createdAt
+    })
+    .from(auditLogs)
+    .where(
+      and(
+        eq(auditLogs.entityType, 'APPLICATION'),
+        eq(auditLogs.entityId, id)
+      )
+    )
+    .orderBy(auditLogs.createdAt);
+
+  // Get admin emails
+  const adminIds = [...new Set(logs.map(l => l.adminId).filter(Boolean))];
+  const admins = adminIds.length > 0 
+    ? await db
+        .select({ id: adminUsers.id, email: adminUsers.email })
+        .from(adminUsers)
+        .where(
+          adminIds.length === 1 
+            ? eq(adminUsers.id, adminIds[0])
+            : eq(adminUsers.id, adminIds[0]) // Drizzle limitation, we'll map manually
+        )
+    : [];
+
+  const adminMap = new Map(admins.map(a => [a.id, a.email]));
+
+  const history = logs.map(log => ({
+    id: log.id,
+    action: log.action,
+    adminId: log.adminId,
+    adminEmail: adminMap.get(log.adminId) || log.adminId,
+    payload: log.payload,
+    createdAt: log.createdAt ? Math.floor(new Date(log.createdAt).getTime() / 1000) : null
+  }));
+
+  return c.json({ data: history });
 });
 
 adminRoutes.get('/audit-logs', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(auditLogs) }));

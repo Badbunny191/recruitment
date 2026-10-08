@@ -73,13 +73,17 @@ export const applications = sqliteTable('applications', {
   fullname: text('fullname').notNull(),
   nationalId: text('national_id').notNull(),
   status: text('status').default('SUBMITTED'),
+  statusReason: text('status_reason'),
+  verifiedBy: text('verified_by'),
+  verifiedAt: integer('verified_at', { mode: 'timestamp' }),
   formData: text('form_data', { mode: 'json' }).notNull(),
   submittedAt: integer('submitted_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
   deletedAt: integer('deleted_at', { mode: 'timestamp' })
 }, (table) => ({
   roundIdx: index('idx_apps_round').on(table.roundId),
   statusIdx: index('idx_apps_status').on(table.status),
-  checkStatus: check('chk_app_status', sql`${table.status} IN ('DRAFT', 'SUBMITTED', 'VERIFIED', 'REJECTED')`)
+  roundStatusIdx: index('idx_apps_round_status').on(table.roundId, table.status),
+  checkStatus: check('chk_app_status', sql`${table.status} IN ('DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED')`)
 }));
 
 export const applicationAttachments = sqliteTable('application_attachments', {

@@ -4,7 +4,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import { Bindings } from '../types';
 import { ApplicationSubmitSchema } from '../schemas/validators';
 import { recruitmentRounds, templateFields, fieldMaster, applications, applicationAttachments } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 
 const publicRoutes = new Hono<{ Bindings: Bindings }>();
@@ -41,6 +41,33 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
 publicRoutes.post('/applications/submit', zValidator('json', ApplicationSubmitSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const data = c.req.valid('json');
+
+  // Check for duplicate application (same email + same round, not deleted)
+  const existingApp = await db
+    .select({
+      id: applications.id,
+      applicationNo: applications.applicationNo,
+      status: applications.status
+    })
+    .from(applications)
+    .where(
+      and(
+        eq(applications.roundId, data.roundId),
+        eq(applications.email, data.email),
+        isNull(applications.deletedAt)
+      )
+    )
+    .get();
+
+  if (existingApp) {
+    return c.json({
+      success: false,
+      error: 'ท่านได้สมัครรอบนี้แล้ว',
+      applicationNo: existingApp.applicationNo
+    }, 400);
+  }
+
+  // Generate unique application number
   const applicationId = uuidv4();
   const applicationNo = `APP-${new Date().getFullYear()}-${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
 
@@ -52,7 +79,7 @@ publicRoutes.post('/applications/submit', zValidator('json', ApplicationSubmitSc
       email: data.email,
       fullname: data.fullname,
       nationalId: data.nationalId,
-      formData: data.formData, // data.formData เป็น parsed object แล้ว (Zod parse) - Drizzle จะจัดการ JSON conversion เอง
+      formData: data.formData,
       status: 'SUBMITTED',
     }),
     ...(data.attachments?.length ? data.attachments.map(att => 
@@ -64,10 +91,6 @@ publicRoutes.post('/applications/submit', zValidator('json', ApplicationSubmitSc
       })
     ) : [])
   ]);
-
-  // ส่งงานไปเข้าคิวทำ PDF เบื้องหลัง (ปิดชั่วคราวสำหรับ Demo)
-  // TODO: เปิดใช้งานเมื่อพร้อม PDF Queue
-  // await c.env.PDF_QUEUE.send({ applicationId, roundId: data.roundId });
 
   return c.json({ success: true, data: { applicationNo } }, 201);
 });

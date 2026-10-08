@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const FieldTypeEnum = z.enum(['TEXT', 'TEXTAREA', 'DROPDOWN', 'RADIO', 'FILE']);
 export const TemplateVersionStatusEnum = z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']);
 export const RoundStatusEnum = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
-export const ApplicationStatusEnum = z.enum(['DRAFT', 'SUBMITTED', 'VERIFIED', 'REJECTED']);
+export const ApplicationStatusEnum = z.enum(['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED']);
 
 export const LoginRequestSchema = z.object({
   email: z.string().email(),
@@ -65,6 +65,11 @@ export const RecruitmentRoundUpdateSchema = z.object({
   }
   return true;
 }, { message: "closeDate must be after openDate", path: ["closeDate"] });
+
+export const ApplicationStatusUpdateSchema = z.object({
+  status: z.enum(['UNDER_REVIEW', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED']),
+  reason: z.string().optional(),
+});
 
 export const ApplicationAttachmentSchema = z.object({
   fieldId: z.string(),
