@@ -47,7 +47,7 @@ export default function ApplicationsPage() {
                 <TableCell>{app.nationalId}</TableCell>
                 <TableCell><Badge>{app.status}</Badge></TableCell>
                 <TableCell className="text-right">
-                  <Button variant="outline" size="sm" onClick={() => router.push(`/admin/applications/?id=${app.id}`)}>
+                  <Button variant="outline" size="sm" onClick={() => router.push(`/admin/applications/detail?id=${app.id}`)}>
                     ดูรายละเอียด
                   </Button>
                 </TableCell>
