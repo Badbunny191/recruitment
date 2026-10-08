@@ -33,6 +33,9 @@ export const TemplateFieldCreateSchema = z.object({
   isRequired: z.boolean().default(true),
   overrideOptions: z.array(z.string()).nullable().optional(),
   overrideLabelTh: z.string().nullable().optional(),
+  helpText: z.string().nullable().optional(),
+  placeholder: z.string().nullable().optional(),
+  validationRules: z.record(z.string(), z.any()).nullable().optional(),
 });
 
 export const TemplateVersionCreateSchema = z.object({
@@ -76,14 +79,21 @@ export const ApplicationAttachmentSchema = z.object({
   fileUrl: z.string().min(1), // Accept relative or absolute URL
 });
 
+// Core field IDs - these are required for mapping formData to core columns
+export const CORE_FIELD_IDS = ['field-fullname', 'field-email', 'field-national-id'] as const;
+
 export const ApplicationSubmitSchema = z.object({
   roundId: z.string(),
-  email: z.string().email(),
-  fullname: z.string().min(1),
-  nationalId: z.string().length(13),
-  status: ApplicationStatusEnum.default('SUBMITTED'), 
+  // Support BOTH modes for backward compatibility during transition:
+  // - New Mode: formData only (email/fullname/nationalId inside formData)
+  // - Legacy Mode: root fields (email/fullname/nationalId as separate fields)
   formData: z.record(z.string(), z.any()),
   attachments: z.array(ApplicationAttachmentSchema).optional(),
+  // Legacy fields (optional - for backward compatibility)
+  email: z.string().email().optional(),
+  fullname: z.string().optional(),
+  nationalId: z.string().optional(),
+  status: ApplicationStatusEnum.default('SUBMITTED'), 
 });
 
 export const FileUploadRequestSchema = z.object({

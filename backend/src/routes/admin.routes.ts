@@ -30,20 +30,38 @@ adminRoutes.use('/*', authMiddleware);
 adminRoutes.get('/fields', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(fieldMaster) }));
 adminRoutes.post('/fields', auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
-  const data = c.req.valid('json');
+  const data = c.req.valid('json') as any;
   const id = uuidv4();
-  await db.insert(fieldMaster).values({ id, ...data, defaultOptions: data.defaultOptions ? JSON.stringify(data.defaultOptions) : null });
+  
+  const insertValues: any = { id, ...data };
+  // Parse defaultOptions to JSON string
+  if (data.defaultOptions) {
+    insertValues.defaultOptions = JSON.stringify(data.defaultOptions);
+  }
+  // Parse fileConfig to JSON string
+  if (data.fileConfig) {
+    insertValues.fileConfig = JSON.stringify(data.fileConfig);
+  }
+  
+  await db.insert(fieldMaster).values(insertValues);
   return c.json({ success: true, id }, 201);
 });
 
 adminRoutes.patch('/fields/:id', auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
-  const data = c.req.valid('json');
+  const data = c.req.valid('json') as any;
   const updateValues: any = { ...data };
+  
+  // Parse defaultOptions to JSON string (or null to clear)
   if (data.defaultOptions !== undefined) {
     updateValues.defaultOptions = data.defaultOptions ? JSON.stringify(data.defaultOptions) : null;
   }
+  // Parse fileConfig to JSON string (or null to clear)
+  if (data.fileConfig !== undefined) {
+    updateValues.fileConfig = data.fileConfig ? JSON.stringify(data.fileConfig) : null;
+  }
+  
   await db.update(fieldMaster).set(updateValues).where(eq(fieldMaster.id, id));
   return c.json({ success: true });
 });
@@ -76,26 +94,64 @@ adminRoutes.get('/templates/:id/versions', async (c) => {
   return c.json({ data });
 });
 
+// GET /admin/template-fields/:versionId - Get fields for a specific template version
+adminRoutes.get('/template-fields/:versionId', async (c) => {
+  const db = drizzle(c.env.DB);
+  const versionId = c.req.param('versionId');
+  
+  const fields = await db.select({
+    id: templateFields.id,
+    fieldId: templateFields.fieldId,
+    displayOrder: templateFields.displayOrder,
+    isRequired: templateFields.isRequired,
+    overrideLabelTh: templateFields.overrideLabelTh,
+    overrideOptions: templateFields.overrideOptions,
+    helpText: templateFields.helpText,
+    placeholder: templateFields.placeholder,
+    validationRules: templateFields.validationRules,
+  } as any)
+  .from(templateFields)
+  .where(eq(templateFields.templateVersionId, versionId))
+  .orderBy(templateFields.displayOrder);
+  
+  return c.json({ data: fields });
+});
+
 adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'), zValidator('json', TemplateVersionCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
-  const payload = c.req.valid('json');
+  const payload = c.req.valid('json') as any;
   const versionId = uuidv4();
   
   const currentVersions = await db.select({ v: templateVersions.versionNumber }).from(templateVersions).where(eq(templateVersions.templateId, payload.templateId));
   const nextVer = currentVersions.length > 0 ? Math.max(...currentVersions.map(x => x.v)) + 1 : 1;
 
-  await db.batch([
-    db.insert(templateVersions).values({ id: versionId, templateId: payload.templateId, versionNumber: nextVer, status: 'PUBLISHED' }),
-    ...payload.fields.map(f => db.insert(templateFields).values({
+  // Insert version
+  await db.insert(templateVersions).values({ 
+    id: versionId, 
+    templateId: payload.templateId, 
+    versionNumber: nextVer, 
+    status: 'PUBLISHED' 
+  });
+
+  // Insert each field
+  for (const f of payload.fields) {
+    const fieldValues: any = {
       id: uuidv4(),
       templateVersionId: versionId,
       fieldId: f.fieldId,
       displayOrder: f.displayOrder,
       isRequired: f.isRequired,
       overrideOptions: f.overrideOptions ? JSON.stringify(f.overrideOptions) : null,
-      overrideLabelTh: f.overrideLabelTh
-    }))
-  ]);
+      overrideLabelTh: f.overrideLabelTh,
+    };
+    // Include new fields if present
+    if (f.helpText) fieldValues.helpText = f.helpText;
+    if (f.placeholder) fieldValues.placeholder = f.placeholder;
+    if (f.validationRules) fieldValues.validationRules = JSON.stringify(f.validationRules);
+    
+    await db.insert(templateFields).values(fieldValues as any);
+  }
+
   return c.json({ success: true, versionId }, 201);
 });
 
@@ -445,6 +501,64 @@ adminRoutes.post('/applications/bulk-status', auditMiddleware('APPLICATION'), as
       details: error?.cause?.message || null
     }, 500);
   }
+});
+
+// GET /admin/rounds/comparison - Compare rounds with their template versions
+adminRoutes.get('/rounds/comparison', async (c) => {
+  const db = drizzle(c.env.DB);
+  
+  // Get all rounds
+  const allRounds = await db.select().from(recruitmentRounds);
+  
+  // Get all templates
+  const allTemplates = await db.select().from(templates);
+  
+  // Get all versions
+  const allVersions = await db.select().from(templateVersions);
+  
+  // Pre-fetch field counts for all versions
+  const versionIds = allVersions.map(v => v.id);
+  const versionFieldCounts: Record<string, number> = {};
+  
+  for (const vid of versionIds) {
+    const result = await db.select({ c: count() })
+      .from(templateFields)
+      .where(eq(templateFields.templateVersionId, vid))
+      .get();
+    versionFieldCounts[vid] = Number(result?.c ?? 0);
+  }
+  
+  // Build comparison data
+  const comparison = allRounds.map(round => {
+    const currentVersion = allVersions.find(v => v.id === round.templateVersionId);
+    
+    // Find latest published version for this template
+    const templateVersions = allVersions
+      .filter(v => v.templateId === currentVersion?.templateId && v.status === 'PUBLISHED')
+      .sort((a, b) => b.versionNumber - a.versionNumber);
+    
+    const latestVersion = templateVersions[0];
+    
+    const template = allTemplates.find(t => t.id === currentVersion?.templateId);
+    
+    return {
+      roundId: round.id,
+      roundTitle: round.title,
+      roundStatus: round.status,
+      templateId: currentVersion?.templateId || null,
+      templateName: template?.name || 'Unknown',
+      currentVersionId: round.templateVersionId,
+      currentVersionNumber: currentVersion?.versionNumber || 0,
+      currentFieldCount: versionFieldCounts[round.templateVersionId] || 0,
+      latestVersionId: latestVersion?.id || null,
+      latestVersionNumber: latestVersion?.versionNumber || 0,
+      latestFieldCount: versionFieldCounts[latestVersion?.id] || 0,
+      isOutdated: currentVersion?.id !== latestVersion?.id,
+      needsUpdate: (currentVersion?.id !== latestVersion?.id) && round.status === 'ACTIVE'
+    };
+  });
+  
+  return c.json({ data: comparison });
 });
 
 adminRoutes.get('/audit-logs', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(auditLogs) }));

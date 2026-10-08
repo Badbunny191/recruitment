@@ -15,9 +15,17 @@ export const fieldMaster = sqliteTable('field_master', {
   labelTh: text('label_th').notNull(),
   defaultOptions: text('default_options', { mode: 'json' }),
   pdfMappingKey: text('pdf_mapping_key'),
-  isActive: integer('is_active', { mode: 'boolean' }).default(true)
+  isActive: integer('is_active', { mode: 'boolean' }).default(true),
+  // UI enhancement
+  helpText: text('help_text'),
+  placeholder: text('placeholder'),
+  section: text('section'),
+  fileConfig: text('file_config', { mode: 'json' }),
+  // Validation
+  validationType: text('validation_type'),
+  validationMessage: text('validation_message'),
 }, (table) => ({
-  checkFieldType: check('chk_field_type', sql`${table.fieldType} IN ('TEXT', 'TEXTAREA', 'DROPDOWN', 'RADIO', 'FILE')`)
+  checkFieldType: check('chk_field_type', sql`${table.fieldType} IN ('TEXT', 'TEXTAREA', 'DROPDOWN', 'RADIO', 'FILE', 'NUMBER', 'CHECKBOX', 'DATE')`)
 }));
 
 export const templates = sqliteTable('templates', {
@@ -45,7 +53,10 @@ export const templateFields = sqliteTable('template_fields', {
   displayOrder: integer('display_order').notNull(),
   isRequired: integer('is_required', { mode: 'boolean' }).default(true),
   overrideOptions: text('override_options', { mode: 'json' }),
-  overrideLabelTh: text('override_label_th')
+  overrideLabelTh: text('override_label_th'),
+  helpText: text('help_text'),
+  placeholder: text('placeholder'),
+  validationRules: text('validation_rules', { mode: 'json' }),
 }, (table) => ({
   tplVerIdx: index('idx_tpl_fields_version').on(table.templateVersionId)
 }));

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
 import { Bindings } from '../types';
-import { ApplicationSubmitSchema } from '../schemas/validators';
+import { ApplicationSubmitSchema, CORE_FIELD_IDS } from '../schemas/validators';
 import { recruitmentRounds, templateFields, fieldMaster, applications, applicationAttachments } from '../db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
@@ -28,6 +28,12 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
     options: fieldMaster.defaultOptions,
     overrideOptions: templateFields.overrideOptions,
     isRequired: templateFields.isRequired,
+    helpText: fieldMaster.helpText,
+    placeholder: fieldMaster.placeholder,
+    section: fieldMaster.section,
+    fileConfig: fieldMaster.fileConfig,
+    validationType: fieldMaster.validationType,
+    validationMessage: fieldMaster.validationMessage,
     order: templateFields.displayOrder
   })
   .from(templateFields)
@@ -42,6 +48,58 @@ publicRoutes.post('/applications/submit', zValidator('json', ApplicationSubmitSc
   const db = drizzle(c.env.DB);
   const data = c.req.valid('json');
 
+  // Get template mapping for pdf_mapping_key
+  const round = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.id, data.roundId)).get();
+  if (!round) {
+    return c.json({ success: false, error: 'รอบรับสมัครไม่พบ' }, 404);
+  }
+
+  // Get template field mappings (fieldId -> pdfMappingKey)
+  const templateMappings = await db
+    .select({
+      fieldId: templateFields.fieldId,
+      pdfMappingKey: fieldMaster.pdfMappingKey,
+    })
+    .from(templateFields)
+    .innerJoin(fieldMaster, eq(templateFields.fieldId, fieldMaster.id))
+    .where(eq(templateFields.templateVersionId, round.templateVersionId));
+
+  // Build mapping: fieldId -> core column name
+  const fieldToColumnMap: Record<string, string> = {};
+  templateMappings.forEach(m => {
+    if (m.pdfMappingKey) {
+      fieldToColumnMap[m.fieldId] = m.pdfMappingKey;
+    }
+  });
+
+  // Extract core values from formData using mapping
+  const getCoreValue = (fieldId: string, fallback?: string): string => {
+    // Try from formData first
+    if (data.formData && data.formData[fieldId]) {
+      return String(data.formData[fieldId]);
+    }
+    // Fallback to legacy root fields
+    if (fieldId === 'field-email' && data.email) return data.email;
+    if (fieldId === 'field-fullname' && data.fullname) return data.fullname;
+    if (fieldId === 'field-national-id' && data.nationalId) return data.nationalId;
+    return fallback || '';
+  };
+
+  const email = getCoreValue('field-email');
+  const fullname = getCoreValue('field-fullname');
+  const nationalId = getCoreValue('field-national-id');
+
+  // Validate core fields are present
+  if (!email) {
+    return c.json({ success: false, error: 'อีเมลไม่พบในข้อมูล (field-email)' }, 400);
+  }
+  if (!fullname) {
+    return c.json({ success: false, error: 'ชื่อ-นามสกุลไม่พบในข้อมูล (field-fullname)' }, 400);
+  }
+  if (!nationalId) {
+    return c.json({ success: false, error: 'เลขประจำตัวประชาชนไม่พบในข้อมูล (field-national-id)' }, 400);
+  }
+
   // Check for duplicate application (same email + same round, not deleted)
   const existingApp = await db
     .select({
@@ -53,7 +111,7 @@ publicRoutes.post('/applications/submit', zValidator('json', ApplicationSubmitSc
     .where(
       and(
         eq(applications.roundId, data.roundId),
-        eq(applications.email, data.email),
+        eq(applications.email, email),
         isNull(applications.deletedAt)
       )
     )
@@ -76,9 +134,9 @@ publicRoutes.post('/applications/submit', zValidator('json', ApplicationSubmitSc
       id: applicationId,
       applicationNo,
       roundId: data.roundId,
-      email: data.email,
-      fullname: data.fullname,
-      nationalId: data.nationalId,
+      email,
+      fullname,
+      nationalId,
       formData: data.formData,
       status: 'SUBMITTED',
     }),
