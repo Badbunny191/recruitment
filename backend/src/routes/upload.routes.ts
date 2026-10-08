@@ -107,7 +107,7 @@ uploadRoutes.post('/direct', async (c) => {
  * GET /api/v1/public/uploads/files/:key
  * Download/View file จาก R2
  */
-uploadRoutes.get('/files/:key{*}', async (c) => {
+uploadRoutes.get('/files/:key{.+}', async (c) => {
   try {
     const key = c.req.param('key');
     const decodedKey = decodeURIComponent(key);
@@ -150,7 +150,7 @@ uploadRoutes.get('/files/:key{*}', async (c) => {
  * DELETE /api/v1/public/uploads/files/:key
  * Delete file จาก R2
  */
-uploadRoutes.delete('/files/:key{*}', async (c) => {
+uploadRoutes.delete('/files/:key{.+}', async (c) => {
   try {
     const key = c.req.param('key');
     const decodedKey = decodeURIComponent(key);
