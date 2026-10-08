@@ -30,15 +30,15 @@ export default {
   // รับ Request แบบ Queue (Background Job สร้าง PDF)
   //async queue(batch: MessageBatch<any>, env: Bindings): Promise<void> {
   //  for (const message of batch.messages) {
-    //  try {
-      //  const { applicationId, roundId } = message.body;
-        //console.log(`Processing PDF for App: ${applicationId}, Round: ${roundId}`);
-        // ที่นี่จะเรียกใช้ pdf-generator.service.ts ในอนาคต
-        //message.ack();
-      //} catch (error) {
-        //console.error(`Queue error:`, error);
-        //message.retry();
-      //}
-    //}
+  //    try {
+  //      const { applicationId, roundId } = message.body;
+  //      console.log(`Processing PDF for App: ${applicationId}, Round: ${roundId}`);
+  //      // ที่นี่จะเรียกใช้ pdf-generator.service.ts ในอนาคต
+  //      message.ack();
+  //    } catch (error) {
+  //      console.error(`Queue error:`, error);
+  //      message.retry();
+  //    }
+  //  }
   //}
 };

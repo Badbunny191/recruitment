@@ -4,6 +4,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "build": "npx wrangler types && npx tsc --noEmit",
+    "typecheck": "npx tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "wrangler d1 migrations apply sao-db --local"
   },
