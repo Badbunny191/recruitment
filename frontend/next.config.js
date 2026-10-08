@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // output: 'export', // Disabled for dynamic routes support
+  output: 'export', // Static export for Cloudflare Pages
   trailingSlash: true,
   images: {
     unoptimized: true,
