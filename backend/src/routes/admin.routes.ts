@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
 import { sign } from 'hono/jwt';
 import { v4 as uuidv4 } from 'uuid';
-import { eq, and, ne, isNull, count, or, like, inArray } from 'drizzle-orm';
+import { eq, and, ne, isNull, count, or, like, inArray, sql } from 'drizzle-orm';
 import { Bindings, AppVariables } from '../types';
 import { authMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
@@ -142,8 +142,11 @@ adminRoutes.get('/template-fields/:versionId', async (c) => {
     helpText: templateFields.helpText,
     placeholder: templateFields.placeholder,
     validationRules: templateFields.validationRules,
+    // Get label from fieldMaster, fallback to overrideLabelTh if set
+    labelTh: sql<string>`COALESCE(${templateFields.overrideLabelTh}, ${fieldMaster.labelTh})`,
   } as any)
   .from(templateFields)
+  .innerJoin(fieldMaster, eq(templateFields.fieldId, fieldMaster.id))
   .where(eq(templateFields.templateVersionId, versionId))
   .orderBy(templateFields.displayOrder);
   
