@@ -116,7 +116,7 @@ export default function FieldMasterPage() {
 
   const load = async () => {
     setLoading(true);
-    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/fields', {
+    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/fields', {
       headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
     }).then((r) => r.json());
     setFields(res.data || []);
@@ -220,8 +220,8 @@ export default function FieldMasterPage() {
       }
 
       const url = editing
-        ? `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/fields/${editing.id}`
-        : `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/fields`;
+        ? `${process.env.NEXT_PUBLIC_API_URL}/admin/fields/${editing.id}`
+        : `${process.env.NEXT_PUBLIC_API_URL}/admin/fields`;
       const method = editing ? 'PATCH' : 'POST';
 
       const res = await fetch(url, {
@@ -246,7 +246,7 @@ export default function FieldMasterPage() {
   const handleDelete = async () => {
     if (!confirmDelete) return;
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/fields/${confirmDelete.id}`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/fields/${confirmDelete.id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
       });

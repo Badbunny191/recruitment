@@ -67,7 +67,7 @@ export function CloneRoundModal({
     setError(null);
     try {
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/rounds/${roundId}/clone-options`,
+        `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${roundId}/clone-options`,
         {
           headers: {
             Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
@@ -110,7 +110,7 @@ export function CloneRoundModal({
     setCloneError(null);
     try {
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/rounds/${roundId}/clone`,
+        `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${roundId}/clone`,
         {
           method: 'POST',
           headers: {

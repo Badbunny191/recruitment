@@ -43,7 +43,7 @@ export function ViewVersionModal({
     setError(null);
     try {
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/template-fields/${versionId}`,
+        `${process.env.NEXT_PUBLIC_API_URL}/admin/template-fields/${versionId}`,
         {
           headers: {
             Authorization: `Bearer ${localStorage.getItem('adminToken')}`,

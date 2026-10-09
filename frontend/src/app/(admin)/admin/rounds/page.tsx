@@ -122,7 +122,7 @@ export default function RoundsPage() {
     setLoadingAppCount(true);
     try {
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/rounds/${roundId}/clone-options`,
+        `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${roundId}/clone-options`,
         { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
       ).then(r => r.json()).catch(() => ({ data: null }));
       setEditingAppCount(res?.data?.applicationCount || 0);
@@ -134,7 +134,7 @@ export default function RoundsPage() {
   };
 
   const loadRounds = async () => {
-    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/rounds', {
+    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/rounds', {
       headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
     }).then((r) => r.json());
     setRounds(res.data || []);
@@ -142,20 +142,20 @@ export default function RoundsPage() {
   };
 
   const loadTemplates = async () => {
-    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/templates', {
+    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/templates', {
       headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
     }).then((r) => r.json());
     setTemplates(res.data || []);
   };
 
   const loadAllVersions = async () => {
-    const tpls: Template[] = await fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/templates', {
+    const tpls: Template[] = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/templates', {
       headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
     }).then((r) => r.json()).then((res) => res.data || []);
     const allVersions: TemplateVersion[] = [];
     for (const t of tpls) {
       const vs: TemplateVersion[] = await fetch(
-        process.env.NEXT_PUBLIC_API_URL + `/api/v1/admin/templates/${t.id}/versions`,
+        process.env.NEXT_PUBLIC_API_URL + `/admin/templates/${t.id}/versions`,
         { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
       ).then((r) => r.json()).then((res) => res.data || []);
       allVersions.push(...vs);
@@ -165,7 +165,7 @@ export default function RoundsPage() {
 
   const loadRoundsWithVersionInfo = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/rounds-with-version-info`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/rounds-with-version-info`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
       }).then((r) => r.json());
       setRoundsWithVersionInfo(res.data || []);
@@ -257,7 +257,7 @@ export default function RoundsPage() {
           closeDate: toUnix(form.closeDate),
           status: form.status,
         };
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/rounds/${editing.id}`, {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${editing.id}`, {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
@@ -275,7 +275,7 @@ export default function RoundsPage() {
           closeDate: toUnix(form.closeDate),
           status: form.status,
         };
-        const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/rounds', {
+        const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/rounds', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

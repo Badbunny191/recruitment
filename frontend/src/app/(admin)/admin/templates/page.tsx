@@ -38,7 +38,7 @@ export default function TemplatesPage() {
 
   const load = async () => {
     setLoading(true);
-    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/templates', {
+    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/templates', {
       headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
     }).then((r) => r.json());
     setTemplates(res.data || []);
@@ -71,8 +71,8 @@ export default function TemplatesPage() {
         description: form.description || null,
       };
       const url = editing
-        ? `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/templates/${editing.id}`
-        : `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/templates`;
+        ? `${process.env.NEXT_PUBLIC_API_URL}/admin/templates/${editing.id}`
+        : `${process.env.NEXT_PUBLIC_API_URL}/admin/templates`;
       const method = editing ? 'PATCH' : 'POST';
 
       const res = await fetch(url, {

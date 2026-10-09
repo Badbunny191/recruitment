@@ -8,7 +8,7 @@ export default function AuditLogsPage() {
   const [logs, setLogs] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/audit-logs', {
+    fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/audit-logs', {
       headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` }
     }).then(res => res.json()).then(res => setLogs(res.data || []));
   }, []);

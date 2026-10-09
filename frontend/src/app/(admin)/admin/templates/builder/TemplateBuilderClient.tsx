@@ -149,13 +149,13 @@ function BuilderInner() {
     if (!templateId) return;
     try {
       const [fieldsRes, versionsRes, templatesRes] = await Promise.all([
-        fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/fields', {
+        fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/fields', {
           headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
         }).then((r) => r.json()),
-        fetch(process.env.NEXT_PUBLIC_API_URL + `/api/v1/admin/templates/${templateId}/versions`, {
+        fetch(process.env.NEXT_PUBLIC_API_URL + `/admin/templates/${templateId}/versions`, {
           headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
         }).then((r) => r.json()),
-        fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/templates', {
+        fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/templates', {
           headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
         }).then((r) => r.json()),
       ]);
@@ -188,7 +188,7 @@ function BuilderInner() {
         
         // Load fields for this version
         const fieldsDataRes = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/template-fields/${targetVersion.id}`,
+          `${process.env.NEXT_PUBLIC_API_URL}/admin/template-fields/${targetVersion.id}`,
           { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
         ).then(r => r.json()).catch(() => ({ data: [] }));
         
@@ -294,7 +294,7 @@ function BuilderInner() {
         }),
       };
       
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/templates/${templateId}/versions`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/templates/${templateId}/versions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -330,7 +330,7 @@ function BuilderInner() {
     
     setSubmitting(true);
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/template-versions/${draftVersionId}/publish`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/template-versions/${draftVersionId}/publish`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -360,7 +360,7 @@ function BuilderInner() {
     
     setSubmitting(true);
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/template-versions/${versionId}/archive`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/template-versions/${versionId}/archive`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -390,7 +390,7 @@ function BuilderInner() {
     
     setSubmitting(true);
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/template-versions/${versionId}`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/template-versions/${versionId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -439,12 +439,39 @@ function BuilderInner() {
     .filter(v => v.status === 'DRAFT')
     .sort((a, b) => b.versionNumber - a.versionNumber)[0];
 
-  // Helper to format date
-  const formatDate = (ts: number | string | Date | null | undefined) => {
+  // Helper to format date - handle various input formats
+  const formatDate = (ts: unknown) => {
     if (!ts) return '-';
     try {
-      const date = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+      let date: Date;
+      
+      // Handle number (Unix timestamp in seconds)
+      if (typeof ts === 'number') {
+        date = new Date(ts * 1000);
+      }
+      // Handle string (ISO date string)
+      else if (typeof ts === 'string') {
+        // Try parsing as-is first
+        date = new Date(ts);
+        // If invalid, try adding 'T' separator for Thai date format (dd/MM/yyyy)
+        if (isNaN(date.getTime())) {
+          const parts = ts.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+          if (parts) {
+            const [, day, month, year, hour = '0', minute = '0'] = parts;
+            date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(hour), parseInt(minute));
+          }
+        }
+      }
+      // Handle Date object
+      else if (ts instanceof Date) {
+        date = ts;
+      }
+      else {
+        return '-';
+      }
+      
       if (isNaN(date.getTime())) return '-';
+      
       return date.toLocaleDateString('th-TH', {
         day: '2-digit',
         month: '2-digit',

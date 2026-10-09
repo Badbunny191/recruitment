@@ -55,7 +55,7 @@ export function CompareVersionModal({
     setError(null);
     try {
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/template-versions/${fromVersionId}/compare/${toVersionId}`,
+        `${process.env.NEXT_PUBLIC_API_URL}/admin/template-versions/${fromVersionId}/compare/${toVersionId}`,
         {
           headers: {
             Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
