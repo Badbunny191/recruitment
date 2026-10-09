@@ -74,7 +74,40 @@ adminRoutes.delete('/fields/:id', auditMiddleware('FIELD_MASTER'), async (c) => 
   return c.json({ success: true });
 });
 
-adminRoutes.get('/templates', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(templates) }));
+adminRoutes.get('/templates', async (c) => {
+  const db = drizzle(c.env.DB);
+  
+  // Get all templates
+  const allTemplates = await db.select().from(templates);
+  
+  // Get all versions
+  const allVersions = await db.select().from(templateVersions);
+  
+  // Get all rounds
+  const allRounds = await db.select().from(recruitmentRounds);
+  
+  // Build enriched data
+  const enrichedTemplates = allTemplates.map(tpl => {
+    const tplVersions = allVersions.filter(v => v.templateId === tpl.id);
+    const publishedVersion = tplVersions
+      .filter(v => v.status === 'PUBLISHED')
+      .sort((a, b) => b.versionNumber - a.versionNumber)[0];
+    
+    // Count rounds using published version
+    const roundsCount = publishedVersion
+      ? allRounds.filter(r => r.templateVersionId === publishedVersion.id).length
+      : 0;
+    
+    return {
+      ...tpl,
+      versionCount: tplVersions.length,
+      currentVersion: publishedVersion,
+      roundsCount
+    };
+  });
+  
+  return c.json({ data: enrichedTemplates });
+});
 adminRoutes.post('/templates', auditMiddleware('TEMPLATE'), zValidator('json', TemplateCreateSchema), async (c) => {
   const id = uuidv4();
   await drizzle(c.env.DB).insert(templates).values({ id, ...c.req.valid('json') });
@@ -117,6 +150,7 @@ adminRoutes.get('/template-fields/:versionId', async (c) => {
   return c.json({ data: fields });
 });
 
+// Create new version as DRAFT (not PUBLISHED)
 adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'), zValidator('json', TemplateVersionCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const payload = c.req.valid('json') as any;
@@ -125,12 +159,12 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
   const currentVersions = await db.select({ v: templateVersions.versionNumber }).from(templateVersions).where(eq(templateVersions.templateId, payload.templateId));
   const nextVer = currentVersions.length > 0 ? Math.max(...currentVersions.map(x => x.v)) + 1 : 1;
 
-  // Insert version
+  // Insert version as DRAFT (user must publish manually)
   await db.insert(templateVersions).values({ 
     id: versionId, 
     templateId: payload.templateId, 
     versionNumber: nextVer, 
-    status: 'PUBLISHED' 
+    status: 'DRAFT' 
   });
 
   // Insert each field
@@ -155,6 +189,85 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
   return c.json({ success: true, versionId }, 201);
 });
 
+// PATCH /admin/template-versions/:id/publish - DRAFT → PUBLISHED
+adminRoutes.patch('/template-versions/:id/publish', auditMiddleware('TEMPLATE_VERSION'), async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+  
+  // Get current version
+  const version = await db.select().from(templateVersions).where(eq(templateVersions.id, id)).get();
+  if (!version) {
+    return c.json({ error: 'Version not found' }, 404);
+  }
+  
+  if (version.status !== 'DRAFT') {
+    return c.json({ error: 'Only DRAFT version can be published' }, 400);
+  }
+  
+  await db.update(templateVersions).set({ status: 'PUBLISHED' }).where(eq(templateVersions.id, id));
+  return c.json({ success: true });
+});
+
+// PATCH /admin/template-versions/:id/archive - PUBLISHED → ARCHIVED
+adminRoutes.patch('/template-versions/:id/archive', auditMiddleware('TEMPLATE_VERSION'), async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+  
+  // Get current version
+  const version = await db.select().from(templateVersions).where(eq(templateVersions.id, id)).get();
+  if (!version) {
+    return c.json({ error: 'Version not found' }, 404);
+  }
+  
+  if (version.status !== 'PUBLISHED') {
+    return c.json({ error: 'Only PUBLISHED version can be archived' }, 400);
+  }
+  
+  // Check if any active rounds are using this version
+  const activeRounds = await db.select()
+    .from(recruitmentRounds)
+    .where(and(
+      eq(recruitmentRounds.templateVersionId, id),
+      eq(recruitmentRounds.status, 'ACTIVE')
+    ));
+  
+  if (activeRounds.length > 0) {
+    return c.json({ error: 'Cannot archive version that is used by active rounds', activeRounds: activeRounds.length }, 400);
+  }
+  
+  await db.update(templateVersions).set({ status: 'ARCHIVED' }).where(eq(templateVersions.id, id));
+  return c.json({ success: true });
+});
+
+// DELETE /admin/template-versions/:id - Delete DRAFT version only
+adminRoutes.delete('/template-versions/:id', auditMiddleware('TEMPLATE_VERSION'), async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+  
+  // Get current version
+  const version = await db.select().from(templateVersions).where(eq(templateVersions.id, id)).get();
+  if (!version) {
+    return c.json({ error: 'Version not found' }, 404);
+  }
+  
+  if (version.status !== 'DRAFT') {
+    return c.json({ error: 'Only DRAFT version can be deleted', status: version.status }, 400);
+  }
+  
+  // Check if any rounds are using this version
+  const roundsUsing = await db.select()
+    .from(recruitmentRounds)
+    .where(eq(recruitmentRounds.templateVersionId, id));
+  
+  if (roundsUsing.length > 0) {
+    return c.json({ error: 'Cannot delete version that is used by rounds', roundsCount: roundsUsing.length }, 400);
+  }
+  
+  // Delete version (templateFields will cascade delete)
+  await db.delete(templateVersions).where(eq(templateVersions.id, id));
+  return c.json({ success: true });
+});
+
 adminRoutes.get('/rounds', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(recruitmentRounds) }));
 adminRoutes.post('/rounds', auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
@@ -174,23 +287,31 @@ adminRoutes.post('/rounds', auditMiddleware('RECRUITMENT_ROUND'), zValidator('js
 });
 
 // PATCH round: แก้ได้เฉพาะ metadata เท่านั้น (title, positionLevel, openDate, closeDate, status)
-// ห้ามเปลี่ยน templateVersionId เมื่อมี applications แล้ว
+// ห้ามเปลี่ยน templateVersionId ทุกสถานะ (DRAFT, ACTIVE, CLOSED)
 adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const data = c.req.valid('json');
 
-  // นับ applications ของ round นี้ (ไม่นับที่ถูก soft delete แล้ว)
-  const appCount = await db.select({ c: count() })
-    .from(applications)
-    .where(and(eq(applications.roundId, id), isNull(applications.deletedAt)))
-    .get();
+  // Get current round
+  const round = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.id, id)).get();
+  if (!round) {
+    return c.json({ error: 'Round not found' }, 404);
+  }
+
+  // Block templateVersionId change for ACTIVE and CLOSED rounds only
+  // DRAFT round: can change version
+  if (data.templateVersionId !== undefined && data.templateVersionId !== round.templateVersionId) {
+    if (round.status !== 'DRAFT') {
+      return c.json({ error: 'Cannot change template version after round creation', currentStatus: round.status }, 400);
+    }
+  }
 
   const updateValues: any = { ...data };
   if (data.openDate !== undefined) updateValues.openDate = new Date(data.openDate * 1000);
   if (data.closeDate !== undefined) updateValues.closeDate = new Date(data.closeDate * 1000);
   await db.update(recruitmentRounds).set(updateValues).where(eq(recruitmentRounds.id, id));
-  return c.json({ success: true, applicationsCount: appCount?.c ?? 0 });
+  return c.json({ success: true });
 });
 
 adminRoutes.get('/applications', async (c) => {

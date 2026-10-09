@@ -62,6 +62,7 @@ export const RecruitmentRoundUpdateSchema = z.object({
   openDate: z.number().int().positive().optional(),
   closeDate: z.number().int().positive().optional(),
   status: RoundStatusEnum.optional(),
+  templateVersionId: z.string().optional(), // For DRAFT round version change
 }).refine(data => {
   if (data.openDate !== undefined && data.closeDate !== undefined) {
     return data.closeDate > data.openDate;
