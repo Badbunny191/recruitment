@@ -22,6 +22,7 @@ interface FileConfig {
 
 interface SchemaField {
   fieldId: string;
+  sectionId: string | null; // Sprint 4: ref to section (null = no section)
   type: FieldType;
   label: string;
   overrideLabel: string | null;
@@ -33,7 +34,13 @@ interface SchemaField {
   validationType?: ValidationType;
   validationMessage?: string;
   fileConfig?: FileConfig;
-  section?: string;
+  section?: string; // Legacy: fieldMaster.section (for fallback)
+}
+
+interface TemplateSection {
+  id: string;
+  name: string;
+  displayOrder: number;
 }
 
 interface FormValues {
@@ -67,9 +74,9 @@ function FormInner() {
   const router = useRouter();
   const roundId = searchParams.get('id');
   const [schema, setSchema] = useState<SchemaField[]>([]);
+  const [sections, setSections] = useState<TemplateSection[]>([]);
   const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [sections, setSections] = useState<string[]>([]);
 
   const { register, handleSubmit, control, formState: { errors } } = useForm<FormValues>();
 
@@ -118,6 +125,7 @@ function FormInner() {
         
         return {
           fieldId: field.fieldId,
+          sectionId: field.sectionId ?? null, // Sprint 4
           type: field.type,
           label: field.label || '',
           overrideLabel: field.overrideLabel,
@@ -129,17 +137,28 @@ function FormInner() {
           validationType: field.validationType,
           validationMessage: field.validationMessage,
           fileConfig,
+          // Legacy fallback - keep fieldMaster.section if backend still returns it
           section: field.section,
         };
       };
-      
-      // Group fields by section
-      const fields: SchemaField[] = (res.data || []).map(parseSchemaField);
-      const sectionSet = new Set<string>();
-      fields.forEach(f => {
-        if (f.section) sectionSet.add(f.section);
-      });
-      setSections(Array.from(sectionSet));
+
+      // Sprint 4: Response shape = { sections: [...], fields: [...] } OR legacy flat array
+      // Hybrid Mode: support BOTH
+      let fields: SchemaField[];
+      let sectionList: TemplateSection[] = [];
+      if (res.data && Array.isArray(res.data.fields)) {
+        // New shape (Sprint 4)
+        fields = res.data.fields.map(parseSchemaField);
+        sectionList = res.data.sections || [];
+      } else if (Array.isArray(res.data)) {
+        // Legacy shape - fallback to fieldMaster.section
+        fields = res.data.map(parseSchemaField);
+        sectionList = [];
+      } else {
+        fields = [];
+        sectionList = [];
+      }
+      setSections(sectionList);
       setSchema(fields);
       setLoading(false);
     })
@@ -408,20 +427,32 @@ function FormInner() {
     );
   };
 
-  // Group fields by section
+  // Sprint 4: Hybrid Mode
+  // - If sections[] exists → render sectioned layout (Sprint 4)
+  // - Else → fallback to legacy fieldMaster.section (Sprint 3 behavior)
+  const hasTemplateSections = sections.length > 0;
+
+  // Group fields by sectionId (Sprint 4) or section string (legacy)
   const getFieldsBySection = () => {
     const grouped: Record<string, SchemaField[]> = {};
     const ungrouped: SchemaField[] = [];
-    
+
     schema.forEach(field => {
-      if (field.section) {
+      // Sprint 4 mode: use sectionId
+      if (hasTemplateSections && field.sectionId) {
+        if (!grouped[field.sectionId]) grouped[field.sectionId] = [];
+        grouped[field.sectionId].push(field);
+      } else if (hasTemplateSections && !field.sectionId) {
+        ungrouped.push(field);
+      } else if (!hasTemplateSections && field.section) {
+        // Legacy fallback: use fieldMaster.section
         if (!grouped[field.section]) grouped[field.section] = [];
         grouped[field.section].push(field);
       } else {
         ungrouped.push(field);
       }
     });
-    
+
     return { grouped, ungrouped };
   };
 
@@ -457,38 +488,60 @@ function FormInner() {
             {/* NO MORE HARDCODED PERSONAL INFO SECTION */}
             {/* All fields are rendered from Schema via Round Snapshot */}
             
-            {/* Fields grouped by section */}
+            {/* Sprint 4: Hybrid Mode - sections[] + fallback to legacy fieldMaster.section */}
             {hasSchemaFields ? (
               <div className="space-y-8">
-                {/* Ungrouped fields */}
+                {/* Ungrouped fields (sectionId = null, no legacy section) */}
                 {ungrouped.length > 0 && (
                   <div className="space-y-6">
                     <h3 className="font-semibold text-lg border-b pb-2 flex items-center gap-2">
                       <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                       </svg>
-                      ข้อมูลประกอบการพิจารณา
+                      {hasTemplateSections ? 'ข้อมูลอื่น ๆ' : 'ข้อมูลประกอบการพิจารณา'}
                     </h3>
                     <div className="grid grid-cols-1 gap-6">
                       {ungrouped.map(renderField)}
                     </div>
                   </div>
                 )}
-                
-                {/* Grouped fields by section */}
-                {Object.entries(grouped).map(([section, fields]) => (
-                  <div key={section} className="space-y-6">
-                    <h3 className="font-semibold text-lg border-b pb-2 flex items-center gap-2">
-                      <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                      </svg>
-                      {section}
-                    </h3>
-                    <div className="grid grid-cols-1 gap-6">
-                      {fields.map(renderField)}
+
+                {/* Grouped fields by section (Sprint 4: sectionId, Legacy: section string) */}
+                {hasTemplateSections ? (
+                  // Sprint 4 mode: render sections[] in order
+                  sections.map((section) => {
+                    const sectionFields = grouped[section.id] || [];
+                    if (sectionFields.length === 0) return null;
+                    return (
+                      <div key={section.id} className="space-y-6">
+                        <h3 className="font-semibold text-lg border-b pb-2 flex items-center gap-2">
+                          <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                          </svg>
+                          {section.name}
+                        </h3>
+                        <div className="grid grid-cols-1 gap-6">
+                          {sectionFields.map(renderField)}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  // Legacy fallback: render using fieldMaster.section (Sprint 3)
+                  Object.entries(grouped).map(([sectionName, sectionFields]) => (
+                    <div key={sectionName} className="space-y-6">
+                      <h3 className="font-semibold text-lg border-b pb-2 flex items-center gap-2">
+                        <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                        </svg>
+                        {sectionName}
+                      </h3>
+                      <div className="grid grid-cols-1 gap-6">
+                        {sectionFields.map(renderField)}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             ) : (
               <div className="text-center py-8 text-gray-500">

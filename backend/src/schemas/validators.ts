@@ -36,12 +36,61 @@ export const TemplateFieldCreateSchema = z.object({
   helpText: z.string().nullable().optional(),
   placeholder: z.string().nullable().optional(),
   validationRules: z.record(z.string(), z.any()).nullable().optional(),
+  // Rich Field Metadata
+  rows: z.number().int().positive().nullable().optional(),
+  minLength: z.number().int().min(0).nullable().optional(),
+  maxLength: z.number().int().min(1).nullable().optional(),
+});
+
+// Sprint 4 - Section schemas
+export const TemplateSectionCreatePayloadSchema = z.object({
+  tempId: z.string().min(1), // client-generated for mapping
+  name: z.string().min(1, 'Section name required').max(200),
+  displayOrder: z.number().int().positive(),
+});
+
+export const TemplateSectionCreateSchema = z.object({
+  templateVersionId: z.string(),
+  name: z.string().min(1, 'Section name required').max(200),
+  displayOrder: z.number().int().positive(),
+});
+
+export const TemplateSectionUpdateSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  displayOrder: z.number().int().positive().optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const TemplateSectionReorderSchema = z.object({
+  items: z.array(z.object({
+    id: z.string(),
+    displayOrder: z.number().int().positive(),
+  })).min(1),
+});
+
+export const TemplateFieldReorderSchema = z.object({
+  items: z.array(z.object({
+    id: z.string(),
+    displayOrder: z.number().int().positive(),
+    sectionId: z.string().nullable().optional(),
+  })).min(1),
+});
+
+export const TemplateFieldSectionAssignSchema = z.object({
+  sectionId: z.string().nullable(),
 });
 
 export const TemplateVersionCreateSchema = z.object({
   templateId: z.string(),
   status: TemplateVersionStatusEnum.default('DRAFT'),
-  fields: z.array(TemplateFieldCreateSchema).min(1),
+  // Sprint 4 - Mode B
+  cloneFromVersionId: z.string().optional(),
+  // Sprint 4 - Mode A
+  sections: z.array(TemplateSectionCreatePayloadSchema).optional(),
+  // Fields required ทุก mode (Mode A, B, C) — แต่ Mode B จะ ignore fields
+  fields: z.array(TemplateFieldCreateSchema.extend({
+    sectionId: z.string().nullable().optional(), // Mode A: client tempId
+  })).min(1),
 });
 
 export const RecruitmentRoundCreateSchema = z.object({
@@ -51,6 +100,11 @@ export const RecruitmentRoundCreateSchema = z.object({
   openDate: z.number().int().positive(), // Unix timestamp (seconds)
   closeDate: z.number().int().positive(), // Unix timestamp (seconds)
   status: RoundStatusEnum.default('DRAFT'),
+  // Form Header / Announcement
+  announcementTitle: z.string().nullable().optional(),
+  announcementDescription: z.string().nullable().optional(),
+  contactInformation: z.string().nullable().optional(),
+  remark: z.string().nullable().optional(),
 }).refine(data => data.closeDate > data.openDate, {
   message: "closeDate must be after openDate",
   path: ["closeDate"],
@@ -63,6 +117,11 @@ export const RecruitmentRoundUpdateSchema = z.object({
   closeDate: z.number().int().positive().optional(),
   status: RoundStatusEnum.optional(),
   templateVersionId: z.string().optional(), // For DRAFT round version change
+  // Form Header / Announcement
+  announcementTitle: z.string().nullable().optional(),
+  announcementDescription: z.string().nullable().optional(),
+  contactInformation: z.string().nullable().optional(),
+  remark: z.string().nullable().optional(),
 }).refine(data => {
   if (data.openDate !== undefined && data.closeDate !== undefined) {
     return data.closeDate > data.openDate;

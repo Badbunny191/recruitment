@@ -114,6 +114,11 @@ export default function FieldMasterPage() {
   const [submitting, setSubmitting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<FieldMaster | null>(null);
 
+  // Field Delete Impact Modal
+  const [impactModalOpen, setImpactModalOpen] = useState(false);
+  const [impactData, setImpactData] = useState<any>(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+
   const load = async () => {
     setLoading(true);
     const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/fields', {
@@ -126,6 +131,23 @@ export default function FieldMasterPage() {
   useEffect(() => {
     load();
   }, []);
+
+  // เรียก Impact API ก่อนลบ
+  const checkFieldImpact = async (fieldId: string) => {
+    setImpactLoading(true);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/fields/${fieldId}/usage`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
+      });
+      const data = await res.json();
+      setImpactData(data.data);
+      setImpactModalOpen(true);
+    } catch (err) {
+      alert('เกิดข้อผิดพลาดในการตรวจสอบผลกระทบ');
+    } finally {
+      setImpactLoading(false);
+    }
+  };
 
   const openCreate = () => {
     setEditing(null);
@@ -243,6 +265,12 @@ export default function FieldMasterPage() {
     }
   };
 
+  // เปลี่ยนปุ่มลบให้เรียก impact check ก่อน
+  const handleDeleteClick = async (f: FieldMaster) => {
+    setConfirmDelete(f);
+    await checkFieldImpact(f.id);
+  };
+
   const handleDelete = async () => {
     if (!confirmDelete) return;
     try {
@@ -252,6 +280,8 @@ export default function FieldMasterPage() {
       });
       if (!res.ok) throw new Error('delete failed');
       setConfirmDelete(null);
+      setImpactModalOpen(false);
+      setImpactData(null);
       await load();
     } catch (err) {
       alert('เกิดข้อผิดพลาดในการลบ');
@@ -390,7 +420,7 @@ export default function FieldMasterPage() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => setConfirmDelete(field)}
+                          onClick={() => handleDeleteClick(field)}
                           disabled={!field.isActive}
                           className="text-red-600 hover:text-red-700 hover:bg-red-50"
                         >
@@ -647,24 +677,164 @@ export default function FieldMasterPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete confirm */}
-      <Dialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
-        <DialogContent>
+      {/* Field Delete Impact Modal */}
+      <Dialog open={impactModalOpen} onOpenChange={setImpactModalOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>ยืนยันการลบ Field</DialogTitle>
+            <DialogTitle>ผลกระทบจากการลบ Field</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-gray-600">
-            คุณต้องการลบ <b>"{confirmDelete?.labelTh}"</b> หรือไม่?
-            <br />
-            <span className="text-gray-500">ระบบจะตั้งค่าเป็น "ปิดใช้งาน" (ข้อมูลจะไม่ถูกลบออกจากฐานข้อมูล)</span>
-          </p>
+          
+          {impactLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="flex items-center gap-2 text-gray-500">
+                <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>กำลังตรวจสอบ...</span>
+              </div>
+            </div>
+          ) : impactData ? (
+            <div className="space-y-4">
+              {/* Field Info */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <p className="font-medium text-blue-800">Field: {impactData.fieldName}</p>
+                <p className="text-sm text-blue-600 mt-1">
+                  {impactData.isActive ? 'สถานะ: ใช้งาน' : 'สถานะ: ปิดใช้งาน'}
+                </p>
+              </div>
+
+              {impactData.canDelete ? (
+                /* สามารถลบได้ */
+                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                  <div className="flex items-center gap-2 text-green-800">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="font-medium">สามารถลบได้ทันที</span>
+                  </div>
+                  <p className="text-sm text-green-700 mt-2">{impactData.message}</p>
+                  <p className="text-xs text-green-600 mt-1">
+                    Field นี้ไม่ถูกใช้งานใน template ใดๆ ระบบจะตั้งค่าเป็น "ปิดใช้งาน" (Soft Delete)
+                  </p>
+                </div>
+              ) : (
+                /* ไม่สามารถลบได้ */
+                <div className="space-y-4">
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 text-amber-800">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <span className="font-medium">ไม่สามารถลบได้โดยตรง</span>
+                    </div>
+                    <p className="text-sm text-amber-700 mt-2">{impactData.message}</p>
+                  </div>
+
+                  {/* Usage Summary */}
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="bg-slate-50 border rounded-lg p-3 text-center">
+                      <p className="text-2xl font-bold text-slate-800">{impactData.usage.templateCount}</p>
+                      <p className="text-xs text-slate-500">Templates</p>
+                    </div>
+                    <div className="bg-slate-50 border rounded-lg p-3 text-center">
+                      <p className="text-2xl font-bold text-slate-800">{impactData.usage.versionCount}</p>
+                      <p className="text-xs text-slate-500">Versions</p>
+                    </div>
+                    <div className="bg-slate-50 border rounded-lg p-3 text-center">
+                      <p className="text-2xl font-bold text-slate-800">{impactData.usage.roundCount}</p>
+                      <p className="text-xs text-slate-500">Rounds</p>
+                    </div>
+                  </div>
+
+                  {/* Templates List */}
+                  {impactData.usage.templates.length > 0 && (
+                    <div className="space-y-2">
+                      <h4 className="font-medium text-sm text-gray-700">Templates ที่ใช้ Field นี้:</h4>
+                      <div className="space-y-1">
+                        {impactData.usage.templates.map((t: any) => (
+                          <div key={t.id} className="flex items-center gap-2 text-sm bg-gray-50 p-2 rounded">
+                            <span className="text-gray-600">📄</span>
+                            <span>{t.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Versions List */}
+                  {impactData.usage.versions.length > 0 && (
+                    <div className="space-y-2">
+                      <h4 className="font-medium text-sm text-gray-700">Versions ที่ใช้ Field นี้:</h4>
+                      <div className="space-y-1">
+                        {impactData.usage.versions.map((v: any) => (
+                          <div key={v.id} className="flex items-center justify-between text-sm bg-gray-50 p-2 rounded">
+                            <div className="flex items-center gap-2">
+                              <span className="text-gray-600">📋</span>
+                              <span>{v.templateName}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge variant={v.status === 'PUBLISHED' ? 'default' : 'secondary'} className="text-xs">
+                                v{v.versionNumber} ({v.status})
+                              </Badge>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Rounds List */}
+                  {impactData.usage.rounds.length > 0 && (
+                    <div className="space-y-2">
+                      <h4 className="font-medium text-sm text-gray-700">Rounds ที่ใช้ Field นี้:</h4>
+                      <div className="space-y-1 max-h-40 overflow-y-auto">
+                        {impactData.usage.rounds.map((r: any) => (
+                          <div key={r.id} className="flex items-center justify-between text-sm bg-gray-50 p-2 rounded">
+                            <div className="flex items-center gap-2">
+                              <span className="text-gray-600">📌</span>
+                              <span>{r.title}</span>
+                            </div>
+                            <Badge variant={r.status === 'ACTIVE' ? 'default' : 'secondary'} className="text-xs">
+                              {r.status}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Alternative: Deactivate */}
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                    <p className="text-sm text-gray-700">
+                      <strong>ทางเลือก:</strong> หากต้องการให้ Field นี้ไม่ปรากฏใน Form Builder ใหม่ 
+                      สามารถตั้งค่าเป็น "ปิดใช้งาน" แทนการลบ
+                    </p>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Field ที่ถูกปิดใช้งานจะถูกซ่อนจาก Form Builder แต่ข้อมูลใน Rounds และ Applications ที่มีอยู่จะไม่ได้รับผลกระทบ
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
+          
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmDelete(null)}>
-              ยกเลิก
+            <Button variant="outline" onClick={() => {
+              setImpactModalOpen(false);
+              setConfirmDelete(null);
+            }}>
+              ปิด
             </Button>
-            <Button variant="destructive" onClick={handleDelete}>
-              ลบ (Soft Delete)
-            </Button>
+            {impactData?.canDelete && (
+              <Button 
+                variant="destructive" 
+                onClick={handleDelete}
+                disabled={submitting}
+              >
+                {submitting ? 'กำลังลบ...' : 'ตกลง ลบ (Soft Delete)'}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

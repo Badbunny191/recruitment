@@ -16,10 +16,21 @@ interface VersionComparison {
   added: string[];
   removed: string[];
   modified: string[];
+  // Sprint 4: section diff
+  sections?: {
+    added: string[];
+    removed: string[];
+    modified: string[];
+    fieldSectionChanged: string[];
+  };
   summary: {
     added: number;
     removed: number;
     modified: number;
+    sectionsAdded?: number;
+    sectionsRemoved?: number;
+    sectionsModified?: number;
+    fieldSectionChanged?: number;
   };
 }
 
@@ -128,12 +139,93 @@ export function CompareVersionModal({
                   ~{comparison.summary.modified} แก้ไข
                 </Badge>
               )}
+              {/* Sprint 4: Section summary badges */}
+              {comparison.summary.sectionsAdded !== undefined && comparison.summary.sectionsAdded > 0 && (
+                <Badge className="bg-blue-100 text-blue-800 border-blue-300">
+                  +{comparison.summary.sectionsAdded} Section
+                </Badge>
+              )}
+              {comparison.summary.sectionsRemoved !== undefined && comparison.summary.sectionsRemoved > 0 && (
+                <Badge className="bg-orange-100 text-orange-800 border-orange-300">
+                  -{comparison.summary.sectionsRemoved} Section
+                </Badge>
+              )}
+              {comparison.summary.fieldSectionChanged !== undefined && comparison.summary.fieldSectionChanged > 0 && (
+                <Badge className="bg-purple-100 text-purple-800 border-purple-300">
+                  ↔{comparison.summary.fieldSectionChanged} ย้าย Section
+                </Badge>
+              )}
               {comparison.summary.added === 0 && comparison.summary.removed === 0 && comparison.summary.modified === 0 && (
                 <Badge className="bg-gray-100 text-gray-800 border-gray-300">
                   ไม่มีการเปลี่ยนแปลง
                 </Badge>
               )}
             </div>
+
+            {/* Sprint 4: Section changes (added/removed/modified sections) */}
+            {comparison.sections && (
+              <>
+                {comparison.sections.added.length > 0 && (
+                  <div className="border rounded-lg p-4 bg-blue-50">
+                    <h4 className="font-medium text-blue-800 mb-2 flex items-center gap-2">
+                      <span className="text-blue-600">📂</span> Section ที่เพิ่ม
+                    </h4>
+                    <ul className="space-y-1">
+                      {comparison.sections.added.map((s, idx) => (
+                        <li key={idx} className="flex items-center gap-2 text-sm text-blue-700">
+                          <span className="text-blue-500">➕</span> {s}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {comparison.sections.removed.length > 0 && (
+                  <div className="border rounded-lg p-4 bg-orange-50">
+                    <h4 className="font-medium text-orange-800 mb-2 flex items-center gap-2">
+                      <span className="text-orange-600">📂</span> Section ที่ลบ
+                    </h4>
+                    <ul className="space-y-1">
+                      {comparison.sections.removed.map((s, idx) => (
+                        <li key={idx} className="flex items-center gap-2 text-sm text-orange-700">
+                          <span className="text-orange-500">🗑️</span> {s}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {comparison.sections.modified.length > 0 && (
+                  <div className="border rounded-lg p-4 bg-yellow-50">
+                    <h4 className="font-medium text-yellow-800 mb-2 flex items-center gap-2">
+                      <span className="text-yellow-600">📂</span> Section ที่เรียงลำดับใหม่
+                    </h4>
+                    <ul className="space-y-1">
+                      {comparison.sections.modified.map((s, idx) => (
+                        <li key={idx} className="flex items-center gap-2 text-sm text-yellow-700">
+                          <span className="text-yellow-500">🔀</span> {s}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {comparison.sections.fieldSectionChanged.length > 0 && (
+                  <div className="border rounded-lg p-4 bg-purple-50">
+                    <h4 className="font-medium text-purple-800 mb-2 flex items-center gap-2">
+                      <span className="text-purple-600">📂</span> Field ที่ย้าย Section
+                    </h4>
+                    <ul className="space-y-1">
+                      {comparison.sections.fieldSectionChanged.map((f, idx) => (
+                        <li key={idx} className="flex items-center gap-2 text-sm text-purple-700">
+                          <span className="text-purple-500">↔️</span> {f}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
 
             {/* Added Fields */}
             {comparison.added.length > 0 && (

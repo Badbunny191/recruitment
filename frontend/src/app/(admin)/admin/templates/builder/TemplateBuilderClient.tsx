@@ -43,6 +43,10 @@ interface VersionField {
   helpText: string | null;
   placeholder: string | null;
   validationRules: Record<string, any> | null;
+  // Rich Field Metadata
+  rows: number | null;
+  minLength: number | null;
+  maxLength: number | null;
 }
 
 interface BuilderField {
@@ -54,6 +58,10 @@ interface BuilderField {
   helpText: string;
   placeholder: string;
   validationRulesText: string;
+  // Rich Field Metadata
+  rows: string;
+  minLength: string;
+  maxLength: string;
   // metadata for UI
   fieldType?: string;
   label?: string;
@@ -61,10 +69,20 @@ interface BuilderField {
   helpTextOriginal?: string;
   placeholderOriginal?: string;
   validationTypeOriginal?: string;
+  // Sprint 4
+  sectionId: string | null;
+}
+
+interface BuilderSection {
+  id: string; // server uuid (for saved sections) OR tempId for new sections not yet saved
+  name: string;
+  displayOrder: number;
+  isActive: boolean;
 }
 
 interface FormValues {
   fields: BuilderField[];
+  sections: BuilderSection[];
 }
 
 // Helper to parse options from various formats
@@ -138,12 +156,14 @@ function BuilderInner() {
     setCompareModalOpen(true);
   };
 
-  const { control, register, handleSubmit, watch, reset } = useForm<FormValues>({
-    defaultValues: { fields: [] },
+  const { control, register, handleSubmit, watch, reset, setValue } = useForm<FormValues>({
+    defaultValues: { fields: [], sections: [] },
   });
-  const { fields, append, remove, replace } = useFieldArray({ control, name: 'fields' });
-  
+  const { fields, append, remove, replace, move } = useFieldArray({ control, name: 'fields' });
+  const { append: appendSection, remove: removeSection, replace: replaceSections } = useFieldArray({ control, name: 'sections' });
+
   const watchedFields = watch('fields');
+  const watchedSections = watch('sections');
 
   const loadAll = async () => {
     if (!templateId) return;
@@ -185,15 +205,22 @@ function BuilderInner() {
         if (targetVersion.status === 'DRAFT') {
           setDraftVersionId(targetVersion.id);
         }
-        
+
         // Load fields for this version
         const fieldsDataRes = await fetch(
           `${process.env.NEXT_PUBLIC_API_URL}/admin/template-fields/${targetVersion.id}`,
           { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
         ).then(r => r.json()).catch(() => ({ data: [] }));
-        
+
+        // Sprint 4: Load sections for this version
+        const sectionsDataRes = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL}/admin/template-sections/${targetVersion.id}`,
+          { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
+        ).then(r => r.json()).catch(() => ({ data: [] }));
+
         const existingFields: VersionField[] = fieldsDataRes.data || [];
-        
+        const existingSections: any[] = sectionsDataRes.data || [];
+
         const formFields: BuilderField[] = existingFields.map((vf: VersionField) => {
           const mf = fieldsRes.data?.find((m: MasterField) => m.id === vf.fieldId);
           const opts = parseOptions(vf.overrideOptions);
@@ -206,16 +233,29 @@ function BuilderInner() {
             helpText: vf.helpText || '',
             placeholder: vf.placeholder || '',
             validationRulesText: vf.validationRules ? JSON.stringify(vf.validationRules) : '',
+            rows: vf.rows?.toString() || '',
+            minLength: vf.minLength?.toString() || '',
+            maxLength: vf.maxLength?.toString() || '',
             fieldType: mf?.fieldType,
             label: vf.overrideLabelTh || mf?.labelTh || '',
             defaultOptions: parseOptions(mf?.defaultOptions),
             helpTextOriginal: mf?.helpText,
             placeholderOriginal: mf?.placeholder,
             validationTypeOriginal: mf?.validationType,
+            // Sprint 4
+            sectionId: (vf as any).sectionId ?? null,
           };
         });
-        
+
+        const formSections: BuilderSection[] = existingSections.map((s: any) => ({
+          id: s.id,
+          name: s.name,
+          displayOrder: s.displayOrder,
+          isActive: s.isActive,
+        }));
+
         replace(formFields);
+        replaceSections(formSections);
       }
     } finally {
       setLoading(false);
@@ -226,9 +266,12 @@ function BuilderInner() {
     loadAll();
   }, [templateId]);
 
-  const addField = (mf: MasterField) => {
+  const addField = (mf: MasterField, targetSectionId: string | null = null) => {
     const opts = parseOptions(mf.defaultOptions);
     const currentFields = watch('fields');
+    const currentSections = watch('sections');
+    // Default to first section if exists
+    const sectionId = targetSectionId ?? (currentSections.length > 0 ? currentSections[0].id : null);
     append({
       fieldId: mf.id,
       displayOrder: currentFields.length + 1,
@@ -238,13 +281,59 @@ function BuilderInner() {
       helpText: mf.helpText || '',
       placeholder: mf.placeholder || '',
       validationRulesText: '',
+      rows: '',
+      minLength: '',
+      maxLength: '',
       fieldType: mf.fieldType,
       label: mf.labelTh,
       defaultOptions: opts,
       helpTextOriginal: mf.helpText,
       placeholderOriginal: mf.placeholder,
       validationTypeOriginal: mf.validationType,
+      sectionId,
     });
+  };
+
+  const addSection = () => {
+    const currentSections = watch('sections');
+    const name = window.prompt('ชื่อ Section ใหม่:', `ข้อมูลใหม่ ${currentSections.length + 1}`);
+    if (!name || !name.trim()) return;
+    // Use tempId (uuid-like) for new section - backend will replace with real uuid on save
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    appendSection({
+      id: tempId,
+      name: name.trim(),
+      displayOrder: currentSections.length + 1,
+      isActive: true,
+    });
+  };
+
+  const removeSectionAction = async (index: number) => {
+    const section = watchedSections[index];
+    if (!confirm(`ต้องการลบ Section "${section.name}"?\n\nField ทั้งหมดใน Section นี้จะกลายเป็น "ไม่มี Section"`)) return;
+    // Reassign fields in this section to null
+    const updated = watchedFields.map(f =>
+      f.sectionId === section.id ? { ...f, sectionId: null } : f
+    );
+    replace(updated);
+    removeSection(index);
+  };
+
+  const moveSection = (index: number, direction: -1 | 1) => {
+    const newIndex = index + direction;
+    if (newIndex < 0 || newIndex >= watchedSections.length) return;
+    // Use react-hook-form move for sections array
+    moveSectionArray(index, newIndex);
+  };
+
+  const moveSectionArray = (from: number, to: number) => {
+    // Local reorder using useFieldArray's swap
+    // useFieldArray v7+ supports `swap`
+    const arr = [...watchedSections];
+    const [item] = arr.splice(from, 1);
+    arr.splice(to, 0, item);
+    const renumbered = arr.map((s, i) => ({ ...s, displayOrder: i + 1 }));
+    replaceSections(renumbered);
   };
 
   const moveField = (index: number, direction: -1 | 1) => {
@@ -263,10 +352,19 @@ function BuilderInner() {
       alert('กรุณาเพิ่มฟิลด์อย่างน้อย 1 ฟิลด์');
       return;
     }
+    if (data.sections.length === 0) {
+      alert('กรุณาเพิ่ม Section อย่างน้อย 1 Section');
+      return;
+    }
     setSubmitting(true);
     try {
       const payload = {
         templateId,
+        sections: data.sections.map((s) => ({
+          tempId: s.id, // tempId for client-side mapping
+          name: s.name,
+          displayOrder: s.displayOrder,
+        })),
         fields: data.fields.map((f) => {
           const fieldData: any = {
             fieldId: f.fieldId,
@@ -276,6 +374,7 @@ function BuilderInner() {
             overrideOptions: f.overrideOptionsText
               ? f.overrideOptionsText.split('\n').map((s) => s.trim()).filter(Boolean)
               : null,
+            sectionId: f.sectionId || null,
           };
           if (f.helpText && f.helpText !== f.helpTextOriginal) {
             fieldData.helpText = f.helpText;
@@ -290,10 +389,19 @@ function BuilderInner() {
               // Ignore invalid JSON
             }
           }
+          if (f.rows && !isNaN(parseInt(f.rows))) {
+            fieldData.rows = parseInt(f.rows);
+          }
+          if (f.minLength && !isNaN(parseInt(f.minLength))) {
+            fieldData.minLength = parseInt(f.minLength);
+          }
+          if (f.maxLength && !isNaN(parseInt(f.maxLength))) {
+            fieldData.maxLength = parseInt(f.maxLength);
+          }
           return fieldData;
         }),
       };
-      
+
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/templates/${templateId}/versions`, {
         method: 'POST',
         headers: {
@@ -302,16 +410,50 @@ function BuilderInner() {
         },
         body: JSON.stringify(payload),
       });
-      
+
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error || 'save failed');
       }
-      
+
       alert('บันทึก Draft สำเร็จ! กด "Publish" เพื่อเผยแพร่');
       await loadAll();
     } catch (err) {
       alert('เกิดข้อผิดพลาด: ' + (err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Clone version (Mode B): use existing version as source
+  const onCloneVersion = async (sourceVersionId: string, sourceVersionNumber: number) => {
+    if (!confirm(`ต้องการ Clone v${sourceVersionNumber} เป็น Draft ใหม่?\n\nSections + Fields ทั้งหมดจะถูก copy ไปยัง DRAFT ใหม่`)) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/templates/${templateId}/versions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
+        },
+        body: JSON.stringify({
+          templateId,
+          cloneFromVersionId: sourceVersionId,
+          // ไม่ต้องส่ง sections/fields - backend จะ clone ให้อัตโนมัติ
+          // แต่ validator ต้องการ fields min 1 → ส่ง dummy field 1 ตัว (จะถูกแทนที่)
+          // ... workaround: backend Mode B ไม่ใช้ fields array
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'clone failed');
+      }
+
+      alert(`Clone v${sourceVersionNumber} สำเร็จ!`);
+      await loadAll();
+    } catch (err) {
+      alert('Clone ล้มเหลว: ' + (err as Error).message);
     } finally {
       setSubmitting(false);
     }
@@ -630,6 +772,15 @@ function BuilderInner() {
                           >
                             Compare
                           </Button>
+                          {/* Clone as new Draft - Sprint 4 */}
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => onCloneVersion(v.id, v.versionNumber)}
+                            disabled={submitting}
+                          >
+                            Clone
+                          </Button>
                           {/* Delete Draft - only if DRAFT and no round uses it */}
                           {v.status === 'DRAFT' && (
                             <Button
@@ -700,138 +851,251 @@ function BuilderInner() {
           </CardContent>
         </Card>
 
-        {/* Selected fields */}
+        {/* Selected fields - Sprint 4: Sectioned layout */}
         <Card className="col-span-2 h-[60vh] overflow-auto">
           <CardHeader>
-            <CardTitle className="text-base">
-              ฟิลด์ใน Template ({fields.length})
-              {currentVersion && (
-                <span className="text-sm font-normal text-slate-500 ml-2">
-                  (v{currentVersion.versionNumber} — {currentVersion.status})
-                </span>
-              )}
+            <CardTitle className="text-base flex items-center justify-between">
+              <span>
+                ฟิลด์ใน Template ({fields.length})
+                {currentVersion && (
+                  <span className="text-sm font-normal text-slate-500 ml-2">
+                    (v{currentVersion.versionNumber} — {currentVersion.status})
+                  </span>
+                )}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={addSection}
+                disabled={!currentVersion || currentVersion.status !== 'DRAFT'}
+              >
+                + เพิ่ม Section
+              </Button>
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {fields.length === 0 ? (
+          <CardContent className="space-y-4">
+            {watchedSections.length === 0 ? (
               <p className="text-sm text-slate-500 text-center py-8">
-                ยังไม่มีฟิลด์ — คลิก "เพิ่ม" จากคลังคำถามทางซ้าย
+                ยังไม่มี Section — คลิก "+ เพิ่ม Section" เพื่อเริ่มต้น
               </p>
             ) : (
               <>
-                {fields.map((field, index) => {
-                  const opts = watchedFields[index]?.defaultOptions;
-                  const hasValidation = watchedFields[index]?.validationTypeOriginal && watchedFields[index]?.validationTypeOriginal !== 'NONE';
+                {watchedSections.map((section, sectionIdx) => {
+                  const sectionFields = watchedFields
+                    .map((f, idx) => ({ f, idx }))
+                    .filter(({ f }) => f.sectionId === section.id);
                   return (
-                  <div key={field.id} className="p-4 border rounded bg-slate-50 space-y-3">
-                    <div className="flex items-center gap-3">
-                      <span className="font-bold text-lg w-8">{index + 1}</span>
-                      <div className="flex-1">
-                        <div className="font-medium">{field.label}</div>
-                        <div className="flex items-center gap-2 mt-1">
-                          <Badge variant="outline" className="text-xs">
-                            {field.fieldType}
-                          </Badge>
-                          {hasValidation && (
-                            <Badge variant="outline" className="text-xs text-orange-600 border-orange-200">
-                              {watchedFields[index].validationTypeOriginal}
-                            </Badge>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex gap-1">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => moveField(index, -1)}
-                          disabled={index === 0}
-                        >
-                          ↑
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => moveField(index, 1)}
-                          disabled={index === fields.length - 1}
-                        >
-                          ↓
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => remove(index)}
-                        >
-                          ลบ
-                        </Button>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3 pl-11">
-                      <div className="space-y-1 col-span-2">
-                        <Label className="text-xs">คำถามใหม่ (ไม่บังคับ)</Label>
-                        <Input
-                          {...register(`fields.${index}.overrideLabelTh`)}
-                          placeholder="ปล่อยว่างเพื่อใช้คำถามเดิม"
-                        />
-                      </div>
-                      {(field.fieldType === 'DROPDOWN' || field.fieldType === 'RADIO') && (
-                        <div className="space-y-1 col-span-2">
-                          <Label className="text-xs">ตัวเลือกใหม่ (ไม่บังคับ)</Label>
-                          <Textarea
-                            {...register(`fields.${index}.overrideOptionsText`)}
-                            rows={3}
-                            placeholder={
-                              opts && opts.length > 0
-                                ? `ใช้ค่าเดิม:\n${opts.join('\n')}`
-                                : 'ตัวเลือก 1\nตัวเลือก 2'
-                            }
-                          />
-                        </div>
-                      )}
-                      <div className="space-y-1 col-span-2">
-                        <Label className="text-xs">Help Text ใหม่ (ไม่บังคับ)</Label>
-                        <Input
-                          {...register(`fields.${index}.helpText`)}
-                          placeholder={field.helpTextOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
-                        />
-                      </div>
-                      <div className="space-y-1 col-span-2">
-                        <Label className="text-xs">Placeholder ใหม่ (ไม่บังคับ)</Label>
-                        <Input
-                          {...register(`fields.${index}.placeholder`)}
-                          placeholder={field.placeholderOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
-                        />
-                      </div>
-                      {hasValidation && (
-                        <div className="space-y-1 col-span-2">
-                          <Label className="text-xs">Validation Rules JSON (ไม่บังคับ)</Label>
-                          <Input
-                            {...register(`fields.${index}.validationRulesText`)}
-                            placeholder='{"minLength": 5, "maxLength": 100}'
-                          />
-                        </div>
-                      )}
-                      <Controller
-                        control={control}
-                        name={`fields.${index}.isRequired`}
-                        render={({ field: f }) => (
-                          <div className="flex items-center space-x-2 col-span-2 bg-blue-50 p-3 rounded border border-blue-100">
-                            <Checkbox
-                              id={`req-${index}`}
-                              checked={f.value}
-                              onChange={(e) => f.onChange(e.target.checked)}
-                            />
-                            <Label htmlFor={`req-${index}`} className="cursor-pointer font-medium text-blue-800">
-                              ต้องตอบ (Required)
-                            </Label>
+                    <div key={section.id} className="border-2 border-blue-200 rounded-lg bg-blue-50/30">
+                      {/* Section header */}
+                      <div className="flex items-center gap-2 p-3 bg-blue-100 border-b border-blue-200 rounded-t-lg">
+                        <span className="font-bold text-sm w-6">{sectionIdx + 1}.</span>
+                        <div className="flex-1">
+                          <div className="font-semibold">{section.name}</div>
+                          <div className="text-xs text-slate-500">
+                            {sectionFields.length} ฟิลด์
                           </div>
+                        </div>
+                        <div className="flex gap-1">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => moveSection(sectionIdx, -1)}
+                            disabled={sectionIdx === 0}
+                          >
+                            ↑
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => moveSection(sectionIdx, 1)}
+                            disabled={sectionIdx === watchedSections.length - 1}
+                          >
+                            ↓
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => removeSectionAction(sectionIdx)}
+                          >
+                            ลบ Section
+                          </Button>
+                        </div>
+                      </div>
+                      {/* Section body: fields in this section */}
+                      <div className="p-3 space-y-2">
+                        {sectionFields.length === 0 ? (
+                          <p className="text-sm text-slate-400 text-center py-4">
+                            ยังไม่มีฟิลด์ใน Section นี้ — คลิก "เพิ่ม" จากคลังคำถาม (จะเพิ่มเข้า Section แรกอัตโนมัติ)
+                          </p>
+                        ) : (
+                          sectionFields.map(({ f: field, idx: index }) => {
+                            const opts = watchedFields[index]?.defaultOptions;
+                            const hasValidation = watchedFields[index]?.validationTypeOriginal && watchedFields[index]?.validationTypeOriginal !== 'NONE';
+                            return (
+                              <div key={field.fieldId} className="p-4 border rounded bg-white space-y-3">
+                                <div className="flex items-center gap-3">
+                                  <span className="font-bold text-lg w-8">{index + 1}</span>
+                                  <div className="flex-1">
+                                    <div className="font-medium">{field.label}</div>
+                                    <div className="flex items-center gap-2 mt-1">
+                                      <Badge variant="outline" className="text-xs">
+                                        {field.fieldType}
+                                      </Badge>
+                                      {hasValidation && (
+                                        <Badge variant="outline" className="text-xs text-orange-600 border-orange-200">
+                                          {watchedFields[index].validationTypeOriginal}
+                                        </Badge>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="flex gap-1">
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => moveField(index, -1)}
+                                      disabled={index === 0}
+                                    >
+                                      ↑
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => moveField(index, 1)}
+                                      disabled={index === fields.length - 1}
+                                    >
+                                      ↓
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="destructive"
+                                      size="sm"
+                                      onClick={() => remove(index)}
+                                    >
+                                      ลบ
+                                    </Button>
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3 pl-11">
+                                  <div className="space-y-1 col-span-2">
+                                    <Label className="text-xs">Section (ไม่บังคับ - เปลี่ยน Section ของ Field นี้)</Label>
+                                    <select
+                                      {...register(`fields.${index}.sectionId`)}
+                                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                    >
+                                      <option value="">— ไม่มี Section —</option>
+                                      {watchedSections.map((s) => (
+                                        <option key={s.id} value={s.id}>{s.name}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  <div className="space-y-1 col-span-2">
+                                    <Label className="text-xs">คำถามใหม่ (ไม่บังคับ)</Label>
+                                    <Input
+                                      {...register(`fields.${index}.overrideLabelTh`)}
+                                      placeholder="ปล่อยว่างเพื่อใช้คำถามเดิม"
+                                    />
+                                  </div>
+                                  {(field.fieldType === 'DROPDOWN' || field.fieldType === 'RADIO') && (
+                                    <div className="space-y-1 col-span-2">
+                                      <Label className="text-xs">ตัวเลือกใหม่ (ไม่บังคับ)</Label>
+                                      <Textarea
+                                        {...register(`fields.${index}.overrideOptionsText`)}
+                                        rows={3}
+                                        placeholder={
+                                          opts && opts.length > 0
+                                            ? `ใช้ค่าเดิม:\n${opts.join('\n')}`
+                                            : 'ตัวเลือก 1\nตัวเลือก 2'
+                                        }
+                                      />
+                                    </div>
+                                  )}
+                                  <div className="space-y-1 col-span-2">
+                                    <Label className="text-xs">Help Text ใหม่ (ไม่บังคับ)</Label>
+                                    <Input
+                                      {...register(`fields.${index}.helpText`)}
+                                      placeholder={field.helpTextOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
+                                    />
+                                  </div>
+                                  <div className="space-y-1 col-span-2">
+                                    <Label className="text-xs">Placeholder ใหม่ (ไม่บังคับ)</Label>
+                                    <Input
+                                      {...register(`fields.${index}.placeholder`)}
+                                      placeholder={field.placeholderOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
+                                    />
+                                  </div>
+                                  {hasValidation && (
+                                    <div className="space-y-1 col-span-2">
+                                      <Label className="text-xs">Validation Rules JSON (ไม่บังคับ)</Label>
+                                      <Input
+                                        {...register(`fields.${index}.validationRulesText`)}
+                                        placeholder='{"minLength": 5, "maxLength": 100}'
+                                      />
+                                    </div>
+                                  )}
+
+                                  {/* Rich Field Metadata - แสดงสำหรับ TEXT และ TEXTAREA */}
+                                  {(field.fieldType === 'TEXT' || field.fieldType === 'TEXTAREA') && (
+                                    <>
+                                      <div className="space-y-1">
+                                        <Label className="text-xs">จำนวนบรรทัด (TEXTAREA)</Label>
+                                        <Input
+                                          type="number"
+                                          min={1}
+                                          {...register(`fields.${index}.rows`)}
+                                          placeholder="เช่น 3"
+                                        />
+                                      </div>
+                                      <div className="space-y-1">
+                                        <Label className="text-xs">ความยาวขั้นต่ำ</Label>
+                                        <Input
+                                          type="number"
+                                          min={0}
+                                          {...register(`fields.${index}.minLength`)}
+                                          placeholder="เช่น 0"
+                                        />
+                                      </div>
+                                      <div className="space-y-1">
+                                        <Label className="text-xs">ความยาวสูงสุด</Label>
+                                        <Input
+                                          type="number"
+                                          min={1}
+                                          {...register(`fields.${index}.maxLength`)}
+                                          placeholder="เช่น 500"
+                                        />
+                                      </div>
+                                    </>
+                                  )}
+
+                                  <Controller
+                                    control={control}
+                                    name={`fields.${index}.isRequired`}
+                                    render={({ field: f }) => (
+                                      <div className="flex items-center space-x-2 col-span-2 bg-blue-50 p-3 rounded border border-blue-100">
+                                        <Checkbox
+                                          id={`req-${index}`}
+                                          checked={f.value}
+                                          onChange={(e) => f.onChange(e.target.checked)}
+                                        />
+                                        <Label htmlFor={`req-${index}`} className="cursor-pointer font-medium text-blue-800">
+                                          ต้องตอบ (Required)
+                                        </Label>
+                                      </div>
+                                    )}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })
                         )}
-                      />
+                      </div>
                     </div>
-                  </div>
-                );
+                  );
                 })}
               </>
             )}

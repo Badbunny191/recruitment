@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { Select } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { CompareVersionModal } from '@/components/CompareVersionModal';
@@ -42,6 +43,11 @@ interface FormState {
   openDate: string;
   closeDate: string;
   status: 'DRAFT' | 'ACTIVE' | 'CLOSED';
+  // Form Header / Announcement
+  announcementTitle: string;
+  announcementDescription: string;
+  contactInformation: string;
+  remark: string;
 }
 
 interface RoundVersionInfo {
@@ -74,6 +80,11 @@ const EMPTY_FORM: FormState = {
   openDate: '',
   closeDate: '',
   status: 'DRAFT',
+  // Form Header / Announcement
+  announcementTitle: '',
+  announcementDescription: '',
+  contactInformation: '',
+  remark: '',
 };
 
 const toLocalInput = (value: string | number | Date) => {
@@ -235,6 +246,11 @@ export default function RoundsPage() {
       openDate: toLocalInput(r.openDate),
       closeDate: toLocalInput(r.closeDate),
       status: r.status,
+      // Form Header / Announcement
+      announcementTitle: (r as any).announcementTitle || '',
+      announcementDescription: (r as any).announcementDescription || '',
+      contactInformation: (r as any).contactInformation || '',
+      remark: (r as any).remark || '',
     });
     setDialogOpen(true);
   };
@@ -256,6 +272,11 @@ export default function RoundsPage() {
           openDate: toUnix(form.openDate),
           closeDate: toUnix(form.closeDate),
           status: form.status,
+          // Form Header / Announcement
+          announcementTitle: form.announcementTitle || null,
+          announcementDescription: form.announcementDescription || null,
+          contactInformation: form.contactInformation || null,
+          remark: form.remark || null,
         };
         const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${editing.id}`, {
           method: 'PATCH',
@@ -274,6 +295,11 @@ export default function RoundsPage() {
           openDate: toUnix(form.openDate),
           closeDate: toUnix(form.closeDate),
           status: form.status,
+          // Form Header / Announcement
+          announcementTitle: form.announcementTitle || null,
+          announcementDescription: form.announcementDescription || null,
+          contactInformation: form.contactInformation || null,
+          remark: form.remark || null,
         };
         const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/rounds', {
           method: 'POST',
@@ -579,6 +605,54 @@ export default function RoundsPage() {
                 <option value="CLOSED">CLOSED — ปิดรับแล้ว</option>
               </Select>
             </div>
+
+            {/* Form Header / Announcement Section */}
+            <div className="border-t pt-4 mt-4">
+              <h3 className="font-medium text-gray-800 mb-4">ข้อมูลประกาศรับสมัคร (Header)</h3>
+
+              <div className="space-y-2">
+                <Label htmlFor="announcementTitle">หัวข้อประกาศ</Label>
+                <Input
+                  id="announcementTitle"
+                  value={form.announcementTitle}
+                  onChange={(e) => setForm({ ...form, announcementTitle: e.target.value })}
+                  placeholder="เช่น ประกาศรับสมัครนักตรวจเงินแผ่นดิน"
+                />
+              </div>
+
+              <div className="space-y-2 mt-3">
+                <Label htmlFor="announcementDescription">รายละเอียดประกาศ</Label>
+                <Textarea
+                  id="announcementDescription"
+                  value={form.announcementDescription}
+                  onChange={(e) => setForm({ ...form, announcementDescription: e.target.value })}
+                  rows={3}
+                  placeholder="รายละเอียดเพิ่มเติมเกี่ยวกับการรับสมัคร"
+                />
+              </div>
+
+              <div className="space-y-2 mt-3">
+                <Label htmlFor="contactInformation">ข้อมูลติดต่อ</Label>
+                <Input
+                  id="contactInformation"
+                  value={form.contactInformation}
+                  onChange={(e) => setForm({ ...form, contactInformation: e.target.value })}
+                  placeholder="เช่น ติดต่อ 02-xxx-xxxx ต่อ xxx"
+                />
+              </div>
+
+              <div className="space-y-2 mt-3">
+                <Label htmlFor="remark">หมายเหตุ</Label>
+                <Textarea
+                  id="remark"
+                  value={form.remark}
+                  onChange={(e) => setForm({ ...form, remark: e.target.value })}
+                  rows={2}
+                  placeholder="หมายเหตุเพิ่มเติม"
+                />
+              </div>
+            </div>
+
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
                 ยกเลิก

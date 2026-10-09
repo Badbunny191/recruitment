@@ -3,12 +3,19 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 interface VersionField {
   fieldId: string;
+  sectionId: string | null; // Sprint 4
   labelTh: string;
   isRequired: boolean;
+}
+
+interface TemplateSection {
+  id: string;
+  name: string;
+  displayOrder: number;
+  isActive?: boolean; // Sprint 4: optional in case backend doesn't return
 }
 
 interface ViewVersionModalProps {
@@ -29,32 +36,37 @@ export function ViewVersionModal({
   templateName,
 }: ViewVersionModalProps) {
   const [fields, setFields] = React.useState<VersionField[]>([]);
+  const [sections, setSections] = React.useState<TemplateSection[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (open && versionId) {
-      fetchFields();
+      fetchData();
     }
   }, [open, versionId]);
 
-  const fetchFields = async () => {
+  const fetchData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/admin/template-fields/${versionId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
-          },
-        }
-      );
-      const data = await res.json();
-      if (data.error) {
-        setError(data.error);
+      // Fetch fields and sections in parallel (Sprint 4)
+      const [fieldsRes, sectionsRes] = await Promise.all([
+        fetch(
+          `${process.env.NEXT_PUBLIC_API_URL}/admin/template-fields/${versionId}`,
+          { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
+        ).then(r => r.json()),
+        fetch(
+          `${process.env.NEXT_PUBLIC_API_URL}/admin/template-sections/${versionId}`,
+          { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
+        ).then(r => r.json()).catch(() => ({ data: [] })),
+      ]);
+
+      if (fieldsRes.error) {
+        setError(fieldsRes.error);
       } else {
-        setFields(data.data || []);
+        setFields(fieldsRes.data || []);
+        setSections((sectionsRes.data || []).filter((s: TemplateSection) => s.isActive !== false));
       }
     } catch {
       setError('เกิดข้อผิดพลาดในการโหลดข้อมูล');
@@ -75,6 +87,10 @@ export function ViewVersionModal({
         return <Badge>{s}</Badge>;
     }
   };
+
+  // Sprint 4: Group fields by section
+  const ungroupedFields = fields.filter(f => !f.sectionId);
+  const fieldsBySectionId = (sectionId: string) => fields.filter(f => f.sectionId === sectionId);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -115,37 +131,55 @@ export function ViewVersionModal({
                 ไม่มีฟิลด์ใน version นี้
               </div>
             ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-12">#</TableHead>
-                    <TableHead>คำถาม</TableHead>
-                    <TableHead className="w-24 text-center">บังคับ</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {fields.map((field, idx) => (
-                    <TableRow key={field.fieldId}>
-                      <TableCell className="font-medium">{idx + 1}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <span>{field.labelTh}</span>
+              <div className="space-y-6">
+                {/* Sprint 4: Render sections in order, then ungrouped */}
+                {sections.map((section) => {
+                  const sectionFields = fieldsBySectionId(section.id);
+                  if (sectionFields.length === 0) return null;
+                  return (
+                    <div key={section.id} className="border rounded-lg p-4 bg-slate-50">
+                      <h4 className="font-semibold text-base mb-3 pb-2 border-b flex items-center gap-2">
+                        <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                        </svg>
+                        {section.name}
+                        <Badge variant="outline" className="text-xs ml-2">{sectionFields.length} ฟิลด์</Badge>
+                      </h4>
+                      <ol className="space-y-2 list-decimal list-inside">
+                        {sectionFields.map((field) => (
+                          <li key={field.fieldId} className="flex items-center gap-2 text-sm">
+                            <span className="flex-1">{field.labelTh}</span>
+                            {field.isRequired && (
+                              <Badge className="bg-red-100 text-red-700 text-xs">ต้องตอบ</Badge>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  );
+                })}
+
+                {/* Ungrouped fields */}
+                {ungroupedFields.length > 0 && (
+                  <div className="border rounded-lg p-4 bg-slate-50">
+                    <h4 className="font-semibold text-base mb-3 pb-2 border-b">ไม่มี Section</h4>
+                    <ol className="space-y-2 list-decimal list-inside">
+                      {ungroupedFields.map((field) => (
+                        <li key={field.fieldId} className="flex items-center gap-2 text-sm">
+                          <span className="flex-1">{field.labelTh}</span>
                           {field.isRequired && (
                             <Badge className="bg-red-100 text-red-700 text-xs">ต้องตอบ</Badge>
                           )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {field.isRequired ? '✓' : '—'}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+              </div>
             )}
 
             <div className="text-sm text-slate-500 mt-4">
-              รวม {fields.length} ฟิลด์
+              รวม {fields.length} ฟิลด์ ใน {sections.length} Section
             </div>
           </>
         )}

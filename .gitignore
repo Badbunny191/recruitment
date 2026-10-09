@@ -23,3 +23,17 @@ build/
 
 # logs
 *.log
+
+# TypeScript build info
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+
+# temp
+drizzle/*.tmp
+
+# OS
+Thumbs.db

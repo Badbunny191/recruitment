@@ -15,6 +15,34 @@
       "when": 1791475583933,
       "tag": "0001_demonic_whistler",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791567798948,
+      "tag": "0002_motionless_the_fury",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1791568165947,
+      "tag": "0003_chunky_steve_rogers",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1791568307678,
+      "tag": "0004_next_doctor_faustus",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1791569923855,
+      "tag": "0005_tiresome_namorita",
+      "breakpoints": true
     }
   ]
 }

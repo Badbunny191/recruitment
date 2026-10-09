@@ -46,10 +46,24 @@ export const templateVersions = sqliteTable('template_versions', {
   checkStatus: check('chk_version_status', sql`${table.status} IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')`)
 }));
 
+export const templateSections = sqliteTable('template_sections', {
+  id: text('id').primaryKey(),
+  templateVersionId: text('template_version_id').notNull().references(() => templateVersions.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  displayOrder: integer('display_order').notNull(),
+  isActive: integer('is_active', { mode: 'boolean' }).default(true),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+}, (table) => ({
+  versionIdx: index('idx_tpl_sections_version').on(table.templateVersionId),
+  unqVersionOrder: uniqueIndex('unq_tpl_sections_version_order').on(table.templateVersionId, table.displayOrder),
+}));
+
 export const templateFields = sqliteTable('template_fields', {
   id: text('id').primaryKey(),
   templateVersionId: text('template_version_id').notNull().references(() => templateVersions.id, { onDelete: 'cascade' }),
   fieldId: text('field_id').notNull().references(() => fieldMaster.id, { onDelete: 'restrict' }),
+  sectionId: text('section_id').references(() => templateSections.id, { onDelete: 'set null' }),
   displayOrder: integer('display_order').notNull(),
   isRequired: integer('is_required', { mode: 'boolean' }).default(true),
   overrideOptions: text('override_options', { mode: 'json' }),
@@ -57,8 +71,13 @@ export const templateFields = sqliteTable('template_fields', {
   helpText: text('help_text'),
   placeholder: text('placeholder'),
   validationRules: text('validation_rules', { mode: 'json' }),
+  // Rich Field Metadata - rows (TEXTAREA), min_length, max_length
+  rows: integer('rows'),
+  minLength: integer('min_length'),
+  maxLength: integer('max_length'),
 }, (table) => ({
-  tplVerIdx: index('idx_tpl_fields_version').on(table.templateVersionId)
+  tplVerIdx: index('idx_tpl_fields_version').on(table.templateVersionId),
+  sectionIdx: index('idx_tpl_fields_section').on(table.sectionId),
 }));
 
 export const recruitmentRounds = sqliteTable('recruitment_rounds', {
@@ -70,7 +89,12 @@ export const recruitmentRounds = sqliteTable('recruitment_rounds', {
   closeDate: integer('close_date', { mode: 'timestamp' }).notNull(),
   status: text('status').default('ACTIVE'),
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
-  deletedAt: integer('deleted_at', { mode: 'timestamp' })
+  deletedAt: integer('deleted_at', { mode: 'timestamp' }),
+  // Form Header / Announcement
+  announcementTitle: text('announcement_title'),
+  announcementDescription: text('announcement_description'),
+  contactInformation: text('contact_information'),
+  remark: text('remark'),
 }, (table) => ({
   checkStatus: check('chk_round_status', sql`${table.status} IN ('DRAFT', 'ACTIVE', 'CLOSED')`),
   checkDates: check('chk_round_dates', sql`${table.closeDate} >= ${table.openDate}`)
@@ -119,3 +143,41 @@ export const auditLogs = sqliteTable('audit_logs', {
 }, (table) => ({
   entityIdx: index('idx_audit_entity').on(table.entityType, table.entityId)
 }));
+
+export const organizations = sqliteTable('organizations', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  displayOrder: integer('display_order').notNull(),
+  isActive: integer('is_active', { mode: 'boolean' }).default(true),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
+});
+
+export const jobFamilies = sqliteTable('job_families', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  displayOrder: integer('display_order').notNull(),
+  isActive: integer('is_active', { mode: 'boolean' }).default(true),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
+});
+
+export const positionLevels = sqliteTable('position_levels', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  displayOrder: integer('display_order').notNull(),
+  isActive: integer('is_active', { mode: 'boolean' }).default(true),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
+});
+
+export const positions = sqliteTable('positions', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  jobFamilyId: text('job_family_id').notNull(),
+  positionLevelId: text('position_level_id').notNull(),
+  displayOrder: integer('display_order').notNull(),
+  isActive: integer('is_active', { mode: 'boolean' }).default(true),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
+});

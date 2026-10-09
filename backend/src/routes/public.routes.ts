@@ -3,8 +3,8 @@ import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
 import { Bindings } from '../types';
 import { ApplicationSubmitSchema, CORE_FIELD_IDS } from '../schemas/validators';
-import { recruitmentRounds, templateFields, fieldMaster, applications, applicationAttachments } from '../db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
+import { recruitmentRounds, templateFields, templateSections, fieldMaster, applications, applicationAttachments } from '../db/schema';
+import { eq, and, isNull, asc } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 
 const publicRoutes = new Hono<{ Bindings: Bindings }>();
@@ -20,8 +20,14 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
   const round = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.id, c.req.param('id'))).get();
   if (!round) return c.json({ error: 'Not found' }, 404);
 
+  // Sprint 4: Fetch sections (ordered) for sectioned layout
+  const sections = await db.select().from(templateSections)
+    .where(eq(templateSections.templateVersionId, round.templateVersionId))
+    .orderBy(asc(templateSections.displayOrder));
+
   const schema = await db.select({
     fieldId: templateFields.fieldId,
+    sectionId: templateFields.sectionId, // Sprint 4: ref to section
     type: fieldMaster.fieldType,
     label: fieldMaster.labelTh,
     overrideLabel: templateFields.overrideLabelTh,
@@ -30,7 +36,7 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
     isRequired: templateFields.isRequired,
     helpText: fieldMaster.helpText,
     placeholder: fieldMaster.placeholder,
-    section: fieldMaster.section,
+    section: fieldMaster.section, // Legacy: ใช้สำหรับ fallback (Sprint 3 behavior)
     fileConfig: fieldMaster.fileConfig,
     validationType: fieldMaster.validationType,
     validationMessage: fieldMaster.validationMessage,
@@ -41,7 +47,14 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
   .where(eq(templateFields.templateVersionId, round.templateVersionId))
   .orderBy(templateFields.displayOrder);
 
-  return c.json({ data: schema });
+  // Hybrid Mode: return sections + fields (Sprint 4)
+  // Frontend จะ fallback ไปใช้ fieldMaster.section ถ้า sections ว่าง
+  return c.json({
+    data: {
+      sections: sections.filter(s => s.isActive), // only active sections
+      fields: schema,
+    }
+  });
 });
 
 publicRoutes.post('/applications/submit', zValidator('json', ApplicationSubmitSchema), async (c) => {
