@@ -8,12 +8,23 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Badge } from '@/components/ui/badge';
+
+interface TemplateVersion {
+  id: string;
+  versionNumber: number;
+  status: string;
+  createdAt: string | number | Date;
+}
 
 interface Template {
   id: string;
   name: string;
   description: string | null;
   createdAt: string | number | Date;
+  versionCount: number;
+  currentVersion: TemplateVersion | null;
+  roundsCount: number;
 }
 
 export default function TemplatesPage() {
@@ -27,7 +38,7 @@ export default function TemplatesPage() {
 
   const load = async () => {
     setLoading(true);
-    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/templates', {
+    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/templates', {
       headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
     }).then((r) => r.json());
     setTemplates(res.data || []);
@@ -60,8 +71,8 @@ export default function TemplatesPage() {
         description: form.description || null,
       };
       const url = editing
-        ? `${process.env.NEXT_PUBLIC_API_URL}/admin/templates/${editing.id}`
-        : `${process.env.NEXT_PUBLIC_API_URL}/admin/templates`;
+        ? `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/templates/${editing.id}`
+        : `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/templates`;
       const method = editing ? 'PATCH' : 'POST';
 
       const res = await fetch(url, {
@@ -82,6 +93,19 @@ export default function TemplatesPage() {
     }
   };
 
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'PUBLISHED':
+        return <Badge variant="default" className="bg-green-600">Published</Badge>;
+      case 'DRAFT':
+        return <Badge variant="secondary" className="bg-yellow-100 text-yellow-800 border-yellow-300">Draft</Badge>;
+      case 'ARCHIVED':
+        return <Badge variant="outline" className="bg-gray-100 text-gray-600 border-gray-300">Archived</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
+    }
+  };
+
   return (
     <div className="p-8 space-y-6">
       <div className="flex justify-between items-center">
@@ -94,7 +118,9 @@ export default function TemplatesPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Template Name</TableHead>
-              <TableHead>Description</TableHead>
+              <TableHead>Current Version</TableHead>
+              <TableHead>Versions</TableHead>
+              <TableHead>Active Rounds</TableHead>
               <TableHead>สร้างเมื่อ</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
@@ -102,13 +128,13 @@ export default function TemplatesPage() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={4} className="text-center text-slate-500 py-6">
+                <TableCell colSpan={6} className="text-center text-slate-500 py-6">
                   กำลังโหลด...
                 </TableCell>
               </TableRow>
             ) : templates.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} className="text-center text-slate-500 py-6">
+                <TableCell colSpan={6} className="text-center text-slate-500 py-6">
                   ยังไม่มี Template — คลิก "+ สร้าง Template" เพื่อเริ่มต้น
                 </TableCell>
               </TableRow>
@@ -120,11 +146,28 @@ export default function TemplatesPage() {
                   onClick={() => router.push(`/admin/templates/builder?id=${tpl.id}`)}
                 >
                   <TableCell className="font-medium">{tpl.name}</TableCell>
-                  <TableCell className="text-slate-500">{tpl.description || '-'}</TableCell>
+                  <TableCell>
+                    {tpl.currentVersion ? (
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">v{tpl.currentVersion.versionNumber}</span>
+                        {getStatusBadge(tpl.currentVersion.status)}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400 text-sm">ยังไม่มี Published</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <span className="text-slate-600">{tpl.versionCount} versions</span>
+                  </TableCell>
+                  <TableCell>
+                    <span className={`font-medium ${tpl.roundsCount > 0 ? 'text-blue-600' : 'text-slate-400'}`}>
+                      {tpl.roundsCount} rounds
+                    </span>
+                  </TableCell>
                   <TableCell className="text-slate-500 text-sm">
                     {tpl.createdAt ? new Date(tpl.createdAt).toLocaleDateString('th-TH') : '-'}
                   </TableCell>
-                  <TableCell className="text-right space-x-2">
+                  <TableCell className="text-right space-x-2" onClick={(e) => e.stopPropagation()}>
                     <Button
                       variant="outline"
                       size="sm"

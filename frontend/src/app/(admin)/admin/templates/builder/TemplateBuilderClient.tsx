@@ -10,6 +10,8 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { ViewVersionModal } from '@/components/ViewVersionModal';
+import { CompareVersionModal } from '@/components/CompareVersionModal';
 
 interface MasterField {
   id: string;
@@ -80,6 +82,20 @@ const parseOptions = (input: any): string[] => {
   return [];
 };
 
+// Status badge helper
+const StatusBadge = ({ status }: { status: string }) => {
+  switch (status) {
+    case 'PUBLISHED':
+      return <Badge variant="default" className="bg-green-600">Published</Badge>;
+    case 'DRAFT':
+      return <Badge variant="secondary" className="bg-yellow-100 text-yellow-800 border-yellow-300">Draft</Badge>;
+    case 'ARCHIVED':
+      return <Badge variant="outline" className="bg-gray-100 text-gray-600 border-gray-300">Archived</Badge>;
+    default:
+      return <Badge variant="outline">{status}</Badge>;
+  }
+};
+
 function BuilderInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -89,11 +105,40 @@ function BuilderInner() {
   const [template, setTemplate] = useState<{ id: string; name: string; description: string | null } | null>(null);
   const [versions, setVersions] = useState<TemplateVersion[]>([]);
   const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
+  const [draftVersionId, setDraftVersionId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
 
-  const { control, register, handleSubmit, watch, reset, setValue } = useForm<FormValues>({
+  // View Version Modal
+  const [viewModalOpen, setViewModalOpen] = useState(false);
+  const [viewVersionId, setViewVersionId] = useState('');
+  const [viewVersionNumber, setViewVersionNumber] = useState(0);
+  const [viewVersionStatus, setViewVersionStatus] = useState('');
+
+  // Compare Version Modal
+  const [compareModalOpen, setCompareModalOpen] = useState(false);
+  const [compareFromVersionId, setCompareFromVersionId] = useState('');
+  const [compareToVersionId, setCompareToVersionId] = useState('');
+  const [compareFromVersionNumber, setCompareFromVersionNumber] = useState(0);
+  const [compareToVersionNumber, setCompareToVersionNumber] = useState(0);
+
+  const openViewModal = (v: TemplateVersion) => {
+    setViewVersionId(v.id);
+    setViewVersionNumber(v.versionNumber);
+    setViewVersionStatus(v.status);
+    setViewModalOpen(true);
+  };
+
+  const openCompareModal = (from: TemplateVersion, to: TemplateVersion) => {
+    setCompareFromVersionId(from.id);
+    setCompareToVersionId(to.id);
+    setCompareFromVersionNumber(from.versionNumber);
+    setCompareToVersionNumber(to.versionNumber);
+    setCompareModalOpen(true);
+  };
+
+  const { control, register, handleSubmit, watch, reset } = useForm<FormValues>({
     defaultValues: { fields: [] },
   });
   const { fields, append, remove, replace } = useFieldArray({ control, name: 'fields' });
@@ -104,13 +149,13 @@ function BuilderInner() {
     if (!templateId) return;
     try {
       const [fieldsRes, versionsRes, templatesRes] = await Promise.all([
-        fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/fields', {
+        fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/fields', {
           headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
         }).then((r) => r.json()),
-        fetch(process.env.NEXT_PUBLIC_API_URL + `/admin/templates/${templateId}/versions`, {
+        fetch(process.env.NEXT_PUBLIC_API_URL + `/api/v1/admin/templates/${templateId}/versions`, {
           headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
         }).then((r) => r.json()),
-        fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/templates', {
+        fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/templates', {
           headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
         }).then((r) => r.json()),
       ]);
@@ -122,22 +167,31 @@ function BuilderInner() {
       const allVersions: TemplateVersion[] = versionsRes.data || [];
       setVersions(allVersions);
       
-      // Find the current/last published version
+      // Find the latest Draft version (editable)
+      const draftVersions = allVersions
+        .filter(v => v.status === 'DRAFT')
+        .sort((a, b) => b.versionNumber - a.versionNumber);
+      
+      // Find the latest Published version
       const publishedVersions = allVersions
         .filter(v => v.status === 'PUBLISHED')
         .sort((a, b) => b.versionNumber - a.versionNumber);
       
-      if (publishedVersions.length > 0) {
-        const currentVer = publishedVersions[0];
-        setCurrentVersionId(currentVer.id);
+      // Priority: Draft > Published
+      const targetVersion = draftVersions[0] || publishedVersions[0];
+      
+      if (targetVersion) {
+        setCurrentVersionId(targetVersion.id);
+        if (targetVersion.status === 'DRAFT') {
+          setDraftVersionId(targetVersion.id);
+        }
         
         // Load fields for this version
         const fieldsDataRes = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL}/admin/template-fields/${currentVer.id}`,
+          `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/template-fields/${targetVersion.id}`,
           { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
         ).then(r => r.json()).catch(() => ({ data: [] }));
         
-        // Populate form with existing fields
         const existingFields: VersionField[] = fieldsDataRes.data || [];
         
         const formFields: BuilderField[] = existingFields.map((vf: VersionField) => {
@@ -161,7 +215,6 @@ function BuilderInner() {
           };
         });
         
-        // Use replace instead of reset to directly replace the array
         replace(formFields);
       }
     } finally {
@@ -204,7 +257,8 @@ function BuilderInner() {
     replace(formValues);
   };
 
-  const onSubmit = async (data: FormValues) => {
+  // Save as Draft (new or update)
+  const onSaveDraft = async (data: FormValues) => {
     if (data.fields.length === 0) {
       alert('กรุณาเพิ่มฟิลด์อย่างน้อย 1 ฟิลด์');
       return;
@@ -223,14 +277,12 @@ function BuilderInner() {
               ? f.overrideOptionsText.split('\n').map((s) => s.trim()).filter(Boolean)
               : null,
           };
-          // Include helpText and placeholder if different from original
           if (f.helpText && f.helpText !== f.helpTextOriginal) {
             fieldData.helpText = f.helpText;
           }
           if (f.placeholder && f.placeholder !== f.placeholderOriginal) {
             fieldData.placeholder = f.placeholder;
           }
-          // Parse validation rules if provided
           if (f.validationRulesText) {
             try {
               fieldData.validationRules = JSON.parse(f.validationRulesText);
@@ -241,7 +293,8 @@ function BuilderInner() {
           return fieldData;
         }),
       };
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/templates/${templateId}/versions`, {
+      
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/templates/${templateId}/versions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -249,8 +302,108 @@ function BuilderInner() {
         },
         body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error('save failed');
-      alert('บันทึก Version ใหม่สำเร็จ!');
+      
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'save failed');
+      }
+      
+      alert('บันทึก Draft สำเร็จ! กด "Publish" เพื่อเผยแพร่');
+      await loadAll();
+    } catch (err) {
+      alert('เกิดข้อผิดพลาด: ' + (err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Publish Draft → Published
+  const onPublish = async () => {
+    if (!draftVersionId) {
+      alert('ไม่มี Draft version ที่จะ Publish');
+      return;
+    }
+    
+    if (!confirm('ต้องการ Publish Draft version นี้?\n\nVersion ที่ Publish แล้วจะถูกล็อก ไม่สามารถแก้ไขได้')) {
+      return;
+    }
+    
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/template-versions/${draftVersionId}/publish`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
+        },
+      });
+      
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'publish failed');
+      }
+      
+      alert('Publish สำเร็จ! สามารถใช้สร้าง Round ได้แล้ว');
+      await loadAll();
+    } catch (err) {
+      alert('เกิดข้อผิดพลาด: ' + (err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Archive Published → Archived
+  const onArchive = async (versionId: string, versionNumber: number) => {
+    if (!confirm(`ต้องการ Archive v${versionNumber}?\n\nVersion ที่ Archived จะเก็บไว้อ้างอิงเท่านั้น ไม่สามารถใช้สร้าง Round ใหม่ได้`)) {
+      return;
+    }
+    
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/template-versions/${versionId}/archive`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
+        },
+      });
+      
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'archive failed');
+      }
+      
+      alert(`Archive v${versionNumber} สำเร็จ!`);
+      await loadAll();
+    } catch (err) {
+      alert('เกิดข้อผิดพลาด: ' + (err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Delete Draft version
+  const onDeleteVersion = async (versionId: string, versionNumber: number) => {
+    if (!confirm(`ต้องการลบ v${versionNumber}?\n\nเฉพาะ Draft version เท่านั้นที่ลบได้`)) {
+      return;
+    }
+    
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/template-versions/${versionId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
+        },
+      });
+      
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'delete failed');
+      }
+      
+      alert(`ลบ v${versionNumber} สำเร็จ!`);
       await loadAll();
     } catch (err) {
       alert('เกิดข้อผิดพลาด: ' + (err as Error).message);
@@ -279,6 +432,30 @@ function BuilderInner() {
   }
 
   const currentVersion = versions.find(v => v.id === currentVersionId);
+  const latestPublished = versions
+    .filter(v => v.status === 'PUBLISHED')
+    .sort((a, b) => b.versionNumber - a.versionNumber)[0];
+  const latestDraft = versions
+    .filter(v => v.status === 'DRAFT')
+    .sort((a, b) => b.versionNumber - a.versionNumber)[0];
+
+  // Helper to format date
+  const formatDate = (ts: number | string | Date | null | undefined) => {
+    if (!ts) return '-';
+    try {
+      const date = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+      if (isNaN(date.getTime())) return '-';
+      return date.toLocaleDateString('th-TH', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return '-';
+    }
+  };
 
   return (
     <div className="p-8 space-y-6">
@@ -294,31 +471,154 @@ function BuilderInner() {
             <p className="text-slate-500 text-sm mt-1">{template.description}</p>
           )}
         </div>
-        <div className="text-right">
-          {currentVersion && (
-            <Badge variant="default" className="mr-2">v{currentVersion.versionNumber} (ปัจจุบัน)</Badge>
+        <div className="text-right space-x-2">
+          {/* Draft Actions */}
+          {latestDraft && (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => onArchive(latestDraft.id, latestDraft.versionNumber)}
+                disabled={submitting}
+              >
+                Archive
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => onDeleteVersion(latestDraft.id, latestDraft.versionNumber)}
+                disabled={submitting}
+              >
+                ลบ Draft
+              </Button>
+            </>
           )}
-          <Button onClick={handleSubmit(onSubmit)} disabled={submitting || fields.length === 0}>
-            {submitting ? 'กำลังบันทึก...' : 'Publish New Version'}
+          {/* Publish Button */}
+          {latestDraft && (
+            <Button
+              onClick={onPublish}
+              disabled={submitting}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              Publish v{latestDraft.versionNumber}
+            </Button>
+          )}
+          {/* Save as Draft Button */}
+          <Button
+            variant="secondary"
+            onClick={handleSubmit(onSaveDraft)}
+            disabled={submitting || fields.length === 0}
+          >
+            {submitting ? 'กำลังบันทึก...' : 'Save as Draft'}
           </Button>
         </div>
       </div>
 
-      {/* Versions history */}
+      {/* Status Info with Badges */}
+      <div className="bg-blue-50 border border-blue-200 rounded p-4">
+        <div className="flex items-center gap-6 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-slate-600">Latest Published:</span>
+            {latestPublished ? (
+              <>
+                <span className="font-medium">v{latestPublished.versionNumber}</span>
+                <StatusBadge status="PUBLISHED" />
+              </>
+            ) : (
+              <span className="text-slate-400">ยังไม่มี Published</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-slate-600">Current Draft:</span>
+            {latestDraft ? (
+              <>
+                <span className="font-medium">v{latestDraft.versionNumber}</span>
+                <StatusBadge status="DRAFT" />
+              </>
+            ) : (
+              <span className="text-slate-400">ไม่มี Draft</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Version History */}
       {versions.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">ประวัติ Version ({versions.length})</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-wrap gap-2">
+            <div className="space-y-3">
               {versions
                 .sort((a, b) => b.versionNumber - a.versionNumber)
-                .map((v) => (
-                  <Badge key={v.id} variant={v.status === 'PUBLISHED' ? 'default' : 'secondary'}>
-                    v{v.versionNumber} — {v.status}
-                  </Badge>
-                ))}
+                .map((v) => {
+                  const isLatestPublished = latestPublished?.id === v.id;
+                  const isLatestDraft = latestDraft?.id === v.id;
+                  return (
+                    <div key={v.id} className="border rounded-lg p-4 bg-slate-50">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-lg">v{v.versionNumber}</span>
+                            <StatusBadge status={v.status} />
+                            {isLatestPublished && (
+                              <Badge className="bg-purple-100 text-purple-700 border-purple-300 text-xs">
+                                Latest Published
+                              </Badge>
+                            )}
+                            {isLatestDraft && (
+                              <Badge className="bg-blue-100 text-blue-700 border-blue-300 text-xs">
+                                Current Draft
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-500 mt-1">
+                            {v.status === 'DRAFT' && `สร้างเมื่อ ${formatDate(v.createdAt)}`}
+                            {v.status === 'PUBLISHED' && `เผยแพร่เมื่อ ${formatDate(v.createdAt)}`}
+                            {v.status === 'ARCHIVED' && `เก็บไว้เมื่อ ${formatDate(v.createdAt)}`}
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          {/* View button - all versions */}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openViewModal(v)}
+                          >
+                            View
+                          </Button>
+                          {/* Compare button - all versions */}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              // Find another version to compare with
+                              const otherVersions = versions.filter(vv => vv.id !== v.id);
+                              if (otherVersions.length > 0) {
+                                openCompareModal(v, otherVersions[0]);
+                              } else {
+                                alert('ต้องมีอย่างน้อย 2 versions จึงจะเปรียบเทียบได้');
+                              }
+                            }}
+                          >
+                            Compare
+                          </Button>
+                          {/* Delete Draft - only if DRAFT and no round uses it */}
+                          {v.status === 'DRAFT' && (
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => onDeleteVersion(v.id, v.versionNumber)}
+                              disabled={submitting}
+                            >
+                              Delete
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
             </div>
           </CardContent>
         </Card>
@@ -380,7 +680,7 @@ function BuilderInner() {
               ฟิลด์ใน Template ({fields.length})
               {currentVersion && (
                 <span className="text-sm font-normal text-slate-500 ml-2">
-                  (จาก v{currentVersion.versionNumber})
+                  (v{currentVersion.versionNumber} — {currentVersion.status})
                 </span>
               )}
             </CardTitle>
@@ -511,6 +811,24 @@ function BuilderInner() {
           </CardContent>
         </Card>
       </div>
+
+      {/* View Version Modal */}
+      <ViewVersionModal
+        open={viewModalOpen}
+        onOpenChange={setViewModalOpen}
+        versionId={viewVersionId}
+        versionNumber={viewVersionNumber}
+        status={viewVersionStatus}
+        templateName={template?.name || ''}
+      />
+
+      {/* Compare Version Modal */}
+      <CompareVersionModal
+        open={compareModalOpen}
+        onOpenChange={setCompareModalOpen}
+        fromVersionId={compareFromVersionId}
+        toVersionId={compareToVersionId}
+      />
     </div>
   );
 }

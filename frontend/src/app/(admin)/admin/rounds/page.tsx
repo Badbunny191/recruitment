@@ -6,9 +6,10 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { Select } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { CompareVersionModal } from '@/components/CompareVersionModal';
+import { CloneRoundModal } from '@/components/CloneRoundModal';
 
 interface Round {
   id: string;
@@ -38,9 +39,32 @@ interface FormState {
   title: string;
   positionLevel: string;
   templateVersionId: string;
-  openDate: string; // datetime-local string
+  openDate: string;
   closeDate: string;
   status: 'DRAFT' | 'ACTIVE' | 'CLOSED';
+}
+
+interface RoundVersionInfo {
+  roundId: string;
+  roundTitle: string;
+  roundStatus: 'DRAFT' | 'ACTIVE' | 'CLOSED';
+  currentVersion: {
+    id: string;
+    versionNumber: number;
+    status: string;
+    fields: { fieldId: string; labelTh: string; isRequired: boolean }[];
+  } | null;
+  latestPublishedVersion: {
+    id: string;
+    versionNumber: number;
+    status: string;
+    fields: { fieldId: string; labelTh: string; isRequired: boolean }[];
+  } | null;
+  hasNewerVersion: boolean;
+  template: {
+    id: string;
+    name: string;
+  } | null;
 }
 
 const EMPTY_FORM: FormState = {
@@ -64,6 +88,7 @@ const toUnix = (local: string) => Math.floor(new Date(local).getTime() / 1000);
 
 export default function RoundsPage() {
   const [rounds, setRounds] = useState<Round[]>([]);
+  const [roundsWithVersionInfo, setRoundsWithVersionInfo] = useState<RoundVersionInfo[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [versions, setVersions] = useState<TemplateVersion[]>([]);
   const [loading, setLoading] = useState(true);
@@ -72,8 +97,44 @@ export default function RoundsPage() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
 
+  // Compare Version Modal
+  const [compareModalOpen, setCompareModalOpen] = useState(false);
+  const [compareFromVersionId, setCompareFromVersionId] = useState('');
+  const [compareToVersionId, setCompareToVersionId] = useState('');
+
+  // Clone Round Modal
+  const [cloneModalOpen, setCloneModalOpen] = useState(false);
+  const [cloneRoundId, setCloneRoundId] = useState('');
+
+  // Active Round Protection
+  const [editingAppCount, setEditingAppCount] = useState<number | null>(null);
+  const [loadingAppCount, setLoadingAppCount] = useState(false);
+
+  useEffect(() => {
+    if (editing && editing.status === 'ACTIVE') {
+      loadApplicationCount(editing.id);
+    } else {
+      setEditingAppCount(null);
+    }
+  }, [editing]);
+
+  const loadApplicationCount = async (roundId: string) => {
+    setLoadingAppCount(true);
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/rounds/${roundId}/clone-options`,
+        { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
+      ).then(r => r.json()).catch(() => ({ data: null }));
+      setEditingAppCount(res?.data?.applicationCount || 0);
+    } catch {
+      setEditingAppCount(0);
+    } finally {
+      setLoadingAppCount(false);
+    }
+  };
+
   const loadRounds = async () => {
-    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/rounds', {
+    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/rounds', {
       headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
     }).then((r) => r.json());
     setRounds(res.data || []);
@@ -81,21 +142,20 @@ export default function RoundsPage() {
   };
 
   const loadTemplates = async () => {
-    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/templates', {
+    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/templates', {
       headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
     }).then((r) => r.json());
     setTemplates(res.data || []);
   };
 
-  // โหลด versions ของทุก template
   const loadAllVersions = async () => {
-    const tpls: Template[] = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/templates', {
+    const tpls: Template[] = await fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/templates', {
       headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
     }).then((r) => r.json()).then((res) => res.data || []);
     const allVersions: TemplateVersion[] = [];
     for (const t of tpls) {
       const vs: TemplateVersion[] = await fetch(
-        process.env.NEXT_PUBLIC_API_URL + `/admin/templates/${t.id}/versions`,
+        process.env.NEXT_PUBLIC_API_URL + `/api/v1/admin/templates/${t.id}/versions`,
         { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
       ).then((r) => r.json()).then((res) => res.data || []);
       allVersions.push(...vs);
@@ -103,11 +163,62 @@ export default function RoundsPage() {
     setVersions(allVersions);
   };
 
+  const loadRoundsWithVersionInfo = async () => {
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/rounds-with-version-info`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
+      }).then((r) => r.json());
+      setRoundsWithVersionInfo(res.data || []);
+    } catch (err) {
+      console.error('Failed to load version info:', err);
+    }
+  };
+
   useEffect(() => {
     loadRounds();
     loadTemplates();
     loadAllVersions();
+    loadRoundsWithVersionInfo();
   }, []);
+
+  const getVersionWarning = (roundId: string) => {
+    const info = roundsWithVersionInfo.find(r => r.roundId === roundId);
+    if (!info) return null;
+    
+    if (info.hasNewerVersion && info.latestPublishedVersion) {
+      return {
+        currentVersionNumber: info.currentVersion?.versionNumber || 0,
+        latestVersionNumber: info.latestPublishedVersion.versionNumber,
+        latestVersionId: info.latestPublishedVersion.id,
+        currentVersionId: info.currentVersion?.id || '',
+      };
+    }
+    return null;
+  };
+
+  const openCompareModal = (fromVersionId: string, toVersionId: string) => {
+    setCompareFromVersionId(fromVersionId);
+    setCompareToVersionId(toVersionId);
+    setCompareModalOpen(true);
+  };
+
+  const openCloneModal = (roundId: string) => {
+    setCloneRoundId(roundId);
+    setCloneModalOpen(true);
+  };
+
+  const handleCloneSuccess = async () => {
+    await loadRounds();
+    await loadRoundsWithVersionInfo();
+  };
+
+  const handleCloneFromCompare = (versionId: string) => {
+    setCompareModalOpen(false);
+    const info = roundsWithVersionInfo.find(r => r.currentVersion?.id === compareFromVersionId);
+    if (info) {
+      openCloneModal(info.roundId);
+    }
+  };
 
   const openCreate = () => {
     setEditing(null);
@@ -139,7 +250,6 @@ export default function RoundsPage() {
     setSubmitting(true);
     try {
       if (editing) {
-        // PATCH: ห้ามส่ง templateVersionId
         const payload = {
           title: form.title,
           positionLevel: form.positionLevel,
@@ -147,7 +257,7 @@ export default function RoundsPage() {
           closeDate: toUnix(form.closeDate),
           status: form.status,
         };
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${editing.id}`, {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/admin/rounds/${editing.id}`, {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
@@ -157,7 +267,6 @@ export default function RoundsPage() {
         });
         if (!res.ok) throw new Error('update failed');
       } else {
-        // POST
         const payload = {
           title: form.title,
           positionLevel: form.positionLevel,
@@ -166,7 +275,7 @@ export default function RoundsPage() {
           closeDate: toUnix(form.closeDate),
           status: form.status,
         };
-        const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/rounds', {
+        const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/api/v1/admin/rounds', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -203,18 +312,20 @@ export default function RoundsPage() {
     return `${t?.name || '?'} v${v.versionNumber}`;
   };
 
+  const publishedVersions = versions.filter(v => v.status === 'PUBLISHED');
+
   return (
     <div className="p-8 space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">รอบการรับสมัคร (Recruitment Rounds)</h1>
-        <Button onClick={openCreate} disabled={versions.length === 0}>
+        <Button onClick={openCreate} disabled={publishedVersions.length === 0}>
           + สร้างรอบใหม่
         </Button>
       </div>
 
-      {versions.length === 0 && (
+      {publishedVersions.length === 0 && (
         <div className="bg-yellow-50 border border-yellow-200 rounded p-4 text-sm text-yellow-800">
-          ยังไม่มี Template Version — กรุณาไปที่{' '}
+          ยังไม่มี Published Template Version — กรุณาไปที่{' '}
           <a href="/admin/templates" className="underline font-medium">หน้า Templates</a>{' '}
           เพื่อสร้าง Template และ Publish Version ก่อน
         </div>
@@ -246,12 +357,28 @@ export default function RoundsPage() {
                 </TableCell>
               </TableRow>
             ) : (
-              rounds.map((r) => (
+              rounds.map((r) => {
+                const versionWarning = getVersionWarning(r.id);
+                return (
                 <TableRow key={r.id}>
-                  <TableCell className="font-medium">{r.title}</TableCell>
+                  <TableCell className="font-medium">
+                    {r.title}
+                    {versionWarning && (
+                      <div className="mt-1">
+                        <span className="bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full border border-amber-300 text-xs">
+                          ⚠️ มี Published Version ใหม่กว่า
+                        </span>
+                      </div>
+                    )}
+                  </TableCell>
                   <TableCell>{r.positionLevel}</TableCell>
                   <TableCell className="text-slate-500 text-sm">
                     {versionLabel(r.templateVersionId)}
+                    {versionWarning && (
+                      <div className="text-xs text-amber-600 mt-1">
+                        Published ล่าสุด: v{versionWarning.latestVersionNumber}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell className="text-sm">
                     {formatDate(r.openDate)} - {formatDate(r.closeDate)}
@@ -266,12 +393,35 @@ export default function RoundsPage() {
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button variant="outline" size="sm" onClick={() => openEdit(r)}>
-                      แก้ไข
-                    </Button>
+                    <div className="flex items-center justify-end gap-2">
+                      {versionWarning && (
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          className="text-xs text-blue-600 hover:text-blue-800"
+                          onClick={() => openCompareModal(
+                            versionWarning.currentVersionId, 
+                            versionWarning.latestVersionId
+                          )}
+                        >
+                          เปรียบเทียบ
+                        </Button>
+                      )}
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        className="text-xs"
+                        onClick={() => openCloneModal(r.id)}
+                      >
+                        Clone
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => openEdit(r)}>
+                        แก้ไข
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
-              ))
+              )})
             )}
           </TableBody>
         </Table>
@@ -312,27 +462,87 @@ export default function RoundsPage() {
                   onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })}
                   required
                 >
-                  <option value="">-- เลือก Template Version --</option>
-                  {versions.map((v) => {
+                  <option value="">-- เลือก Published Version --</option>
+                  {publishedVersions.map((v) => {
                     const t = templates.find((x) => x.id === v.templateId);
                     return (
                       <option key={v.id} value={v.id}>
-                        {t?.name || '?'} v{v.versionNumber} ({v.status})
+                        {t?.name || '?'} v{v.versionNumber}
                       </option>
                     );
                   })}
                 </Select>
                 <p className="text-xs text-slate-500">
-                  Template ที่เลือกจะถูกล็อกไว้ ไม่สามารถเปลี่ยนได้หลังสร้างรอบแล้ว
+                  เฉพาะ Published Version เท่านั้นที่สร้าง Round ได้
                 </p>
               </div>
             )}
             {editing && (
               <div className="space-y-2">
-                <Label>Template (ล็อกไว้แล้ว)</Label>
-                <div className="p-2 bg-slate-100 rounded text-sm">
-                  {versionLabel(form.templateVersionId)}
-                </div>
+                <Label>Template Version</Label>
+                {editing.status === 'DRAFT' ? (
+                  <>
+                    <Select
+                      value={form.templateVersionId}
+                      onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })}
+                    >
+                      <option value="">-- เลือก Published Version --</option>
+                      {publishedVersions.map((v) => {
+                        const t = templates.find((x) => x.id === v.templateId);
+                        return (
+                          <option key={v.id} value={v.id}>
+                            {t?.name || '?'} v{v.versionNumber}
+                          </option>
+                        );
+                      })}
+                    </Select>
+                    <p className="text-xs text-blue-600">
+                      Draft Round: สามารถเปลี่ยน Version ได้
+                    </p>
+                  </>
+                ) : editing.status === 'ACTIVE' ? (
+                  <div className="p-3 bg-slate-100 rounded">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium">
+                        {versionLabel(form.templateVersionId)}
+                      </span>
+                    </div>
+                    {loadingAppCount ? (
+                      <p className="text-xs text-slate-500 mt-2">กำลังโหลด...</p>
+                    ) : editingAppCount !== null && editingAppCount > 0 ? (
+                      <div className="mt-3 p-2 bg-amber-50 border border-amber-200 rounded text-xs">
+                        <div className="flex items-center gap-2 text-amber-800">
+                          <span>🔒</span>
+                          <span>ล็อกแล้ว — มีผู้สมัครแล้ว {editingAppCount} คน</span>
+                        </div>
+                        <p className="text-amber-700 mt-1">
+                          ไม่สามารถเปลี่ยน Version ได้ กรุณา Clone Round ใหม่
+                        </p>
+                        <Button 
+                          size="sm" 
+                          variant="outline"
+                          className="mt-2 text-xs"
+                          onClick={() => openCloneModal(editing.id)}
+                        >
+                          Clone Round
+                        </Button>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-red-600 mt-2">
+                        ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบเปิดรับสมัครแล้ว
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-3 bg-slate-100 rounded">
+                    <span className="text-sm font-medium">
+                      {versionLabel(form.templateVersionId)}
+                    </span>
+                    <p className="text-xs text-red-600 mt-2">
+                      ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบปิดรับสมัครแล้ว
+                    </p>
+                  </div>
+                )}
               </div>
             )}
             <div className="grid grid-cols-2 gap-4">
@@ -380,6 +590,21 @@ export default function RoundsPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <CompareVersionModal
+        open={compareModalOpen}
+        onOpenChange={setCompareModalOpen}
+        fromVersionId={compareFromVersionId}
+        toVersionId={compareToVersionId}
+        onClone={handleCloneFromCompare}
+      />
+
+      <CloneRoundModal
+        open={cloneModalOpen}
+        onOpenChange={setCloneModalOpen}
+        roundId={cloneRoundId}
+        onCloneSuccess={handleCloneSuccess}
+      />
     </div>
   );
 }
