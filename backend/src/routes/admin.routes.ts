@@ -682,6 +682,371 @@ adminRoutes.get('/rounds/comparison', async (c) => {
   return c.json({ data: comparison });
 });
 
+// =============================================================================
+// FEATURE 1: Version Update Warning - Get round with version comparison data
+// =============================================================================
+adminRoutes.get('/rounds-with-version-info', async (c) => {
+  const db = drizzle(c.env.DB);
+  
+  // Get all rounds with their template versions
+  const allRounds = await db.select({
+    roundId: recruitmentRounds.id,
+    roundTitle: recruitmentRounds.title,
+    roundStatus: recruitmentRounds.status,
+    templateVersionId: recruitmentRounds.templateVersionId,
+  }).from(recruitmentRounds);
+  
+  // Get all templates
+  const allTemplates = await db.select().from(templates);
+  
+  // Get all versions
+  const allVersions = await db.select().from(templateVersions);
+  
+  // Get all field master for field names
+  const allFields = await db.select().from(fieldMaster);
+  
+  // Get field counts and field details for all versions
+  const versionFieldDetails: Record<string, any[]> = {};
+  
+  for (const ver of allVersions) {
+    const fields = await db.select({
+      id: templateFields.id,
+      fieldId: templateFields.fieldId,
+      isRequired: templateFields.isRequired,
+    })
+    .from(templateFields)
+    .where(eq(templateFields.templateVersionId, ver.id));
+    
+    versionFieldDetails[ver.id] = fields.map(f => {
+      const fieldMaster = allFields.find(fm => fm.id === f.fieldId);
+      return {
+        fieldId: f.fieldId,
+        labelTh: fieldMaster?.labelTh || f.fieldId,
+        isRequired: f.isRequired,
+      };
+    });
+  }
+  
+  // Build enriched round data
+  const enrichedRounds = allRounds.map(round => {
+    const currentVersion = allVersions.find(v => v.id === round.templateVersionId);
+    const template = currentVersion ? allTemplates.find(t => t.id === currentVersion.templateId) : null;
+    
+    // Find latest published version for this template
+    const publishedVersions = allVersions
+      .filter(v => v.templateId === currentVersion?.templateId && v.status === 'PUBLISHED')
+      .sort((a, b) => b.versionNumber - a.versionNumber);
+    
+    const latestPublished = publishedVersions[0];
+    
+    return {
+      roundId: round.roundId,
+      roundTitle: round.roundTitle,
+      roundStatus: round.roundStatus,
+      currentVersion: currentVersion ? {
+        id: currentVersion.id,
+        versionNumber: currentVersion.versionNumber,
+        status: currentVersion.status,
+        fields: versionFieldDetails[currentVersion.id] || [],
+      } : null,
+      latestPublishedVersion: latestPublished && latestPublished.id !== currentVersion?.id ? {
+        id: latestPublished.id,
+        versionNumber: latestPublished.versionNumber,
+        status: latestPublished.status,
+        fields: versionFieldDetails[latestPublished.id] || [],
+      } : null,
+      hasNewerVersion: latestPublished && currentVersion && latestPublished.versionNumber > currentVersion.versionNumber,
+      template: template ? {
+        id: template.id,
+        name: template.name,
+      } : null,
+    };
+  });
+  
+  return c.json({ data: enrichedRounds });
+});
+
+// =============================================================================
+// FEATURE 2: Compare Version API
+// GET /admin/template-versions/:fromId/compare/:toId
+// =============================================================================
+adminRoutes.get('/template-versions/:fromId/compare/:toId', async (c) => {
+  const db = drizzle(c.env.DB);
+  const fromId = c.req.param('fromId');
+  const toId = c.req.param('toId');
+  
+  // Get both versions
+  const [fromVersion, toVersion] = await Promise.all([
+    db.select().from(templateVersions).where(eq(templateVersions.id, fromId)).get(),
+    db.select().from(templateVersions).where(eq(templateVersions.id, toId)).get(),
+  ]);
+  
+  if (!fromVersion || !toVersion) {
+    return c.json({ error: 'Version not found' }, 404);
+  }
+  
+  // Get fields for both versions
+  const [fromFields, toFields] = await Promise.all([
+    db.select({
+      fieldId: templateFields.fieldId,
+      isRequired: templateFields.isRequired,
+    })
+    .from(templateFields)
+    .where(eq(templateFields.templateVersionId, fromId)),
+    db.select({
+      fieldId: templateFields.fieldId,
+      isRequired: templateFields.isRequired,
+    })
+    .from(templateFields)
+    .where(eq(templateFields.templateVersionId, toId)),
+  ]);
+  
+  // Get all field master for labels
+  const allFields = await db.select().from(fieldMaster);
+  const getLabel = (fieldId: string) => allFields.find(f => f.id === fieldId)?.labelTh || fieldId;
+  
+  const fromFieldIds = new Set(fromFields.map(f => f.fieldId));
+  const toFieldIds = new Set(toFields.map(f => f.fieldId));
+  
+  // Calculate differences
+  const added: string[] = [];
+  const removed: string[] = [];
+  const modified: string[] = [];
+  
+  // Fields in toVersion but not in fromVersion = added
+  for (const fieldId of toFieldIds) {
+    if (!fromFieldIds.has(fieldId)) {
+      added.push(getLabel(fieldId));
+    }
+  }
+  
+  // Fields in fromVersion but not in toVersion = removed
+  for (const fieldId of fromFieldIds) {
+    if (!toFieldIds.has(fieldId)) {
+      removed.push(getLabel(fieldId));
+    }
+  }
+  
+  // Fields in both - check for required field changes
+  for (const fieldId of fromFieldIds) {
+    if (toFieldIds.has(fieldId)) {
+      const fromReq = fromFields.find(f => f.fieldId === fieldId)?.isRequired;
+      const toReq = toFields.find(f => f.fieldId === fieldId)?.isRequired;
+      if (fromReq !== toReq) {
+        modified.push(getLabel(fieldId));
+      }
+    }
+  }
+  
+  return c.json({
+    data: {
+      fromVersion: {
+        id: fromVersion.id,
+        versionNumber: fromVersion.versionNumber,
+      },
+      toVersion: {
+        id: toVersion.id,
+        versionNumber: toVersion.versionNumber,
+      },
+      added,
+      removed,
+      modified,
+      summary: {
+        added: added.length,
+        removed: removed.length,
+        modified: modified.length,
+      },
+    }
+  });
+});
+
+// =============================================================================
+// FEATURE 3: Clone Round API
+// POST /admin/rounds/:id/clone
+// =============================================================================
+adminRoutes.post('/rounds/:id/clone', auditMiddleware('ROUND_CLONED'), async (c) => {
+  const db = drizzle(c.env.DB);
+  const roundId = c.req.param('id');
+  const { templateVersionId, title } = await c.req.json();
+  
+  // Get original round
+  const originalRound = await db
+    .select()
+    .from(recruitmentRounds)
+    .where(eq(recruitmentRounds.id, roundId))
+    .get();
+    
+  if (!originalRound) {
+    return c.json({ error: 'Round not found' }, 404);
+  }
+  
+  // Validate new template version if provided
+  let newTemplateVersionId = templateVersionId || originalRound.templateVersionId;
+  
+  if (templateVersionId) {
+    const newVersion = await db
+      .select()
+      .from(templateVersions)
+      .where(eq(templateVersions.id, templateVersionId))
+      .get();
+      
+    if (!newVersion) {
+      return c.json({ error: 'Template version not found' }, 404);
+    }
+    
+    if (newVersion.status !== 'PUBLISHED') {
+      return c.json({ error: 'Can only clone with PUBLISHED version' }, 400);
+    }
+  }
+  
+  // Count applications in original round
+  const appCountResult = await db
+    .select({ count: count() })
+    .from(applications)
+    .where(eq(applications.roundId, roundId))
+    .get();
+  const appCount = Number(appCountResult?.count ?? 0);
+  
+  // Create new round with DRAFT status
+  const newRoundId = uuidv4();
+  const newTitle = title || `${originalRound.title} (Copy)`;
+  
+  await db.insert(recruitmentRounds).values({
+    id: newRoundId,
+    templateVersionId: newTemplateVersionId,
+    title: newTitle,
+    positionLevel: originalRound.positionLevel,
+    openDate: originalRound.openDate,
+    closeDate: originalRound.closeDate,
+    status: 'DRAFT', // Always DRAFT for cloned round
+  });
+  
+  // Log the clone action with audit details
+  const adminId = c.get('jwtPayload')?.id;
+  if (adminId) {
+    await db.insert(auditLogs).values({
+      id: uuidv4(),
+      adminId,
+      action: 'CREATE',
+      entityType: 'ROUND_CLONED',
+      entityId: newRoundId,
+      payload: JSON.stringify({
+        originalRoundId: roundId,
+        newRoundId,
+        originalVersionId: originalRound.templateVersionId,
+        newVersionId: newTemplateVersionId,
+        originalVersionNumber: originalRound.templateVersionId,
+        applicationCount: appCount,
+      }),
+    });
+  }
+  
+  return c.json({ 
+    success: true, 
+    id: newRoundId,
+    message: `Cloned round "${newTitle}" with ${appCount} applications (not copied)`
+  }, 201);
+});
+
+// =============================================================================
+// FEATURE 4: Get available versions for cloning (for UI dropdown)
+// =============================================================================
+adminRoutes.get('/rounds/:id/clone-options', async (c) => {
+  const db = drizzle(c.env.DB);
+  const roundId = c.req.param('id');
+  
+  // Get original round
+  const round = await db
+    .select()
+    .from(recruitmentRounds)
+    .where(eq(recruitmentRounds.id, roundId))
+    .get();
+    
+  if (!round) {
+    return c.json({ error: 'Round not found' }, 404);
+  }
+  
+  // Get current version info
+  const currentVersion = await db
+    .select()
+    .from(templateVersions)
+    .where(eq(templateVersions.id, round.templateVersionId))
+    .get();
+  
+  // Get template and all published versions
+  const template = currentVersion 
+    ? await db.select().from(templates).where(eq(templates.id, currentVersion.templateId)).get()
+    : null;
+  
+  const publishedVersions = template
+    ? await db.select()
+        .from(templateVersions)
+        .where(and(
+          eq(templateVersions.templateId, template.id),
+          eq(templateVersions.status, 'PUBLISHED')
+        ))
+    : [];
+  
+  // Get application count for protection message
+  const appCountResult = await db
+    .select({ count: count() })
+    .from(applications)
+    .where(eq(applications.roundId, roundId))
+    .get();
+  const appCount = Number(appCountResult?.count ?? 0);
+  
+  // Get comparison data for each version option
+  const versionOptions = await Promise.all(
+    publishedVersions.map(async (ver) => {
+      const [currentFields, newFields] = await Promise.all([
+        db.select({ fieldId: templateFields.fieldId })
+          .from(templateFields)
+          .where(eq(templateFields.templateVersionId, round.templateVersionId)),
+        db.select({ fieldId: templateFields.fieldId })
+          .from(templateFields)
+          .where(eq(templateFields.templateVersionId, ver.id)),
+      ]);
+      
+      const currentFieldIds = new Set(currentFields.map(f => f.fieldId));
+      const newFieldIds = new Set(newFields.map(f => f.fieldId));
+      
+      let added = 0, removed = 0;
+      for (const fid of newFieldIds) if (!currentFieldIds.has(fid)) added++;
+      for (const fid of currentFieldIds) if (!newFieldIds.has(fid)) removed++;
+      
+      return {
+        versionId: ver.id,
+        versionNumber: ver.versionNumber,
+        isCurrentVersion: ver.id === round.templateVersionId,
+        isRecommended: ver.versionNumber > (currentVersion?.versionNumber || 0),
+        fieldChanges: {
+          added,
+          removed,
+        },
+      };
+    })
+  );
+  
+  return c.json({
+    data: {
+      originalRound: {
+        id: round.id,
+        title: round.title,
+        status: round.status,
+        currentVersionId: round.templateVersionId,
+        currentVersionNumber: currentVersion?.versionNumber || 0,
+      },
+      template: template ? {
+        id: template.id,
+        name: template.name,
+      } : null,
+      applicationCount: appCount,
+      needsProtection: round.status === 'ACTIVE' && appCount > 0,
+      versionOptions,
+    }
+  });
+});
+
 adminRoutes.get('/audit-logs', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(auditLogs) }));
 
 export { adminRoutes };
