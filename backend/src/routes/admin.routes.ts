@@ -529,12 +529,7 @@ adminRoutes.put('/template-versions/:versionId',
       await db.insert(templateFields).values(fieldValues as any);
     }
 
-    // 6. Update version timestamp
-    await db.update(templateVersions)
-      .set({ updatedAt: sql`(unixepoch())` })
-      .where(eq(templateVersions.id, versionId));
-
-    return c.json({ 
+    return c.json({
       success: true, 
       versionId,
       versionNumber: version.versionNumber,
@@ -828,25 +823,18 @@ adminRoutes.patch('/template-versions/:id/publish', auditMiddleware('TEMPLATE_VE
       eq(templateVersions.templateId, version.templateId),
       eq(templateVersions.status, 'PUBLISHED')
     )).get();
-  
-  const actions: any[] = [
-    // Set new version as PUBLISHED
-    db.update(templateVersions)
-      .set({ status: 'PUBLISHED' })
-      .where(eq(templateVersions.id, id))
-  ];
-  
+
+  // Set new version as PUBLISHED
+  await db.update(templateVersions)
+    .set({ status: 'PUBLISHED' })
+    .where(eq(templateVersions.id, id));
+
   // If there's an existing Published version, archive it
   if (currentPublished) {
-    actions.push(
-      db.update(templateVersions)
-        .set({ status: 'ARCHIVED' })
-        .where(eq(templateVersions.id, currentPublished.id))
-    );
+    await db.update(templateVersions)
+      .set({ status: 'ARCHIVED' })
+      .where(eq(templateVersions.id, currentPublished.id));
   }
-  
-  // Execute all actions in batch
-  await db.batch(actions);
   
   return c.json({ 
     success: true,
