@@ -7,7 +7,12 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "sao-db"
-database_id = "c8c9e923-0b64-4203-880b-ea5af58d316f" # ใส่ ID จริงหลังจากสร้างด้วยคำสั่ง wrangler d1 create
+database_id = "c8c9e923-0b64-4203-880b-ea5af58d316f"
+
+[[d1_databases]]
+binding = "DB_LOCAL"
+database_name = "sao-db-local"
+database_id = "3c2afb74-3a5d-4adb-8f58-d2077e4b462f"
 
 # R2 Bucket Binding
 [[r2_buckets]]
