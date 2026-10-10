@@ -24,10 +24,16 @@ export interface MasterListPageConfig {
   emptyText?: string;
   /** API field name for the name/title field. Default: "name" */
   nameField?: string;
+  /** เปิดให้มีปุ่ม Delete หรือไม่ (default: false) */
+  allowDelete?: boolean;
+  /** ชื่อ entity สำหรับ confirm dialog (default: entityNameTh) */
+  entityNameThForDelete?: string;
 }
 
 export function MasterListPage({ config }: { config: MasterListPageConfig }) {
   const nameField = config.nameField || 'name';
+  const allowDelete = config.allowDelete ?? false;
+  const entityNameThForDelete = config.entityNameThForDelete || config.entityNameTh;
 
   const [items, setItems] = useState<MasterItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,6 +47,11 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
     isActive: true,
   });
   const [submitting, setSubmitting] = useState(false);
+
+  // Delete confirmation state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletingItem, setDeletingItem] = useState<MasterItem | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -148,6 +159,34 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
       await load();
     } catch (err) {
       alert('เกิดข้อผิดพลาดในการเปลี่ยนสถานะ');
+    }
+  };
+
+  const openDeleteConfirm = (item: MasterItem) => {
+    setDeletingItem(item);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDelete = async () => {
+    if (!deletingItem) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`${apiBase}${config.apiPath}/${deletingItem.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token()}` },
+      });
+      
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'ลบไม่สำเร็จ');
+      }
+      setDeleteDialogOpen(false);
+      setDeletingItem(null);
+      await load();
+    } catch (err: any) {
+      alert(`เกิดข้อผิดพลาด: ${err.message || 'ไม่สามารถลบได้'}`);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -285,6 +324,16 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
                         >
                           {item.isActive ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
                         </Button>
+                        {allowDelete && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openDeleteConfirm(item)}
+                            className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          >
+                            ลบ
+                          </Button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -358,6 +407,37 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      {allowDelete && (
+        <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>ยืนยันการลบ</DialogTitle>
+            </DialogHeader>
+            <div className="py-4">
+              <p className="text-slate-700">
+                คุณต้องการลบ <strong>{entityNameThForDelete}</strong> นี้ใช่หรือไม่?
+              </p>
+              <p className="text-sm text-slate-500 mt-2">
+                การดำเนินการนี้ไม่สามารถย้อนกลับได้
+              </p>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteDialogOpen(false)} disabled={deleting}>
+                ยกเลิก
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={handleDelete}
+                disabled={deleting}
+              >
+                {deleting ? 'กำลังลบ...' : 'ลบ'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

@@ -1845,7 +1845,7 @@ adminRoutes.put('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c) =>
   return c.json({ data: updated });
 });
 
-// DELETE /admin/job-families/:id - Soft delete
+// DELETE /admin/job-families/:id - Hard delete (ตรวจสอบ FK จาก positions ก่อน)
 adminRoutes.delete('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
@@ -1853,11 +1853,23 @@ adminRoutes.delete('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c)
   const existing = await db.select().from(jobFamilies).where(eq(jobFamilies.id, id)).get();
   if (!existing) return c.json({ error: 'Job Family not found' }, 404);
 
-  await db.update(jobFamilies).set({
-    isActive: false,
-    updatedAt: sql`(unixepoch())`
-  }).where(eq(jobFamilies.id, id));
+  // ตรวจสอบว่ามี Position ที่ใช้ Job Family นี้หรือไม่
+  const positionsUsingJobFamily = await db
+    .select({ count: count() })
+    .from(positions)
+    .where(eq(positions.jobFamilyId, id))
+    .get();
 
+  if (positionsUsingJobFamily && Number(positionsUsingJobFamily.count) > 0) {
+    return c.json({
+      error: `ไม่สามารถลบ Job Family "${existing.name}" ได้ เนื่องจากมี Position ที่อ้างอิงถึงอยู่ ${Number(positionsUsingJobFamily.count)} รายการ`,
+      referenceCount: Number(positionsUsingJobFamily.count),
+      references: 'positions'
+    }, 400);
+  }
+
+  // Hard delete
+  await db.delete(jobFamilies).where(eq(jobFamilies.id, id));
   return c.json({ success: true });
 });
 
@@ -1966,7 +1978,7 @@ adminRoutes.put('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), async
   return c.json({ data: updated });
 });
 
-// DELETE /admin/position-levels/:id - Soft delete
+// DELETE /admin/position-levels/:id - Hard delete (ตรวจสอบ FK จาก positions ก่อน)
 adminRoutes.delete('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
@@ -1974,11 +1986,23 @@ adminRoutes.delete('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), as
   const existing = await db.select().from(positionLevels).where(eq(positionLevels.id, id)).get();
   if (!existing) return c.json({ error: 'Position Level not found' }, 404);
 
-  await db.update(positionLevels).set({
-    isActive: false,
-    updatedAt: sql`(unixepoch())`
-  }).where(eq(positionLevels.id, id));
+  // ตรวจสอบว่ามี Position ที่ใช้ Position Level นี้หรือไม่
+  const positionsUsingLevel = await db
+    .select({ count: count() })
+    .from(positions)
+    .where(eq(positions.positionLevelId, id))
+    .get();
 
+  if (positionsUsingLevel && Number(positionsUsingLevel.count) > 0) {
+    return c.json({
+      error: `ไม่สามารถลบ Position Level "${existing.name}" ได้ เนื่องจากมี Position ที่อ้างอิงถึงอยู่ ${Number(positionsUsingLevel.count)} รายการ`,
+      referenceCount: Number(positionsUsingLevel.count),
+      references: 'positions'
+    }, 400);
+  }
+
+  // Hard delete
+  await db.delete(positionLevels).where(eq(positionLevels.id, id));
   return c.json({ success: true });
 });
 
@@ -2091,7 +2115,7 @@ adminRoutes.put('/positions/:id', auditMiddleware('POSITION'), async (c) => {
   return c.json({ data: updated });
 });
 
-// DELETE /admin/positions/:id - Soft delete
+// DELETE /admin/positions/:id - Hard delete
 adminRoutes.delete('/positions/:id', auditMiddleware('POSITION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
@@ -2099,10 +2123,8 @@ adminRoutes.delete('/positions/:id', auditMiddleware('POSITION'), async (c) => {
   const existing = await db.select().from(positions).where(eq(positions.id, id)).get();
   if (!existing) return c.json({ error: 'Position not found' }, 404);
 
-  await db.update(positions).set({
-    isActive: false,
-    updatedAt: sql`(unixepoch())`
-  }).where(eq(positions.id, id));
+  // Hard delete (positions table has no FK from other tables)
+  await db.delete(positions).where(eq(positions.id, id));
 
   return c.json({ success: true });
 });

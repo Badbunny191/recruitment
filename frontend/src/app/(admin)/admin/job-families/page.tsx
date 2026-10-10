@@ -10,7 +10,9 @@ export default function JobFamiliesPage() {
         addButtonLabel: 'เพิ่ม Job Family ใหม่',
         apiPath: '/admin/job-families',
         entityNameTh: 'Job Family',
+        entityNameThForDelete: 'Job Family',
         emptyText: 'ไม่พบข้อมูล Job Family',
+        allowDelete: true,
       }}
     />
   );

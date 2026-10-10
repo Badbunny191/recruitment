@@ -57,6 +57,11 @@ export default function PositionsPage() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
 
+  // Delete confirmation state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletingPosition, setDeletingPosition] = useState<Position | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
   const apiBase = process.env.NEXT_PUBLIC_API_URL || '';
   const token = () => localStorage.getItem('adminToken') || '';
 
@@ -163,6 +168,34 @@ export default function PositionsPage() {
       await load();
     } catch (err) {
       alert('เกิดข้อผิดพลาด');
+    }
+  };
+
+  const openDeleteConfirm = (position: Position) => {
+    setDeletingPosition(position);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDelete = async () => {
+    if (!deletingPosition) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`${apiBase}/admin/positions/${deletingPosition.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token()}` },
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'ลบไม่สำเร็จ');
+      }
+      setDeleteDialogOpen(false);
+      setDeletingPosition(null);
+      await load();
+    } catch (err: any) {
+      alert(`เกิดข้อผิดพลาด: ${err.message || 'ไม่สามารถลบได้'}`);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -273,6 +306,14 @@ export default function PositionsPage() {
                         <Button variant="ghost" size="sm" onClick={() => handleToggle(p)} className="text-slate-600">
                           {p.isActive ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
                         </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openDeleteConfirm(p)}
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                        >
+                          ลบ
+                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -356,6 +397,35 @@ export default function PositionsPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={submitting}>ยกเลิก</Button>
             <Button type="submit" form="position-form" disabled={submitting}>{submitting ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>ยืนยันการลบ</DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            <p className="text-slate-700">
+              คุณต้องการลบตำแหน่ง <strong>{deletingPosition?.title}</strong> ใช่หรือไม่?
+            </p>
+            <p className="text-sm text-slate-500 mt-2">
+              การดำเนินการนี้ไม่สามารถย้อนกลับได้
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)} disabled={deleting}>
+              ยกเลิก
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={deleting}
+            >
+              {deleting ? 'กำลังลบ...' : 'ลบ'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
