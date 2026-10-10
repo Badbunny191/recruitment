@@ -105,10 +105,33 @@ export const TemplateVersionCreateSchema = z.object({
   cloneFromVersionId: z.string().optional(),
   // Sprint 4 - Mode A
   sections: z.array(TemplateSectionCreatePayloadSchema).optional(),
-  // Fields required ทุก mode (Mode A, B, C) — แต่ Mode B จะ ignore fields
+  // Fields required ทุก mode (Mode A, C) — Mode B (clone) จะ ignore fields
+  // ดังนั้นทำให้ optional เพื่อรองรับ clone ที่ไม่ต้องส่ง fields
   fields: z.array(TemplateFieldCreateSchema.extend({
     sectionId: z.string().nullable().optional(), // Mode A: client tempId
-  })).min(1),
+  })).min(1).optional(), // เพิ่ม .optional() เพื่อรองรับ Mode B
+}).refine(data => {
+  // Mode B (clone): ต้องมี cloneFromVersionId
+  // Mode A/C: ต้องมี fields อย่างน้อย 1
+  if (data.cloneFromVersionId) {
+    return true; // Mode B: ผ่าน
+  }
+  // Mode A/C: ต้องมี fields
+  return data.fields && data.fields.length >= 1;
+}, {
+  message: "Either cloneFromVersionId (Mode B) or fields (Mode A/C) is required",
+  path: ["fields"],
+});
+
+// =============================================================================
+// Sprint 4 - Template Version Update Schema (Phase 1)
+// PUT /admin/template-versions/:versionId - UPDATE Draft เดิม (ไม่สร้าง Version ใหม่)
+// =============================================================================
+export const TemplateVersionUpdateSchema = z.object({
+  sections: z.array(TemplateSectionCreatePayloadSchema).min(1, 'At least 1 section required'),
+  fields: z.array(TemplateFieldCreateSchema.extend({
+    sectionId: z.string().nullable().optional(), // client tempId
+  })).min(1, 'At least 1 field required'),
 });
 
 export const RecruitmentRoundCreateSchema = z.object({

@@ -9,7 +9,7 @@ import { authMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions } from '../db/schema';
-import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema } from '../schemas/validators';
+import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema } from '../schemas/validators';
 
 const adminRoutes = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
 
@@ -419,6 +419,92 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
 });
 
 // =============================================================================
+// Sprint 4 - Template Version Update API (Phase 1)
+// PUT /admin/template-versions/:versionId - UPDATE Draft เดิม (ไม่สร้าง Version ใหม่)
+// =============================================================================
+adminRoutes.put('/template-versions/:versionId', 
+  auditMiddleware('TEMPLATE_VERSION'),
+  zValidator('json', TemplateVersionUpdateSchema), 
+  async (c) => {
+    const db = drizzle(c.env.DB);
+    const versionId = c.req.param('versionId');
+    const payload = c.req.valid('json') as any;
+
+    // 1. Verify version exists
+    const version = await db.select()
+      .from(templateVersions)
+      .where(eq(templateVersions.id, versionId))
+      .get();
+    
+    if (!version) {
+      return c.json({ error: 'Version not found' }, 404);
+    }
+
+    // 2. Validate: เฉพาะ DRAFT เท่านั้นที่อัปเดตได้
+    if (version.status !== 'DRAFT') {
+      return c.json({ 
+        error: `Can only update DRAFT version. Current status: ${version.status}` 
+      }, 400);
+    }
+
+    // 3. DELETE existing sections and fields (CASCADE จะลบ fields ด้วย)
+    await db.delete(templateSections)
+      .where(eq(templateSections.templateVersionId, versionId));
+
+    // 4. INSERT new sections
+    const sectionIdMap = new Map<string, string>();
+    for (const s of payload.sections) {
+      const newSectionId = uuidv4();
+      sectionIdMap.set(s.tempId, newSectionId);
+      await db.insert(templateSections).values({
+        id: newSectionId,
+        templateVersionId: versionId,
+        name: s.name,
+        displayOrder: s.displayOrder,
+        isActive: true,
+        createdAt: sql`(unixepoch())`,
+        updatedAt: sql`(unixepoch())`,
+      });
+    }
+
+    // 5. INSERT new fields
+    for (const f of payload.fields) {
+      const realSectionId = f.sectionId ? (sectionIdMap.get(f.sectionId) ?? null) : null;
+      const fieldValues: any = {
+        id: uuidv4(),
+        templateVersionId: versionId,
+        fieldId: f.fieldId,
+        sectionId: realSectionId,
+        displayOrder: f.displayOrder,
+        isRequired: f.isRequired ?? true,
+        overrideOptions: f.overrideOptions ? JSON.stringify(f.overrideOptions) : null,
+        overrideLabelTh: f.overrideLabelTh ?? null,
+      };
+      if (f.helpText) fieldValues.helpText = f.helpText;
+      if (f.placeholder) fieldValues.placeholder = f.placeholder;
+      if (f.validationRules) fieldValues.validationRules = JSON.stringify(f.validationRules);
+      if (f.rows) fieldValues.rows = f.rows;
+      if (f.minLength !== undefined && f.minLength !== null) fieldValues.minLength = f.minLength;
+      if (f.maxLength !== undefined && f.maxLength !== null) fieldValues.maxLength = f.maxLength;
+
+      await db.insert(templateFields).values(fieldValues as any);
+    }
+
+    // 6. Update version timestamp
+    await db.update(templateVersions)
+      .set({ updatedAt: sql`(unixepoch())` })
+      .where(eq(templateVersions.id, versionId));
+
+    return c.json({ 
+      success: true, 
+      versionId,
+      versionNumber: version.versionNumber,
+      message: 'Draft updated successfully'
+    });
+  }
+);
+
+// =============================================================================
 // Sprint 4 - Template Sections API
 // =============================================================================
 
@@ -681,6 +767,7 @@ adminRoutes.put('/template-fields/:id/section', auditMiddleware('TEMPLATE_FIELD'
 });
 
 // PATCH /admin/template-versions/:id/publish - DRAFT → PUBLISHED
+// RFC Policy: Only 1 Published version at a time. Old Published → Auto Archive
 adminRoutes.patch('/template-versions/:id/publish', auditMiddleware('TEMPLATE_VERSION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
@@ -695,8 +782,38 @@ adminRoutes.patch('/template-versions/:id/publish', auditMiddleware('TEMPLATE_VE
     return c.json({ error: 'Only DRAFT version can be published' }, 400);
   }
   
-  await db.update(templateVersions).set({ status: 'PUBLISHED' }).where(eq(templateVersions.id, id));
-  return c.json({ success: true });
+  // RFC Policy: Auto-archive old Published version
+  // Find current Published version for this template
+  const currentPublished = await db.select().from(templateVersions)
+    .where(and(
+      eq(templateVersions.templateId, version.templateId),
+      eq(templateVersions.status, 'PUBLISHED')
+    )).get();
+  
+  const actions: any[] = [
+    // Set new version as PUBLISHED
+    db.update(templateVersions)
+      .set({ status: 'PUBLISHED' })
+      .where(eq(templateVersions.id, id))
+  ];
+  
+  // If there's an existing Published version, archive it
+  if (currentPublished) {
+    actions.push(
+      db.update(templateVersions)
+        .set({ status: 'ARCHIVED' })
+        .where(eq(templateVersions.id, currentPublished.id))
+    );
+  }
+  
+  // Execute all actions in batch
+  await db.batch(actions);
+  
+  return c.json({ 
+    success: true,
+    previousPublishedArchived: !!currentPublished,
+    previousPublishedId: currentPublished?.id || null
+  });
 });
 
 // PATCH /admin/template-versions/:id/archive - PUBLISHED → ARCHIVED
@@ -714,16 +831,16 @@ adminRoutes.patch('/template-versions/:id/archive', auditMiddleware('TEMPLATE_VE
     return c.json({ error: 'Only PUBLISHED version can be archived' }, 400);
   }
   
-  // Check if any active rounds are using this version
-  const activeRounds = await db.select()
+  // RFC Policy: Cannot archive if any rounds reference this version (snapshot)
+  const roundsUsing = await db.select()
     .from(recruitmentRounds)
-    .where(and(
-      eq(recruitmentRounds.templateVersionId, id),
-      eq(recruitmentRounds.status, 'ACTIVE')
-    ));
+    .where(eq(recruitmentRounds.templateVersionId, id));
   
-  if (activeRounds.length > 0) {
-    return c.json({ error: 'Cannot archive version that is used by active rounds', activeRounds: activeRounds.length }, 400);
+  if (roundsUsing.length > 0) {
+    return c.json({ 
+      error: 'Cannot archive version that is referenced by rounds (snapshot policy)',
+      roundsCount: roundsUsing.length
+    }, 400);
   }
   
   await db.update(templateVersions).set({ status: 'ARCHIVED' }).where(eq(templateVersions.id, id));
@@ -741,6 +858,7 @@ adminRoutes.delete('/template-versions/:id', auditMiddleware('TEMPLATE_VERSION')
     return c.json({ error: 'Version not found' }, 404);
   }
   
+  // RFC Policy: Only DRAFT can be deleted
   if (version.status !== 'DRAFT') {
     return c.json({ error: 'Only DRAFT version can be deleted', status: version.status }, 400);
   }
