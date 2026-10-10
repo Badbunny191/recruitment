@@ -56,12 +56,10 @@ export default function PositionsPage() {
   const [editing, setEditing] = useState<Position | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<Position | null>(null);
 
   const apiBase = process.env.NEXT_PUBLIC_API_URL || '';
   const token = () => localStorage.getItem('adminToken') || '';
 
-  // Load positions + reference data (jobFamilies, positionLevels)
   const load = async () => {
     setLoading(true);
     try {
@@ -89,8 +87,7 @@ export default function PositionsPage() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFilter]);
+  }, [activeFilter, search]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -126,16 +123,21 @@ export default function PositionsPage() {
       const url = editing ? `${apiBase}/admin/positions/${editing.id}` : `${apiBase}/admin/positions`;
       const method = editing ? 'PUT' : 'POST';
 
+      // Build payload - displayOrder only sent when editing (auto-assigned on create)
+      const payload: Record<string, any> = {
+        title: form.title.trim(),
+        jobFamilyId: form.jobFamilyId,
+        positionLevelId: form.positionLevelId,
+        isActive: form.isActive,
+      };
+      if (editing) {
+        payload.displayOrder = form.displayOrder;
+      }
+
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
-        body: JSON.stringify({
-          title: form.title.trim(),
-          jobFamilyId: form.jobFamilyId,
-          positionLevelId: form.positionLevelId,
-          displayOrder: form.displayOrder,
-          isActive: form.isActive,
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
@@ -158,21 +160,6 @@ export default function PositionsPage() {
         headers: { Authorization: `Bearer ${token()}` },
       });
       if (!res.ok) throw new Error('toggle failed');
-      await load();
-    } catch (err) {
-      alert('เกิดข้อผิดพลาด');
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!confirmDelete) return;
-    try {
-      const res = await fetch(`${apiBase}/admin/positions/${confirmDelete.id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token()}` },
-      });
-      if (!res.ok) throw new Error('delete failed');
-      setConfirmDelete(null);
       await load();
     } catch (err) {
       alert('เกิดข้อผิดพลาด');
@@ -272,7 +259,6 @@ export default function PositionsPage() {
                     <TableCell className="text-center font-mono text-slate-600">{p.displayOrder}</TableCell>
                     <TableCell>
                       <p className="font-medium">{p.title}</p>
-                      <p className="text-xs text-gray-500 mt-0.5 font-mono">{p.id}</p>
                     </TableCell>
                     <TableCell><Badge variant="outline">{jfName(p.jobFamilyId)}</Badge></TableCell>
                     <TableCell><Badge variant="outline">{plName(p.positionLevelId)}</Badge></TableCell>
@@ -285,10 +271,7 @@ export default function PositionsPage() {
                       <div className="flex gap-2 justify-end">
                         <Button variant="outline" size="sm" onClick={() => openEdit(p)}>แก้ไข</Button>
                         <Button variant="ghost" size="sm" onClick={() => handleToggle(p)} className="text-slate-600">
-                          {p.isActive ? 'ปิด' : 'เปิด'}
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(p)} disabled={!p.isActive} className="text-red-600 hover:text-red-700 hover:bg-red-50">
-                          ลบ
+                          {p.isActive ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
                         </Button>
                       </div>
                     </TableCell>
@@ -306,7 +289,7 @@ export default function PositionsPage() {
           <DialogHeader>
             <DialogTitle>{editing ? 'แก้ไขตำแหน่ง' : 'เพิ่มตำแหน่งใหม่'}</DialogTitle>
           </DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form id="position-form" onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="title">ชื่อตำแหน่ง *</Label>
               <Input id="title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required />
@@ -335,19 +318,28 @@ export default function PositionsPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="displayOrder">ลำดับการแสดงผล (display_order) *</Label>
-              <Input
-                id="displayOrder"
-                type="number"
-                min={1}
-                step={1}
-                value={form.displayOrder}
-                onChange={(e) => setForm({ ...form, displayOrder: parseInt(e.target.value, 10) || 0 })}
-                required
-                disabled={!editing}
-                placeholder={editing ? '' : 'กำหนดอัตโนมัติเมื่อสร้างใหม่'}
-              />
-              {!editing && <p className="text-xs text-slate-500">ระบบจะกำหนดลำดับถัดไปให้อัตโนมัติ</p>}
+              <Label htmlFor="displayOrder">ลำดับการแสดงผล (display_order)</Label>
+              {editing ? (
+                <>
+                  <Input
+                    id="displayOrder"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={form.displayOrder}
+                    onChange={(e) => setForm({ ...form, displayOrder: parseInt(e.target.value, 10) || 0 })}
+                    required
+                  />
+                  <p className="text-xs text-slate-500">กรอกจำนวนเต็มบวก (1, 2, 3...)</p>
+                </>
+              ) : (
+                <Input
+                  id="displayOrderDisplay"
+                  type="text"
+                  value="(ระบบจะกำหนดให้อัตโนมัติ)"
+                  disabled
+                />
+              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -363,29 +355,11 @@ export default function PositionsPage() {
           </form>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={submitting}>ยกเลิก</Button>
-            <Button onClick={handleSubmit} disabled={submitting}>{submitting ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
+            <Button type="submit" form="position-form" disabled={submitting}>{submitting ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Confirm Delete */}
-      <Dialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
-        <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>ยืนยันการลบตำแหน่ง</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-              ตำแหน่งจะถูกตั้งค่าเป็น &quot;ปิดใช้งาน&quot; (Soft Delete)
-            </div>
-            {confirmDelete && (
-              <p className="text-sm"><strong>ชื่อ:</strong> {confirmDelete.title}</p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmDelete(null)}>ยกเลิก</Button>
-            <Button variant="destructive" onClick={handleDelete}>ตกลง ลบ (Soft Delete)</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

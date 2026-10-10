@@ -7,6 +7,7 @@ import { eq, and, ne, isNull, count, or, like, inArray, sql, asc } from 'drizzle
 import { Bindings, AppVariables } from '../types';
 import { authMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
+import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions } from '../db/schema';
 import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema } from '../schemas/validators';
 
@@ -922,8 +923,9 @@ adminRoutes.patch('/applications/:id/status', auditMiddleware('APPLICATION'), zV
   if (status === 'REJECTED' && !reason) {
     return c.json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' }, 400);
   }
-
-  const now = new Date();
+  
+  // Drizzle expects Date object for timestamp fields
+  const verifiedAtDate = new Date();
   
   try {
     await db
@@ -932,7 +934,7 @@ adminRoutes.patch('/applications/:id/status', auditMiddleware('APPLICATION'), zV
         status,
         statusReason: reason || null,
         verifiedBy: adminId,
-        verifiedAt: now
+        verifiedAt: verifiedAtDate
       })
       .where(eq(applications.id, id));
 
@@ -943,7 +945,7 @@ adminRoutes.patch('/applications/:id/status', auditMiddleware('APPLICATION'), zV
         status,
         statusReason: reason || null,
         verifiedBy: adminId,
-        verifiedAt: Math.floor(now.getTime() / 1000)
+        verifiedAt: nowUnix()
       }
     });
   } catch (error: any) {
@@ -1010,9 +1012,9 @@ adminRoutes.get('/applications/:id', async (c) => {
       statusReason: app.statusReason,
       verifiedBy: app.verifiedBy,
       verifiedByEmail: reviewerEmail,
-      verifiedAt: app.verifiedAt ? Math.floor(new Date(app.verifiedAt).getTime() / 1000) : null,
+      verifiedAt: toUnixTimestamp(app.verifiedAt),
       formData: app.formData,
-      submittedAt: app.submittedAt ? Math.floor(new Date(app.submittedAt).getTime() / 1000) : null,
+      submittedAt: toUnixTimestamp(app.submittedAt),
       attachments,
       schema
     }
@@ -1069,7 +1071,7 @@ adminRoutes.get('/applications/:id/history', async (c) => {
     adminId: log.adminId,
     adminEmail: adminMap.get(log.adminId) || log.adminId,
     payload: log.payload,
-    createdAt: log.createdAt ? Math.floor(new Date(log.createdAt).getTime() / 1000) : null
+    createdAt: toUnixTimestamp(log.createdAt)
   }));
 
   return c.json({ data: history });
@@ -1094,7 +1096,8 @@ adminRoutes.post('/applications/bulk-status', auditMiddleware('APPLICATION'), as
     return c.json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' }, 400);
   }
 
-  const now = new Date();
+  // Drizzle expects Date object for timestamp fields
+  const verifiedAtDate = new Date();
   
   try {
     // Update all applications with matching IDs (not deleted)
@@ -1104,7 +1107,7 @@ adminRoutes.post('/applications/bulk-status', auditMiddleware('APPLICATION'), as
         status,
         statusReason: reason || null,
         verifiedBy: adminId,
-        verifiedAt: now
+        verifiedAt: verifiedAtDate
       })
       .where(
         and(
@@ -1120,7 +1123,7 @@ adminRoutes.post('/applications/bulk-status', auditMiddleware('APPLICATION'), as
         status,
         reason: reason || null,
         verifiedBy: adminId,
-        verifiedAt: Math.floor(now.getTime() / 1000)
+        verifiedAt: nowUnix()
       }
     });
   } catch (error: any) {
@@ -1708,7 +1711,8 @@ adminRoutes.put('/organizations/:id', auditMiddleware('ORGANIZATION'), async (c)
   if (body.isActive !== undefined) {
     updateData.isActive = body.isActive;
   }
-  updateData.updatedAt = Math.floor(Date.now() / 1000);
+  // Drizzle expects Date object for timestamp fields, not Unix timestamp number
+  updateData.updatedAt = new Date();
 
   await db.update(organizations).set(updateData).where(eq(organizations.id, id));
   
@@ -1833,7 +1837,8 @@ adminRoutes.put('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c) =>
     updateData.displayOrder = body.displayOrder;
   }
   if (body.isActive !== undefined) updateData.isActive = body.isActive;
-  updateData.updatedAt = Math.floor(Date.now() / 1000);
+  // Drizzle expects Date object for timestamp fields, not Unix timestamp number
+  updateData.updatedAt = new Date();
 
   await db.update(jobFamilies).set(updateData).where(eq(jobFamilies.id, id));
   const updated = await db.select().from(jobFamilies).where(eq(jobFamilies.id, id)).get();
@@ -1953,7 +1958,8 @@ adminRoutes.put('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), async
     updateData.displayOrder = body.displayOrder;
   }
   if (body.isActive !== undefined) updateData.isActive = body.isActive;
-  updateData.updatedAt = Math.floor(Date.now() / 1000);
+  // Drizzle expects Date object for timestamp fields, not Unix timestamp number
+  updateData.updatedAt = new Date();
 
   await db.update(positionLevels).set(updateData).where(eq(positionLevels.id, id));
   const updated = await db.select().from(positionLevels).where(eq(positionLevels.id, id)).get();
@@ -2077,7 +2083,8 @@ adminRoutes.put('/positions/:id', auditMiddleware('POSITION'), async (c) => {
     updateData.displayOrder = body.displayOrder;
   }
   if (body.isActive !== undefined) updateData.isActive = body.isActive;
-  updateData.updatedAt = Math.floor(Date.now() / 1000);
+  // Drizzle expects Date object for timestamp fields, not Unix timestamp number
+  updateData.updatedAt = new Date();
 
   await db.update(positions).set(updateData).where(eq(positions.id, id));
   const updated = await db.select().from(positions).where(eq(positions.id, id)).get();

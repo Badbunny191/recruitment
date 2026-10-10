@@ -14,8 +14,6 @@ interface Organization {
   name: string;
   displayOrder: number;
   isActive: boolean;
-  createdAt?: number;
-  updatedAt?: number;
 }
 
 interface FormState {
@@ -39,7 +37,6 @@ export default function OrganizationsPage() {
   const [editing, setEditing] = useState<Organization | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<Organization | null>(null);
 
   const token = () => localStorage.getItem('adminToken') || '';
   const apiBase = process.env.NEXT_PUBLIC_API_URL || '';
@@ -66,8 +63,7 @@ export default function OrganizationsPage() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFilter]);
+  }, [activeFilter, search]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,7 +88,8 @@ export default function OrganizationsPage() {
       alert('กรุณากรอกชื่อหน่วยงาน');
       return;
     }
-    if (!Number.isInteger(form.displayOrder) || form.displayOrder < 1) {
+    // displayOrder validation only when editing
+    if (editing && (!Number.isInteger(form.displayOrder) || form.displayOrder < 1)) {
       alert('กรุณากรอก displayOrder เป็นจำนวนเต็มบวก');
       return;
     }
@@ -103,17 +100,22 @@ export default function OrganizationsPage() {
         : `${apiBase}/admin/organizations`;
       const method = editing ? 'PUT' : 'POST';
 
+      // Build payload - displayOrder only sent when editing (auto-assigned on create)
+      const payload: Record<string, any> = {
+        name: form.name.trim(),
+        isActive: form.isActive,
+      };
+      if (editing) {
+        payload.displayOrder = form.displayOrder;
+      }
+
       const res = await fetch(url, {
         method,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token()}`,
         },
-        body: JSON.stringify({
-          name: form.name.trim(),
-          displayOrder: form.displayOrder,
-          isActive: form.isActive,
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
@@ -139,21 +141,6 @@ export default function OrganizationsPage() {
       await load();
     } catch (err) {
       alert('เกิดข้อผิดพลาดในการเปลี่ยนสถานะ');
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!confirmDelete) return;
-    try {
-      const res = await fetch(`${apiBase}/admin/organizations/${confirmDelete.id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token()}` },
-      });
-      if (!res.ok) throw new Error('delete failed');
-      setConfirmDelete(null);
-      await load();
-    } catch (err) {
-      alert('เกิดข้อผิดพลาดในการลบ');
     }
   };
 
@@ -272,7 +259,6 @@ export default function OrganizationsPage() {
                     </TableCell>
                     <TableCell>
                       <p className="font-medium">{org.name}</p>
-                      <p className="text-xs text-gray-500 mt-0.5 font-mono">{org.id}</p>
                     </TableCell>
                     <TableCell>
                       <Badge variant={org.isActive ? 'default' : 'secondary'}>
@@ -292,15 +278,6 @@ export default function OrganizationsPage() {
                         >
                           {org.isActive ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setConfirmDelete(org)}
-                          disabled={!org.isActive}
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                        >
-                          ลบ
-                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -317,7 +294,7 @@ export default function OrganizationsPage() {
           <DialogHeader>
             <DialogTitle>{editing ? 'แก้ไขหน่วยงาน' : 'เพิ่มหน่วยงานใหม่'}</DialogTitle>
           </DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form id="org-form" onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="name">ชื่อหน่วยงาน *</Label>
               <Input
@@ -329,20 +306,27 @@ export default function OrganizationsPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="displayOrder">ลำดับการแสดงผล (display_order) *</Label>
-              <Input
-                id="displayOrder"
-                type="number"
-                min={1}
-                step={1}
-                value={form.displayOrder}
-                onChange={(e) => setForm({ ...form, displayOrder: parseInt(e.target.value, 10) || 0 })}
-                required
-                disabled={!editing}
-                placeholder={editing ? '' : 'กำหนดอัตโนมัติเมื่อสร้างใหม่'}
-              />
-              {!editing && (
-                <p className="text-xs text-slate-500">ระบบจะกำหนดลำดับถัดไปให้อัตโนมัติ (สูงสุด + 1)</p>
+              <Label htmlFor="displayOrder">ลำดับการแสดงผล (display_order)</Label>
+              {editing ? (
+                <>
+                  <Input
+                    id="displayOrder"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={form.displayOrder}
+                    onChange={(e) => setForm({ ...form, displayOrder: parseInt(e.target.value, 10) || 0 })}
+                    required
+                  />
+                  <p className="text-xs text-slate-500">กรอกจำนวนเต็มบวก (1, 2, 3...)</p>
+                </>
+              ) : (
+                <Input
+                  id="displayOrderDisplay"
+                  type="text"
+                  value="(ระบบจะกำหนดให้อัตโนมัติ)"
+                  disabled
+                />
               )}
             </div>
             <div className="flex items-center gap-2">
@@ -360,39 +344,13 @@ export default function OrganizationsPage() {
             <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={submitting}>
               ยกเลิก
             </Button>
-            <Button onClick={handleSubmit} disabled={submitting}>
+            <Button type="submit" form="org-form" disabled={submitting}>
               {submitting ? 'กำลังบันทึก...' : 'บันทึก'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Confirm Delete Dialog */}
-      <Dialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>ยืนยันการลบหน่วยงาน</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-              หน่วยงานจะถูกตั้งค่าเป็น &quot;ปิดใช้งาน&quot; (Soft Delete)
-            </div>
-            {confirmDelete && (
-              <p className="text-sm">
-                <strong>ชื่อ:</strong> {confirmDelete.name}
-              </p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmDelete(null)}>
-              ยกเลิก
-            </Button>
-            <Button variant="destructive" onClick={handleDelete}>
-              ตกลง ลบ (Soft Delete)
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

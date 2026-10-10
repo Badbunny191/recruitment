@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -22,25 +22,13 @@ export interface MasterListPageConfig {
   apiPath: string;
   entityNameTh: string; // เช่น "หน่วยงาน", "Job Family", "Position Level"
   emptyText?: string;
+  /** API field name for the name/title field. Default: "name" */
+  nameField?: string;
 }
 
-/**
- * MasterListPage - Generic CRUD UI สำหรับ Master Data ทั่วไป
- * ใช้ pattern เดียวกันกับ:
- * - Organization Master
- * - Field Master
- * - Job Family Master
- * - Position Level Master
- *
- * Features:
- * - List + Search + Filter (active/inactive)
- * - Stats cards
- * - Create/Edit (Dialog)
- * - Soft Delete (isActive = false)
- * - Toggle Active/Inactive
- * - auto-assign displayOrder (MAX + 1)
- */
 export function MasterListPage({ config }: { config: MasterListPageConfig }) {
+  const nameField = config.nameField || 'name';
+
   const [items, setItems] = useState<MasterItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -53,7 +41,8 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
     isActive: true,
   });
   const [submitting, setSubmitting] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<MasterItem | null>(null);
+
+  const formRef = useRef<HTMLFormElement>(null);
 
   const apiBase = process.env.NEXT_PUBLIC_API_URL || '';
   const token = () => (typeof window !== 'undefined' ? localStorage.getItem('adminToken') || '' : '');
@@ -100,12 +89,14 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
     setDialogOpen(true);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.FormEvent) => {
+    // Allow direct call from Button onClick
+    if (e) e.preventDefault();
     if (!form.name.trim()) {
       alert(`กรุณากรอกชื่อ${config.entityNameTh}`);
       return;
     }
+    // displayOrder validation only when editing (when it's editable)
     if (editing && (!Number.isInteger(form.displayOrder) || form.displayOrder < 1)) {
       alert('กรุณากรอก displayOrder เป็นจำนวนเต็มบวก');
       return;
@@ -115,17 +106,23 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
       const url = editing ? `${apiBase}${config.apiPath}/${editing.id}` : `${apiBase}${config.apiPath}`;
       const method = editing ? 'PUT' : 'POST';
 
+      // Build payload: use configured nameField (default "name")
+      const payload: Record<string, any> = {
+        [nameField]: form.name.trim(),
+        isActive: form.isActive,
+      };
+      // Only include displayOrder when editing (it is auto-assigned on create)
+      if (editing) {
+        payload.displayOrder = form.displayOrder;
+      }
+
       const res = await fetch(url, {
         method,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token()}`,
         },
-        body: JSON.stringify({
-          name: form.name.trim(),
-          displayOrder: form.displayOrder,
-          isActive: form.isActive,
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
@@ -151,21 +148,6 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
       await load();
     } catch (err) {
       alert('เกิดข้อผิดพลาดในการเปลี่ยนสถานะ');
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!confirmDelete) return;
-    try {
-      const res = await fetch(`${apiBase}${config.apiPath}/${confirmDelete.id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token()}` },
-      });
-      if (!res.ok) throw new Error('delete failed');
-      setConfirmDelete(null);
-      await load();
-    } catch (err) {
-      alert('เกิดข้อผิดพลาดในการลบ');
     }
   };
 
@@ -284,7 +266,6 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
                     </TableCell>
                     <TableCell>
                       <p className="font-medium">{item.name}</p>
-                      <p className="text-xs text-gray-500 mt-0.5 font-mono">{item.id}</p>
                     </TableCell>
                     <TableCell>
                       <Badge variant={item.isActive ? 'default' : 'secondary'}>
@@ -304,15 +285,6 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
                         >
                           {item.isActive ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setConfirmDelete(item)}
-                          disabled={!item.isActive}
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                        >
-                          ลบ
-                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -331,7 +303,7 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
               {editing ? `แก้ไข${config.entityNameTh}` : `เพิ่ม${config.entityNameTh}ใหม่`}
             </DialogTitle>
           </DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form id="master-form" ref={formRef} onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="name">ชื่อ{config.entityNameTh} *</Label>
               <Input
@@ -342,20 +314,27 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="displayOrder">ลำดับการแสดงผล (display_order) *</Label>
-              <Input
-                id="displayOrder"
-                type="number"
-                min={1}
-                step={1}
-                value={form.displayOrder}
-                onChange={(e) => setForm({ ...form, displayOrder: parseInt(e.target.value, 10) || 0 })}
-                required
-                disabled={!editing}
-                placeholder={editing ? '' : 'กำหนดอัตโนมัติเมื่อสร้างใหม่'}
-              />
-              {!editing && (
-                <p className="text-xs text-slate-500">ระบบจะกำหนดลำดับถัดไปให้อัตโนมัติ (สูงสุด + 1)</p>
+              <Label htmlFor="displayOrder">ลำดับการแสดงผล (display_order)</Label>
+              {editing ? (
+                <>
+                  <Input
+                    id="displayOrder"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={form.displayOrder}
+                    onChange={(e) => setForm({ ...form, displayOrder: parseInt(e.target.value, 10) || 0 })}
+                    required
+                  />
+                  <p className="text-xs text-slate-500">กรอกจำนวนเต็มบวก (1, 2, 3...)</p>
+                </>
+              ) : (
+                <Input
+                  id="displayOrderDisplay"
+                  type="text"
+                  value="(ระบบจะกำหนดให้อัตโนมัติ)"
+                  disabled
+                />
               )}
             </div>
             <div className="flex items-center gap-2">
@@ -373,35 +352,8 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
             <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={submitting}>
               ยกเลิก
             </Button>
-            <Button onClick={handleSubmit} disabled={submitting}>
+            <Button type="submit" form="master-form" disabled={submitting}>
               {submitting ? 'กำลังบันทึก...' : 'บันทึก'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Confirm Delete Dialog */}
-      <Dialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>ยืนยันการลบ{config.entityNameTh}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-              {config.entityNameTh}จะถูกตั้งค่าเป็น &quot;ปิดใช้งาน&quot; (Soft Delete)
-            </div>
-            {confirmDelete && (
-              <p className="text-sm">
-                <strong>ชื่อ:</strong> {confirmDelete.name}
-              </p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmDelete(null)}>
-              ยกเลิก
-            </Button>
-            <Button variant="destructive" onClick={handleDelete}>
-              ตกลง ลบ (Soft Delete)
             </Button>
           </DialogFooter>
         </DialogContent>
