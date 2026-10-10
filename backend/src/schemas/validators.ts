@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
-export const FieldTypeEnum = z.enum(['TEXT', 'TEXTAREA', 'DROPDOWN', 'RADIO', 'FILE']);
+// Allowed values must stay in sync with the CHECK constraint "chk_field_type"
+// in backend/src/db/schema.ts and the D1 table definition.
+export const FieldTypeEnum = z.enum(['TEXT', 'TEXTAREA', 'DROPDOWN', 'RADIO', 'FILE', 'NUMBER', 'CHECKBOX', 'DATE', 'MASTER_DATA']);
 export const TemplateVersionStatusEnum = z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']);
 export const RoundStatusEnum = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
 export const ApplicationStatusEnum = z.enum(['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED']);
@@ -10,10 +12,26 @@ export const LoginRequestSchema = z.object({
   password: z.string().min(8),
 });
 
+// Master data sources available to MASTER_DATA fields (Phase 1: organizations only)
+export const MASTER_DATA_SOURCES = ['organizations'] as const;
+export type MasterDataSource = (typeof MASTER_DATA_SOURCES)[number];
+
+export const MasterDataOptionsSchema = z.object({
+  source: z.enum(MASTER_DATA_SOURCES),
+});
+
+// defaultOptions has two shapes:
+//  - string[] : static options for DROPDOWN / RADIO
+//  - { source: MasterDataSource } : MASTER_DATA field config
+export const FieldOptionsSchema = z.union([
+  z.array(z.string()),
+  MasterDataOptionsSchema,
+]);
+
 export const FieldMasterCreateSchema = z.object({
   fieldType: FieldTypeEnum,
   labelTh: z.string().min(1),
-  defaultOptions: z.array(z.string()).nullable().optional(),
+  defaultOptions: FieldOptionsSchema.nullable().optional(),
   pdfMappingKey: z.string().nullable().optional(),
   isActive: z.boolean().default(true),
 });

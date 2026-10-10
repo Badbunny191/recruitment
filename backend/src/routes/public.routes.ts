@@ -3,11 +3,26 @@ import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
 import { Bindings } from '../types';
 import { ApplicationSubmitSchema, CORE_FIELD_IDS } from '../schemas/validators';
-import { recruitmentRounds, templateFields, templateSections, fieldMaster, applications, applicationAttachments } from '../db/schema';
+import { recruitmentRounds, templateFields, templateSections, fieldMaster, applications, applicationAttachments, organizations } from '../db/schema';
 import { eq, and, isNull, asc } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 
 const publicRoutes = new Hono<{ Bindings: Bindings }>();
+
+// =============================================================================
+// MASTER DATA - Phase 1 (organizations only)
+// =============================================================================
+// Public, unauthenticated. Only active records, ordered by displayOrder.
+publicRoutes.get('/master-data/organizations', async (c) => {
+  const db = drizzle(c.env.DB);
+  const rows = await db
+    .select({ id: organizations.id, name: organizations.name })
+    .from(organizations)
+    .where(eq(organizations.isActive, true))
+    .orderBy(asc(organizations.displayOrder));
+
+  return c.json({ data: rows });
+});
 
 publicRoutes.get('/rounds/active', async (c) => {
   const db = drizzle(c.env.DB);
@@ -47,12 +62,38 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
   .where(eq(templateFields.templateVersionId, round.templateVersionId))
   .orderBy(templateFields.displayOrder);
 
+  // Normalize MASTER_DATA fields:
+  // defaultOptions for MASTER_DATA is { source: 'organizations' }, not string[].
+  // Send it as a separate `masterDataSource` field so the frontend does not have
+  // to guess, and drop the object from `options`.
+  const normalized = schema.map((f) => {
+    if (f.type !== 'MASTER_DATA') return { ...f, masterDataSource: null };
+
+    const raw: unknown = f.options;
+    let source: string | null = null;
+
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          source = (parsed as { source?: string }).source ?? null;
+        }
+      } catch {
+        source = null;
+      }
+    } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      source = (raw as { source?: string }).source ?? null;
+    }
+
+    return { ...f, options: null, masterDataSource: source };
+  });
+
   // Hybrid Mode: return sections + fields (Sprint 4)
   // Frontend จะ fallback ไปใช้ fieldMaster.section ถ้า sections ว่าง
   return c.json({
     data: {
       sections: sections.filter(s => s.isActive), // only active sections
-      fields: schema,
+      fields: normalized,
     }
   });
 });

@@ -10,9 +10,19 @@ import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { FileUpload } from '@/components/FileUpload';
+import { SearchableDropdown } from '@/components/SearchableDropdown';
 
-type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE';
+type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_ID' | 'REGEX';
+
+// Phase 1 supports only 'organizations'. Keep in sync with MASTER_DATA_SOURCES in
+// backend/src/schemas/validators.ts
+type MasterDataSource = 'organizations';
+
+interface MasterDataOption {
+  id: string;
+  name: string;
+}
 
 interface FileConfig {
   allowedFileTypes?: string[];
@@ -28,6 +38,8 @@ interface SchemaField {
   overrideLabel: string | null;
   options: string[] | null;
   overrideOptions: string[] | null;
+  // MASTER_DATA fields store { source: 'organizations' } here instead of string[]
+  masterDataSource?: MasterDataSource | null;
   isRequired: boolean;
   helpText?: string;
   placeholder?: string;
@@ -78,7 +90,30 @@ function FormInner() {
   const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // MASTER_DATA options (Phase 1: organizations)
+  const [organizations, setOrganizations] = useState<MasterDataOption[]>([]);
+  const [masterDataError, setMasterDataError] = useState<string | null>(null);
+
   const { register, handleSubmit, control, formState: { errors } } = useForm<FormValues>();
+
+  const getApiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
+
+  // Load master data options once (organizations)
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`${getApiUrl()}/public/master-data/organizations`, { signal: controller.signal })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((res) => setOrganizations(res.data || []))
+      .catch((err) => {
+        if (err?.name === 'AbortError') return;
+        console.error('Failed to load master data:', err);
+        setMasterDataError('ไม่สามารถโหลดข้อมูลหน่วยงานได้ กรุณาลองใหม่อีกครั้ง');
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!roundId) {
@@ -98,10 +133,20 @@ function FormInner() {
       const parseSchemaField = (field: any): SchemaField => {
         // Parse options
         let options: string[] = [];
+        let masterDataSource: MasterDataSource | null = null;
         if (field.options) {
           if (Array.isArray(field.options)) options = field.options;
           else if (typeof field.options === 'string') {
-            try { options = JSON.parse(field.options); } catch { options = []; }
+            try {
+              const parsed = JSON.parse(field.options);
+              if (Array.isArray(parsed)) options = parsed;
+              else if (parsed && typeof parsed === 'object' && parsed.source) {
+                masterDataSource = parsed.source;
+              }
+            } catch { options = []; }
+          } else if (typeof field.options === 'object' && (field.options as any).source) {
+            // Drizzle { mode: 'json' } may hand back a parsed object
+            masterDataSource = (field.options as any).source;
           }
         }
         
@@ -131,6 +176,7 @@ function FormInner() {
           overrideLabel: field.overrideLabel,
           options: options.length > 0 ? options : null,
           overrideOptions: overrideOptions.length > 0 ? overrideOptions : null,
+          masterDataSource,
           isRequired: field.isRequired || false,
           helpText: field.helpText,
           placeholder: field.placeholder,
@@ -182,6 +228,12 @@ function FormInner() {
         if (data[field.fieldId]) attachments.push({ fieldId: field.fieldId, fileUrl: data[field.fieldId] });
       } else if (field.type === 'CHECKBOX') {
         formData[field.fieldId] = data[field.fieldId] === true;
+      } else if (field.type === 'MASTER_DATA') {
+        // Persist { id, name } so the value stays human-readable for admin
+        // views even if the master record is later renamed.
+        const selectedId = data[field.fieldId];
+        const selected = organizations.find((o) => o.id === selectedId);
+        formData[field.fieldId] = selected ? { id: selected.id, name: selected.name } : null;
       } else {
         formData[field.fieldId] = data[field.fieldId];
       }
@@ -385,6 +437,45 @@ function FormInner() {
           </div>
         )}
         
+        {field.type === 'MASTER_DATA' && (
+          <Controller
+            name={field.fieldId}
+            control={control}
+            rules={validationRules}
+            render={({ field: rhfField }) => {
+              // Legacy apps may hold a plain string; normalise to the id.
+              const rawValue = rhfField.value;
+              const legacyValue =
+                rawValue && typeof rawValue === 'object'
+                  ? ((rawValue as { id?: string }).id ?? null)
+                  : (typeof rawValue === 'string' && rawValue) || null;
+
+              if (field.masterDataSource !== 'organizations') {
+                return (
+                  <p className="text-xs text-red-500">
+                    ไม่รองรับแหล่งข้อมูล: {field.masterDataSource || 'ไม่ระบุ'}
+                  </p>
+                );
+              }
+
+              return (
+                <>
+                  <SearchableDropdown
+                    options={organizations.map((o) => ({ id: o.id, label: o.name }))}
+                    value={legacyValue}
+                    onChange={(id) => rhfField.onChange(id)}
+                    placeholder={placeholder || 'พิมพ์เพื่อค้นหาหน่วยงาน...'}
+                    emptyText="ไม่พบหน่วยงานที่ค้นหา"
+                  />
+                  {masterDataError && (
+                    <p className="text-xs text-red-500 mt-1">{masterDataError}</p>
+                  )}
+                </>
+              );
+            }}
+          />
+        )}
+
         {field.type === 'CHECKBOX' && (
           <div className="flex items-start space-x-2">
             <Checkbox 
