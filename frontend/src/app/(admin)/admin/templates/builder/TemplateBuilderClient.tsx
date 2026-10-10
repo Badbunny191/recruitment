@@ -25,6 +25,7 @@ interface MasterField {
   validationType?: string;
   validationMessage?: string;
   fileConfig?: any;
+  pdfMappingKey?: string | null;
 }
 
 interface TemplateVersion {
@@ -121,6 +122,7 @@ function BuilderInner() {
   const templateId = searchParams.get('id') || '';
 
   const [masterFields, setMasterFields] = useState<MasterField[]>([]);
+
   const [template, setTemplate] = useState<{ id: string; name: string; description: string | null } | null>(null);
   const [versions, setVersions] = useState<TemplateVersion[]>([]);
   const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
@@ -401,15 +403,16 @@ function BuilderInner() {
       return;
     }
     
-    setSubmitting(true);
-    try {
-      const payload = {
-        sections: data.sections.map((s) => ({
-          tempId: s.id, // tempId for client-side mapping
-          name: s.name,
-          displayOrder: s.displayOrder,
-        })),
-        fields: data.fields.map((f) => {
+      setSubmitting(true);
+      try {
+        // ส่ง fieldId ตรง ๆ ไม่ต้องแปลง (FK migration เสร็จแล้ว — template_fields.field_id รับ UUID ได้แล้ว)
+        const payload = {
+          sections: data.sections.map((s) => ({
+            tempId: s.id, // tempId for client-side mapping
+            name: s.name,
+            displayOrder: s.displayOrder,
+          })),
+          fields: data.fields.map((f) => {
           const fieldData: any = {
             fieldId: f.fieldId,
             displayOrder: f.displayOrder,
@@ -487,7 +490,13 @@ function BuilderInner() {
           error: err,
           payload: payload,
         });
-        throw new Error(err.error || err.details || `save failed (${res.status})`);
+        // Serialize error message (อาจเป็น object จาก Hono)
+        const errMsg = typeof err.error === 'string'
+          ? err.error
+          : (err.details && typeof err.details === 'string')
+            ? err.details
+            : (err.error?.message || err.details?.message || `save failed (${res.status})`);
+        throw new Error(errMsg);
       }
 
       const result = await res.json();
@@ -503,7 +512,8 @@ function BuilderInner() {
       await loadAll();
     } catch (err) {
       console.error('Save Draft error:', err);
-      alert('เกิดข้อผิดพลาด: ' + (err as Error).message);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      alert('เกิดข้อผิดพลาด: ' + errMsg);
     } finally {
       setSubmitting(false);
     }

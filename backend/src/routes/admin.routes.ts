@@ -366,16 +366,29 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
         fieldId: f.fieldId,
         sectionId: realSectionId,
         displayOrder: f.displayOrder,
-        isRequired: f.isRequired,
-        overrideOptions: f.overrideOptions ? JSON.stringify(f.overrideOptions) : null,
-        overrideLabelTh: f.overrideLabelTh,
+        isRequired: f.isRequired ?? true,
+        // Defensive normalization: undefined / "" / [] => null
+        overrideOptions:
+          Array.isArray(f.overrideOptions) && f.overrideOptions.length > 0
+            ? JSON.stringify(f.overrideOptions)
+            : null,
+        overrideLabelTh: (typeof f.overrideLabelTh === 'string' && f.overrideLabelTh.trim().length > 0)
+          ? f.overrideLabelTh.trim()
+          : null,
+        helpText: (typeof f.helpText === 'string' && f.helpText.trim().length > 0)
+          ? f.helpText.trim()
+          : null,
+        placeholder: (typeof f.placeholder === 'string' && f.placeholder.trim().length > 0)
+          ? f.placeholder.trim()
+          : null,
+        validationRules:
+          f.validationRules && typeof f.validationRules === 'object' && Object.keys(f.validationRules).length > 0
+            ? JSON.stringify(f.validationRules)
+            : null,
+        rows: Number.isFinite(f.rows) && f.rows !== null ? Number(f.rows) : null,
+        minLength: Number.isFinite(f.minLength) && f.minLength !== null ? Number(f.minLength) : null,
+        maxLength: Number.isFinite(f.maxLength) && f.maxLength !== null ? Number(f.maxLength) : null,
       };
-      if (f.helpText) fieldValues.helpText = f.helpText;
-      if (f.placeholder) fieldValues.placeholder = f.placeholder;
-      if (f.validationRules) fieldValues.validationRules = JSON.stringify(f.validationRules);
-      if (f.rows) fieldValues.rows = f.rows;
-      if (f.minLength) fieldValues.minLength = f.minLength;
-      if (f.maxLength) fieldValues.maxLength = f.maxLength;
 
       await db.insert(templateFields).values(fieldValues as any);
     }
@@ -400,16 +413,29 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
         fieldId: f.fieldId,
         sectionId: defaultSectionId, // assign to default section
         displayOrder: f.displayOrder,
-        isRequired: f.isRequired,
-        overrideOptions: f.overrideOptions ? JSON.stringify(f.overrideOptions) : null,
-        overrideLabelTh: f.overrideLabelTh,
+        isRequired: f.isRequired ?? true,
+        // Defensive normalization: undefined / "" / [] => null
+        overrideOptions:
+          Array.isArray(f.overrideOptions) && f.overrideOptions.length > 0
+            ? JSON.stringify(f.overrideOptions)
+            : null,
+        overrideLabelTh: (typeof f.overrideLabelTh === 'string' && f.overrideLabelTh.trim().length > 0)
+          ? f.overrideLabelTh.trim()
+          : null,
+        helpText: (typeof f.helpText === 'string' && f.helpText.trim().length > 0)
+          ? f.helpText.trim()
+          : null,
+        placeholder: (typeof f.placeholder === 'string' && f.placeholder.trim().length > 0)
+          ? f.placeholder.trim()
+          : null,
+        validationRules:
+          f.validationRules && typeof f.validationRules === 'object' && Object.keys(f.validationRules).length > 0
+            ? JSON.stringify(f.validationRules)
+            : null,
+        rows: Number.isFinite(f.rows) && f.rows !== null ? Number(f.rows) : null,
+        minLength: Number.isFinite(f.minLength) && f.minLength !== null ? Number(f.minLength) : null,
+        maxLength: Number.isFinite(f.maxLength) && f.maxLength !== null ? Number(f.maxLength) : null,
       };
-      if (f.helpText) fieldValues.helpText = f.helpText;
-      if (f.placeholder) fieldValues.placeholder = f.placeholder;
-      if (f.validationRules) fieldValues.validationRules = JSON.stringify(f.validationRules);
-      if (f.rows) fieldValues.rows = f.rows;
-      if (f.minLength) fieldValues.minLength = f.minLength;
-      if (f.maxLength) fieldValues.maxLength = f.maxLength;
 
       await db.insert(templateFields).values(fieldValues as any);
     }
@@ -477,15 +503,28 @@ adminRoutes.put('/template-versions/:versionId',
         sectionId: realSectionId,
         displayOrder: f.displayOrder,
         isRequired: f.isRequired ?? true,
-        overrideOptions: f.overrideOptions ? JSON.stringify(f.overrideOptions) : null,
-        overrideLabelTh: f.overrideLabelTh ?? null,
+        // Defensive normalization: undefined / "" / [] => null
+        overrideOptions:
+          Array.isArray(f.overrideOptions) && f.overrideOptions.length > 0
+            ? JSON.stringify(f.overrideOptions)
+            : null,
+        overrideLabelTh: (typeof f.overrideLabelTh === 'string' && f.overrideLabelTh.trim().length > 0)
+          ? f.overrideLabelTh.trim()
+          : null,
+        helpText: (typeof f.helpText === 'string' && f.helpText.trim().length > 0)
+          ? f.helpText.trim()
+          : null,
+        placeholder: (typeof f.placeholder === 'string' && f.placeholder.trim().length > 0)
+          ? f.placeholder.trim()
+          : null,
+        validationRules:
+          f.validationRules && typeof f.validationRules === 'object' && Object.keys(f.validationRules).length > 0
+            ? JSON.stringify(f.validationRules)
+            : null,
+        rows: Number.isFinite(f.rows) && f.rows !== null ? Number(f.rows) : null,
+        minLength: Number.isFinite(f.minLength) && f.minLength !== null ? Number(f.minLength) : null,
+        maxLength: Number.isFinite(f.maxLength) && f.maxLength !== null ? Number(f.maxLength) : null,
       };
-      if (f.helpText) fieldValues.helpText = f.helpText;
-      if (f.placeholder) fieldValues.placeholder = f.placeholder;
-      if (f.validationRules) fieldValues.validationRules = JSON.stringify(f.validationRules);
-      if (f.rows) fieldValues.rows = f.rows;
-      if (f.minLength !== undefined && f.minLength !== null) fieldValues.minLength = f.minLength;
-      if (f.maxLength !== undefined && f.maxLength !== null) fieldValues.maxLength = f.maxLength;
 
       await db.insert(templateFields).values(fieldValues as any);
     }
