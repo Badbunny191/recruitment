@@ -473,64 +473,77 @@ adminRoutes.put('/template-versions/:versionId',
       }, 400);
     }
 
-    // 3. DELETE existing sections and fields (CASCADE จะลบ fields ด้วย)
-    await db.delete(templateSections)
-      .where(eq(templateSections.templateVersionId, versionId));
-
-    // 4. INSERT new sections
+    // 3. Atomic rebuild of fields+sections via D1 batch.
+    // ⚠️ Schema note: templateFields.sectionId uses ON DELETE SET NULL (not CASCADE),
+    // so deleting sections first would leave orphan field rows behind and cause duplicates
+    // on the next save. Always delete FIELDS first, then sections, then INSERT sections,
+    // then INSERT fields — all in one D1 batch so we either get a consistent new state
+    // or D1 aborts before any statement runs.
+    // Note: D1 does not support SQL BEGIN/COMMIT (transaction()), so we use db.batch().
     const sectionIdMap = new Map<string, string>();
     for (const s of payload.sections) {
-      const newSectionId = uuidv4();
-      sectionIdMap.set(s.tempId, newSectionId);
-      await db.insert(templateSections).values({
-        id: newSectionId,
-        templateVersionId: versionId,
-        name: s.name,
-        displayOrder: s.displayOrder,
-        isActive: true,
-        createdAt: sql`(unixepoch())`,
-        updatedAt: sql`(unixepoch())`,
-      });
+      sectionIdMap.set(s.tempId, uuidv4());
     }
 
-    // 5. INSERT new fields
-    for (const f of payload.fields) {
-      const realSectionId = f.sectionId ? (sectionIdMap.get(f.sectionId) ?? null) : null;
-      const fieldValues: any = {
-        id: uuidv4(),
-        templateVersionId: versionId,
-        fieldId: f.fieldId,
-        sectionId: realSectionId,
-        displayOrder: f.displayOrder,
-        isRequired: f.isRequired ?? true,
-        // Defensive normalization: undefined / "" / [] => null
-        overrideOptions:
-          Array.isArray(f.overrideOptions) && f.overrideOptions.length > 0
-            ? JSON.stringify(f.overrideOptions)
+    const stmts: any[] = [
+      // 3a. Delete fields first (children of sections via SET NULL)
+      db.delete(templateFields)
+        .where(eq(templateFields.templateVersionId, versionId)),
+      // 3b. Then delete sections (no remaining FK references after fields are gone)
+      db.delete(templateSections)
+        .where(eq(templateSections.templateVersionId, versionId)),
+      // 3c. Insert new sections
+      ...payload.sections.map((s: any) =>
+        db.insert(templateSections).values({
+          id: sectionIdMap.get(s.tempId)!,
+          templateVersionId: versionId,
+          name: s.name,
+          displayOrder: s.displayOrder,
+          isActive: true,
+          createdAt: sql`(unixepoch())`,
+          updatedAt: sql`(unixepoch())`,
+        })
+      ),
+      // 3d. Insert new fields with remapped sectionId
+      ...payload.fields.map((f: any) => {
+        const realSectionId = f.sectionId ? (sectionIdMap.get(f.sectionId) ?? null) : null;
+        const fieldValues: any = {
+          id: uuidv4(),
+          templateVersionId: versionId,
+          fieldId: f.fieldId,
+          sectionId: realSectionId,
+          displayOrder: f.displayOrder,
+          isRequired: f.isRequired ?? true,
+          // Defensive normalization: undefined / "" / [] => null
+          overrideOptions:
+            Array.isArray(f.overrideOptions) && f.overrideOptions.length > 0
+              ? JSON.stringify(f.overrideOptions)
+              : null,
+          overrideLabelTh: (typeof f.overrideLabelTh === 'string' && f.overrideLabelTh.trim().length > 0)
+            ? f.overrideLabelTh.trim()
             : null,
-        overrideLabelTh: (typeof f.overrideLabelTh === 'string' && f.overrideLabelTh.trim().length > 0)
-          ? f.overrideLabelTh.trim()
-          : null,
-        helpText: (typeof f.helpText === 'string' && f.helpText.trim().length > 0)
-          ? f.helpText.trim()
-          : null,
-        placeholder: (typeof f.placeholder === 'string' && f.placeholder.trim().length > 0)
-          ? f.placeholder.trim()
-          : null,
-        validationRules:
-          f.validationRules && typeof f.validationRules === 'object' && Object.keys(f.validationRules).length > 0
-            ? JSON.stringify(f.validationRules)
+          helpText: (typeof f.helpText === 'string' && f.helpText.trim().length > 0)
+            ? f.helpText.trim()
             : null,
-        rows: Number.isFinite(f.rows) && f.rows !== null ? Number(f.rows) : null,
-        minLength: Number.isFinite(f.minLength) && f.minLength !== null ? Number(f.minLength) : null,
-        maxLength: Number.isFinite(f.maxLength) && f.maxLength !== null ? Number(f.maxLength) : null,
-      };
+          placeholder: (typeof f.placeholder === 'string' && f.placeholder.trim().length > 0)
+            ? f.placeholder.trim()
+            : null,
+          validationRules:
+            f.validationRules && typeof f.validationRules === 'object' && Object.keys(f.validationRules).length > 0
+              ? JSON.stringify(f.validationRules)
+              : null,
+          rows: Number.isFinite(f.rows) && f.rows !== null ? Number(f.rows) : null,
+          minLength: Number.isFinite(f.minLength) && f.minLength !== null ? Number(f.minLength) : null,
+          maxLength: Number.isFinite(f.maxLength) && f.maxLength !== null ? Number(f.maxLength) : null,
+        };
+        return db.insert(templateFields).values(fieldValues as any);
+      }),
+    ];
 
-      await db.insert(templateFields).values(fieldValues as any);
-    }
+    await (db.batch as any)(stmts);
 
     return c.json({
-      success: true, 
+      success: true,
       versionId,
       versionNumber: version.versionNumber,
       message: 'Draft updated successfully'
