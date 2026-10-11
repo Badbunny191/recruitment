@@ -25,7 +25,7 @@ export const fieldMaster = sqliteTable('field_master', {
   validationType: text('validation_type'),
   validationMessage: text('validation_message'),
 }, (table) => ({
-  checkFieldType: check('chk_field_type', sql`${table.fieldType} IN ('TEXT', 'TEXTAREA', 'DROPDOWN', 'RADIO', 'FILE', 'NUMBER', 'CHECKBOX', 'DATE')`)
+  checkFieldType: check('chk_field_type', sql`${table.fieldType} IN ('TEXT', 'TEXTAREA', 'DROPDOWN', 'RADIO', 'FILE', 'NUMBER', 'CHECKBOX', 'DATE', 'MASTER_DATA')`)
 }));
 
 export const templates = sqliteTable('templates', {

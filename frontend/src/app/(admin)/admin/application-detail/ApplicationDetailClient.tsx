@@ -246,6 +246,19 @@ export default function ApplicationDetailClient() {
     );
   }
 
+  // MASTER_DATA values are stored as { id, name }.
+  // Legacy applications stored a plain string — handle both.
+  const formatFormDataValue = (value: unknown): string => {
+    if (value === null || value === undefined || value === '') return '-';
+    if (typeof value === 'boolean') return value ? 'ตกลง' : 'ไม่ตกลง';
+    if (typeof value === 'object') {
+      const rec = value as Record<string, unknown>;
+      if (typeof rec.name === 'string' && rec.name) return rec.name;
+      return JSON.stringify(value);
+    }
+    return String(value);
+  };
+
   const parseFormData = (raw: any): Record<string, any> => {
     if (!raw) return {};
     if (typeof raw === 'object') return raw;
@@ -370,9 +383,7 @@ export default function ApplicationDetailClient() {
                   <div key={key} className="bg-gray-50 rounded-lg p-4">
                     <p className="text-sm text-gray-500 mb-1">{getFieldLabel(key)}</p>
                     <p className="font-medium whitespace-pre-wrap">
-                      {typeof value === 'object' && value !== null 
-                        ? JSON.stringify(value, null, 2) 
-                        : String(value) || '-'}
+                      {formatFormDataValue(value)}
                     </p>
                   </div>
                 ))}

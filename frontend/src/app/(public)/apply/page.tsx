@@ -10,9 +10,19 @@ import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { FileUpload } from '@/components/FileUpload';
+import { SearchableDropdown } from '@/components/SearchableDropdown';
 
-type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE';
+type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_ID' | 'REGEX';
+
+// Phase 1 supports only 'organizations'. Keep in sync with MASTER_DATA_SOURCES in
+// backend/src/schemas/validators.ts
+type MasterDataSource = 'organizations';
+
+interface MasterDataOption {
+  id: string;
+  name: string;
+}
 
 interface FileConfig {
   allowedFileTypes?: string[];
@@ -28,6 +38,8 @@ interface SchemaField {
   overrideLabel: string | null;
   options: string[] | null;
   overrideOptions: string[] | null;
+  // MASTER_DATA fields store { source: 'organizations' } here instead of string[]
+  masterDataSource?: MasterDataSource | null;
   isRequired: boolean;
   helpText?: string;
   placeholder?: string;
@@ -73,12 +85,90 @@ function FormInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const roundId = searchParams.get('id');
+
+  // Format a Date to Thai Buddhist wall clock (Asia/Bangkok, UTC+7).
+  //
+  // IMPORTANT: Admin form saves the openDate/closeDate as a wall-clock value
+  // entered in Thai time. The backend stores it as `unixepoch()` seconds,
+  // which D1 interprets as UTC. So the stored integer is *already* the
+  // "Bangkok wall clock" (shifted by -7h relative to the true UTC instant).
+  //
+  // To display the value the admin entered, we add the Bangkok offset
+  // (+7h) back to the timestamp and then read it as if it were UTC. This
+  // avoids using the client machine's local timezone and matches the
+  // server-side gate math (see backend/src/routes/public.routes.ts).
+  const formatThaiDateTime = (value: string | number | null | undefined): string => {
+    if (value === null || value === undefined || value === '') return '-';
+    let d: Date;
+    if (typeof value === 'number') {
+      // epoch seconds (DB stores integer unixepoch()) OR epoch ms
+      d = new Date(value < 1e12 ? value * 1000 : value);
+    } else {
+      d = new Date(value);
+    }
+    if (isNaN(d.getTime())) return String(value);
+
+    // Shift +7h so that getUTC*() returns the Thai wall clock the admin entered.
+    const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
+    const dThai = new Date(d.getTime() + BANGKOK_OFFSET_MS);
+
+    const months = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+    const day = dThai.getUTCDate();
+    const month = months[dThai.getUTCMonth()];
+    const year = dThai.getUTCFullYear() + 543; // CE -> BE
+    const hh = String(dThai.getUTCHours()).padStart(2, '0');
+    const mm = String(dThai.getUTCMinutes()).padStart(2, '0');
+    return `${day} ${month} ${year} ${hh}:${mm}`;
+  };
   const [schema, setSchema] = useState<SchemaField[]>([]);
   const [sections, setSections] = useState<TemplateSection[]>([]);
   const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Round lifecycle gate (DRAFT/CLOSED => 403 from /schema and /submit).
+  // When set, the page shows a friendly error card instead of the form.
+  const [roundError, setRoundError] = useState<{ message: string; status: string } | null>(null);
+
+  // Round detail fetched from /public/rounds/:id/detail (works for all statuses
+  // including DRAFT/CLOSED — unlike /rounds/active which only lists ACTIVE).
+  // Used by the announcement block (ACTIVE) and the Error Page (DRAFT/CLOSED).
+  interface RoundInfo {
+    id: string;
+    title: string;
+    positionLevel: string;
+    status: string;
+    openDate: string;  // ISO
+    closeDate: string; // ISO
+    announcementTitle: string | null;
+    announcementDescription: string | null;
+    contactInformation: string | null;
+    remark: string | null;
+  }
+  const [roundInfo, setRoundInfo] = useState<RoundInfo | null>(null);
+
+  // MASTER_DATA options (Phase 1: organizations)
+  const [organizations, setOrganizations] = useState<MasterDataOption[]>([]);
+  const [masterDataError, setMasterDataError] = useState<string | null>(null);
 
   const { register, handleSubmit, control, formState: { errors } } = useForm<FormValues>();
+
+  const getApiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
+
+  // Load master data options once (organizations)
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`${getApiUrl()}/public/master-data/organizations`, { signal: controller.signal })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((res) => setOrganizations(res.data || []))
+      .catch((err) => {
+        if (err?.name === 'AbortError') return;
+        console.error('Failed to load master data:', err);
+        setMasterDataError('ไม่สามารถโหลดข้อมูลหน่วยงานได้ กรุณาลองใหม่อีกครั้ง');
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!roundId) {
@@ -88,20 +178,63 @@ function FormInner() {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
     fetch(`${apiUrl}/public/rounds/${roundId}/schema`)
     .then(res => {
+      // ✅ Business rule gate: if the backend returns 403, it means the round is
+      // DRAFT (not yet published) or CLOSED. Extract the human-readable message
+      // from the response body instead of showing a generic HTTP error.
+      if (res.status === 403) {
+        return res.json().then((body: any) => {
+          setRoundError({
+            message: body?.error ?? 'ขณะนี้ยังไม่เปิดรับสมัคร',
+            status: body?.status ?? 'DRAFT',
+          });
+          setLoading(false);
+          return null; // signal: stop processing
+        });
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     })
-    .then(res => {
+    .then((res) => {
+      // null means we already handled a 403 above; skip the rest of the pipeline.
+      if (res === null) return;
+
       console.log('Schema loaded:', res.data);
       
       // Parse and normalize schema data
       const parseSchemaField = (field: any): SchemaField => {
         // Parse options
         let options: string[] = [];
-        if (field.options) {
+        let masterDataSource: MasterDataSource | null = null;
+
+        // ✅ BUG 1 FIX: Backend /public/rounds/:id/schema now sends `masterDataSource`
+        // as a top-level camelCase field (resolved by the server-side normalization in
+        // public.routes.ts). Trust that first; fall back to parsing `field.options` only
+        // if the server didn't provide it (legacy responses).
+        if (field.masterDataSource) {
+          if (field.masterDataSource === 'organizations') {
+            masterDataSource = 'organizations';
+          } else {
+            // Unknown / unsupported source — keep as null so the renderer falls into the
+            // "ไม่รองรับแหล่งข้อมูล" branch instead of silently rendering wrong data.
+            masterDataSource = null;
+          }
+        } else if (field.options) {
           if (Array.isArray(field.options)) options = field.options;
           else if (typeof field.options === 'string') {
-            try { options = JSON.parse(field.options); } catch { options = []; }
+            try {
+              const parsed = JSON.parse(field.options);
+              if (Array.isArray(parsed)) options = parsed;
+              else if (parsed && typeof parsed === 'object' && parsed.source) {
+                if (parsed.source === 'organizations') {
+                  masterDataSource = 'organizations';
+                }
+              }
+            } catch { options = []; }
+          } else if (typeof field.options === 'object' && (field.options as any).source) {
+            // Drizzle { mode: 'json' } may hand back a parsed object
+            if ((field.options as any).source === 'organizations') {
+              masterDataSource = 'organizations';
+            }
           }
         }
         
@@ -131,6 +264,7 @@ function FormInner() {
           overrideLabel: field.overrideLabel,
           options: options.length > 0 ? options : null,
           overrideOptions: overrideOptions.length > 0 ? overrideOptions : null,
+          masterDataSource,
           isRequired: field.isRequired || false,
           helpText: field.helpText,
           placeholder: field.placeholder,
@@ -169,6 +303,35 @@ function FormInner() {
     });
   }, [roundId]);
 
+  // Fetch round detail (announcement / contact / remark / dates / status) from
+  // /public/rounds/:id/detail. This endpoint works for ALL statuses including
+  // DRAFT and CLOSED — unlike /rounds/active which filters ACTIVE only. The
+  // page uses it for both the announcement block (ACTIVE) and the Error Page
+  // (DRAFT/CLOSED).
+  useEffect(() => {
+    if (!roundId) return;
+    const controller = new AbortController();
+    fetch(`${getApiUrl()}/public/rounds/${roundId}/detail`, { signal: controller.signal })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((res) => {
+        // Response shape: { success: true, data: { id, title, positionLevel, status, openDate, closeDate, announcementTitle, ... } }
+        if (res && res.success && res.data) {
+          setRoundInfo(res.data as RoundInfo);
+        } else {
+          setRoundInfo(null);
+        }
+      })
+      .catch((err) => {
+        if (err?.name === 'AbortError') return;
+        console.warn('Failed to load round detail:', err);
+        setRoundInfo(null);
+      });
+    return () => controller.abort();
+  }, [roundId]);
+
   const onSubmit: SubmitHandler<FormValues> = async (data) => {
     setIsSubmitting(true);
 
@@ -182,6 +345,12 @@ function FormInner() {
         if (data[field.fieldId]) attachments.push({ fieldId: field.fieldId, fileUrl: data[field.fieldId] });
       } else if (field.type === 'CHECKBOX') {
         formData[field.fieldId] = data[field.fieldId] === true;
+      } else if (field.type === 'MASTER_DATA') {
+        // Persist { id, name } so the value stays human-readable for admin
+        // views even if the master record is later renamed.
+        const selectedId = data[field.fieldId];
+        const selected = organizations.find((o) => o.id === selectedId);
+        formData[field.fieldId] = selected ? { id: selected.id, name: selected.name } : null;
       } else {
         formData[field.fieldId] = data[field.fieldId];
       }
@@ -195,6 +364,16 @@ function FormInner() {
         body: JSON.stringify({ roundId, formData, attachments }),
       });
       const result = await res.json();
+
+      // ✅ Business rule gate: if the round is DRAFT or CLOSED, the backend
+      // returns 403. Show a friendly error card instead of a generic alert.
+      if (res.status === 403) {
+        setRoundError({
+          message: result?.error ?? 'ขณะนี้ยังไม่เปิดรับสมัคร',
+          status: result?.status ?? 'DRAFT',
+        });
+        return;
+      }
 
       if (result.success) {
         router.push(`/apply/success?appNo=${result.data.applicationNo}`);
@@ -385,6 +564,45 @@ function FormInner() {
           </div>
         )}
         
+        {field.type === 'MASTER_DATA' && (
+          <Controller
+            name={field.fieldId}
+            control={control}
+            rules={validationRules}
+            render={({ field: rhfField }) => {
+              // Legacy apps may hold a plain string; normalise to the id.
+              const rawValue = rhfField.value;
+              const legacyValue =
+                rawValue && typeof rawValue === 'object'
+                  ? ((rawValue as { id?: string }).id ?? null)
+                  : (typeof rawValue === 'string' && rawValue) || null;
+
+              if (field.masterDataSource !== 'organizations') {
+                return (
+                  <p className="text-xs text-red-500">
+                    ไม่รองรับแหล่งข้อมูล: {field.masterDataSource || 'ไม่ระบุ'}
+                  </p>
+                );
+              }
+
+              return (
+                <>
+                  <SearchableDropdown
+                    options={organizations.map((o) => ({ id: o.id, label: o.name }))}
+                    value={legacyValue}
+                    onChange={(id) => rhfField.onChange(id)}
+                    placeholder={placeholder || 'พิมพ์เพื่อค้นหาหน่วยงาน...'}
+                    emptyText="ไม่พบหน่วยงานที่ค้นหา"
+                  />
+                  {masterDataError && (
+                    <p className="text-xs text-red-500 mt-1">{masterDataError}</p>
+                  )}
+                </>
+              );
+            }}
+          />
+        )}
+
         {field.type === 'CHECKBOX' && (
           <div className="flex items-start space-x-2">
             <Checkbox 
@@ -477,8 +695,103 @@ function FormInner() {
   // Check if there are any fields in the schema
   const hasSchemaFields = schema.length > 0;
 
+  // ✅ UX: When the round is DRAFT/CLOSED, the page renders an Error Page
+  // ONLY — no form card, no announcement block, no submit button. This
+  // matches the business rule: applicants should immediately see why they
+  // cannot apply, when the round opened/closed, and which position it is.
+  if (roundError) {
+    return (
+      <div className="max-w-3xl mx-auto p-4 md:p-8">
+        <Card>
+          <CardHeader className="bg-amber-50 border-b border-amber-200">
+            <CardTitle className="text-xl text-amber-800">
+              ไม่สามารถเปิดใบสมัครได้
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-6 space-y-4">
+            {/* Round identity (works for DRAFT/CLOSED too because /rounds/:id/detail
+                returns all statuses) */}
+            {roundInfo && (
+              <div className="space-y-2">
+                {roundInfo.announcementTitle && (
+                  <h2 className="text-base md:text-lg font-semibold text-slate-900">
+                    {roundInfo.announcementTitle}
+                  </h2>
+                )}
+                {roundInfo.title && (
+                  <p className="text-sm text-slate-700">
+                    <span className="font-medium">ชื่อรอบ:</span> {roundInfo.title}
+                  </p>
+                )}
+                {roundInfo.positionLevel && (
+                  <p className="text-sm text-slate-700">
+                    <span className="font-medium">ตำแหน่ง:</span> {roundInfo.positionLevel}
+                  </p>
+                )}
+                {roundInfo.openDate && (
+                  <p className="text-sm text-slate-700">
+                    <span className="font-medium">เปิดรับสมัคร:</span> {formatThaiDateTime(roundInfo.openDate)}
+                  </p>
+                )}
+                {roundInfo.closeDate && (
+                  <p className="text-sm text-slate-700">
+                    <span className="font-medium">ปิดรับสมัคร:</span> {formatThaiDateTime(roundInfo.closeDate)}
+                  </p>
+                )}
+                <p className="text-sm text-slate-700">
+                  <span className="font-medium">สถานะ:</span> {roundError.status}
+                </p>
+              </div>
+            )}
+
+            {/* Reason message from backend */}
+            <div className="rounded-md bg-amber-100 border border-amber-300 px-4 py-3 text-base text-amber-900">
+              {roundError.message}
+            </div>
+
+            <p className="text-sm text-slate-500">
+              หากคุณคิดว่าเป็นข้อผิดพลาด กรุณาติดต่อเจ้าหน้าที่
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-3xl mx-auto p-4 md:p-8">
+      {/* ✅ BUG 2 FIX: Round announcement / contact / remark block.
+          Rendered ABOVE the application form (per spec). Only shows when
+          roundInfo loaded and the matching field is non-empty. */}
+      {roundInfo && (roundInfo.announcementTitle || roundInfo.announcementDescription || roundInfo.contactInformation || roundInfo.remark) && (
+        <div className="mb-4 rounded-md border border-blue-200 bg-blue-50/60 p-4 md:p-5 space-y-3">
+          {roundInfo.announcementTitle && (
+            <div>
+              <h2 className="text-base md:text-lg font-semibold text-slate-900">
+                {roundInfo.announcementTitle}
+              </h2>
+            </div>
+          )}
+          {roundInfo.announcementDescription && (
+            <div className="text-sm text-slate-700 whitespace-pre-line">
+              {roundInfo.announcementDescription}
+            </div>
+          )}
+          {roundInfo.contactInformation && (
+            <div className="text-sm text-slate-700">
+              <span className="font-medium">ข้อมูลติดต่อ: </span>
+              <span className="whitespace-pre-line">{roundInfo.contactInformation}</span>
+            </div>
+          )}
+          {roundInfo.remark && (
+            <div className="text-sm text-slate-600">
+              <span className="font-medium">หมายเหตุ: </span>
+              <span className="whitespace-pre-line">{roundInfo.remark}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       <Card>
         <CardHeader className="bg-slate-50 border-b">
           <CardTitle className="text-xl">ใบสมัครคัดเลือกบุคลากร</CardTitle>

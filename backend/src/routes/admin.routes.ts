@@ -9,7 +9,7 @@ import { authMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions } from '../db/schema';
-import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema } from '../schemas/validators';
+import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema } from '../schemas/validators';
 
 const adminRoutes = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
 
@@ -366,16 +366,29 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
         fieldId: f.fieldId,
         sectionId: realSectionId,
         displayOrder: f.displayOrder,
-        isRequired: f.isRequired,
-        overrideOptions: f.overrideOptions ? JSON.stringify(f.overrideOptions) : null,
-        overrideLabelTh: f.overrideLabelTh,
+        isRequired: f.isRequired ?? true,
+        // Defensive normalization: undefined / "" / [] => null
+        overrideOptions:
+          Array.isArray(f.overrideOptions) && f.overrideOptions.length > 0
+            ? JSON.stringify(f.overrideOptions)
+            : null,
+        overrideLabelTh: (typeof f.overrideLabelTh === 'string' && f.overrideLabelTh.trim().length > 0)
+          ? f.overrideLabelTh.trim()
+          : null,
+        helpText: (typeof f.helpText === 'string' && f.helpText.trim().length > 0)
+          ? f.helpText.trim()
+          : null,
+        placeholder: (typeof f.placeholder === 'string' && f.placeholder.trim().length > 0)
+          ? f.placeholder.trim()
+          : null,
+        validationRules:
+          f.validationRules && typeof f.validationRules === 'object' && Object.keys(f.validationRules).length > 0
+            ? JSON.stringify(f.validationRules)
+            : null,
+        rows: Number.isFinite(f.rows) && f.rows !== null ? Number(f.rows) : null,
+        minLength: Number.isFinite(f.minLength) && f.minLength !== null ? Number(f.minLength) : null,
+        maxLength: Number.isFinite(f.maxLength) && f.maxLength !== null ? Number(f.maxLength) : null,
       };
-      if (f.helpText) fieldValues.helpText = f.helpText;
-      if (f.placeholder) fieldValues.placeholder = f.placeholder;
-      if (f.validationRules) fieldValues.validationRules = JSON.stringify(f.validationRules);
-      if (f.rows) fieldValues.rows = f.rows;
-      if (f.minLength) fieldValues.minLength = f.minLength;
-      if (f.maxLength) fieldValues.maxLength = f.maxLength;
 
       await db.insert(templateFields).values(fieldValues as any);
     }
@@ -400,16 +413,29 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
         fieldId: f.fieldId,
         sectionId: defaultSectionId, // assign to default section
         displayOrder: f.displayOrder,
-        isRequired: f.isRequired,
-        overrideOptions: f.overrideOptions ? JSON.stringify(f.overrideOptions) : null,
-        overrideLabelTh: f.overrideLabelTh,
+        isRequired: f.isRequired ?? true,
+        // Defensive normalization: undefined / "" / [] => null
+        overrideOptions:
+          Array.isArray(f.overrideOptions) && f.overrideOptions.length > 0
+            ? JSON.stringify(f.overrideOptions)
+            : null,
+        overrideLabelTh: (typeof f.overrideLabelTh === 'string' && f.overrideLabelTh.trim().length > 0)
+          ? f.overrideLabelTh.trim()
+          : null,
+        helpText: (typeof f.helpText === 'string' && f.helpText.trim().length > 0)
+          ? f.helpText.trim()
+          : null,
+        placeholder: (typeof f.placeholder === 'string' && f.placeholder.trim().length > 0)
+          ? f.placeholder.trim()
+          : null,
+        validationRules:
+          f.validationRules && typeof f.validationRules === 'object' && Object.keys(f.validationRules).length > 0
+            ? JSON.stringify(f.validationRules)
+            : null,
+        rows: Number.isFinite(f.rows) && f.rows !== null ? Number(f.rows) : null,
+        minLength: Number.isFinite(f.minLength) && f.minLength !== null ? Number(f.minLength) : null,
+        maxLength: Number.isFinite(f.maxLength) && f.maxLength !== null ? Number(f.maxLength) : null,
       };
-      if (f.helpText) fieldValues.helpText = f.helpText;
-      if (f.placeholder) fieldValues.placeholder = f.placeholder;
-      if (f.validationRules) fieldValues.validationRules = JSON.stringify(f.validationRules);
-      if (f.rows) fieldValues.rows = f.rows;
-      if (f.minLength) fieldValues.minLength = f.minLength;
-      if (f.maxLength) fieldValues.maxLength = f.maxLength;
 
       await db.insert(templateFields).values(fieldValues as any);
     }
@@ -417,6 +443,113 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
 
   return c.json({ success: true, versionId }, 201);
 });
+
+// =============================================================================
+// Sprint 4 - Template Version Update API (Phase 1)
+// PUT /admin/template-versions/:versionId - UPDATE Draft เดิม (ไม่สร้าง Version ใหม่)
+// =============================================================================
+adminRoutes.put('/template-versions/:versionId', 
+  auditMiddleware('TEMPLATE_VERSION'),
+  zValidator('json', TemplateVersionUpdateSchema), 
+  async (c) => {
+    const db = drizzle(c.env.DB);
+    const versionId = c.req.param('versionId');
+    const payload = c.req.valid('json') as any;
+
+    // 1. Verify version exists
+    const version = await db.select()
+      .from(templateVersions)
+      .where(eq(templateVersions.id, versionId))
+      .get();
+    
+    if (!version) {
+      return c.json({ error: 'Version not found' }, 404);
+    }
+
+    // 2. Validate: เฉพาะ DRAFT เท่านั้นที่อัปเดตได้
+    if (version.status !== 'DRAFT') {
+      return c.json({ 
+        error: `Can only update DRAFT version. Current status: ${version.status}` 
+      }, 400);
+    }
+
+    // 3. Atomic rebuild of fields+sections via D1 batch.
+    // ⚠️ Schema note: templateFields.sectionId uses ON DELETE SET NULL (not CASCADE),
+    // so deleting sections first would leave orphan field rows behind and cause duplicates
+    // on the next save. Always delete FIELDS first, then sections, then INSERT sections,
+    // then INSERT fields — all in one D1 batch so we either get a consistent new state
+    // or D1 aborts before any statement runs.
+    // Note: D1 does not support SQL BEGIN/COMMIT (transaction()), so we use db.batch().
+    const sectionIdMap = new Map<string, string>();
+    for (const s of payload.sections) {
+      sectionIdMap.set(s.tempId, uuidv4());
+    }
+
+    const stmts: any[] = [
+      // 3a. Delete fields first (children of sections via SET NULL)
+      db.delete(templateFields)
+        .where(eq(templateFields.templateVersionId, versionId)),
+      // 3b. Then delete sections (no remaining FK references after fields are gone)
+      db.delete(templateSections)
+        .where(eq(templateSections.templateVersionId, versionId)),
+      // 3c. Insert new sections
+      ...payload.sections.map((s: any) =>
+        db.insert(templateSections).values({
+          id: sectionIdMap.get(s.tempId)!,
+          templateVersionId: versionId,
+          name: s.name,
+          displayOrder: s.displayOrder,
+          isActive: true,
+          createdAt: sql`(unixepoch())`,
+          updatedAt: sql`(unixepoch())`,
+        })
+      ),
+      // 3d. Insert new fields with remapped sectionId
+      ...payload.fields.map((f: any) => {
+        const realSectionId = f.sectionId ? (sectionIdMap.get(f.sectionId) ?? null) : null;
+        const fieldValues: any = {
+          id: uuidv4(),
+          templateVersionId: versionId,
+          fieldId: f.fieldId,
+          sectionId: realSectionId,
+          displayOrder: f.displayOrder,
+          isRequired: f.isRequired ?? true,
+          // Defensive normalization: undefined / "" / [] => null
+          overrideOptions:
+            Array.isArray(f.overrideOptions) && f.overrideOptions.length > 0
+              ? JSON.stringify(f.overrideOptions)
+              : null,
+          overrideLabelTh: (typeof f.overrideLabelTh === 'string' && f.overrideLabelTh.trim().length > 0)
+            ? f.overrideLabelTh.trim()
+            : null,
+          helpText: (typeof f.helpText === 'string' && f.helpText.trim().length > 0)
+            ? f.helpText.trim()
+            : null,
+          placeholder: (typeof f.placeholder === 'string' && f.placeholder.trim().length > 0)
+            ? f.placeholder.trim()
+            : null,
+          validationRules:
+            f.validationRules && typeof f.validationRules === 'object' && Object.keys(f.validationRules).length > 0
+              ? JSON.stringify(f.validationRules)
+              : null,
+          rows: Number.isFinite(f.rows) && f.rows !== null ? Number(f.rows) : null,
+          minLength: Number.isFinite(f.minLength) && f.minLength !== null ? Number(f.minLength) : null,
+          maxLength: Number.isFinite(f.maxLength) && f.maxLength !== null ? Number(f.maxLength) : null,
+        };
+        return db.insert(templateFields).values(fieldValues as any);
+      }),
+    ];
+
+    await (db.batch as any)(stmts);
+
+    return c.json({
+      success: true,
+      versionId,
+      versionNumber: version.versionNumber,
+      message: 'Draft updated successfully'
+    });
+  }
+);
 
 // =============================================================================
 // Sprint 4 - Template Sections API
@@ -681,6 +814,7 @@ adminRoutes.put('/template-fields/:id/section', auditMiddleware('TEMPLATE_FIELD'
 });
 
 // PATCH /admin/template-versions/:id/publish - DRAFT → PUBLISHED
+// RFC Policy: Only 1 Published version at a time. Old Published → Auto Archive
 adminRoutes.patch('/template-versions/:id/publish', auditMiddleware('TEMPLATE_VERSION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
@@ -695,8 +829,31 @@ adminRoutes.patch('/template-versions/:id/publish', auditMiddleware('TEMPLATE_VE
     return c.json({ error: 'Only DRAFT version can be published' }, 400);
   }
   
-  await db.update(templateVersions).set({ status: 'PUBLISHED' }).where(eq(templateVersions.id, id));
-  return c.json({ success: true });
+  // RFC Policy: Auto-archive old Published version
+  // Find current Published version for this template
+  const currentPublished = await db.select().from(templateVersions)
+    .where(and(
+      eq(templateVersions.templateId, version.templateId),
+      eq(templateVersions.status, 'PUBLISHED')
+    )).get();
+
+  // Set new version as PUBLISHED
+  await db.update(templateVersions)
+    .set({ status: 'PUBLISHED' })
+    .where(eq(templateVersions.id, id));
+
+  // If there's an existing Published version, archive it
+  if (currentPublished) {
+    await db.update(templateVersions)
+      .set({ status: 'ARCHIVED' })
+      .where(eq(templateVersions.id, currentPublished.id));
+  }
+  
+  return c.json({ 
+    success: true,
+    previousPublishedArchived: !!currentPublished,
+    previousPublishedId: currentPublished?.id || null
+  });
 });
 
 // PATCH /admin/template-versions/:id/archive - PUBLISHED → ARCHIVED
@@ -714,16 +871,16 @@ adminRoutes.patch('/template-versions/:id/archive', auditMiddleware('TEMPLATE_VE
     return c.json({ error: 'Only PUBLISHED version can be archived' }, 400);
   }
   
-  // Check if any active rounds are using this version
-  const activeRounds = await db.select()
+  // RFC Policy: Cannot archive if any rounds reference this version (snapshot)
+  const roundsUsing = await db.select()
     .from(recruitmentRounds)
-    .where(and(
-      eq(recruitmentRounds.templateVersionId, id),
-      eq(recruitmentRounds.status, 'ACTIVE')
-    ));
+    .where(eq(recruitmentRounds.templateVersionId, id));
   
-  if (activeRounds.length > 0) {
-    return c.json({ error: 'Cannot archive version that is used by active rounds', activeRounds: activeRounds.length }, 400);
+  if (roundsUsing.length > 0) {
+    return c.json({ 
+      error: 'Cannot archive version that is referenced by rounds (snapshot policy)',
+      roundsCount: roundsUsing.length
+    }, 400);
   }
   
   await db.update(templateVersions).set({ status: 'ARCHIVED' }).where(eq(templateVersions.id, id));
@@ -741,6 +898,7 @@ adminRoutes.delete('/template-versions/:id', auditMiddleware('TEMPLATE_VERSION')
     return c.json({ error: 'Version not found' }, 404);
   }
   
+  // RFC Policy: Only DRAFT can be deleted
   if (version.status !== 'DRAFT') {
     return c.json({ error: 'Only DRAFT version can be deleted', status: version.status }, 400);
   }
@@ -2144,6 +2302,126 @@ adminRoutes.patch('/positions/:id/toggle', auditMiddleware('POSITION'), async (c
 
   const updated = await db.select().from(positions).where(eq(positions.id, id)).get();
   return c.json({ data: updated });
+});
+
+// =============================================================================
+// FEATURE: Admin Preview Form (Sprint 5)
+// =============================================================
+// GET /admin/rounds/:id/preview-schema
+//
+// Bypasses the public round lifecycle gate (evaluateRound) so that an
+// authenticated Admin can preview the schema of a DRAFT or CLOSED round
+// before publishing. The response shape mirrors /public/rounds/:id/schema
+// (sections + fields with MASTER_DATA normalization) and adds:
+//   - isPreview: true            (frontend marker to switch to Preview UX)
+//   - round.{status, dates...}  (so the Preview page can render banners
+//     without an extra round-detail call)
+//
+// Security: protected by `adminRoutes.use('/*', authMiddleware)` above.
+// This endpoint does NOT call evaluateRound() and does NOT expose any
+// application or attachment data.
+// =============================================================================
+adminRoutes.get('/rounds/:id/preview-schema', async (c) => {
+  const db = drizzle(c.env.DB);
+  const roundId = c.req.param('id');
+
+  // 1. Fetch the round (any status, no gate)
+  const round = await db
+    .select({
+      id: recruitmentRounds.id,
+      title: recruitmentRounds.title,
+      positionLevel: recruitmentRounds.positionLevel,
+      status: recruitmentRounds.status,
+      openDate: recruitmentRounds.openDate,
+      closeDate: recruitmentRounds.closeDate,
+      announcementTitle: recruitmentRounds.announcementTitle,
+      announcementDescription: recruitmentRounds.announcementDescription,
+      contactInformation: recruitmentRounds.contactInformation,
+      remark: recruitmentRounds.remark,
+      templateVersionId: recruitmentRounds.templateVersionId,
+    })
+    .from(recruitmentRounds)
+    .where(eq(recruitmentRounds.id, roundId))
+    .get();
+
+  if (!round) {
+    return c.json({ success: false, error: 'ไม่พบรอบรับสมัคร' }, 404);
+  }
+
+  // 2. Fetch sections (same query shape as public schema)
+  const sections = await db
+    .select()
+    .from(templateSections)
+    .where(eq(templateSections.templateVersionId, round.templateVersionId))
+    .orderBy(asc(templateSections.displayOrder));
+
+  // 3. Fetch fields with fieldMaster join (same as public schema)
+  const schema = await db
+    .select({
+      fieldId: templateFields.fieldId,
+      sectionId: templateFields.sectionId,
+      type: fieldMaster.fieldType,
+      label: fieldMaster.labelTh,
+      overrideLabel: templateFields.overrideLabelTh,
+      options: fieldMaster.defaultOptions,
+      overrideOptions: templateFields.overrideOptions,
+      isRequired: templateFields.isRequired,
+      helpText: fieldMaster.helpText,
+      placeholder: fieldMaster.placeholder,
+      section: fieldMaster.section, // legacy fallback
+      fileConfig: fieldMaster.fileConfig,
+      validationType: fieldMaster.validationType,
+      validationMessage: fieldMaster.validationMessage,
+      order: templateFields.displayOrder,
+    })
+    .from(templateFields)
+    .innerJoin(fieldMaster, eq(templateFields.fieldId, fieldMaster.id))
+    .where(eq(templateFields.templateVersionId, round.templateVersionId))
+    .orderBy(templateFields.displayOrder);
+
+  // 4. Normalize MASTER_DATA fields (same logic as public schema)
+  const normalized = schema.map((f) => {
+    if (f.type !== 'MASTER_DATA') return { ...f, masterDataSource: null };
+
+    const raw: unknown = f.options;
+    let source: string | null = null;
+
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          source = (parsed as { source?: string }).source ?? null;
+        }
+      } catch {
+        source = null;
+      }
+    } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      source = (raw as { source?: string }).source ?? null;
+    }
+
+    return { ...f, options: null, masterDataSource: source };
+  });
+
+  return c.json({
+    success: true,
+    isPreview: true,
+    data: {
+      sections: sections.filter((s) => s.isActive),
+      fields: normalized,
+      round: {
+        id: round.id,
+        title: round.title,
+        positionLevel: round.positionLevel,
+        status: round.status,
+        openDate: round.openDate,
+        closeDate: round.closeDate,
+        announcementTitle: round.announcementTitle,
+        announcementDescription: round.announcementDescription,
+        contactInformation: round.contactInformation,
+        remark: round.remark,
+      },
+    },
+  });
 });
 
 export { adminRoutes };

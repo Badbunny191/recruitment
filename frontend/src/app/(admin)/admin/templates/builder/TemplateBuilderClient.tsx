@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ViewVersionModal } from '@/components/ViewVersionModal';
 import { CompareVersionModal } from '@/components/CompareVersionModal';
 
@@ -24,6 +25,7 @@ interface MasterField {
   validationType?: string;
   validationMessage?: string;
   fileConfig?: any;
+  pdfMappingKey?: string | null;
 }
 
 interface TemplateVersion {
@@ -120,10 +122,13 @@ function BuilderInner() {
   const templateId = searchParams.get('id') || '';
 
   const [masterFields, setMasterFields] = useState<MasterField[]>([]);
+
   const [template, setTemplate] = useState<{ id: string; name: string; description: string | null } | null>(null);
   const [versions, setVersions] = useState<TemplateVersion[]>([]);
   const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
   const [draftVersionId, setDraftVersionId] = useState<string | null>(null);
+  const [publishedVersionId, setPublishedVersionId] = useState<string | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
@@ -197,13 +202,23 @@ function BuilderInner() {
         .filter(v => v.status === 'PUBLISHED')
         .sort((a, b) => b.versionNumber - a.versionNumber);
       
+      const latestPublished = publishedVersions[0] || null;
+      const latestDraft = draftVersions[0] || null;
+      
+      // Set published version ID
+      if (latestPublished) {
+        setPublishedVersionId(latestPublished.id);
+      }
+      
       // Priority: Draft > Published
-      const targetVersion = draftVersions[0] || publishedVersions[0];
+      const targetVersion = latestDraft || latestPublished;
       
       if (targetVersion) {
         setCurrentVersionId(targetVersion.id);
         if (targetVersion.status === 'DRAFT') {
           setDraftVersionId(targetVersion.id);
+        } else {
+          setDraftVersionId(null); // Clear draft ID when showing published
         }
 
         // Load fields for this version
@@ -256,6 +271,9 @@ function BuilderInner() {
 
         replace(formFields);
         replaceSections(formSections);
+        
+        // Clear unsaved changes indicator after loading
+        setHasUnsavedChanges(false);
       }
     } finally {
       setLoading(false);
@@ -267,11 +285,25 @@ function BuilderInner() {
   }, [templateId]);
 
   const addField = (mf: MasterField, targetSectionId: string | null = null) => {
+    // Allow adding fields even without a version (will be created with Save Draft)
     const opts = parseOptions(mf.defaultOptions);
     const currentFields = watch('fields');
-    const currentSections = watch('sections');
-    // Default to first section if exists
-    const sectionId = targetSectionId ?? (currentSections.length > 0 ? currentSections[0].id : null);
+    let currentSections = watch('sections');
+    
+    // Auto-create first section if none exists
+    if (currentSections.length === 0) {
+      const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      appendSection({
+        id: tempId,
+        name: 'ข้อมูลทั่วไป',
+        displayOrder: 1,
+        isActive: true,
+      });
+      currentSections = [{ id: tempId, name: 'ข้อมูลทั่วไป', displayOrder: 1, isActive: true }];
+    }
+    
+    // Default to first section
+    const sectionId = targetSectionId ?? currentSections[0].id;
     append({
       fieldId: mf.id,
       displayOrder: currentFields.length + 1,
@@ -292,9 +324,11 @@ function BuilderInner() {
       validationTypeOriginal: mf.validationType,
       sectionId,
     });
+    setHasUnsavedChanges(true);
   };
 
   const addSection = () => {
+    // Allow adding sections even without a version (will be created with Save Draft)
     const currentSections = watch('sections');
     const name = window.prompt('ชื่อ Section ใหม่:', `ข้อมูลใหม่ ${currentSections.length + 1}`);
     if (!name || !name.trim()) return;
@@ -306,6 +340,7 @@ function BuilderInner() {
       displayOrder: currentSections.length + 1,
       isActive: true,
     });
+    setHasUnsavedChanges(true);
   };
 
   const removeSectionAction = async (index: number) => {
@@ -317,6 +352,7 @@ function BuilderInner() {
     );
     replace(updated);
     removeSection(index);
+    setHasUnsavedChanges(true);
   };
 
   const moveSection = (index: number, direction: -1 | 1) => {
@@ -334,6 +370,7 @@ function BuilderInner() {
     arr.splice(to, 0, item);
     const renumbered = arr.map((s, i) => ({ ...s, displayOrder: i + 1 }));
     replaceSections(renumbered);
+    setHasUnsavedChanges(true);
   };
 
   const moveField = (index: number, direction: -1 | 1) => {
@@ -344,9 +381,12 @@ function BuilderInner() {
     [current[index], current[newIndex]] = [current[newIndex], current[index]];
     const formValues = current.map((f, i) => ({ ...f, displayOrder: i + 1 }));
     replace(formValues);
+    setHasUnsavedChanges(true);
   };
 
-  // Save as Draft (new or update)
+  // Save as Draft - RFC Phase 2
+  // IF draftVersionId exists → PUT update
+  // ELSE → POST create new
   const onSaveDraft = async (data: FormValues) => {
     if (data.fields.length === 0) {
       alert('กรุณาเพิ่มฟิลด์อย่างน้อย 1 ฟิลด์');
@@ -356,16 +396,23 @@ function BuilderInner() {
       alert('กรุณาเพิ่ม Section อย่างน้อย 1 Section');
       return;
     }
-    setSubmitting(true);
-    try {
-      const payload = {
-        templateId,
-        sections: data.sections.map((s) => ({
-          tempId: s.id, // tempId for client-side mapping
-          name: s.name,
-          displayOrder: s.displayOrder,
-        })),
-        fields: data.fields.map((f) => {
+    
+    // Validate templateId before making request
+    if (!templateId || templateId.trim() === '') {
+      alert('ไม่พบ Template ID');
+      return;
+    }
+    
+      setSubmitting(true);
+      try {
+        // ส่ง fieldId ตรง ๆ ไม่ต้องแปลง (FK migration เสร็จแล้ว — template_fields.field_id รับ UUID ได้แล้ว)
+        const payload = {
+          sections: data.sections.map((s) => ({
+            tempId: s.id, // tempId for client-side mapping
+            name: s.name,
+            displayOrder: s.displayOrder,
+          })),
+          fields: data.fields.map((f) => {
           const fieldData: any = {
             fieldId: f.fieldId,
             displayOrder: f.displayOrder,
@@ -402,24 +449,71 @@ function BuilderInner() {
         }),
       };
 
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/templates/${templateId}/versions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'save failed');
+      let res: Response;
+      
+      if (draftVersionId) {
+        // ✅ Mode: UPDATE existing Draft (RFC Phase 2)
+        const apiUrl = `${process.env.NEXT_PUBLIC_API_URL}/admin/template-versions/${draftVersionId}`;
+        console.log('Update Draft URL:', apiUrl);
+        
+        res = await fetch(apiUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
+          },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        // ✅ Mode: CREATE new Draft
+        const apiUrl = `${process.env.NEXT_PUBLIC_API_URL}/admin/templates/${encodeURIComponent(templateId)}/versions`;
+        console.log('Create Draft URL:', apiUrl);
+        
+        res = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
+          },
+          body: JSON.stringify({
+            templateId,
+            ...payload,
+          }),
+        });
       }
 
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.error('Save Draft failed:', {
+          status: res.status,
+          statusText: res.statusText,
+          error: err,
+          payload: payload,
+        });
+        // Serialize error message (อาจเป็น object จาก Hono)
+        const errMsg = typeof err.error === 'string'
+          ? err.error
+          : (err.details && typeof err.details === 'string')
+            ? err.details
+            : (err.error?.message || err.details?.message || `save failed (${res.status})`);
+        throw new Error(errMsg);
+      }
+
+      const result = await res.json();
+      
+      // Update draftVersionId if this was a create
+      if (!draftVersionId && result.versionId) {
+        setDraftVersionId(result.versionId);
+        setCurrentVersionId(result.versionId);
+      }
+      
+      setHasUnsavedChanges(false);
       alert('บันทึก Draft สำเร็จ! กด "Publish" เพื่อเผยแพร่');
       await loadAll();
     } catch (err) {
-      alert('เกิดข้อผิดพลาด: ' + (err as Error).message);
+      console.error('Save Draft error:', err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      alert('เกิดข้อผิดพลาด: ' + errMsg);
     } finally {
       setSubmitting(false);
     }
@@ -580,6 +674,10 @@ function BuilderInner() {
   const latestDraft = versions
     .filter(v => v.status === 'DRAFT')
     .sort((a, b) => b.versionNumber - a.versionNumber)[0];
+  
+  // RFC Phase 2: Determine mode
+  const isEditMode = !!draftVersionId; // Has Draft = Editable
+  const isViewMode = !draftVersionId && !!currentVersion && currentVersion.status === 'PUBLISHED'; // No Draft but has Published = Read Only
 
   // Helper to format date - handle various input formats
   const formatDate = (ts: unknown) => {
@@ -628,6 +726,102 @@ function BuilderInner() {
 
   return (
     <div className="p-8 space-y-6">
+      {/* RFC Phase 2: Active Context Banner - บอกชัดเจนว่ากำลังแก้ไข version ไหน */}
+      <Alert className={
+        isEditMode 
+          ? 'bg-blue-50 border-blue-300 border-2' 
+          : isViewMode 
+            ? 'bg-gray-100 border-gray-300 border-2' 
+            : 'bg-orange-50 border-orange-300 border-2'
+      }>
+        <AlertDescription className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {isEditMode ? (
+              <>
+                <span className="text-2xl">📝</span>
+                <div>
+                  <span className="font-bold text-blue-900 text-lg">กำลังแก้ไข Draft v{currentVersion?.versionNumber}</span>
+                  <Badge variant="outline" className="ml-2 bg-blue-100 text-blue-800 border-blue-300">
+                    แก้ไขได้
+                  </Badge>
+                </div>
+              </>
+            ) : isViewMode ? (
+              <>
+                <span className="text-2xl">🔒</span>
+                <div>
+                  <span className="font-bold text-gray-800 text-lg">กำลังดู Published v{currentVersion?.versionNumber}</span>
+                  <Badge variant="outline" className="ml-2 bg-gray-200 text-gray-700 border-gray-400">
+                    อ่านอย่างเดียว
+                  </Badge>
+                </div>
+              </>
+            ) : (
+              <>
+                <span className="text-2xl">📋</span>
+                <div>
+                  <span className="font-bold text-orange-800 text-lg">ยังไม่มี Version</span>
+                </div>
+              </>
+            )}
+            {hasUnsavedChanges && (
+              <Badge variant="outline" className="border-orange-400 text-orange-700 bg-orange-100 font-semibold animate-pulse">
+                ⚠️ มีการเปลี่ยนแปลงที่ยังไม่บันทึก
+              </Badge>
+            )}
+          </div>
+          
+          {/* No Version: สร้าง Draft ใหม่ */}
+          {!draftVersionId && !currentVersion && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleSubmit(onSaveDraft)}
+              disabled={submitting}
+              className="bg-blue-600 hover:bg-blue-700"
+            >
+              📝 สร้าง Draft v1
+            </Button>
+          )}
+          
+          {/* Edit Mode: Save Draft + Publish */}
+          {isEditMode && (
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleSubmit(onSaveDraft)}
+                disabled={submitting || fields.length === 0}
+              >
+                💾 {submitting ? 'กำลังบันทึก...' : 'Save Draft'}
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={onPublish}
+                disabled={submitting}
+                className="bg-green-600 hover:bg-green-700"
+              >
+                🔵 Publish v{latestDraft?.versionNumber}
+              </Button>
+            </div>
+          )}
+          
+          {/* View Mode: สร้าง Draft ใหม่ */}
+          {isViewMode && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => onCloneVersion(latestPublished!.id, latestPublished!.versionNumber)}
+              disabled={submitting}
+              className="bg-blue-600 hover:bg-blue-700"
+            >
+              📝 สร้าง Draft ใหม่จาก v{latestPublished?.versionNumber}
+            </Button>
+          )}
+        </AlertDescription>
+      </Alert>
+
       <div className="flex justify-between items-start">
         <div>
           <Button variant="ghost" size="sm" onClick={() => router.push('/admin/templates')}>
@@ -641,44 +835,20 @@ function BuilderInner() {
           )}
         </div>
         <div className="text-right space-x-2">
-          {/* Draft Actions */}
-          {latestDraft && (
-            <>
-              <Button
-                variant="outline"
-                onClick={() => onArchive(latestDraft.id, latestDraft.versionNumber)}
-                disabled={submitting}
-              >
-                Archive
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => onDeleteVersion(latestDraft.id, latestDraft.versionNumber)}
-                disabled={submitting}
-              >
-                ลบ Draft
-              </Button>
-            </>
+          {/* RFC Phase 2: View Mode = No action buttons in header */}
+          {isViewMode && (
+            <span className="text-sm text-gray-500 italic">ดู Version อย่างเดียว</span>
           )}
-          {/* Publish Button */}
-          {latestDraft && (
-            <Button
-              onClick={onPublish}
-              disabled={submitting}
-              className="bg-green-600 hover:bg-green-700"
-            >
-              Publish v{latestDraft.versionNumber}
-            </Button>
+          
+          {/* RFC Phase 2: Edit Mode = No action buttons in header (all in Banner) */}
+          {isEditMode && (
+            <span className="text-sm text-blue-600">💾 Save Draft และ 🔵 Publish อยู่ด้านบน</span>
           )}
-          {/* Save as Draft Button */}
-          <Button
-            variant="secondary"
-            onClick={handleSubmit(onSaveDraft)}
-            disabled={submitting || fields.length === 0}
-          >
-            {submitting ? 'กำลังบันทึก...' : 'Save as Draft'}
-          </Button>
+          
+          {/* RFC Phase 2: No Version = ปุ่มอยู่ใน Banner แล้ว */}
+          {!draftVersionId && !currentVersion && (
+            <span className="text-sm text-orange-600">📝 สร้าง Draft อยู่ด้านบน</span>
+          )}
         </div>
       </div>
 
@@ -772,16 +942,18 @@ function BuilderInner() {
                           >
                             Compare
                           </Button>
-                          {/* Clone as new Draft - Sprint 4 */}
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => onCloneVersion(v.id, v.versionNumber)}
-                            disabled={submitting}
-                          >
-                            Clone
-                          </Button>
-                          {/* Delete Draft - only if DRAFT and no round uses it */}
+                          {/* PUBLISHED: สร้าง Draft ใหม่จาก Published */}
+                          {v.status === 'PUBLISHED' && (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => onCloneVersion(v.id, v.versionNumber)}
+                              disabled={submitting}
+                            >
+                              📝 สร้าง Draft ใหม่
+                            </Button>
+                          )}
+                          {/* DRAFT: Delete เท่านั้น (Publish ทำจาก Edit Mode Banner) */}
                           {v.status === 'DRAFT' && (
                             <Button
                               variant="destructive"
@@ -792,6 +964,7 @@ function BuilderInner() {
                               Delete
                             </Button>
                           )}
+                          {/* ARCHIVED: View only - no action buttons */}
                         </div>
                       </div>
                     </div>
@@ -840,6 +1013,7 @@ function BuilderInner() {
                         size="sm"
                         onClick={() => addField(mf)}
                         disabled={used}
+                        title={!isEditMode ? 'สร้าง Draft ก่อนเพื่อเพิ่ม Field' : undefined}
                       >
                         {used ? 'ใช้แล้ว' : 'เพิ่ม'}
                       </Button>
@@ -868,7 +1042,6 @@ function BuilderInner() {
                 variant="outline"
                 size="sm"
                 onClick={addSection}
-                disabled={!currentVersion || currentVersion.status !== 'DRAFT'}
               >
                 + เพิ่ม Section
               </Button>
@@ -897,32 +1070,36 @@ function BuilderInner() {
                           </div>
                         </div>
                         <div className="flex gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => moveSection(sectionIdx, -1)}
-                            disabled={sectionIdx === 0}
-                          >
-                            ↑
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => moveSection(sectionIdx, 1)}
-                            disabled={sectionIdx === watchedSections.length - 1}
-                          >
-                            ↓
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => removeSectionAction(sectionIdx)}
-                          >
-                            ลบ Section
-                          </Button>
+                          {isEditMode && (
+                            <>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => moveSection(sectionIdx, -1)}
+                                disabled={sectionIdx === 0}
+                              >
+                                ↑
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => moveSection(sectionIdx, 1)}
+                                disabled={sectionIdx === watchedSections.length - 1}
+                              >
+                                ↓
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => removeSectionAction(sectionIdx)}
+                              >
+                                ลบ Section
+                              </Button>
+                            </>
+                          )}
                         </div>
                       </div>
                       {/* Section body: fields in this section */}
@@ -953,32 +1130,36 @@ function BuilderInner() {
                                     </div>
                                   </div>
                                   <div className="flex gap-1">
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() => moveField(index, -1)}
-                                      disabled={index === 0}
-                                    >
-                                      ↑
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() => moveField(index, 1)}
-                                      disabled={index === fields.length - 1}
-                                    >
-                                      ↓
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant="destructive"
-                                      size="sm"
-                                      onClick={() => remove(index)}
-                                    >
-                                      ลบ
-                                    </Button>
+                                    {isEditMode && (
+                                      <>
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => moveField(index, -1)}
+                                          disabled={index === 0}
+                                        >
+                                          ↑
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => moveField(index, 1)}
+                                          disabled={index === fields.length - 1}
+                                        >
+                                          ↓
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          variant="destructive"
+                                          size="sm"
+                                          onClick={() => remove(index)}
+                                        >
+                                          ลบ
+                                        </Button>
+                                      </>
+                                    )}
                                   </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-3 pl-11">
@@ -1076,13 +1257,18 @@ function BuilderInner() {
                                     control={control}
                                     name={`fields.${index}.isRequired`}
                                     render={({ field: f }) => (
-                                      <div className="flex items-center space-x-2 col-span-2 bg-blue-50 p-3 rounded border border-blue-100">
+                                      <div className={`flex items-center space-x-2 col-span-2 p-3 rounded border ${
+                                        isEditMode ? 'bg-blue-50 border-blue-100' : 'bg-gray-50 border-gray-200'
+                                      }`}>
                                         <Checkbox
                                           id={`req-${index}`}
                                           checked={f.value}
-                                          onChange={(e) => f.onChange(e.target.checked)}
+                                          onChange={(e) => isEditMode && f.onChange(e.target.checked)}
+                                          disabled={!isEditMode}
                                         />
-                                        <Label htmlFor={`req-${index}`} className="cursor-pointer font-medium text-blue-800">
+                                        <Label htmlFor={`req-${index}`} className={`cursor-pointer font-medium ${
+                                          isEditMode ? 'text-blue-800' : 'text-gray-600'
+                                        }`}>
                                           ต้องตอบ (Required)
                                         </Label>
                                       </div>

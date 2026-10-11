@@ -12,8 +12,12 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Card, CardContent } from '@/components/ui/card';
 
-type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE';
+type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_ID' | 'REGEX';
+
+// Phase 1 supports only 'organizations'. Keep in sync with MASTER_DATA_SOURCES in
+// backend/src/schemas/validators.ts
+type MasterDataSource = 'organizations';
 
 interface FileConfig {
   allowedFileTypes?: string[];
@@ -25,7 +29,8 @@ interface FieldMaster {
   id: string;
   fieldType: FieldType;
   labelTh: string;
-  defaultOptions: string[] | null;
+  // string[] for DROPDOWN/RADIO, { source } for MASTER_DATA
+  defaultOptions: string[] | { source: MasterDataSource } | null;
   pdfMappingKey: string | null;
   isActive: boolean;
   helpText?: string;
@@ -40,6 +45,7 @@ interface FormState {
   fieldType: FieldType;
   labelTh: string;
   defaultOptionsText: string;
+  masterDataSource: MasterDataSource;
   pdfMappingKey: string;
   isActive: boolean;
   helpText: string;
@@ -54,6 +60,7 @@ const EMPTY_FORM: FormState = {
   fieldType: 'TEXT',
   labelTh: '',
   defaultOptionsText: '',
+  masterDataSource: 'organizations',
   pdfMappingKey: '',
   isActive: true,
   helpText: '',
@@ -73,6 +80,11 @@ const FIELD_TYPE_OPTIONS: { value: FieldType; label: string }[] = [
   { value: 'RADIO', label: 'RADIO — เลือก 1 ตัวเลือก' },
   { value: 'CHECKBOX', label: 'CHECKBOX — ช่องติ๊กถูก' },
   { value: 'FILE', label: 'FILE — อัปโหลดไฟล์' },
+  { value: 'MASTER_DATA', label: 'MASTER_DATA — เลือกจากข้อมูลหลัก (คลังหน่วยงาน)' },
+];
+
+const MASTER_DATA_SOURCE_OPTIONS: { value: MasterDataSource; label: string }[] = [
+  { value: 'organizations', label: 'หน่วยงาน (Organizations)' },
 ];
 
 const VALIDATION_TYPE_OPTIONS: { value: ValidationType; label: string; example: string }[] = [
@@ -172,24 +184,30 @@ export default function FieldMasterPage() {
       }
     }
     
-    // Parse defaultOptions - could be array or JSON string from DB
+    // Parse defaultOptions - could be array, { source }, or JSON string from DB
     let parsedOptions: string[] = [];
+    let masterDataSource: MasterDataSource = 'organizations';
     if (f.defaultOptions) {
-      if (typeof f.defaultOptions === 'string') {
+      let rawOptions: any = f.defaultOptions;
+      if (typeof rawOptions === 'string') {
         try {
-          parsedOptions = JSON.parse(f.defaultOptions);
+          rawOptions = JSON.parse(rawOptions);
         } catch {
-          parsedOptions = [];
+          rawOptions = null;
         }
-      } else if (Array.isArray(f.defaultOptions)) {
-        parsedOptions = f.defaultOptions;
+      }
+      if (Array.isArray(rawOptions)) {
+        parsedOptions = rawOptions;
+      } else if (rawOptions && typeof rawOptions === 'object' && rawOptions.source) {
+        masterDataSource = rawOptions.source;
       }
     }
-    
+
     setForm({
       fieldType: f.fieldType,
       labelTh: f.labelTh,
       defaultOptionsText: parsedOptions.join('\n'),
+      masterDataSource,
       pdfMappingKey: f.pdfMappingKey || '',
       isActive: f.isActive,
       helpText: f.helpText || '',
@@ -214,7 +232,11 @@ export default function FieldMasterPage() {
       const payload: any = {
         fieldType: form.fieldType,
         labelTh: form.labelTh,
-        defaultOptions: parseOptions(form.defaultOptionsText),
+        // MASTER_DATA stores a source ref, DROPDOWN/RADIO store a string[]
+        defaultOptions:
+          form.fieldType === 'MASTER_DATA'
+            ? { source: form.masterDataSource }
+            : parseOptions(form.defaultOptionsText),
         pdfMappingKey: form.pdfMappingKey || null,
         isActive: form.isActive,
       };
@@ -305,6 +327,7 @@ export default function FieldMasterPage() {
       RADIO: 'bg-orange-100 text-orange-800',
       CHECKBOX: 'bg-teal-100 text-teal-800',
       FILE: 'bg-pink-100 text-pink-800',
+      MASTER_DATA: 'bg-indigo-100 text-indigo-800',
     };
     return colors[type] || 'bg-gray-100 text-gray-800';
   };
@@ -512,6 +535,32 @@ export default function FieldMasterPage() {
                     onChange={(e) => setForm({ ...form, defaultOptionsText: e.target.value })}
                     placeholder={'ตัวเลือก 1\nตัวเลือก 2\nตัวเลือก 3'}
                   />
+                </div>
+              </div>
+            )}
+
+            {/* Source selection for MASTER_DATA type */}
+            {form.fieldType === 'MASTER_DATA' && (
+              <div className="space-y-4">
+                <h3 className="font-medium text-gray-800 border-b pb-2">แหล่งข้อมูลหลัก</h3>
+                <div className="space-y-2">
+                  <Label htmlFor="masterDataSource">แหล่งข้อมูล *</Label>
+                  <Select
+                    id="masterDataSource"
+                    value={form.masterDataSource}
+                    onChange={(e) =>
+                      setForm({ ...form, masterDataSource: e.target.value as MasterDataSource })
+                    }
+                    required
+                  >
+                    {MASTER_DATA_SOURCE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </Select>
+                  <p className="text-xs text-gray-500">
+                    ผู้สมัครจะเห็นเป็นช่องค้นหา (Searchable Dropdown) ในแบบฟอร์มสาธารณะ
+                    และค่าที่เลือกจะถูกบันทึกเป็น &#123; id, name &#125; โดยอัตโนมัติ
+                  </p>
                 </div>
               </div>
             )}
