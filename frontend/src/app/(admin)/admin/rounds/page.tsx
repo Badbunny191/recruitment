@@ -421,20 +421,29 @@ export default function RoundsPage() {
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-2">
                       {versionWarning && (
-                        <Button 
-                          variant="ghost" 
+                        <Button
+                          variant="ghost"
                           size="sm"
                           className="text-xs text-blue-600 hover:text-blue-800"
                           onClick={() => openCompareModal(
-                            versionWarning.currentVersionId, 
+                            versionWarning.currentVersionId,
                             versionWarning.latestVersionId
                           )}
                         >
                           เปรียบเทียบ
                         </Button>
                       )}
-                      <Button 
-                        variant="outline" 
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-xs text-purple-700 border-purple-300 hover:bg-purple-50"
+                        onClick={() => window.open(`/admin/rounds/preview?id=${r.id}`, '_blank')}
+                        title="เปิดดูตัวอย่างฟอร์ม (Bypass Round Lifecycle Gate)"
+                      >
+                        👁 Preview
+                      </Button>
+                      <Button
+                        variant="outline"
                         size="sm"
                         className="text-xs"
                         onClick={() => openCloneModal(r.id)}

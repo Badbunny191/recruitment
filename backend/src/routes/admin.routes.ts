@@ -2304,4 +2304,124 @@ adminRoutes.patch('/positions/:id/toggle', auditMiddleware('POSITION'), async (c
   return c.json({ data: updated });
 });
 
+// =============================================================================
+// FEATURE: Admin Preview Form (Sprint 5)
+// =============================================================
+// GET /admin/rounds/:id/preview-schema
+//
+// Bypasses the public round lifecycle gate (evaluateRound) so that an
+// authenticated Admin can preview the schema of a DRAFT or CLOSED round
+// before publishing. The response shape mirrors /public/rounds/:id/schema
+// (sections + fields with MASTER_DATA normalization) and adds:
+//   - isPreview: true            (frontend marker to switch to Preview UX)
+//   - round.{status, dates...}  (so the Preview page can render banners
+//     without an extra round-detail call)
+//
+// Security: protected by `adminRoutes.use('/*', authMiddleware)` above.
+// This endpoint does NOT call evaluateRound() and does NOT expose any
+// application or attachment data.
+// =============================================================================
+adminRoutes.get('/rounds/:id/preview-schema', async (c) => {
+  const db = drizzle(c.env.DB);
+  const roundId = c.req.param('id');
+
+  // 1. Fetch the round (any status, no gate)
+  const round = await db
+    .select({
+      id: recruitmentRounds.id,
+      title: recruitmentRounds.title,
+      positionLevel: recruitmentRounds.positionLevel,
+      status: recruitmentRounds.status,
+      openDate: recruitmentRounds.openDate,
+      closeDate: recruitmentRounds.closeDate,
+      announcementTitle: recruitmentRounds.announcementTitle,
+      announcementDescription: recruitmentRounds.announcementDescription,
+      contactInformation: recruitmentRounds.contactInformation,
+      remark: recruitmentRounds.remark,
+      templateVersionId: recruitmentRounds.templateVersionId,
+    })
+    .from(recruitmentRounds)
+    .where(eq(recruitmentRounds.id, roundId))
+    .get();
+
+  if (!round) {
+    return c.json({ success: false, error: 'ไม่พบรอบรับสมัคร' }, 404);
+  }
+
+  // 2. Fetch sections (same query shape as public schema)
+  const sections = await db
+    .select()
+    .from(templateSections)
+    .where(eq(templateSections.templateVersionId, round.templateVersionId))
+    .orderBy(asc(templateSections.displayOrder));
+
+  // 3. Fetch fields with fieldMaster join (same as public schema)
+  const schema = await db
+    .select({
+      fieldId: templateFields.fieldId,
+      sectionId: templateFields.sectionId,
+      type: fieldMaster.fieldType,
+      label: fieldMaster.labelTh,
+      overrideLabel: templateFields.overrideLabelTh,
+      options: fieldMaster.defaultOptions,
+      overrideOptions: templateFields.overrideOptions,
+      isRequired: templateFields.isRequired,
+      helpText: fieldMaster.helpText,
+      placeholder: fieldMaster.placeholder,
+      section: fieldMaster.section, // legacy fallback
+      fileConfig: fieldMaster.fileConfig,
+      validationType: fieldMaster.validationType,
+      validationMessage: fieldMaster.validationMessage,
+      order: templateFields.displayOrder,
+    })
+    .from(templateFields)
+    .innerJoin(fieldMaster, eq(templateFields.fieldId, fieldMaster.id))
+    .where(eq(templateFields.templateVersionId, round.templateVersionId))
+    .orderBy(templateFields.displayOrder);
+
+  // 4. Normalize MASTER_DATA fields (same logic as public schema)
+  const normalized = schema.map((f) => {
+    if (f.type !== 'MASTER_DATA') return { ...f, masterDataSource: null };
+
+    const raw: unknown = f.options;
+    let source: string | null = null;
+
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          source = (parsed as { source?: string }).source ?? null;
+        }
+      } catch {
+        source = null;
+      }
+    } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      source = (raw as { source?: string }).source ?? null;
+    }
+
+    return { ...f, options: null, masterDataSource: source };
+  });
+
+  return c.json({
+    success: true,
+    isPreview: true,
+    data: {
+      sections: sections.filter((s) => s.isActive),
+      fields: normalized,
+      round: {
+        id: round.id,
+        title: round.title,
+        positionLevel: round.positionLevel,
+        status: round.status,
+        openDate: round.openDate,
+        closeDate: round.closeDate,
+        announcementTitle: round.announcementTitle,
+        announcementDescription: round.announcementDescription,
+        contactInformation: round.contactInformation,
+        remark: round.remark,
+      },
+    },
+  });
+});
+
 export { adminRoutes };
