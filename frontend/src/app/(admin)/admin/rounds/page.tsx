@@ -269,6 +269,7 @@ export default function RoundsPage() {
         const payload = {
           title: form.title,
           positionLevel: form.positionLevel,
+          templateVersionId: form.templateVersionId,
           openDate: toUnix(form.openDate),
           closeDate: toUnix(form.closeDate),
           status: form.status,
