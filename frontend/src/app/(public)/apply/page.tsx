@@ -90,6 +90,17 @@ function FormInner() {
   const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Round detail (announcement / contact / remark) fetched from /public/rounds/active
+  interface RoundInfo {
+    id: string;
+    title: string;
+    announcementTitle: string | null;
+    announcementDescription: string | null;
+    contactInformation: string | null;
+    remark: string | null;
+  }
+  const [roundInfo, setRoundInfo] = useState<RoundInfo | null>(null);
+
   // MASTER_DATA options (Phase 1: organizations)
   const [organizations, setOrganizations] = useState<MasterDataOption[]>([]);
   const [masterDataError, setMasterDataError] = useState<string | null>(null);
@@ -134,19 +145,36 @@ function FormInner() {
         // Parse options
         let options: string[] = [];
         let masterDataSource: MasterDataSource | null = null;
-        if (field.options) {
+
+        // ✅ BUG 1 FIX: Backend /public/rounds/:id/schema now sends `masterDataSource`
+        // as a top-level camelCase field (resolved by the server-side normalization in
+        // public.routes.ts). Trust that first; fall back to parsing `field.options` only
+        // if the server didn't provide it (legacy responses).
+        if (field.masterDataSource) {
+          if (field.masterDataSource === 'organizations') {
+            masterDataSource = 'organizations';
+          } else {
+            // Unknown / unsupported source — keep as null so the renderer falls into the
+            // "ไม่รองรับแหล่งข้อมูล" branch instead of silently rendering wrong data.
+            masterDataSource = null;
+          }
+        } else if (field.options) {
           if (Array.isArray(field.options)) options = field.options;
           else if (typeof field.options === 'string') {
             try {
               const parsed = JSON.parse(field.options);
               if (Array.isArray(parsed)) options = parsed;
               else if (parsed && typeof parsed === 'object' && parsed.source) {
-                masterDataSource = parsed.source;
+                if (parsed.source === 'organizations') {
+                  masterDataSource = 'organizations';
+                }
               }
             } catch { options = []; }
           } else if (typeof field.options === 'object' && (field.options as any).source) {
             // Drizzle { mode: 'json' } may hand back a parsed object
-            masterDataSource = (field.options as any).source;
+            if ((field.options as any).source === 'organizations') {
+              masterDataSource = 'organizations';
+            }
           }
         }
         
@@ -213,6 +241,31 @@ function FormInner() {
       alert('ไม่สามารถโหลดแบบฟอร์มได้: ' + err.message);
       setLoading(false);
     });
+  }, [roundId]);
+
+  // ✅ BUG 2 FIX: Fetch round detail (announcement / contact / remark) from
+  // /public/rounds/active and pick the row whose id matches roundId. The /schema
+  // endpoint intentionally returns only sections + fields, so we need this second
+  // call to render the announcement header above the form.
+  useEffect(() => {
+    if (!roundId) return;
+    const controller = new AbortController();
+    fetch(`${getApiUrl()}/public/rounds/active`, { signal: controller.signal })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((res) => {
+        const list: RoundInfo[] = Array.isArray(res.data) ? res.data : [];
+        const found = list.find((r) => r.id === roundId) || null;
+        setRoundInfo(found);
+      })
+      .catch((err) => {
+        if (err?.name === 'AbortError') return;
+        console.warn('Failed to load round detail (header will be hidden):', err);
+        setRoundInfo(null);
+      });
+    return () => controller.abort();
   }, [roundId]);
 
   const onSubmit: SubmitHandler<FormValues> = async (data) => {
@@ -570,6 +623,38 @@ function FormInner() {
 
   return (
     <div className="max-w-3xl mx-auto p-4 md:p-8">
+      {/* ✅ BUG 2 FIX: Round announcement / contact / remark block.
+          Rendered ABOVE the application form (per spec). Only shows when
+          roundInfo loaded and the matching field is non-empty. */}
+      {roundInfo && (roundInfo.announcementTitle || roundInfo.announcementDescription || roundInfo.contactInformation || roundInfo.remark) && (
+        <div className="mb-4 rounded-md border border-blue-200 bg-blue-50/60 p-4 md:p-5 space-y-3">
+          {roundInfo.announcementTitle && (
+            <div>
+              <h2 className="text-base md:text-lg font-semibold text-slate-900">
+                {roundInfo.announcementTitle}
+              </h2>
+            </div>
+          )}
+          {roundInfo.announcementDescription && (
+            <div className="text-sm text-slate-700 whitespace-pre-line">
+              {roundInfo.announcementDescription}
+            </div>
+          )}
+          {roundInfo.contactInformation && (
+            <div className="text-sm text-slate-700">
+              <span className="font-medium">ข้อมูลติดต่อ: </span>
+              <span className="whitespace-pre-line">{roundInfo.contactInformation}</span>
+            </div>
+          )}
+          {roundInfo.remark && (
+            <div className="text-sm text-slate-600">
+              <span className="font-medium">หมายเหตุ: </span>
+              <span className="whitespace-pre-line">{roundInfo.remark}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       <Card>
         <CardHeader className="bg-slate-50 border-b">
           <CardTitle className="text-xl">ใบสมัครคัดเลือกบุคลากร</CardTitle>
