@@ -4,7 +4,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import { Bindings } from '../types';
 import { ApplicationSubmitSchema, CORE_FIELD_IDS } from '../schemas/validators';
 import { recruitmentRounds, templateFields, templateSections, fieldMaster, applications, applicationAttachments, organizations } from '../db/schema';
-import { eq, and, isNull, asc } from 'drizzle-orm';
+import { eq, and, isNull, asc, sql } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 
 const publicRoutes = new Hono<{ Bindings: Bindings }>();
@@ -143,7 +143,7 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
     overrideOptions: templateFields.overrideOptions,
     isRequired: templateFields.isRequired,
     helpText: fieldMaster.helpText,
-    placeholder: fieldMaster.placeholder,
+    placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
     section: fieldMaster.section, // Legacy: ใช้สำหรับ fallback (Sprint 3 behavior)
     fileConfig: fieldMaster.fileConfig,
     validationType: fieldMaster.validationType,
