@@ -10,10 +10,12 @@
     "deploy": "npm run build && wrangler pages deploy out --project-name=sao-recruitment-frontend --commit-dirty=true"
   },
   "dependencies": {
+    "clsx": "^2.1.1",
     "next": "^14.2.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "react-hook-form": "^7.51.0"
+    "react-hook-form": "^7.51.0",
+    "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
     "@types/node": "^20.12.0",
