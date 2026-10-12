@@ -106,7 +106,7 @@ export const applications = sqliteTable('applications', {
   roundId: text('round_id').notNull().references(() => recruitmentRounds.id, { onDelete: 'restrict' }),
   email: text('email').notNull(),
   fullname: text('fullname').notNull(),
-  nationalId: text('national_id').notNull(),
+  nationalId: text('national_id'), // Nullable - template may not include this field
   status: text('status').default('SUBMITTED'),
   statusReason: text('status_reason'),
   verifiedBy: text('verified_by'),
