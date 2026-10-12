@@ -14,6 +14,7 @@ export interface SearchableDropdownProps {
   placeholder?: string;
   emptyText?: string;
   disabled?: boolean;
+  readOnly?: boolean;
   className?: string;
 }
 
@@ -31,6 +32,7 @@ export function SearchableDropdown({
   placeholder = 'ค้นหา...',
   emptyText = 'ไม่พบรายการ',
   disabled = false,
+  readOnly = false,
   className = '',
 }: SearchableDropdownProps) {
   const [open, setOpen] = useState(false);
@@ -106,9 +108,13 @@ export function SearchableDropdown({
             setTimeout(() => inputRef.current?.focus(), 0);
           }
         }}
-        className={`flex h-10 w-full items-center justify-between rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:cursor-not-allowed disabled:opacity-50 ${
+        className={`flex h-10 w-full items-center justify-between rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
           open ? 'ring-2 ring-blue-500 border-transparent' : ''
-        }`}
+        } ${
+          disabled ? 'cursor-not-allowed opacity-50' : ''
+        } ${
+          readOnly ? 'cursor-default' : ''
+        } ${className}`}
       >
         <span className={selectedOption ? 'text-gray-900' : 'text-gray-400'}>
           {selectedOption ? selectedOption.label : placeholder}

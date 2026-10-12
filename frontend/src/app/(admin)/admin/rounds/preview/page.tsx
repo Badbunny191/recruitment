@@ -342,7 +342,7 @@ function AdminPreviewInner() {
         {field.helpText && <p className="text-xs text-gray-500 -mt-1">{field.helpText}</p>}
 
         {field.type === 'TEXT' && (
-          <Input id={field.fieldId} placeholder={placeholder} disabled className="bg-slate-50" />
+          <Input id={field.fieldId} placeholder={placeholder} readOnly className="bg-slate-50 placeholder:text-slate-500 cursor-default" />
         )}
 
         {field.type === 'NUMBER' && (
