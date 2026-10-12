@@ -394,6 +394,35 @@ adminRoutes.get('/templates/:id/versions', async (c) => {
 });
 
 // =============================================================================
+// FEATURE: List Published Template Versions
+// GET /admin/template-versions/published
+//
+// คืน template versions ที่ status = 'PUBLISHED' พร้อม template name
+// ใช้สำหรับ dropdown ในหน้า Create/Edit Round (แทนการ fetch /admin/templates + /admin/templates/:id/versions)
+// คืนเฉพาะ template ที่ยังไม่ถูก archive (deletedAt IS NULL)
+// =============================================================================
+adminRoutes.get('/template-versions/published', async (c) => {
+  const db = drizzle(c.env.DB);
+  const data = await db
+    .select({
+      id: templateVersions.id,
+      versionNumber: templateVersions.versionNumber,
+      status: templateVersions.status,
+      createdAt: templateVersions.createdAt,
+      templateId: templates.id,
+      templateName: templates.name,
+    })
+    .from(templateVersions)
+    .innerJoin(templates, eq(templates.id, templateVersions.templateId))
+    .where(and(
+      eq(templateVersions.status, 'PUBLISHED'),
+      isNull(templates.deletedAt)
+    ))
+    .orderBy(asc(templates.name), asc(templateVersions.versionNumber));
+  return c.json({ data });
+});
+
+// =============================================================================
 // FEATURE: Template Preview Schema
 // GET /admin/templates/:templateId/preview-schema
 //
@@ -1232,7 +1261,33 @@ adminRoutes.get('/rounds', async (c) => {
     whereClause = isNull(recruitmentRounds.deletedAt);
   }
 
-  const data = await db.select().from(recruitmentRounds).where(whereClause);
+  // JOIN template_versions + templates เพื่อส่งชื่อ template/version กลับมา
+  // ใช้ LEFT JOIN เพื่อรองรับกรณี template version ถูก archive/ลบ (ป้องกัน row หาย)
+  const data = await db
+    .select({
+      id: recruitmentRounds.id,
+      title: recruitmentRounds.title,
+      positionLevel: recruitmentRounds.positionLevel,
+      templateVersionId: recruitmentRounds.templateVersionId,
+      templateId: templateVersions.templateId,
+      templateName: templates.name,
+      versionNumber: templateVersions.versionNumber,
+      versionStatus: templateVersions.status,
+      openDate: recruitmentRounds.openDate,
+      closeDate: recruitmentRounds.closeDate,
+      status: recruitmentRounds.status,
+      createdAt: recruitmentRounds.createdAt,
+      deletedAt: recruitmentRounds.deletedAt,
+      announcementTitle: recruitmentRounds.announcementTitle,
+      announcementDescription: recruitmentRounds.announcementDescription,
+      contactInformation: recruitmentRounds.contactInformation,
+      remark: recruitmentRounds.remark,
+    })
+    .from(recruitmentRounds)
+    .leftJoin(templateVersions, eq(templateVersions.id, recruitmentRounds.templateVersionId))
+    .leftJoin(templates, eq(templates.id, templateVersions.templateId))
+    .where(whereClause);
+
   return c.json({ data });
 });
 adminRoutes.post('/rounds', auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundCreateSchema), async (c) => {

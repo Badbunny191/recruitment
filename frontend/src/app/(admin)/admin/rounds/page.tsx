@@ -15,6 +15,11 @@ import { CloneRoundModal } from '@/components/CloneRoundModal';
 interface Round {
   id: string;
   templateVersionId: string;
+  // JOIN จาก backend (GET /admin/rounds)
+  templateId?: string | null;
+  templateName?: string | null;
+  versionNumber?: number | null;
+  versionStatus?: string | null;
   title: string;
   positionLevel: string;
   openDate: string | number | Date;
@@ -24,17 +29,12 @@ interface Round {
   deletedAt: string | number | Date | null;
 }
 
-interface Template {
+interface PublishedTemplateVersion {
   id: string;
-  name: string;
-  description: string | null;
-}
-
-interface TemplateVersion {
-  id: string;
-  templateId: string;
   versionNumber: number;
   status: string;
+  templateId: string;
+  templateName: string;
 }
 
 interface FormState {
@@ -101,8 +101,9 @@ const toUnix = (local: string) => Math.floor(new Date(local).getTime() / 1000);
 export default function RoundsPage() {
   const [rounds, setRounds] = useState<Round[]>([]);
   const [roundsWithVersionInfo, setRoundsWithVersionInfo] = useState<RoundVersionInfo[]>([]);
-  const [templates, setTemplates] = useState<Template[]>([]);
-  const [versions, setVersions] = useState<TemplateVersion[]>([]);
+  // ดึงจาก API /admin/template-versions/published โดยตรง (backend JOIN แล้ว)
+  // ไม่ต้องโหลด templates + versions แยกอีกต่อไป
+  const [publishedVersions, setPublishedVersions] = useState<PublishedTemplateVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Round | null>(null);
@@ -256,26 +257,12 @@ export default function RoundsPage() {
     }
   };
 
-  const loadTemplates = async () => {
-    const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/templates', {
-      headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
-    }).then((r) => r.json());
-    setTemplates(res.data || []);
-  };
-
-  const loadAllVersions = async () => {
-    const tpls: Template[] = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/templates', {
-      headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
-    }).then((r) => r.json()).then((res) => res.data || []);
-    const allVersions: TemplateVersion[] = [];
-    for (const t of tpls) {
-      const vs: TemplateVersion[] = await fetch(
-        process.env.NEXT_PUBLIC_API_URL + `/admin/templates/${t.id}/versions`,
-        { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
-      ).then((r) => r.json()).then((res) => res.data || []);
-      allVersions.push(...vs);
-    }
-    setVersions(allVersions);
+  const loadPublishedVersions = async () => {
+    const res = await fetch(
+      process.env.NEXT_PUBLIC_API_URL + '/admin/template-versions/published',
+      { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
+    ).then((r) => r.json());
+    setPublishedVersions(res.data || []);
   };
 
   const loadRoundsWithVersionInfo = async () => {
@@ -291,8 +278,7 @@ export default function RoundsPage() {
 
   useEffect(() => {
     loadRounds();
-    loadTemplates();
-    loadAllVersions();
+    loadPublishedVersions();
     loadRoundsWithVersionInfo();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
@@ -437,14 +423,25 @@ export default function RoundsPage() {
     });
   };
 
-  const versionLabel = (templateVersionId: string) => {
-    const v = versions.find((x) => x.id === templateVersionId);
-    if (!v) return templateVersionId.slice(0, 8) + '...';
-    const t = templates.find((x) => x.id === v.templateId);
-    return `${t?.name || '?'} v${v.versionNumber}`;
+  // ใช้ field ที่ JOIN มาจาก backend โดยตรง (templateName + versionNumber)
+  // ไม่ต้อง lookup ใน client state อีกต่อไป
+  const formatTemplateCell = (r: Round): string => {
+    if (r.templateName && r.versionNumber != null) {
+      return `${r.templateName} v${r.versionNumber}`;
+    }
+    if (r.templateName) {
+      return `${r.templateName} (ไม่พบ version)`;
+    }
+    return `(Template ถูกลบ) ${r.templateVersionId.slice(0, 8)}…`;
   };
 
-  const publishedVersions = versions.filter(v => v.status === 'PUBLISHED');
+  // ใช้สำหรับแสดง template ในฟอร์ม edit (อ้างอิง templateVersionId จาก form state)
+  // ใช้ publishedVersions (ดึงจาก API ใหม่) ในการ lookup
+  const formatTemplateVersionLabel = (templateVersionId: string): string => {
+    const v = publishedVersions.find((x) => x.id === templateVersionId);
+    if (v) return `${v.templateName} v${v.versionNumber}`;
+    return `(Template ถูกลบ) ${templateVersionId.slice(0, 8)}…`;
+  };
 
   return (
     <div className="p-8 space-y-6">
@@ -535,7 +532,7 @@ export default function RoundsPage() {
                   </TableCell>
                   <TableCell>{r.positionLevel}</TableCell>
                   <TableCell className="text-slate-500 text-sm">
-                    {versionLabel(r.templateVersionId)}
+                    {formatTemplateCell(r)}
                     {versionWarning && (
                       <div className="text-xs text-amber-600 mt-1">
                         Published ล่าสุด: v{versionWarning.latestVersionNumber}
@@ -667,14 +664,11 @@ export default function RoundsPage() {
                   required
                 >
                   <option value="">-- เลือก Published Version --</option>
-                  {publishedVersions.map((v) => {
-                    const t = templates.find((x) => x.id === v.templateId);
-                    return (
-                      <option key={v.id} value={v.id}>
-                        {t?.name || '?'} v{v.versionNumber}
-                      </option>
-                    );
-                  })}
+                  {publishedVersions.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.templateName} v{v.versionNumber}
+                    </option>
+                  ))}
                 </Select>
                 <p className="text-xs text-slate-500">
                   เฉพาะ Published Version เท่านั้นที่สร้าง Round ได้
@@ -691,14 +685,11 @@ export default function RoundsPage() {
                       onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })}
                     >
                       <option value="">-- เลือก Published Version --</option>
-                      {publishedVersions.map((v) => {
-                        const t = templates.find((x) => x.id === v.templateId);
-                        return (
-                          <option key={v.id} value={v.id}>
-                            {t?.name || '?'} v{v.versionNumber}
-                          </option>
-                        );
-                      })}
+                      {publishedVersions.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.templateName} v{v.versionNumber}
+                        </option>
+                      ))}
                     </Select>
                     <p className="text-xs text-blue-600">
                       Draft Round: สามารถเปลี่ยน Version ได้
@@ -708,7 +699,7 @@ export default function RoundsPage() {
                   <div className="p-3 bg-slate-100 rounded">
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium">
-                        {versionLabel(form.templateVersionId)}
+                        {formatTemplateVersionLabel(form.templateVersionId)}
                       </span>
                     </div>
                     {loadingAppCount ? (
@@ -740,7 +731,7 @@ export default function RoundsPage() {
                 ) : (
                   <div className="p-3 bg-slate-100 rounded">
                     <span className="text-sm font-medium">
-                      {versionLabel(form.templateVersionId)}
+                      {formatTemplateVersionLabel(form.templateVersionId)}
                     </span>
                     <p className="text-xs text-red-600 mt-2">
                       ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบปิดรับสมัครแล้ว
