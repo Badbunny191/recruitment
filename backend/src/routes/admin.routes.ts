@@ -232,6 +232,146 @@ adminRoutes.get('/templates/:id/versions', async (c) => {
   return c.json({ data });
 });
 
+// =============================================================================
+// FEATURE: Template Preview Schema
+// GET /admin/templates/:templateId/preview-schema
+//
+// Returns the form schema for preview without creating a Round.
+// Accepts ?versionId=<id> to preview a specific version, or defaults to
+// the latest Draft (if exists) or latest Published.
+// =============================================================================
+adminRoutes.get('/templates/:templateId/preview-schema', async (c) => {
+  const db = drizzle(c.env.DB);
+  const templateId = c.req.param('templateId');
+  const requestedVersionId = c.req.query('versionId');
+
+  // 1. Verify template exists
+  const template = await db.select().from(templates).where(eq(templates.id, templateId)).get();
+  if (!template) {
+    return c.json({ success: false, error: 'ไม่พบ Template' }, 404);
+  }
+
+  // 2. Get all versions for this template
+  const versions = await db
+    .select()
+    .from(templateVersions)
+    .where(eq(templateVersions.templateId, templateId))
+    .orderBy(asc(templateVersions.versionNumber));
+
+  if (versions.length === 0) {
+    return c.json({ success: false, error: 'Template นี้ยังไม่มี Version' }, 404);
+  }
+
+  // 3. Determine which version to preview
+  let targetVersion: typeof versions[0] | null = null;
+
+  if (requestedVersionId) {
+    targetVersion = versions.find(v => v.id === requestedVersionId) || null;
+    if (!targetVersion) {
+      return c.json({ success: false, error: 'ไม่พบ Version ที่ระบุ' }, 404);
+    }
+  } else {
+    // Default: Draft > Published
+    const draftVersions = versions.filter(v => v.status === 'DRAFT');
+    const publishedVersions = versions.filter(v => v.status === 'PUBLISHED');
+    const archivedVersions = versions.filter(v => v.status === 'ARCHIVED');
+
+    if (draftVersions.length > 0) {
+      targetVersion = draftVersions.sort((a, b) => b.versionNumber - a.versionNumber)[0];
+    } else if (publishedVersions.length > 0) {
+      targetVersion = publishedVersions.sort((a, b) => b.versionNumber - a.versionNumber)[0];
+    } else if (archivedVersions.length > 0) {
+      targetVersion = archivedVersions.sort((a, b) => b.versionNumber - a.versionNumber)[0];
+    }
+  }
+
+  // 4. Fetch sections
+  const sections = await db
+    .select()
+    .from(templateSections)
+    .where(eq(templateSections.templateVersionId, targetVersion!.id))
+    .orderBy(asc(templateSections.displayOrder));
+
+  // 5. Fetch fields with fieldMaster join
+  const schema = await db
+    .select({
+      fieldId: templateFields.fieldId,
+      sectionId: templateFields.sectionId,
+      type: fieldMaster.fieldType,
+      label: fieldMaster.labelTh,
+      overrideLabel: templateFields.overrideLabelTh,
+      options: fieldMaster.defaultOptions,
+      overrideOptions: templateFields.overrideOptions,
+      isRequired: templateFields.isRequired,
+      helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
+      placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
+      section: fieldMaster.section,
+      fileConfig: fieldMaster.fileConfig,
+      validationType: fieldMaster.validationType,
+      validationMessage: fieldMaster.validationMessage,
+      order: templateFields.displayOrder,
+      // Sprint 4: Additional fields
+      rows: templateFields.rows,
+      minLength: templateFields.minLength,
+      maxLength: templateFields.maxLength,
+    })
+    .from(templateFields)
+    .innerJoin(fieldMaster, eq(templateFields.fieldId, fieldMaster.id))
+    .where(eq(templateFields.templateVersionId, targetVersion!.id))
+    .orderBy(templateFields.displayOrder);
+
+  // 6. Normalize MASTER_DATA fields
+  const normalized = schema.map((f) => {
+    if (f.type !== 'MASTER_DATA') return { ...f, masterDataSource: null };
+
+    const raw: unknown = f.options;
+    let source: string | null = null;
+
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          source = (parsed as { source?: string }).source ?? null;
+        }
+      } catch {
+        source = null;
+      }
+    } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      source = (raw as { source?: string }).source ?? null;
+    }
+
+    return { ...f, options: null, masterDataSource: source };
+  });
+
+  // 7. Build available versions list (for UI tabs)
+  const availableVersions = versions.map(v => ({
+    id: v.id,
+    versionNumber: v.versionNumber,
+    status: v.status,
+    createdAt: v.createdAt,
+  }));
+
+  return c.json({
+    success: true,
+    isPreview: true,
+    data: {
+      template: {
+        id: template.id,
+        name: template.name,
+        description: template.description,
+      },
+      version: {
+        id: targetVersion!.id,
+        versionNumber: targetVersion!.versionNumber,
+        status: targetVersion!.status,
+      },
+      sections: sections.filter(s => s.isActive),
+      fields: normalized,
+      availableVersions,
+    },
+  });
+});
+
 // GET /admin/template-fields/:versionId - Get fields for a specific template version
 adminRoutes.get('/template-fields/:versionId', async (c) => {
   const db = drizzle(c.env.DB);

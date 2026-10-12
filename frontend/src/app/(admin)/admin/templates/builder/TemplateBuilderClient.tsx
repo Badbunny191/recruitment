@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ViewVersionModal } from '@/components/ViewVersionModal';
 import { CompareVersionModal } from '@/components/CompareVersionModal';
+import { TemplatePreviewModal } from '@/components/TemplatePreviewModal';
 
 interface MasterField {
   id: string;
@@ -145,6 +146,9 @@ function BuilderInner() {
   const [compareToVersionId, setCompareToVersionId] = useState('');
   const [compareFromVersionNumber, setCompareFromVersionNumber] = useState(0);
   const [compareToVersionNumber, setCompareToVersionNumber] = useState(0);
+
+  // Template Preview Modal
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
 
   const openViewModal = (v: TemplateVersion) => {
     setViewVersionId(v.id);
@@ -835,6 +839,17 @@ function BuilderInner() {
           )}
         </div>
         <div className="text-right space-x-2">
+          {/* Preview Button - Available for all modes */}
+          {currentVersion && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPreviewModalOpen(true)}
+            >
+              👁 Preview
+            </Button>
+          )}
+
           {/* RFC Phase 2: View Mode = No action buttons in header */}
           {isViewMode && (
             <span className="text-sm text-gray-500 italic">ดู Version อย่างเดียว</span>
@@ -1305,6 +1320,18 @@ function BuilderInner() {
         onOpenChange={setCompareModalOpen}
         fromVersionId={compareFromVersionId}
         toVersionId={compareToVersionId}
+      />
+
+      {/* Template Preview Modal */}
+      <TemplatePreviewModal
+        open={previewModalOpen}
+        onOpenChange={setPreviewModalOpen}
+        templateId={templateId}
+        templateName={template?.name || ''}
+        currentVersionId={currentVersionId}
+        draftVersionId={draftVersionId}
+        publishedVersionId={publishedVersionId}
+        availableVersions={versions}
       />
     </div>
   );
