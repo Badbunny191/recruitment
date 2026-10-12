@@ -639,27 +639,7 @@ function AdminPreviewInner() {
               </div>
             )}
 
-            {/* Disabled consent block (visual placeholder only) */}
-            <div className="space-y-4 bg-slate-50 p-4 rounded-md border border-slate-200">
-              <div className="flex items-start space-x-2 opacity-70">
-                <Checkbox id="consent1" disabled />
-                <label
-                  htmlFor="consent1"
-                  className="text-sm font-medium leading-none text-slate-500 cursor-not-allowed"
-                >
-                  ข้าพเจ้าได้ตรวจสอบความถูกต้องครบถ้วนของข้อมูลในใบสมัครแล้ว
-                </label>
-              </div>
-              <div className="flex items-start space-x-2 opacity-70">
-                <Checkbox id="consent2" disabled />
-                <label
-                  htmlFor="consent2"
-                  className="text-sm font-medium leading-none text-slate-500 cursor-not-allowed"
-                >
-                  ข้าพเจ้าขอรับรองว่าข้อมูลที่ได้แจ้งไว้ในใบสมัครนี้ถูกต้องครบถ้วนทุกประการ
-                </label>
-              </div>
-            </div>
+            {/* NOTE: Consent fields should be added as CHECKBOX type in Template Builder */}
 
             <Button
               type="submit"

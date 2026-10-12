@@ -264,26 +264,48 @@ publicRoutes.post('/applications/submit', zValidator('json', ApplicationSubmitSc
     if (data.formData && data.formData[fieldId]) {
       return String(data.formData[fieldId]);
     }
-    // Fallback to legacy root fields
+    // Fallback to legacy root fields (backward compatibility only)
     if (fieldId === 'field-email' && data.email) return data.email;
     if (fieldId === 'field-fullname' && data.fullname) return data.fullname;
-    if (fieldId === 'field-national-id' && data.nationalId) return data.nationalId;
     return fallback || '';
   };
 
   const email = getCoreValue('field-email');
   const fullname = getCoreValue('field-fullname');
-  const nationalId = getCoreValue('field-national-id');
 
-  // Validate core fields are present
+  // Validate email and fullname are present
   if (!email) {
     return c.json({ success: false, error: 'อีเมลไม่พบในข้อมูล (field-email)' }, 400);
   }
   if (!fullname) {
     return c.json({ success: false, error: 'ชื่อ-นามสกุลไม่พบในข้อมูล (field-fullname)' }, 400);
   }
-  if (!nationalId) {
-    return c.json({ success: false, error: 'เลขประจำตัวประชาชนไม่พบในข้อมูล (field-national-id)' }, 400);
+
+  // ✅ Dynamic validation: only validate fields that exist in template schema
+  // Get required fields from template
+  const templateRequiredFields = await db
+    .select({
+      fieldId: templateFields.fieldId,
+      fieldType: fieldMaster.fieldType,
+    })
+    .from(templateFields)
+    .innerJoin(fieldMaster, eq(templateFields.fieldId, fieldMaster.id))
+    .where(
+      and(
+        eq(templateFields.templateVersionId, round.templateVersionId),
+        eq(templateFields.isRequired, true)
+      )
+    );
+
+  // Validate required fields from template schema
+  for (const requiredField of templateRequiredFields) {
+    const fieldValue = data.formData?.[requiredField.fieldId];
+    if (!fieldValue && fieldValue !== 0) { // Allow 0 as valid value
+      return c.json({ 
+        success: false, 
+        error: `กรุณากรอกข้อมูลที่จำเป็น: ${requiredField.fieldId}` 
+      }, 400);
+    }
   }
 
   // Check for duplicate application (same email + same round, not deleted)
@@ -314,6 +336,10 @@ publicRoutes.post('/applications/submit', zValidator('json', ApplicationSubmitSc
   // Generate unique application number
   const applicationId = uuidv4();
   const applicationNo = `APP-${new Date().getFullYear()}-${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
+
+  // Get nationalId from template mapping (if exists in template schema)
+  const nationalIdFieldId = Object.entries(fieldToColumnMap).find(([_, col]) => col === 'national_id')?.[0];
+  const nationalId = nationalIdFieldId ? getCoreValue(nationalIdFieldId) : null;
 
   await db.batch([
     db.insert(applications).values({

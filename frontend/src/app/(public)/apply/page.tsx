@@ -862,18 +862,7 @@ function FormInner() {
               </div>
             )}
 
-            {/* Consent Section */}
-            <div className="space-y-4 bg-blue-50 p-4 rounded-md border border-blue-100">
-              <div className="flex items-start space-x-2">
-                <Checkbox id="consent1" required />
-                <label htmlFor="consent1" className="text-sm font-medium leading-none">ข้าพเจ้าได้ตรวจสอบความถูกต้องครบถ้วนของข้อมูลในใบสมัครแล้ว</label>
-              </div>
-              <div className="flex items-start space-x-2">
-                <Checkbox id="consent2" required />
-                <label htmlFor="consent2" className="text-sm font-medium leading-none">ข้าพเจ้าขอรับรองว่าข้อมูลที่ได้แจ้งไว้ในใบสมัครนี้ถูกต้องครบถ้วนทุกประการ</label>
-              </div>
-            </div>
-
+            {/* Submit Button */}
             <Button 
               type="submit" 
               className="w-full bg-blue-600 hover:bg-blue-700 h-12 text-lg"

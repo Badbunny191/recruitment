@@ -180,8 +180,10 @@ export const ApplicationAttachmentSchema = z.object({
   fileUrl: z.string().min(1), // Accept relative or absolute URL
 });
 
-// Core field IDs - these are required for mapping formData to core columns
-export const CORE_FIELD_IDS = ['field-fullname', 'field-email', 'field-national-id'] as const;
+// Core field IDs - these map to legacy root columns (backward compatibility)
+// NOTE: field-national-id is NO LONGER hardcoded - only email and fullname are required
+// All other fields come from template schema
+export const CORE_FIELD_IDS = ['field-fullname', 'field-email'] as const;
 
 export const ApplicationSubmitSchema = z.object({
   roundId: z.string(),
