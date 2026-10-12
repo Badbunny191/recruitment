@@ -2366,8 +2366,8 @@ adminRoutes.get('/rounds/:id/preview-schema', async (c) => {
       options: fieldMaster.defaultOptions,
       overrideOptions: templateFields.overrideOptions,
       isRequired: templateFields.isRequired,
-      helpText: fieldMaster.helpText,
-      placeholder: fieldMaster.placeholder,
+      helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
+      placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
       section: fieldMaster.section, // legacy fallback
       fileConfig: fieldMaster.fileConfig,
       validationType: fieldMaster.validationType,

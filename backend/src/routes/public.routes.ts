@@ -142,7 +142,7 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
     options: fieldMaster.defaultOptions,
     overrideOptions: templateFields.overrideOptions,
     isRequired: templateFields.isRequired,
-    helpText: fieldMaster.helpText,
+    helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
     placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
     section: fieldMaster.section, // Legacy: ใช้สำหรับ fallback (Sprint 3 behavior)
     fileConfig: fieldMaster.fileConfig,
