@@ -6,25 +6,25 @@ import { cn } from '@/lib/utils';
 export type SortDirection = 'asc' | 'desc' | null;
 
 export interface SortOption {
-  /** ค่าที่ส่งไปเมื่อเลือก */
-  value: string;
+  /** ค่า unique สำหรับ identify */
+  id: string;
+  /** ฟิลด์ที่ใช้เรียง */
+  field: string;
   /** ข้อความที่แสดง */
   label: string;
-  /** ทิศทางเริ่มต้น (asc = ▲, desc = ▼) */
-  defaultDirection?: SortDirection;
+  /** ทิศทางเรียง */
+  direction: 'asc' | 'desc';
 }
 
 export interface SortDropdownProps {
-  /** ค่าที่เลือกอยู่ */
+  /** id ที่เลือกอยู่ */
   value: string | null;
   /** ฟังก์ชันที่เรียกเมื่อเลือก */
-  onChange: (value: string, direction: SortDirection) => void;
+  onChange: (id: string, field: string, direction: SortDirection) => void;
   /** ตัวเลือกที่มี */
   options: SortOption[];
   /** Label ของ dropdown */
   label?: string;
-  /** placeholder */
-  placeholder?: string;
   /** ขนาด */
   size?: 'default' | 'sm' | 'lg';
   /** disabled state */
@@ -38,7 +38,6 @@ export function SortDropdown({
   onChange,
   options,
   label = 'เรียงตาม',
-  placeholder = 'เลือก...',
   size = 'default',
   disabled = false,
   className,
@@ -46,8 +45,8 @@ export function SortDropdown({
   const [isOpen, setIsOpen] = React.useState(false);
   const dropdownRef = React.useRef<HTMLDivElement>(null);
 
-  // Find selected option
-  const selectedOption = options.find((opt) => opt.value === value);
+  // Find selected option by id
+  const selectedOption = options.find((opt) => opt.id === value);
 
   // Close on click outside
   React.useEffect(() => {
@@ -74,31 +73,14 @@ export function SortDropdown({
   }, [isOpen]);
 
   const handleSelect = (option: SortOption) => {
-    // Toggle direction if same option
-    const newDirection =
-      value === option.value
-        ? option.defaultDirection === 'asc'
-          ? 'desc'
-          : option.defaultDirection === 'desc'
-          ? 'asc'
-          : 'asc'
-        : option.defaultDirection || 'asc';
-
-    onChange(option.value, newDirection);
+    onChange(option.id, option.field, option.direction);
     setIsOpen(false);
   };
 
   const sizeClasses = {
-    default: 'h-10 px-3 text-sm',
+    default: 'h-9 px-3 text-sm',
     sm: 'h-8 px-2 text-xs',
     lg: 'h-12 px-4 text-base',
-  };
-
-  const getDirectionIcon = (option: SortOption) => {
-    if (value !== option.value) return null;
-    const currentOption = options.find((opt) => opt.value === value);
-    const direction = currentOption?.defaultDirection || 'asc';
-    return direction === 'asc' ? '▲' : '▼';
   };
 
   return (
@@ -109,16 +91,16 @@ export function SortDropdown({
         onClick={() => !disabled && setIsOpen(!isOpen)}
         disabled={disabled}
         className={cn(
-          'inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white font-medium transition-colors',
-          'hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
-          'disabled:opacity-50 disabled:cursor-not-allowed',
+          'inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white font-medium transition-colors',
+          'hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1',
+          'disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap',
           sizeClasses[size],
-          isOpen && 'ring-2 ring-blue-500 ring-offset-2'
+          isOpen && 'ring-2 ring-blue-500 ring-offset-1 border-blue-500'
         )}
       >
         {/* Sort Icon */}
         <svg
-          className={cn('h-4 w-4 text-gray-500', size === 'sm' && 'h-3 w-3')}
+          className={cn('h-3.5 w-3.5 text-slate-500')}
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -132,21 +114,21 @@ export function SortDropdown({
         </svg>
 
         {/* Label */}
-        <span className="text-gray-700">
+        <span className="text-slate-700">
           {selectedOption ? selectedOption.label : label}
         </span>
 
         {/* Direction Indicator */}
         {selectedOption && (
-          <span className="text-blue-600 text-xs font-bold">
-            {getDirectionIcon(selectedOption)}
+          <span className="text-blue-600 font-medium">
+            {selectedOption.direction === 'asc' ? '↑' : '↓'}
           </span>
         )}
 
         {/* Chevron */}
         <svg
           className={cn(
-            'h-4 w-4 text-gray-400 transition-transform',
+            'h-3.5 w-3.5 text-slate-400 transition-transform',
             isOpen && 'rotate-180'
           )}
           fill="none"
@@ -164,10 +146,10 @@ export function SortDropdown({
 
       {/* Dropdown Menu */}
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-full min-w-[180px] rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden">
+        <div className="absolute z-50 mt-1 right-0 sm:left-0 min-w-[160px] rounded-lg border border-slate-200 bg-white shadow-lg overflow-hidden">
           <div className="py-1">
             {/* Header */}
-            <div className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider border-b">
+            <div className="px-3 py-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-wider border-b bg-slate-50/50">
               {label}
             </div>
 
@@ -175,19 +157,19 @@ export function SortDropdown({
             <div className="py-1 max-h-60 overflow-auto">
               {options.map((option) => (
                 <button
-                  key={option.value}
+                  key={option.id}
                   type="button"
                   onClick={() => handleSelect(option)}
                   className={cn(
-                    'w-full px-3 py-2 text-left text-sm flex items-center justify-between transition-colors',
-                    'hover:bg-gray-50',
-                    value === option.value && 'bg-blue-50 text-blue-700'
+                    'w-full px-3 py-1.5 text-left text-xs flex items-center justify-between transition-colors',
+                    'hover:bg-slate-50',
+                    value === option.id && 'bg-blue-50 text-blue-700 font-medium'
                   )}
                 >
                   <span>{option.label}</span>
-                  {value === option.value && (
-                    <span className="text-blue-600 text-xs font-bold">
-                      {getDirectionIcon(option)}
+                  {value === option.id && (
+                    <span className="text-blue-600 font-bold">
+                      {option.direction === 'asc' ? '↑' : '↓'}
                     </span>
                   )}
                 </button>

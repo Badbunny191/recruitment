@@ -1,8 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -11,11 +10,16 @@ import { Select } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { CompareVersionModal } from '@/components/CompareVersionModal';
 import { CloneRoundModal } from '@/components/CloneRoundModal';
+import { SearchInput } from '@/components/ui/search-input';
+import { SortDropdown } from '@/components/ui/sort-dropdown';
+import { Pagination } from '@/components/ui/pagination';
+import { ActionMenu } from '@/components/ui/action-menu';
+import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
+import { cn } from '@/lib/utils';
 
 interface Round {
   id: string;
   templateVersionId: string;
-  // JOIN จาก backend (GET /admin/rounds)
   templateId?: string | null;
   templateName?: string | null;
   versionNumber?: number | null;
@@ -44,7 +48,6 @@ interface FormState {
   openDate: string;
   closeDate: string;
   status: 'DRAFT' | 'ACTIVE' | 'CLOSED';
-  // Form Header / Announcement
   announcementTitle: string;
   announcementDescription: string;
   contactInformation: string;
@@ -81,7 +84,6 @@ const EMPTY_FORM: FormState = {
   openDate: '',
   closeDate: '',
   status: 'DRAFT',
-  // Form Header / Announcement
   announcementTitle: '',
   announcementDescription: '',
   contactInformation: '',
@@ -98,11 +100,119 @@ const toLocalInput = (value: string | number | Date) => {
 
 const toUnix = (local: string) => Math.floor(new Date(local).getTime() / 1000);
 
+// ============================================
+// DESIGN SYSTEM - Smart Family Style
+// ============================================
+const CARD_STYLE = {
+  container: 'bg-white rounded-xl border border-slate-200 shadow-sm',
+  header: 'px-4 py-3 border-b border-slate-100',
+  body: 'px-4 py-3',
+};
+
+const STATUS_CONFIG = {
+  ACTIVE: { label: 'ใช้งาน', dot: 'bg-emerald-500' },
+  CLOSED: { label: 'ปิดแล้ว', dot: 'bg-slate-400' },
+  DRAFT: { label: 'ร่าง', dot: 'bg-amber-500' },
+} as const;
+
+// ============================================
+// SUB-COMPONENTS
+// ============================================
+
+/** KPI Card - Smart Family Style */
+function KpiCard({ 
+  icon, 
+  value, 
+  label, 
+  variant = 'default' 
+}: { 
+  icon: string; 
+  value: number | string; 
+  label: string; 
+  variant?: 'default' | 'success' | 'muted';
+}) {
+  const valueColor = {
+    default: 'text-slate-900',
+    success: 'text-emerald-600',
+    muted: 'text-slate-500',
+  }[variant];
+  
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4">
+      <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center text-2xl shrink-0">
+        {icon}
+      </div>
+      <div className="flex flex-col">
+        <span className={cn("text-3xl font-bold tabular-nums leading-none", valueColor)}>{value}</span>
+        <span className="text-sm text-slate-500 mt-1.5">{label}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Filter Pill - Ultra Compact */
+function FilterPill({ 
+  label, 
+  isActive, 
+  onClick,
+  count,
+}: { 
+  label: string; 
+  isActive: boolean; 
+  onClick: () => void;
+  count?: number;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap",
+        isActive 
+          ? "bg-slate-900 text-white" 
+          : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+      )}
+    >
+      {label}
+      {count !== undefined && (
+        <span className={cn(
+          "text-[10px] px-1 rounded min-w-[16px] text-center leading-none",
+          isActive ? "bg-white/20" : "bg-slate-100 text-slate-600"
+        )}>
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Version Badge - Smart Family Style */
+function VersionBadge({ 
+  version, 
+  onCompare 
+}: { 
+  version: number;
+  onCompare: () => void;
+}) {
+  return (
+    <button
+      onClick={onCompare}
+      className="group inline-flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-800 transition-colors"
+    >
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-700 font-medium group-hover:bg-blue-100">
+        🆕 v{version}
+      </span>
+      <span className="opacity-0 group-hover:opacity-100 transition-opacity">ดูความต่าง</span>
+    </button>
+  );
+}
+
+// ============================================
+// MAIN PAGE
+// ============================================
+
 export default function RoundsPage() {
   const [rounds, setRounds] = useState<Round[]>([]);
   const [roundsWithVersionInfo, setRoundsWithVersionInfo] = useState<RoundVersionInfo[]>([]);
-  // ดึงจาก API /admin/template-versions/published โดยตรง (backend JOIN แล้ว)
-  // ไม่ต้องโหลด templates + versions แยกอีกต่อไป
   const [publishedVersions, setPublishedVersions] = useState<PublishedTemplateVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -123,8 +233,18 @@ export default function RoundsPage() {
   const [editingAppCount, setEditingAppCount] = useState<number | null>(null);
   const [loadingAppCount, setLoadingAppCount] = useState(false);
 
-  // View filter: all | active | archived
-  const [view, setView] = useState<'all' | 'active' | 'archived'>('active');
+  // View filter
+  const [view, setView] = useState<'all' | 'active' | 'archived'>('all');
+
+  // Search & Sort state
+  const [search, setSearch] = useState('');
+  const [sortId, setSortId] = useState<string>('createdAt-desc');
+  const [sortField, setSortField] = useState<string>('createdAt');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(10);
 
   // Archive / Restore / Permanent Delete dialogs
   const [archiveDialog, setArchiveDialog] = useState<{ open: boolean; round: Round | null }>({ open: false, round: null });
@@ -168,17 +288,13 @@ export default function RoundsPage() {
     setLoading(false);
   };
 
-  // Archive / Restore / Permanent Delete handlers
   const handleArchive = async () => {
     if (!archiveDialog.round) return;
     setArchiveLoading(true);
     try {
       const res = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${archiveDialog.round.id}/archive`,
-        {
-          method: 'PATCH',
-          headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
-        }
+        { method: 'PATCH', headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
       );
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -199,10 +315,7 @@ export default function RoundsPage() {
     try {
       const res = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${restoreDialog.round.id}/restore`,
-        {
-          method: 'PATCH',
-          headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
-        }
+        { method: 'PATCH', headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
       );
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -218,7 +331,6 @@ export default function RoundsPage() {
   };
 
   const openDeleteDialog = async (round: Round) => {
-    // Check usage first
     const res = await fetch(
       `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${round.id}/usage`,
       { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
@@ -238,10 +350,7 @@ export default function RoundsPage() {
     try {
       const res = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${deleteDialog.round.id}`,
-        {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
-        }
+        { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
       );
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -280,13 +389,15 @@ export default function RoundsPage() {
     loadRounds();
     loadPublishedVersions();
     loadRoundsWithVersionInfo();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [view, search, sortId]);
 
   const getVersionWarning = (roundId: string) => {
     const info = roundsWithVersionInfo.find(r => r.roundId === roundId);
     if (!info) return null;
-    
     if (info.hasNewerVersion && info.latestPublishedVersion) {
       return {
         currentVersionNumber: info.currentVersion?.versionNumber || 0,
@@ -314,12 +425,10 @@ export default function RoundsPage() {
     await loadRoundsWithVersionInfo();
   };
 
-  const handleCloneFromCompare = (versionId: string) => {
+  const handleCloneFromCompare = () => {
     setCompareModalOpen(false);
     const info = roundsWithVersionInfo.find(r => r.currentVersion?.id === compareFromVersionId);
-    if (info) {
-      openCloneModal(info.roundId);
-    }
+    if (info) openCloneModal(info.roundId);
   };
 
   const openCreate = () => {
@@ -337,7 +446,6 @@ export default function RoundsPage() {
       openDate: toLocalInput(r.openDate),
       closeDate: toLocalInput(r.closeDate),
       status: r.status,
-      // Form Header / Announcement
       announcementTitle: (r as any).announcementTitle || '',
       announcementDescription: (r as any).announcementDescription || '',
       contactInformation: (r as any).contactInformation || '',
@@ -348,57 +456,36 @@ export default function RoundsPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
     if (new Date(form.closeDate) <= new Date(form.openDate)) {
       alert('วันปิดรับสมัครต้องมากกว่าวันเปิดรับสมัคร');
       return;
     }
-
     setSubmitting(true);
     try {
+      const payload = {
+        title: form.title,
+        positionLevel: form.positionLevel,
+        templateVersionId: form.templateVersionId,
+        openDate: toUnix(form.openDate),
+        closeDate: toUnix(form.closeDate),
+        status: form.status,
+        announcementTitle: form.announcementTitle || null,
+        announcementDescription: form.announcementDescription || null,
+        contactInformation: form.contactInformation || null,
+        remark: form.remark || null,
+      };
+      
       if (editing) {
-        const payload = {
-          title: form.title,
-          positionLevel: form.positionLevel,
-          templateVersionId: form.templateVersionId,
-          openDate: toUnix(form.openDate),
-          closeDate: toUnix(form.closeDate),
-          status: form.status,
-          // Form Header / Announcement
-          announcementTitle: form.announcementTitle || null,
-          announcementDescription: form.announcementDescription || null,
-          contactInformation: form.contactInformation || null,
-          remark: form.remark || null,
-        };
         const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${editing.id}`, {
           method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
-          },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
           body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error('update failed');
       } else {
-        const payload = {
-          title: form.title,
-          positionLevel: form.positionLevel,
-          templateVersionId: form.templateVersionId,
-          openDate: toUnix(form.openDate),
-          closeDate: toUnix(form.closeDate),
-          status: form.status,
-          // Form Header / Announcement
-          announcementTitle: form.announcementTitle || null,
-          announcementDescription: form.announcementDescription || null,
-          contactInformation: form.contactInformation || null,
-          remark: form.remark || null,
-        };
         const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/rounds', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
-          },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
           body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error('create failed');
@@ -416,292 +503,342 @@ export default function RoundsPage() {
     if (!value) return 'ไม่กำหนด';
     const d = new Date(value);
     if (isNaN(d.getTime())) return 'ไม่กำหนด';
-    return d.toLocaleDateString('th-TH', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
+    return d.toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' });
   };
 
-  // ใช้ field ที่ JOIN มาจาก backend โดยตรง (templateName + versionNumber)
-  // ไม่ต้อง lookup ใน client state อีกต่อไป
   const formatTemplateCell = (r: Round): string => {
-    if (r.templateName && r.versionNumber != null) {
-      return `${r.templateName} v${r.versionNumber}`;
-    }
-    if (r.templateName) {
-      return `${r.templateName} (ไม่พบ version)`;
-    }
+    if (r.templateName && r.versionNumber != null) return `${r.templateName} v${r.versionNumber}`;
+    if (r.templateName) return `${r.templateName} (ไม่พบ version)`;
     return `(Template ถูกลบ) ${r.templateVersionId.slice(0, 8)}…`;
   };
 
-  // ใช้สำหรับแสดง template ในฟอร์ม edit (อ้างอิง templateVersionId จาก form state)
-  // ใช้ publishedVersions (ดึงจาก API ใหม่) ในการ lookup
   const formatTemplateVersionLabel = (templateVersionId: string): string => {
     const v = publishedVersions.find((x) => x.id === templateVersionId);
     if (v) return `${v.templateName} v${v.versionNumber}`;
     return `(Template ถูกลบ) ${templateVersionId.slice(0, 8)}…`;
   };
 
+  // Sort options
+  const sortOptions = [
+    { id: 'createdAt-desc', field: 'createdAt', label: 'ล่าสุด', direction: 'desc' as const },
+    { id: 'createdAt-asc', field: 'createdAt', label: 'เก่าสุด', direction: 'asc' as const },
+    { id: 'title-asc', field: 'title', label: 'ชื่อ A-Z', direction: 'asc' as const },
+    { id: 'title-desc', field: 'title', label: 'ชื่อ Z-A', direction: 'desc' as const },
+  ];
+
+  // Filter & Sort & Paginate
+  const filteredAndSortedRounds = useMemo(() => {
+    let result = [...rounds];
+
+    if (search.trim()) {
+      const s = search.toLowerCase();
+      result = result.filter(r =>
+        r.title.toLowerCase().includes(s) ||
+        r.positionLevel.toLowerCase().includes(s) ||
+        (r.templateName?.toLowerCase().includes(s))
+      );
+    }
+
+    result.sort((a, b) => {
+      let aVal: any, bVal: any;
+      if (sortField === 'createdAt') {
+        aVal = new Date(a.createdAt).getTime();
+        bVal = new Date(b.createdAt).getTime();
+      } else if (sortField === 'title') {
+        aVal = a.title.toLowerCase();
+        bVal = b.title.toLowerCase();
+      } else {
+        return 0;
+      }
+      if (isNaN(aVal) && isNaN(bVal)) return 0;
+      if (isNaN(aVal)) return 1;
+      if (isNaN(bVal)) return -1;
+      
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    return result;
+  }, [rounds, search, sortField, sortDirection]);
+
+  const totalItems = filteredAndSortedRounds.length;
+  const paginatedRounds = filteredAndSortedRounds.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  );
+
+  const totalRounds = rounds.length;
+  const activeRounds = rounds.filter(r => r.status === 'ACTIVE' && !r.deletedAt).length;
+  const archivedRounds = rounds.filter(r => r.deletedAt).length;
+
+  const viewCounts = {
+    all: totalRounds,
+    active: activeRounds,
+    archived: archivedRounds,
+  };
+
   return (
-    <div className="p-8 space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold">รอบการรับสมัคร (Recruitment Rounds)</h1>
-        <Button onClick={openCreate} disabled={publishedVersions.length === 0}>
+    <div className="p-4 md:p-6 space-y-3">
+      {/* ============================================ */}
+      {/* 1. PAGE HEADER */}
+      {/* ============================================ */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">📋</span>
+          <div>
+            <h1 className="text-lg font-bold text-slate-900 leading-tight">รอบการรับสมัคร</h1>
+            <p className="text-[11px] text-slate-500">จัดการรอบการรับสมัครทั้งหมดในระบบ</p>
+          </div>
+        </div>
+        <Button onClick={openCreate} disabled={publishedVersions.length === 0} size="sm" className="h-8">
           + สร้างรอบใหม่
         </Button>
       </div>
 
-      {/* View filter: All / Active / Archived */}
-      <div className="flex gap-2 items-center">
-        <span className="text-sm text-slate-600">มุมมอง:</span>
-        <div className="inline-flex rounded-md border border-slate-200 overflow-hidden">
-          <button
-            onClick={() => setView('all')}
-            className={`px-3 py-1.5 text-sm ${view === 'all' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'}`}
-          >
-            ทั้งหมด
-          </button>
-          <button
-            onClick={() => setView('active')}
-            className={`px-3 py-1.5 text-sm border-l border-slate-200 ${view === 'active' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'}`}
-          >
-            ใช้งานอยู่
-          </button>
-          <button
-            onClick={() => setView('archived')}
-            className={`px-3 py-1.5 text-sm border-l border-slate-200 ${view === 'archived' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'}`}
-          >
-            จัดเก็บแล้ว
-          </button>
-        </div>
-        <span className="text-xs text-slate-500 ml-2">
-          {view === 'active' && 'แสดงเฉพาะรอบที่ใช้งานอยู่'}
-          {view === 'archived' && 'แสดงเฉพาะรอบที่จัดเก็บแล้ว'}
-          {view === 'all' && 'แสดงรอบทั้งหมด'}
-        </span>
-      </div>
-
+      {/* Warning Banner */}
       {publishedVersions.length === 0 && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded p-4 text-sm text-yellow-800">
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
           ยังไม่มี Published Template Version — กรุณาไปที่{' '}
-          <a href="/admin/templates" className="underline font-medium">หน้า Templates</a>{' '}
+          <a href="/admin/templates" className="underline font-medium hover:text-amber-900">หน้า Templates</a>{' '}
           เพื่อสร้าง Template และ Publish Version ก่อน
         </div>
       )}
 
-      <div className="border rounded-md">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>ชื่อรอบ</TableHead>
-              <TableHead>ระดับ</TableHead>
-              <TableHead>Template</TableHead>
-              <TableHead>เปิด-ปิด</TableHead>
-              <TableHead>สถานะ</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loading ? (
-              <TableRow>
-                <TableCell colSpan={6} className="text-center text-slate-500 py-6">
-                  กำลังโหลด...
-                </TableCell>
+      {/* ============================================ */}
+      {/* 2. KPI CARDS - Ultra Compact */}
+      {/* ============================================ */}
+      <div className="grid grid-cols-3 gap-2">
+        <KpiCard icon="📊" value={totalRounds} label="ทั้งหมด" />
+        <KpiCard icon="✅" value={activeRounds} label="ใช้งานอยู่" variant="success" />
+        <KpiCard icon="📁" value={archivedRounds} label="จัดเก็บแล้ว" variant="muted" />
+      </div>
+
+      {/* ============================================ */}
+      {/* 3. CONTENT CARD - Smart Family Style */}
+      {/* ============================================ */}
+      <div className={cn(CARD_STYLE.container, "overflow-hidden")}>
+        {/* 3.1 UNIFIED TOOLBAR */}
+        <div className={cn(CARD_STYLE.header, "flex flex-col gap-2")}>
+          {/* Row 1: Search + Sort */}
+          <div className="flex items-center gap-2">
+            <div className="flex-1 min-w-0">
+              <SearchInput
+                value={search}
+                onChange={setSearch}
+                placeholder="ค้นหาชื่อรอบ..."
+                resultCount={totalItems}
+                resultLabel="รายการ"
+                size="sm"
+                hideResultCount
+              />
+            </div>
+            <SortDropdown
+              value={sortId}
+              onChange={(id, field, direction) => {
+                setSortId(id);
+                setSortField(field);
+                if (direction) setSortDirection(direction);
+              }}
+              options={sortOptions}
+              size="sm"
+            />
+          </div>
+          
+          {/* Row 2: Filter Pills + Result Count */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1">
+              <FilterPill label="ทั้งหมด" isActive={view === 'all'} onClick={() => setView('all')} count={viewCounts.all} />
+              <FilterPill label="ใช้งานอยู่" isActive={view === 'active'} onClick={() => setView('active')} count={viewCounts.active} />
+              <FilterPill label="จัดเก็บแล้ว" isActive={view === 'archived'} onClick={() => setView('archived')} count={viewCounts.archived} />
+            </div>
+            <span className="text-[11px] text-slate-500 whitespace-nowrap">
+              {search.trim() ? `พบ ${totalItems}` : `ทั้งหมด ${totalItems}`}
+            </span>
+          </div>
+        </div>
+
+        {/* 3.2 TABLE - Compact rows */}
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-slate-50/50 hover:bg-slate-50/50">
+                <TableHead className="h-8 text-[11px] font-medium text-slate-600">ชื่อรอบ</TableHead>
+                <TableHead className="h-8 text-[11px] font-medium text-slate-600 hidden md:table-cell">ระดับ</TableHead>
+                <TableHead className="h-8 text-[11px] font-medium text-slate-600 hidden lg:table-cell">Template</TableHead>
+                <TableHead className="h-8 text-[11px] font-medium text-slate-600 hidden sm:table-cell">เปิด-ปิด</TableHead>
+                <TableHead className="h-8 text-[11px] font-medium text-slate-600">สถานะ</TableHead>
+                <TableHead className="h-8 text-[11px] font-medium text-slate-600 text-right w-[50px]">จัดการ</TableHead>
               </TableRow>
-            ) : rounds.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6} className="text-center text-slate-500 py-6">
-                  ยังไม่มีรอบรับสมัคร
-                </TableCell>
-              </TableRow>
-            ) : (
-              rounds.map((r) => {
-                const versionWarning = getVersionWarning(r.id);
-                return (
-                <TableRow key={r.id}>
-                  <TableCell className="font-medium">
-                    {r.title}
-                    {versionWarning && (
-                      <div className="mt-1">
-                        <span className="bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full border border-amber-300 text-xs">
-                          ⚠️ มี Published Version ใหม่กว่า
-                        </span>
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell>{r.positionLevel}</TableCell>
-                  <TableCell className="text-slate-500 text-sm">
-                    {formatTemplateCell(r)}
-                    {versionWarning && (
-                      <div className="text-xs text-amber-600 mt-1">
-                        Published ล่าสุด: v{versionWarning.latestVersionNumber}
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-sm">
-                    {formatDate(r.openDate)} - {formatDate(r.closeDate)}
-                  </TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={
-                        r.status === 'ACTIVE' ? 'default' : r.status === 'CLOSED' ? 'secondary' : 'outline'
-                      }
-                    >
-                      {r.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      {versionWarning && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-xs text-blue-600 hover:text-blue-800"
-                          onClick={() => openCompareModal(
-                            versionWarning.currentVersionId,
-                            versionWarning.latestVersionId
-                          )}
-                        >
-                          เปรียบเทียบ
-                        </Button>
-                      )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="text-xs text-purple-700 border-purple-300 hover:bg-purple-50"
-                        onClick={() => window.open(`/admin/rounds/preview?id=${r.id}`, '_blank')}
-                        title="เปิดดูตัวอย่างฟอร์ม (Bypass Round Lifecycle Gate)"
-                      >
-                        👁 Preview
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="text-xs"
-                        onClick={() => openCloneModal(r.id)}
-                      >
-                        Clone
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => openEdit(r)}>
-                        แก้ไข
-                      </Button>
-                      {/* Archive / Restore / Delete Permanently actions */}
-                      {!r.deletedAt ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="text-xs text-slate-700 border-slate-300 hover:bg-slate-50"
-                          onClick={() => setArchiveDialog({ open: true, round: r })}
-                          title="จัดเก็บ (ซ่อนจากรายการปกติ แต่ไม่ลบข้อมูล)"
-                        >
-                          📁 จัดเก็บ
-                        </Button>
-                      ) : (
-                        <>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="text-xs text-green-700 border-green-300 hover:bg-green-50"
-                            onClick={() => setRestoreDialog({ open: true, round: r })}
-                            title="เรียกคืนกลับมาเป็นรอบที่ใช้งานอยู่"
-                          >
-                            ↩ เรียกคืน
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="text-xs text-red-700 border-red-300 hover:bg-red-50"
-                            onClick={() => openDeleteDialog(r)}
-                            title="ลบถาวร (เฉพาะผู้ดูแลระบบ)"
-                          >
-                            🗑 ลบถาวร
-                          </Button>
-                        </>
-                      )}
+            </TableHeader>
+            <TableBody>
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center py-8">
+                    <div className="flex items-center justify-center gap-2 text-slate-500">
+                      <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      <span className="text-xs">กำลังโหลด...</span>
                     </div>
                   </TableCell>
                 </TableRow>
-              )})
-            )}
-          </TableBody>
-        </Table>
+              ) : filteredAndSortedRounds.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="py-0">
+                    {search ? (
+                      <NoResultsEmptyState keyword={search} onClearFilters={() => setSearch('')} />
+                    ) : (
+                      <NoDataEmptyState
+                        title="ยังไม่มีรอบรับสมัคร"
+                        description="เริ่มต้นโดยการสร้างรอบรับสมัครใหม่"
+                        action={{ label: '+ สร้างรอบใหม่', onClick: openCreate, variant: 'primary' }}
+                      />
+                    )}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                paginatedRounds.map((r) => {
+                  const versionWarning = getVersionWarning(r.id);
+                  const status = STATUS_CONFIG[r.status];
+                  
+                  return (
+                    <TableRow key={r.id} className="group">
+                      {/* ชื่อรอบ */}
+                      <TableCell className="py-2">
+                        <div className="flex flex-col gap-0.5 min-w-0">
+                          <div className="font-medium text-sm text-slate-900 truncate max-w-[240px]" title={r.title}>
+                            {r.title}
+                          </div>
+                          {versionWarning && (
+                            <VersionBadge 
+                              version={versionWarning.latestVersionNumber}
+                              onCompare={() => openCompareModal(versionWarning.currentVersionId, versionWarning.latestVersionId)}
+                            />
+                          )}
+                        </div>
+                      </TableCell>
+                      
+                      {/* ระดับ */}
+                      <TableCell className="py-2 text-sm text-slate-600 hidden md:table-cell">
+                        {r.positionLevel}
+                      </TableCell>
+                      
+                      {/* Template */}
+                      <TableCell className="py-2 text-xs text-slate-500 hidden lg:table-cell">
+                        <div className="truncate max-w-[150px]" title={formatTemplateCell(r)}>
+                          {formatTemplateCell(r)}
+                        </div>
+                      </TableCell>
+                      
+                      {/* วันที่ */}
+                      <TableCell className="py-2 text-xs text-slate-500 whitespace-nowrap hidden sm:table-cell">
+                        <div>{formatDate(r.openDate)}</div>
+                        <div className="text-slate-400">– {formatDate(r.closeDate)}</div>
+                      </TableCell>
+                      
+                      {/* สถานะ */}
+                      <TableCell className="py-2">
+                        <div className="inline-flex items-center gap-1">
+                          <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", status.dot)} />
+                          <span className="text-xs text-slate-700">{status.label}</span>
+                        </div>
+                      </TableCell>
+                      
+                      {/* Actions - ⋮ only */}
+                      <TableCell className="py-2 text-right">
+                        <ActionMenu
+                          size="sm"
+                          items={[
+                            { label: '✏️ แก้ไข', onClick: () => openEdit(r) },
+                            { label: '👁 ดูตัวอย่าง', onClick: () => window.open(`/admin/rounds/preview?id=${r.id}`, '_blank') },
+                            { label: '📋 ทำสำเนา', onClick: () => openCloneModal(r.id) },
+                            ...(versionWarning ? [{ label: '🔍 ดูความต่าง', onClick: () => openCompareModal(versionWarning.currentVersionId, versionWarning.latestVersionId) }] : []),
+                            { type: 'separator', label: '', onClick: () => {} },
+                            ...(!r.deletedAt 
+                              ? [{ label: '📁 จัดเก็บ', onClick: () => setArchiveDialog({ open: true, round: r }) }]
+                              : [
+                                  { label: '↩ เรียกคืน', onClick: () => setRestoreDialog({ open: true, round: r }) },
+                                  { label: '🗑 ลบถาวร', type: 'danger' as const, onClick: () => openDeleteDialog(r) },
+                                ]
+                            ),
+                          ]}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </div>
+
+        {/* 3.3 PAGINATION */}
+        <div className={cn(CARD_STYLE.header, "flex items-center justify-between")}>
+          <span className="text-[11px] text-slate-500">
+            {search.trim() ? `พบ ${totalItems} รายการ` : `แสดง ${paginatedRounds.length} จาก ${totalItems}`}
+          </span>
+          <Pagination
+            currentPage={currentPage}
+            totalItems={totalItems}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            showPageSizeSelector={false}
+            showResultCount={false}
+          />
+        </div>
       </div>
 
+      {/* ============================================ */}
+      {/* 4. FORM DIALOG */}
+      {/* ============================================ */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editing ? 'แก้ไขรอบรับสมัคร' : 'สร้างรอบรับสมัครใหม่'}</DialogTitle>
+            <DialogTitle>{editing ? '✏️ แก้ไขรอบรับสมัคร' : '➕ สร้างรอบรับสมัครใหม่'}</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="title">ชื่อรอบ</Label>
-              <Input
-                id="title"
-                value={form.title}
-                onChange={(e) => setForm({ ...form, title: e.target.value })}
-                required
-                placeholder="เช่น รับสมัครนักตรวจเงินแผ่นดิน รุ่นที่ 12"
-              />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="title">ชื่อรอบ</Label>
+                <Input id="title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required placeholder="เช่น รับสมัครนักตรวจเงินแผ่นดิน รุ่นที่ 12" />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="positionLevel">ระดับตำแหน่ง</Label>
+                <Input id="positionLevel" value={form.positionLevel} onChange={(e) => setForm({ ...form, positionLevel: e.target.value })} required placeholder="เช่น ปฏิบัติการ / ชำนาญการ" />
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="positionLevel">ระดับตำแหน่ง</Label>
-              <Input
-                id="positionLevel"
-                value={form.positionLevel}
-                onChange={(e) => setForm({ ...form, positionLevel: e.target.value })}
-                required
-                placeholder="เช่น ปฏิบัติการ / ชำนาญการ"
-              />
-            </div>
+
             {!editing && (
               <div className="space-y-2">
                 <Label htmlFor="templateVersionId">Template Version</Label>
-                <Select
-                  id="templateVersionId"
-                  value={form.templateVersionId}
-                  onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })}
-                  required
-                >
+                <Select id="templateVersionId" value={form.templateVersionId} onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })} required>
                   <option value="">-- เลือก Published Version --</option>
                   {publishedVersions.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.templateName} v{v.versionNumber}
-                    </option>
+                    <option key={v.id} value={v.id}>{v.templateName} v{v.versionNumber}</option>
                   ))}
                 </Select>
-                <p className="text-xs text-slate-500">
-                  เฉพาะ Published Version เท่านั้นที่สร้าง Round ได้
-                </p>
+                <p className="text-xs text-slate-500">เฉพาะ Published Version เท่านั้นที่สร้าง Round ได้</p>
               </div>
             )}
+
             {editing && (
               <div className="space-y-2">
                 <Label>Template Version</Label>
                 {editing.status === 'DRAFT' ? (
                   <>
-                    <Select
-                      value={form.templateVersionId}
-                      onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })}
-                    >
+                    <Select value={form.templateVersionId} onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })}>
                       <option value="">-- เลือก Published Version --</option>
                       {publishedVersions.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.templateName} v{v.versionNumber}
-                        </option>
+                        <option key={v.id} value={v.id}>{v.templateName} v{v.versionNumber}</option>
                       ))}
                     </Select>
-                    <p className="text-xs text-blue-600">
-                      Draft Round: สามารถเปลี่ยน Version ได้
-                    </p>
+                    <p className="text-xs text-blue-600">Draft Round: สามารถเปลี่ยน Version ได้</p>
                   </>
                 ) : editing.status === 'ACTIVE' ? (
-                  <div className="p-3 bg-slate-100 rounded">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium">
-                        {formatTemplateVersionLabel(form.templateVersionId)}
-                      </span>
-                    </div>
+                  <div className="p-3 bg-slate-100 rounded-lg">
+                    <span className="text-sm font-medium">{formatTemplateVersionLabel(form.templateVersionId)}</span>
                     {loadingAppCount ? (
                       <p className="text-xs text-slate-500 mt-2">กำลังโหลด...</p>
                     ) : editingAppCount !== null && editingAppCount > 0 ? (
@@ -710,122 +847,66 @@ export default function RoundsPage() {
                           <span>🔒</span>
                           <span>ล็อกแล้ว — มีผู้สมัครแล้ว {editingAppCount} คน</span>
                         </div>
-                        <p className="text-amber-700 mt-1">
-                          ไม่สามารถเปลี่ยน Version ได้ กรุณา Clone Round ใหม่
-                        </p>
-                        <Button 
-                          size="sm" 
-                          variant="outline"
-                          className="mt-2 text-xs"
-                          onClick={() => openCloneModal(editing.id)}
-                        >
+                        <p className="text-amber-700 mt-1">ไม่สามารถเปลี่ยน Version ได้ กรุณา Clone Round ใหม่</p>
+                        <Button size="sm" variant="outline" className="mt-2 text-xs" onClick={() => openCloneModal(editing.id)}>
                           Clone Round
                         </Button>
                       </div>
                     ) : (
-                      <p className="text-xs text-red-600 mt-2">
-                        ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบเปิดรับสมัครแล้ว
-                      </p>
+                      <p className="text-xs text-red-600 mt-2">ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบเปิดรับสมัครแล้ว</p>
                     )}
                   </div>
                 ) : (
-                  <div className="p-3 bg-slate-100 rounded">
-                    <span className="text-sm font-medium">
-                      {formatTemplateVersionLabel(form.templateVersionId)}
-                    </span>
-                    <p className="text-xs text-red-600 mt-2">
-                      ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบปิดรับสมัครแล้ว
-                    </p>
+                  <div className="p-3 bg-slate-100 rounded-lg">
+                    <span className="text-sm font-medium">{formatTemplateVersionLabel(form.templateVersionId)}</span>
+                    <p className="text-xs text-red-600 mt-2">ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบปิดรับสมัครแล้ว</p>
                   </div>
                 )}
               </div>
             )}
+
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="openDate">วันเปิดรับสมัคร</Label>
-                <Input
-                  id="openDate"
-                  type="datetime-local"
-                  value={form.openDate}
-                  onChange={(e) => setForm({ ...form, openDate: e.target.value })}
-                  required
-                />
+                <Input id="openDate" type="datetime-local" value={form.openDate} onChange={(e) => setForm({ ...form, openDate: e.target.value })} required />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="closeDate">วันปิดรับสมัคร</Label>
-                <Input
-                  id="closeDate"
-                  type="datetime-local"
-                  value={form.closeDate}
-                  onChange={(e) => setForm({ ...form, closeDate: e.target.value })}
-                  required
-                />
+                <Input id="closeDate" type="datetime-local" value={form.closeDate} onChange={(e) => setForm({ ...form, closeDate: e.target.value })} required />
               </div>
             </div>
+
             <div className="space-y-2">
               <Label htmlFor="status">สถานะ</Label>
-              <Select
-                id="status"
-                value={form.status}
-                onChange={(e) => setForm({ ...form, status: e.target.value as FormState['status'] })}
-              >
-                <option value="DRAFT">DRAFT — ยังไม่เปิดรับ</option>
-                <option value="ACTIVE">ACTIVE — เปิดรับสมัครแล้ว</option>
-                <option value="CLOSED">CLOSED — ปิดรับแล้ว</option>
+              <Select id="status" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as FormState['status'] })}>
+                <option value="DRAFT">ร่าง — ยังไม่เปิดรับ</option>
+                <option value="ACTIVE">เปิดรับ — รับสมัครอยู่</option>
+                <option value="CLOSED">ปิดแล้ว — หยุดรับสมัคร</option>
               </Select>
             </div>
 
-            {/* Form Header / Announcement Section */}
-            <div className="border-t pt-4 mt-4">
-              <h3 className="font-medium text-gray-800 mb-4">ข้อมูลประกาศรับสมัคร (Header)</h3>
-
+            <div className="border-t pt-4 space-y-3">
+              <h3 className="font-medium text-slate-800">ข้อมูลประกาศรับสมัคร</h3>
               <div className="space-y-2">
                 <Label htmlFor="announcementTitle">หัวข้อประกาศ</Label>
-                <Input
-                  id="announcementTitle"
-                  value={form.announcementTitle}
-                  onChange={(e) => setForm({ ...form, announcementTitle: e.target.value })}
-                  placeholder="เช่น ประกาศรับสมัครนักตรวจเงินแผ่นดิน"
-                />
+                <Input id="announcementTitle" value={form.announcementTitle} onChange={(e) => setForm({ ...form, announcementTitle: e.target.value })} placeholder="เช่น ประกาศรับสมัครนักตรวจเงินแผ่นดิน" />
               </div>
-
-              <div className="space-y-2 mt-3">
+              <div className="space-y-2">
                 <Label htmlFor="announcementDescription">รายละเอียดประกาศ</Label>
-                <Textarea
-                  id="announcementDescription"
-                  value={form.announcementDescription}
-                  onChange={(e) => setForm({ ...form, announcementDescription: e.target.value })}
-                  rows={3}
-                  placeholder="รายละเอียดเพิ่มเติมเกี่ยวกับการรับสมัคร"
-                />
+                <Textarea id="announcementDescription" value={form.announcementDescription} onChange={(e) => setForm({ ...form, announcementDescription: e.target.value })} rows={2} placeholder="รายละเอียดเพิ่มเติมเกี่ยวกับการรับสมัคร" />
               </div>
-
-              <div className="space-y-2 mt-3">
+              <div className="space-y-2">
                 <Label htmlFor="contactInformation">ข้อมูลติดต่อ</Label>
-                <Input
-                  id="contactInformation"
-                  value={form.contactInformation}
-                  onChange={(e) => setForm({ ...form, contactInformation: e.target.value })}
-                  placeholder="เช่น ติดต่อ 02-xxx-xxxx ต่อ xxx"
-                />
+                <Input id="contactInformation" value={form.contactInformation} onChange={(e) => setForm({ ...form, contactInformation: e.target.value })} placeholder="เช่น ติดต่อ 02-xxx-xxxx ต่อ xxx" />
               </div>
-
-              <div className="space-y-2 mt-3">
+              <div className="space-y-2">
                 <Label htmlFor="remark">หมายเหตุ</Label>
-                <Textarea
-                  id="remark"
-                  value={form.remark}
-                  onChange={(e) => setForm({ ...form, remark: e.target.value })}
-                  rows={2}
-                  placeholder="หมายเหตุเพิ่มเติม"
-                />
+                <Textarea id="remark" value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} rows={2} placeholder="หมายเหตุเพิ่มเติม" />
               </div>
             </div>
 
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
-                ยกเลิก
-              </Button>
+              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>ยกเลิก</Button>
               <Button type="submit" disabled={submitting}>
                 {submitting ? 'กำลังบันทึก...' : editing ? 'บันทึกการแก้ไข' : 'สร้างรอบ'}
               </Button>
@@ -849,19 +930,15 @@ export default function RoundsPage() {
         onCloneSuccess={handleCloneSuccess}
       />
 
-      {/* Archive Confirmation Dialog */}
+      {/* Archive Dialog */}
       <Dialog open={archiveDialog.open} onOpenChange={(open) => setArchiveDialog({ open, round: open ? archiveDialog.round : null })}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              📁 จัดเก็บรอบรับสมัคร
-            </DialogTitle>
+            <DialogTitle className="flex items-center gap-2">📁 จัดเก็บรอบรับสมัคร</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-2">
-            <p className="text-sm text-slate-700">
-              คุณกำลังจะจัดเก็บ <span className="font-semibold">"{archiveDialog.round?.title}"</span>
-            </p>
-            <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm text-blue-900">
+            <p className="text-sm text-slate-700">คุณกำลังจะจัดเก็บ <span className="font-semibold">"{archiveDialog.round?.title}"</span></p>
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-900">
               <p className="font-medium">ผลกระทบ:</p>
               <ul className="list-disc list-inside mt-1 space-y-0.5 text-xs">
                 <li>รอบรับสมัครจะหายไปจากรายการปกติ</li>
@@ -872,9 +949,7 @@ export default function RoundsPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setArchiveDialog({ open: false, round: null })} disabled={archiveLoading}>
-              ยกเลิก
-            </Button>
+            <Button variant="outline" onClick={() => setArchiveDialog({ open: false, round: null })} disabled={archiveLoading}>ยกเลิก</Button>
             <Button onClick={handleArchive} disabled={archiveLoading} className="bg-slate-700 hover:bg-slate-800">
               {archiveLoading ? 'กำลังจัดเก็บ...' : '📁 จัดเก็บ'}
             </Button>
@@ -882,60 +957,48 @@ export default function RoundsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Restore Confirmation Dialog */}
+      {/* Restore Dialog */}
       <Dialog open={restoreDialog.open} onOpenChange={(open) => setRestoreDialog({ open, round: open ? restoreDialog.round : null })}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              ↩ เรียกคืนรอบรับสมัคร
-            </DialogTitle>
+            <DialogTitle className="flex items-center gap-2">↩ เรียกคืนรอบรับสมัคร</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-2">
-            <p className="text-sm text-slate-700">
-              คุณกำลังจะเรียกคืน <span className="font-semibold">"{restoreDialog.round?.title}"</span>
-            </p>
-            <div className="bg-green-50 border border-green-200 rounded p-3 text-sm text-green-900">
+            <p className="text-sm text-slate-700">คุณกำลังจะเรียกคืน <span className="font-semibold">"{restoreDialog.round?.title}"</span></p>
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-900">
               <p>รอบรับสมัครจะกลับมาแสดงในรายการปกติ และสามารถใช้งานต่อได้</p>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRestoreDialog({ open: false, round: null })} disabled={restoreLoading}>
-              ยกเลิก
-            </Button>
-            <Button onClick={handleRestore} disabled={restoreLoading} className="bg-green-600 hover:bg-green-700">
+            <Button variant="outline" onClick={() => setRestoreDialog({ open: false, round: null })} disabled={restoreLoading}>ยกเลิก</Button>
+            <Button onClick={handleRestore} disabled={restoreLoading} className="bg-emerald-600 hover:bg-emerald-700">
               {restoreLoading ? 'กำลังเรียกคืน...' : '↩ เรียกคืน'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Permanent Delete Dialog (Danger Zone) */}
+      {/* Delete Dialog */}
       <Dialog open={deleteDialog.open} onOpenChange={(open) => {
         if (!open) setDeleteConfirmText('');
         setDeleteDialog(open ? deleteDialog : { open: false, round: null, appCount: 0 });
       }}>
         <DialogContent className="max-w-md border-red-300 border-2">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-red-700">
-              ⚠️ ลบรอบรับสมัครถาวร
-            </DialogTitle>
+            <DialogTitle className="flex items-center gap-2 text-red-700">⚠️ ลบรอบรับสมัครถาวร</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-2">
-            <p className="text-sm text-slate-700">
-              คุณกำลังจะลบถาวร <span className="font-semibold">"{deleteDialog.round?.title}"</span>
-            </p>
+            <p className="text-sm text-slate-700">คุณกำลังจะลบถาวร <span className="font-semibold">"{deleteDialog.round?.title}"</span></p>
             {deleteDialog.appCount > 0 ? (
-              <div className="bg-red-50 border border-red-300 rounded p-3 text-sm text-red-900">
+              <div className="bg-red-50 border border-red-300 rounded-lg p-3 text-sm text-red-900">
                 <p className="font-semibold">ไม่สามารถลบรอบรับสมัครได้</p>
                 <p className="mt-1">เนื่องจากมีผู้สมัครอยู่ในรอบนี้ {deleteDialog.appCount} คน</p>
                 <p className="mt-2 text-xs font-semibold text-red-800">จึงไม่สามารถลบถาวรได้</p>
               </div>
             ) : (
-              <div className="bg-amber-50 border border-amber-300 rounded p-3 text-sm text-amber-900">
+              <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-sm text-amber-900">
                 <p className="font-semibold">⚠️ คำเตือน</p>
-                <p className="mt-1 text-xs">
-                  การลบถาวรจะลบข้อมูลทั้งหมดรวมถึง:
-                </p>
+                <p className="mt-1 text-xs">การลบถาวรจะลบข้อมูลทั้งหมดรวมถึง:</p>
                 <ul className="list-disc list-inside mt-1 text-xs">
                   <li>ข้อมูลผู้สมัคร (ถ้ามี)</li>
                   <li>ไฟล์แนบทั้งหมด</li>
@@ -947,30 +1010,12 @@ export default function RoundsPage() {
               <label className="block text-slate-700 mb-1">
                 พิมพ์ <span className="font-mono font-semibold text-red-700">"{deleteDialog.round?.title}"</span> เพื่อยืนยัน:
               </label>
-              <Input
-                value={deleteConfirmText}
-                onChange={(e) => setDeleteConfirmText(e.target.value)}
-                placeholder="พิมพ์ชื่อรอบเพื่อยืนยัน"
-                className="font-mono"
-              />
+              <Input value={deleteConfirmText} onChange={(e) => setDeleteConfirmText(e.target.value)} placeholder="พิมพ์ชื่อรอบเพื่อยืนยัน" className="font-mono" />
             </div>
           </div>
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setDeleteDialog({ open: false, round: null, appCount: 0 });
-                setDeleteConfirmText('');
-              }}
-              disabled={deleteLoading}
-            >
-              ยกเลิก
-            </Button>
-            <Button
-              onClick={handlePermanentDelete}
-              disabled={deleteLoading || deleteConfirmText !== deleteDialog.round?.title || deleteDialog.appCount > 0}
-              className="bg-red-600 hover:bg-red-700 text-white"
-            >
+            <Button variant="outline" onClick={() => { setDeleteDialog({ open: false, round: null, appCount: 0 }); setDeleteConfirmText(''); }} disabled={deleteLoading}>ยกเลิก</Button>
+            <Button onClick={handlePermanentDelete} disabled={deleteLoading || deleteConfirmText !== deleteDialog.round?.title || deleteDialog.appCount > 0} className="bg-red-600 hover:bg-red-700 text-white">
               {deleteLoading ? 'กำลังลบ...' : '🗑 ลบถาวร'}
             </Button>
           </DialogFooter>
