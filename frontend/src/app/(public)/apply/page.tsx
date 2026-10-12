@@ -481,15 +481,18 @@ function FormInner() {
     const options = parseOptions(field.overrideOptions) || parseOptions(field.options);
     const validationRules = getValidationRules(field);
     const placeholder = getPlaceholder(field);
-    
+    const isCheckbox = field.type === 'CHECKBOX';
+
     return (
       <div key={field.fieldId} className="space-y-2">
-        <Label htmlFor={field.fieldId}>
-          {label} 
-          {field.isRequired && <span className="text-red-500 ml-1">*</span>}
-        </Label>
-        
-        {field.helpText && (
+        {!isCheckbox && (
+          <Label htmlFor={field.fieldId}>
+            {label}
+            {field.isRequired && <span className="text-red-500 ml-1">*</span>}
+          </Label>
+        )}
+
+        {field.helpText && !isCheckbox && (
           <p className="text-xs text-gray-500 -mt-1">{field.helpText}</p>
         )}
         
@@ -605,12 +608,13 @@ function FormInner() {
 
         {field.type === 'CHECKBOX' && (
           <div className="flex items-start space-x-2">
-            <Checkbox 
+            <Checkbox
               id={field.fieldId}
               {...register(field.fieldId, validationRules)}
             />
             <Label htmlFor={field.fieldId} className="font-normal cursor-pointer">
               {field.helpText || placeholder || label}
+              {field.isRequired && <span className="text-red-500 ml-1">*</span>}
             </Label>
           </div>
         )}
@@ -862,17 +866,9 @@ function FormInner() {
               </div>
             )}
 
-            {/* Consent Section */}
-            <div className="space-y-4 bg-blue-50 p-4 rounded-md border border-blue-100">
-              <div className="flex items-start space-x-2">
-                <Checkbox id="consent1" required />
-                <label htmlFor="consent1" className="text-sm font-medium leading-none">ข้าพเจ้าได้ตรวจสอบความถูกต้องครบถ้วนของข้อมูลในใบสมัครแล้ว</label>
-              </div>
-              <div className="flex items-start space-x-2">
-                <Checkbox id="consent2" required />
-                <label htmlFor="consent2" className="text-sm font-medium leading-none">ข้าพเจ้าขอรับรองว่าข้อมูลที่ได้แจ้งไว้ในใบสมัครนี้ถูกต้องครบถ้วนทุกประการ</label>
-              </div>
-            </div>
+            {/* Consent Section removed - Dynamic Template is the source of truth.
+                If the template needs a consent checkbox, add a CHECKBOX field
+                via Template Builder. Hardcoded block deleted to prevent duplicates. */}
 
             <Button 
               type="submit" 

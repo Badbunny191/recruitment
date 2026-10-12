@@ -331,15 +331,18 @@ function AdminPreviewInner() {
     const label = field.overrideLabel || field.label;
     const options = parseOptions(field.overrideOptions) || parseOptions(field.options);
     const placeholder = field.placeholder || '';
+    const isCheckbox = field.type === 'CHECKBOX';
 
     return (
       <div key={field.fieldId} className="space-y-2">
-        <Label htmlFor={field.fieldId}>
-          {label}
-          {field.isRequired && <span className="text-red-500 ml-1">*</span>}
-        </Label>
+        {!isCheckbox && (
+          <Label htmlFor={field.fieldId}>
+            {label}
+            {field.isRequired && <span className="text-red-500 ml-1">*</span>}
+          </Label>
+        )}
 
-        {field.helpText && <p className="text-xs text-gray-500 -mt-1">{field.helpText}</p>}
+        {field.helpText && !isCheckbox && <p className="text-xs text-gray-500 -mt-1">{field.helpText}</p>}
 
         {field.type === 'TEXT' && (
           <Input id={field.fieldId} placeholder={placeholder} readOnly className="bg-slate-50 placeholder:text-slate-500 cursor-default" />
@@ -412,6 +415,7 @@ function AdminPreviewInner() {
             <Checkbox id={field.fieldId} disabled />
             <Label htmlFor={field.fieldId} className="font-normal cursor-not-allowed text-slate-500">
               {field.helpText || placeholder || label}
+              {field.isRequired && <span className="text-red-500 ml-1">*</span>}
             </Label>
           </div>
         )}
@@ -639,27 +643,7 @@ function AdminPreviewInner() {
               </div>
             )}
 
-            {/* Disabled consent block (visual placeholder only) */}
-            <div className="space-y-4 bg-slate-50 p-4 rounded-md border border-slate-200">
-              <div className="flex items-start space-x-2 opacity-70">
-                <Checkbox id="consent1" disabled />
-                <label
-                  htmlFor="consent1"
-                  className="text-sm font-medium leading-none text-slate-500 cursor-not-allowed"
-                >
-                  ข้าพเจ้าได้ตรวจสอบความถูกต้องครบถ้วนของข้อมูลในใบสมัครแล้ว
-                </label>
-              </div>
-              <div className="flex items-start space-x-2 opacity-70">
-                <Checkbox id="consent2" disabled />
-                <label
-                  htmlFor="consent2"
-                  className="text-sm font-medium leading-none text-slate-500 cursor-not-allowed"
-                >
-                  ข้าพเจ้าขอรับรองว่าข้อมูลที่ได้แจ้งไว้ในใบสมัครนี้ถูกต้องครบถ้วนทุกประการ
-                </label>
-              </div>
-            </div>
+            {/* Disabled consent block removed - Dynamic Template is the source of truth. */}
 
             <Button
               type="submit"
