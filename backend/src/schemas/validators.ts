@@ -175,6 +175,13 @@ export const ApplicationStatusUpdateSchema = z.object({
   reason: z.string().optional(),
 });
 
+// =============================================================================
+// FEATURE: Archive / Restore / Permanent Delete
+// =============================================================================
+
+// View filter: All | Active | Archived
+export const RoundViewFilterSchema = z.enum(['all', 'active', 'archived']).default('active');
+
 export const ApplicationAttachmentSchema = z.object({
   fieldId: z.string(),
   fileUrl: z.string().min(1), // Accept relative or absolute URL

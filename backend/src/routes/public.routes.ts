@@ -111,7 +111,9 @@ publicRoutes.get('/master-data/organizations', async (c) => {
 
 publicRoutes.get('/rounds/active', async (c) => {
   const db = drizzle(c.env.DB);
-  const rounds = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.status, 'ACTIVE'));
+  // Exclude archived rounds (deletedAt IS NOT NULL)
+  const rounds = await db.select().from(recruitmentRounds)
+    .where(and(eq(recruitmentRounds.status, 'ACTIVE'), isNull(recruitmentRounds.deletedAt)));
   return c.json({ data: rounds });
 });
 
@@ -119,6 +121,16 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
   const db = drizzle(c.env.DB);
   const round = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.id, c.req.param('id'))).get();
   if (!round) return c.json({ error: 'Not found' }, 404);
+
+  // ✅ Block archived rounds: deletedAt IS NOT NULL
+  if (round.deletedAt) {
+    return c.json({
+      success: false,
+      error: 'Round นี้ถูก archive แล้ว ไม่สามารถรับสมัครได้',
+      reason: 'ARCHIVED',
+      status: round.status,
+    }, 403);
+  }
 
   // ✅ Business rule: gate by status (DRAFT/CLOSED) AND by Asia/Bangkok time
   // window when status is ACTIVE. See the evaluateRound() helper above for
@@ -213,7 +225,7 @@ publicRoutes.get('/rounds/:id/detail', async (c) => {
       remark: recruitmentRounds.remark,
     })
     .from(recruitmentRounds)
-    .where(eq(recruitmentRounds.id, c.req.param('id')))
+    .where(and(eq(recruitmentRounds.id, c.req.param('id')), isNull(recruitmentRounds.deletedAt)))
     .get();
 
   if (!round) return c.json({ success: false, error: 'ไม่พบรอบรับสมัคร' }, 404);

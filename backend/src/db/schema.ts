@@ -32,8 +32,12 @@ export const templates = sqliteTable('templates', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
-  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
-});
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  // Soft delete (Archive) - Sprint 5
+  deletedAt: integer('deleted_at', { mode: 'timestamp' }),
+}, (table) => ({
+  deletedAtIdx: index('idx_templates_deleted_at').on(table.deletedAt),
+}));
 
 export const templateVersions = sqliteTable('template_versions', {
   id: text('id').primaryKey(),
@@ -97,7 +101,8 @@ export const recruitmentRounds = sqliteTable('recruitment_rounds', {
   remark: text('remark'),
 }, (table) => ({
   checkStatus: check('chk_round_status', sql`${table.status} IN ('DRAFT', 'ACTIVE', 'CLOSED')`),
-  checkDates: check('chk_round_dates', sql`${table.closeDate} >= ${table.openDate}`)
+  checkDates: check('chk_round_dates', sql`${table.closeDate} >= ${table.openDate}`),
+  deletedAtIdx: index('idx_rounds_deleted_at').on(table.deletedAt),
 }));
 
 export const applications = sqliteTable('applications', {

@@ -181,36 +181,49 @@ adminRoutes.get('/fields/:id/usage', async (c) => {
 
 adminRoutes.get('/templates', async (c) => {
   const db = drizzle(c.env.DB);
-  
-  // Get all templates
-  const allTemplates = await db.select().from(templates);
-  
+  const view = c.req.query('view') || 'active'; // all | active | archived
+
+  // Filter templates by view
+  let filteredTemplates;
+  if (view === 'archived') {
+    filteredTemplates = await db.select().from(templates).where(sql`${templates.deletedAt} IS NOT NULL`);
+  } else if (view === 'all') {
+    filteredTemplates = await db.select().from(templates);
+  } else {
+    filteredTemplates = await db.select().from(templates).where(isNull(templates.deletedAt));
+  }
+
   // Get all versions
   const allVersions = await db.select().from(templateVersions);
-  
-  // Get all rounds
+
+  // Get all rounds (including archived) for accurate count
   const allRounds = await db.select().from(recruitmentRounds);
-  
+
   // Build enriched data
-  const enrichedTemplates = allTemplates.map(tpl => {
+  const enrichedTemplates = filteredTemplates.map(tpl => {
     const tplVersions = allVersions.filter(v => v.templateId === tpl.id);
     const publishedVersion = tplVersions
       .filter(v => v.status === 'PUBLISHED')
       .sort((a, b) => b.versionNumber - a.versionNumber)[0];
-    
-    // Count rounds using published version
-    const roundsCount = publishedVersion
-      ? allRounds.filter(r => r.templateVersionId === publishedVersion.id).length
-      : 0;
-    
+
+    // Count rounds (active + archived + total) for UI display
+    const versionRounds = publishedVersion
+      ? allRounds.filter(r => r.templateVersionId === publishedVersion.id)
+      : [];
+    const activeRoundsCount = versionRounds.filter(r => !r.deletedAt).length;
+    const archivedRoundsCount = versionRounds.filter(r => r.deletedAt).length;
+    const totalRoundsCount = versionRounds.length;
+
     return {
       ...tpl,
       versionCount: tplVersions.length,
       currentVersion: publishedVersion,
-      roundsCount
+      activeRoundsCount,
+      archivedRoundsCount,
+      totalRoundsCount,
     };
   });
-  
+
   return c.json({ data: enrichedTemplates });
 });
 adminRoutes.post('/templates', auditMiddleware('TEMPLATE'), zValidator('json', TemplateCreateSchema), async (c) => {
@@ -225,6 +238,154 @@ adminRoutes.patch('/templates/:id', auditMiddleware('TEMPLATE'), zValidator('jso
   const data = c.req.valid('json');
   await db.update(templates).set(data).where(eq(templates.id, id));
   return c.json({ success: true });
+});
+
+// =============================================================================
+// FEATURE: Archive / Restore / Permanent Delete - Template
+// =============================================================================
+
+// PATCH /admin/templates/:id/archive - Soft delete
+adminRoutes.patch('/templates/:id/archive', auditMiddleware('TEMPLATE'), async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+
+  const tpl = await db.select().from(templates).where(eq(templates.id, id)).get();
+  if (!tpl) {
+    return c.json({ error: 'Template not found' }, 404);
+  }
+
+  if (tpl.deletedAt) {
+    return c.json({ error: 'Template is already archived' }, 400);
+  }
+
+  await db.update(templates)
+    .set({ deletedAt: new Date() })
+    .where(eq(templates.id, id));
+
+  return c.json({ success: true, archivedAt: Math.floor(Date.now() / 1000) });
+});
+
+// PATCH /admin/templates/:id/restore - Restore
+adminRoutes.patch('/templates/:id/restore', auditMiddleware('TEMPLATE'), async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+
+  const tpl = await db.select().from(templates).where(eq(templates.id, id)).get();
+  if (!tpl) {
+    return c.json({ error: 'Template not found' }, 404);
+  }
+
+  if (!tpl.deletedAt) {
+    return c.json({ error: 'Template is not archived' }, 400);
+  }
+
+  await db.update(templates)
+    .set({ deletedAt: null })
+    .where(eq(templates.id, id));
+
+  return c.json({ success: true });
+});
+
+// GET /admin/templates/:id/usage - Check round usage (with list of rounds)
+adminRoutes.get('/templates/:id/usage', async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+
+  const tpl = await db.select().from(templates).where(eq(templates.id, id)).get();
+  if (!tpl) {
+    return c.json({ error: 'Template not found' }, 404);
+  }
+
+  // Get all version IDs of this template
+  const versions = await db.select({ id: templateVersions.id })
+    .from(templateVersions)
+    .where(eq(templateVersions.templateId, id));
+  const versionIds = versions.map(v => v.id);
+
+  // Get all rounds referencing any version of this template
+  let rounds: Array<{
+    roundId: string;
+    roundName: string;
+    roundStatus: string;
+    deletedAt: Date | null;
+  }> = [];
+
+  if (versionIds.length > 0) {
+    const allRounds = await db
+      .select({
+        id: recruitmentRounds.id,
+        title: recruitmentRounds.title,
+        status: recruitmentRounds.status,
+        deletedAt: recruitmentRounds.deletedAt,
+      })
+      .from(recruitmentRounds)
+      .where(inArray(recruitmentRounds.templateVersionId, versionIds));
+
+    rounds = allRounds.map(r => ({
+      roundId: r.id,
+      roundName: r.title,
+      roundStatus: r.status ?? 'DRAFT',
+      deletedAt: r.deletedAt ?? null,
+    }));
+  }
+
+  const activeRounds = rounds.filter(r => r.deletedAt === null).length;
+  const archivedRounds = rounds.filter(r => r.deletedAt !== null).length;
+  const totalRounds = rounds.length;
+
+  return c.json({
+    data: {
+      templateId: id,
+      name: tpl.name,
+      versionCount: versions.length,
+      isArchived: !!tpl.deletedAt,
+      activeRounds,
+      archivedRounds,
+      totalRounds,
+      roundCount: totalRounds, // backward-compat
+      rounds, // full list: [{ roundId, roundName, roundStatus, deletedAt }]
+    }
+  });
+});
+
+// DELETE /admin/templates/:id - Hard delete (admin only, blocked if rounds reference it)
+adminRoutes.delete('/templates/:id', auditMiddleware('TEMPLATE'), async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+
+  const tpl = await db.select().from(templates).where(eq(templates.id, id)).get();
+  if (!tpl) {
+    return c.json({ error: 'Template not found' }, 404);
+  }
+
+  // Check if any rounds reference versions of this template
+  const versions = await db.select({ id: templateVersions.id })
+    .from(templateVersions)
+    .where(eq(templateVersions.templateId, id));
+  const versionIds = versions.map(v => v.id);
+
+  if (versionIds.length > 0) {
+    const result = await db
+      .select({ count: count() })
+      .from(recruitmentRounds)
+      .where(inArray(recruitmentRounds.templateVersionId, versionIds))
+      .get();
+    const roundCount = result?.count || 0;
+
+    if (roundCount > 0) {
+      return c.json({
+        error: 'ไม่สามารถลบแม่แบบฟอร์มได้ เนื่องจากยังมีรอบรับสมัครที่อ้างอิงแม่แบบนี้อยู่',
+        reason: 'PERMANENT_DELETE_BLOCKED',
+        roundCount,
+        message: `ไม่สามารถลบถาวรได้ เนื่องจากแม่แบบนี้ยังถูกอ้างอิงโดยรอบรับสมัคร ${roundCount} รอบ (จัดเก็บได้ แต่ลบถาวรไม่ได้)`,
+      }, 409);
+    }
+  }
+
+  // Safe to hard delete: cascade will remove versions, sections, fields
+  await db.delete(templates).where(eq(templates.id, id));
+
+  return c.json({ success: true, deletedId: id });
 });
 
 adminRoutes.get('/templates/:id/versions', async (c) => {
@@ -1057,7 +1218,23 @@ adminRoutes.delete('/template-versions/:id', auditMiddleware('TEMPLATE_VERSION')
   return c.json({ success: true });
 });
 
-adminRoutes.get('/rounds', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(recruitmentRounds) }));
+adminRoutes.get('/rounds', async (c) => {
+  const db = drizzle(c.env.DB);
+  const view = c.req.query('view') || 'active'; // all | active | archived
+
+  let whereClause;
+  if (view === 'archived') {
+    whereClause = sql`${recruitmentRounds.deletedAt} IS NOT NULL`;
+  } else if (view === 'all') {
+    // No filter - return both
+    whereClause = sql`1=1`;
+  } else {
+    whereClause = isNull(recruitmentRounds.deletedAt);
+  }
+
+  const data = await db.select().from(recruitmentRounds).where(whereClause);
+  return c.json({ data });
+});
 adminRoutes.post('/rounds', auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const data = c.req.valid('json') as any;
@@ -1119,6 +1296,111 @@ adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidato
   
   await db.update(recruitmentRounds).set(updateValues).where(eq(recruitmentRounds.id, id));
   return c.json({ success: true });
+});
+
+// =============================================================================
+// FEATURE: Archive / Restore / Permanent Delete - Recruitment Round
+// =============================================================================
+
+// PATCH /admin/rounds/:id/archive - Soft delete (set deletedAt = now)
+adminRoutes.patch('/rounds/:id/archive', auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+
+  const round = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.id, id)).get();
+  if (!round) {
+    return c.json({ error: 'Round not found' }, 404);
+  }
+
+  if (round.deletedAt) {
+    return c.json({ error: 'Round is already archived' }, 400);
+  }
+
+  await db.update(recruitmentRounds)
+    .set({ deletedAt: new Date() })
+    .where(eq(recruitmentRounds.id, id));
+
+  return c.json({ success: true, archivedAt: Math.floor(Date.now() / 1000) });
+});
+
+// PATCH /admin/rounds/:id/restore - Restore archived round
+adminRoutes.patch('/rounds/:id/restore', auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+
+  const round = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.id, id)).get();
+  if (!round) {
+    return c.json({ error: 'Round not found' }, 404);
+  }
+
+  if (!round.deletedAt) {
+    return c.json({ error: 'Round is not archived' }, 400);
+  }
+
+  await db.update(recruitmentRounds)
+    .set({ deletedAt: null })
+    .where(eq(recruitmentRounds.id, id));
+
+  return c.json({ success: true });
+});
+
+// GET /admin/rounds/:id/usage - Check how many applications exist
+adminRoutes.get('/rounds/:id/usage', async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+
+  const round = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.id, id)).get();
+  if (!round) {
+    return c.json({ error: 'Round not found' }, 404);
+  }
+
+  const appCount = await db
+    .select({ count: count() })
+    .from(applications)
+    .where(and(eq(applications.roundId, id), isNull(applications.deletedAt)))
+    .get();
+
+  return c.json({
+    data: {
+      roundId: id,
+      title: round.title,
+      status: round.status,
+      isArchived: !!round.deletedAt,
+      applicationCount: appCount?.count || 0,
+    }
+  });
+});
+
+// DELETE /admin/rounds/:id - Hard delete (admin only, blocked if has applications)
+adminRoutes.delete('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+
+  const round = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.id, id)).get();
+  if (!round) {
+    return c.json({ error: 'Round not found' }, 404);
+  }
+
+  // Check if round has any applications
+  const appCount = await db
+    .select({ count: count() })
+    .from(applications)
+    .where(and(eq(applications.roundId, id), isNull(applications.deletedAt)))
+    .get();
+
+  if ((appCount?.count || 0) > 0) {
+    return c.json({
+      error: 'ไม่สามารถลบรอบรับสมัครได้ เนื่องจากมีผู้สมัครอยู่ในรอบนี้',
+      reason: 'PERMANENT_DELETE_BLOCKED',
+      applicationCount: appCount?.count || 0,
+      message: `ไม่สามารถลบถาวรได้ เนื่องจากรอบนี้มีผู้สมัคร ${appCount?.count || 0} คน (จัดเก็บได้ แต่ลบถาวรไม่ได้)`,
+    }, 409);
+  }
+
+  // Hard delete (safe - no applications to lose)
+  await db.delete(recruitmentRounds).where(eq(recruitmentRounds.id, id));
+
+  return c.json({ success: true, deletedId: id });
 });
 
 adminRoutes.get('/applications', async (c) => {
