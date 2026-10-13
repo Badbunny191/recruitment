@@ -22,11 +22,11 @@ interface Round {
   deletedAt?: string | number | Date | null;
 }
 
-const ROUND_STATUS_META: Record<string, { label: string; dot: string; text: string }> = {
-  ACTIVE:   { label: 'ACTIVE',   dot: 'bg-emerald-500', text: 'text-emerald-700' },
-  DRAFT:    { label: 'DRAFT',    dot: 'bg-amber-500',   text: 'text-amber-700' },
-  CLOSED:   { label: 'CLOSED',   dot: 'bg-slate-500',   text: 'text-slate-600' },
-  ARCHIVED: { label: 'ARCHIVED', dot: 'bg-purple-500',  text: 'text-purple-700' },
+const ROUND_STATUS_META: Record<string, { label: string; pill: string }> = {
+  ACTIVE:   { label: 'ใช้งาน',   pill: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  DRAFT:    { label: 'ร่าง',      pill: 'bg-amber-100 text-amber-700 border-amber-200' },
+  CLOSED:   { label: 'ปิดแล้ว',   pill: 'bg-slate-100 text-slate-600 border-slate-200' },
+  ARCHIVED: { label: 'จัดเก็บแล้ว', pill: 'bg-purple-100 text-purple-700 border-purple-200' },
 };
 
 const getRoundStatusMeta = (round: Round) => {
@@ -558,45 +558,51 @@ export default function ApplicationsClient() {
       </div>
 
       {/* ============================================ */}
-      {/* 1.5 CONTEXT BAR - Round Selector (NEW) */}
+      {/* 1.5 CONTEXT BAR - Round Selector (POLISHED) */}
       {/* ============================================ */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3">
+      <div className="bg-gradient-to-r from-slate-50 to-white rounded-xl border-2 border-slate-200 shadow-sm px-5 py-4">
         <div className="flex flex-col md:flex-row md:items-center gap-3">
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="text-base">🎯</span>
-            <span className="text-sm font-medium text-slate-700">กำลังดูข้อมูลของรอบ</span>
+          {/* Visual Anchor - Left */}
+          <div className="flex items-center gap-2.5 shrink-0 md:min-w-[200px]">
+            <div className="w-9 h-9 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
+              <span className="text-lg">🎯</span>
+            </div>
+            <div className="flex flex-col leading-tight">
+              <span className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Context</span>
+              <span className="text-sm font-semibold text-slate-800">กำลังดูข้อมูลของรอบ</span>
+            </div>
           </div>
 
-          {/* Searchable Round Selector */}
-          <div className="relative flex-1 min-w-0 md:max-w-[500px]" ref={roundSelectorRef}>
+          {/* Searchable Round Selector - ใช้พื้นที่เต็มที่ */}
+          <div className="relative flex-1 min-w-0" ref={roundSelectorRef}>
             <button
               type="button"
               onClick={() => setRoundSearchOpen(o => !o)}
               className={cn(
-                "w-full h-10 px-3 text-sm text-left bg-white border rounded-lg flex items-center justify-between gap-2 transition-colors",
-                roundSearchOpen ? "border-blue-500 ring-2 ring-blue-100" : "border-slate-300 hover:border-slate-400"
+                "w-full h-11 px-4 text-left bg-white border-2 rounded-lg flex items-center justify-between gap-3 transition-all",
+                roundSearchOpen
+                  ? "border-blue-500 ring-4 ring-blue-100 shadow-sm"
+                  : "border-slate-300 hover:border-slate-400 hover:shadow-sm"
               )}
             >
               {selectedRound ? (
-                <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <span className={cn("w-2 h-2 rounded-full shrink-0", selectedMeta?.dot)} />
-                  <span className="font-medium text-slate-900 truncate" title={selectedRound.title}>
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  <span className="font-semibold text-base text-slate-900 truncate" title={selectedRound.title}>
                     {selectedRound.title}
                   </span>
                   {selectedMeta && (
                     <span className={cn(
-                      "shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border",
-                      selectedMeta.text,
-                      "border-current/20"
+                      "shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border",
+                      selectedMeta.pill
                     )}>
                       {selectedMeta.label}
                     </span>
                   )}
                 </div>
               ) : (
-                <span className="text-slate-400">-- เลือกรอบ --</span>
+                <span className="text-slate-400 text-sm">-- เลือกรอบ --</span>
               )}
-              <svg className={cn("h-4 w-4 text-slate-400 shrink-0 transition-transform", roundSearchOpen && "rotate-180")} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className={cn("h-4 w-4 text-slate-500 shrink-0 transition-transform", roundSearchOpen && "rotate-180")} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
               </svg>
             </button>
@@ -640,17 +646,16 @@ export default function ApplicationsClient() {
                             setRoundSearchQuery('');
                           }}
                           className={cn(
-                            "w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-slate-50 transition-colors",
+                            "w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-slate-50 transition-colors",
                             isSelected && "bg-blue-50"
                           )}
                         >
-                          <span className={cn("w-2 h-2 rounded-full shrink-0", meta.dot)} />
-                          <span className={cn("text-sm flex-1 truncate", isSelected ? "font-medium text-slate-900" : "text-slate-700")} title={round.title}>
+                          <span className={cn("text-sm flex-1 truncate", isSelected ? "font-semibold text-slate-900" : "text-slate-700")} title={round.title}>
                             {round.title}
                           </span>
                           <span className={cn(
-                            "shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border border-current/20",
-                            meta.text
+                            "shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border",
+                            meta.pill
                           )}>
                             {meta.label}
                           </span>
@@ -669,7 +674,7 @@ export default function ApplicationsClient() {
           </div>
 
           {/* Show Archived toggle */}
-          <label className="flex items-center gap-2 cursor-pointer shrink-0 md:ml-auto">
+          <label className="flex items-center gap-2 cursor-pointer shrink-0 md:ml-2 pl-3 md:border-l border-slate-200">
             <Checkbox
               checked={showArchived}
               onChange={(e) => {
