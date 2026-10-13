@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
 import { sign } from 'hono/jwt';
 import { v4 as uuidv4 } from 'uuid';
-import { eq, and, ne, isNull, count, or, like, inArray, sql, asc } from 'drizzle-orm';
+import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc } from 'drizzle-orm';
 import { Bindings, AppVariables } from '../types';
 import { authMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
@@ -2253,7 +2253,73 @@ adminRoutes.get('/rounds/:id/clone-options', async (c) => {
   });
 });
 
-adminRoutes.get('/audit-logs', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(auditLogs) }));
+adminRoutes.get('/audit-logs', async (c) => {
+  const db = drizzle(c.env.DB);
+
+  // ---------- Pagination params ----------
+  const rawPage = Number(c.req.query('page') ?? '1');
+  const rawPageSize = Number(c.req.query('pageSize') ?? '50');
+  const page = Number.isFinite(rawPage) && rawPage >= 1 ? Math.floor(rawPage) : 1;
+
+  // Whitelist pageSize เพื่อกัน client ขอ pageSize=99999 → ทำลาย DB
+  const allowedPageSizes = [10, 25, 50, 100] as const;
+  const pageSize = (allowedPageSizes as readonly number[]).includes(rawPageSize)
+    ? rawPageSize
+    : 50;
+
+  // ---------- Filter params ----------
+  const action = c.req.query('action')?.trim() || '';
+  const entity = c.req.query('entity')?.trim() || '';
+  const search = c.req.query('search')?.trim() || '';
+
+  // ---------- Build WHERE ----------
+  const filters: ReturnType<typeof eq>[] = [];
+  if (action) filters.push(eq(auditLogs.action, action));
+  if (entity) filters.push(eq(auditLogs.entityType, entity));
+
+  // Search: ค้นหาใน adminId / entityId / ipAddress (ใช้ index บน entity_id ร่วมกับ prefix LIKE ได้)
+  if (search) {
+    const likePattern = `%${search}%`;
+    const searchOr = or(
+      like(auditLogs.adminId, likePattern),
+      like(auditLogs.entityId, likePattern),
+      like(auditLogs.ipAddress, likePattern)
+    );
+    if (searchOr) filters.push(searchOr);
+  }
+
+  const whereClause = filters.length > 0 ? and(...filters) : undefined;
+
+  // ---------- Total count ----------
+  const totalRow = await db
+    .select({ value: count() })
+    .from(auditLogs)
+    .where(whereClause)
+    .get();
+  const total = totalRow?.value ?? 0;
+  const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+  // ---------- Page items ----------
+  // ถ้า page > totalPages ให้ clamp กลับมาที่หน้าสุดท้าย (กันหน้าว่างหลอก)
+  const safePage = totalPages > 0 && page > totalPages ? totalPages : page;
+  const offset = (safePage - 1) * pageSize;
+
+  const items = await db
+    .select()
+    .from(auditLogs)
+    .where(whereClause)
+    .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+    .limit(pageSize)
+    .offset(offset);
+
+  return c.json({
+    items,
+    total,
+    page: safePage,
+    pageSize,
+    totalPages,
+  });
+});
 
 // ============ Organization Master ============
 

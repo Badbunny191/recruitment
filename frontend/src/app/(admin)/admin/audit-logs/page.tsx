@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { SearchInput } from '@/components/ui/search-input';
 import { FilterDropdown } from '@/components/ui/filter-dropdown';
+import { Pagination } from '@/components/ui/pagination';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
 import { cn } from '@/lib/utils';
 
@@ -22,6 +23,14 @@ interface AuditLog {
   createdAt: string | number | Date;
 }
 
+interface AuditLogsResponse {
+  items: AuditLog[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
 // =============================================================================
 // Design Tokens (Smart Family Style - ใช้ร่วมกับหน้าอื่นในระบบ)
 // =============================================================================
@@ -32,14 +41,14 @@ const CARD_STYLE = {
   body: 'px-4 py-3',
 };
 
-// Action Badge Config - ใช้ Tailwind class ตรงกับ StatusBadge / Rounds page
+// Action Badge Config
 const ACTION_CONFIG: Record<string, { label: string; className: string }> = {
   CREATE: { label: 'สร้าง', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   UPDATE: { label: 'แก้ไข', className: 'bg-amber-100 text-amber-700 border-amber-200' },
   DELETE: { label: 'ลบ', className: 'bg-red-100 text-red-700 border-red-200' },
 };
 
-// Entity Type Label (แสดงชื่อจริงภาษาไทยแทน enum)
+// Entity Type Label
 const ENTITY_LABEL: Record<string, string> = {
   RECRUITMENT_ROUND: 'รอบรับสมัคร',
   TEMPLATE: 'Template',
@@ -55,10 +64,28 @@ const ENTITY_LABEL: Record<string, string> = {
   POSITION: 'ตำแหน่ง',
 };
 
+// รายการ Action ที่ใช้ใน Filter (ค่าคงที่ — ไม่ขึ้นกับ data เพราะ data มีแค่หน้าปัจจุบัน)
+const ACTION_OPTIONS = ['CREATE', 'UPDATE', 'DELETE'] as const;
+
+// รายการ Entity ทั้งหมด (จาก requirement)
+const ENTITY_OPTIONS = [
+  'RECRUITMENT_ROUND',
+  'TEMPLATE',
+  'TEMPLATE_VERSION',
+  'FIELD_MASTER',
+  'APPLICATION',
+  'POSITION',
+  'ORGANIZATION',
+  'JOB_FAMILY',
+  'POSITION_LEVEL',
+] as const;
+
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+const DEFAULT_PAGE_SIZE = 50;
+
 // =============================================================================
 // Entity Lookup Maps
-// โหลด "ครั้งเดียว" ต่อ entity type ตอนเปิดหน้า แล้วเก็บใน memory
-// ห้าม: 1 log = 1 request
+// โหลดครั้งเดียวต่อ entity type → ใช้ O(1) lookup ตอน render
 // =============================================================================
 
 type EntityLookup = Record<string, string>; // entityId -> "ชื่อจริง"
@@ -83,10 +110,6 @@ const EMPTY_LOOKUP: LookupBundle = {
   POSITION: {},
 };
 
-/**
- * โหลดทุก entity reference พร้อมกัน (1 ครั้ง ต่อ entity type)
- * คืน LookupBundle ที่ใช้ resolve entityId -> ชื่อจริง
- */
 async function loadAllLookups(apiUrl: string, token: string): Promise<LookupBundle> {
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -126,50 +149,18 @@ async function loadAllLookups(apiUrl: string, token: string): Promise<LookupBund
     POSITION_LEVEL,
     POSITION,
   ] = await Promise.all([
-    // view=all เพื่อให้เห็นทั้ง round ที่ archive แล้ว
-    fetchMap(
-      `${apiUrl}/admin/rounds?view=all`,
-      (r) => `${r.title} (${r.positionLevel})`
-    ),
-    // view=all เพื่อให้เห็นทั้ง template ที่ archive แล้ว
-    fetchMap(
-      `${apiUrl}/admin/templates?view=all`,
-      (t) => t.name || t.title || 'Template'
-    ),
-    fetchMap(
-      `${apiUrl}/admin/fields`,
-      (f) => f.labelTh || f.label || f.fieldType
-    ),
-    fetchMap(
-      `${apiUrl}/admin/organizations`,
-      (o) => o.name
-    ),
-    fetchMap(
-      `${apiUrl}/admin/job-families`,
-      (j) => j.name
-    ),
-    fetchMap(
-      `${apiUrl}/admin/position-levels`,
-      (p) => p.name
-    ),
-    fetchMap(
-      `${apiUrl}/admin/positions`,
-      (p) => p.title
-    ),
+    fetchMap(`${apiUrl}/admin/rounds?view=all`, (r) => `${r.title} (${r.positionLevel})`),
+    fetchMap(`${apiUrl}/admin/templates?view=all`, (t) => t.name || t.title || 'Template'),
+    fetchMap(`${apiUrl}/admin/fields`, (f) => f.labelTh || f.label || f.fieldType),
+    fetchMap(`${apiUrl}/admin/organizations`, (o) => o.name),
+    fetchMap(`${apiUrl}/admin/job-families`, (j) => j.name),
+    fetchMap(`${apiUrl}/admin/position-levels`, (p) => p.name),
+    fetchMap(`${apiUrl}/admin/positions`, (p) => p.title),
   ]);
 
-  return {
-    ROUND,
-    TEMPLATE,
-    FIELD_MASTER,
-    ORGANIZATION,
-    JOB_FAMILY,
-    POSITION_LEVEL,
-    POSITION,
-  };
+  return { ROUND, TEMPLATE, FIELD_MASTER, ORGANIZATION, JOB_FAMILY, POSITION_LEVEL, POSITION };
 }
 
-/** Map entityType (จาก audit_logs.entity_type) -> key ใน LookupBundle */
 const ENTITY_TO_LOOKUP: Record<string, keyof LookupBundle> = {
   RECRUITMENT_ROUND: 'ROUND',
   TEMPLATE: 'TEMPLATE',
@@ -184,7 +175,6 @@ const ENTITY_TO_LOOKUP: Record<string, keyof LookupBundle> = {
 // Helpers
 // =============================================================================
 
-/** Parse payload (อาจเป็น string หรือ object) */
 function parsePayload(payload: string | null | undefined): Record<string, any> | null {
   if (!payload) return null;
   if (typeof payload !== 'string') return payload as any;
@@ -195,7 +185,6 @@ function parsePayload(payload: string | null | undefined): Record<string, any> |
   }
 }
 
-/** Format เวลาเป็น th-TH */
 function formatDateTime(value: string | number | Date): string {
   const d = new Date(value);
   if (isNaN(d.getTime())) return '-';
@@ -208,29 +197,22 @@ function formatDateTime(value: string | number | Date): string {
   });
 }
 
-/** ตัด UUID ยาว ๆ ให้สั้นลง เพื่อ fallback แสดงผล */
 function shortId(id: string): string {
   if (!id) return '-';
   if (id.length <= 8) return id;
   return `${id.slice(0, 4)}…${id.slice(-4)}`;
 }
 
-/**
- * สร้างข้อความ "รายละเอียด" แบบมนุษย์อ่าน
- * ใช้ข้อมูลจาก payload (ถ้ามี) ผสมกับ entityName
- */
 function buildDescription(log: AuditLog, entityName: string | null): string {
   const payload = parsePayload(log.payload);
   const action = log.action;
   const entityLabel = ENTITY_LABEL[log.entityType] || log.entityType;
   const displayName = entityName || shortId(log.entityId);
 
-  // ROUND_CLONED มี payload พิเศษ
   if (log.entityType === 'ROUND_CLONED') {
     return `คัดลอกรอบรับสมัคร → ${displayName}`;
   }
 
-  // APPLICATION status update
   if (log.entityType === 'APPLICATION' && action === 'UPDATE' && payload) {
     if (payload.status) {
       const reason = payload.statusReason ? ` (${payload.statusReason})` : '';
@@ -238,7 +220,6 @@ function buildDescription(log: AuditLog, entityName: string | null): string {
     }
   }
 
-  // ค่า default ตาม action
   switch (action) {
     case 'CREATE':
       return `สร้าง${entityLabel} ${displayName}`;
@@ -256,15 +237,25 @@ function buildDescription(log: AuditLog, entityName: string | null): string {
 // =============================================================================
 
 export default function AuditLogsPage() {
-  const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [lookup, setLookup] = useState<LookupBundle>(EMPTY_LOOKUP);
+  // Page state
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+
+  // Filter / Search state
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [actionFilters, setActionFilters] = useState<string[]>([]);
+  const [entityFilters, setEntityFilters] = useState<string[]>([]);
+
+  // Data
+  const [items, setItems] = useState<AuditLog[]>([]);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Filters
-  const [search, setSearch] = useState('');
-  const [actionFilters, setActionFilters] = useState<string[]>([]);
-  const [entityFilters, setEntityFilters] = useState<string[]>([]);
+  // Lookup
+  const [lookup, setLookup] = useState<LookupBundle>(EMPTY_LOOKUP);
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
   const token = useMemo(
@@ -272,99 +263,88 @@ export default function AuditLogsPage() {
     []
   );
 
+  // Debounce search 300ms ก่อนส่งไป Backend
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // โหลด entity lookup ครั้งเดียว (ตอน mount + เมื่อ token เปลี่ยน)
   useEffect(() => {
     if (!token) return;
-
     let cancelled = false;
     (async () => {
-      try {
-        setLoading(true);
-        setError(null);
-
-        // 1) โหลด audit logs
-        const res = await fetch(`${apiUrl}/admin/audit-logs`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        const rawData: AuditLog[] = json.data || [];
-        const data = rawData
-          .slice()
-          .sort(
-            (a: AuditLog, b: AuditLog) =>
-              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          );
-
-        if (cancelled) return;
-        setLogs(data);
-
-        // 2) โหลด entity reference ทั้งหมดครั้งเดียว
-        const bundle = await loadAllLookups(apiUrl, token);
-        if (cancelled) return;
-        setLookup(bundle);
-      } catch (e) {
-        if (!cancelled) setError((e as Error).message || 'โหลดข้อมูลไม่สำเร็จ');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+      const bundle = await loadAllLookups(apiUrl, token);
+      if (!cancelled) setLookup(bundle);
     })();
-
     return () => {
       cancelled = true;
     };
   }, [apiUrl, token]);
 
-  // หาชื่อ entity จาก LookupBundle
+  // Fetch audit logs ตาม page/filter/search (ทุกครั้งที่เปลี่ยน → โหลดใหม่)
+  const fetchLogs = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!token) return;
+      try {
+        setLoading(true);
+        setError(null);
+
+        const params = new URLSearchParams();
+        params.set('page', String(page));
+        params.set('pageSize', String(pageSize));
+
+        // ส่ง action/entity ไป backend แบบ comma-separated
+        if (actionFilters.length > 0) params.set('action', actionFilters.join(','));
+        if (entityFilters.length > 0) params.set('entity', entityFilters.join(','));
+        if (debouncedSearch) params.set('search', debouncedSearch);
+
+        const res = await fetch(`${apiUrl}/admin/audit-logs?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json: AuditLogsResponse = await res.json();
+
+        if (signal?.aborted) return;
+        setItems(json.items || []);
+        setTotal(json.total || 0);
+        setTotalPages(json.totalPages || 0);
+        // ถ้า backend clamp page (เช่น ขอเกิน) → sync กลับ
+        if (json.page && json.page !== page) setPage(json.page);
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') return;
+        setError((e as Error).message || 'โหลดข้อมูลไม่สำเร็จ');
+      } finally {
+        if (!signal?.aborted) setLoading(false);
+      }
+    },
+    [apiUrl, token, page, pageSize, actionFilters, entityFilters, debouncedSearch]
+  );
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetchLogs(ctrl.signal);
+    return () => ctrl.abort();
+  }, [fetchLogs]);
+
+  // Reset กลับหน้า 1 เมื่อ filter/search/pageSize เปลี่ยน
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, actionFilters, entityFilters, pageSize]);
+
+  // Resolve entity name
   const resolveEntityName = (entityType: string, entityId: string): string | null => {
     const key = ENTITY_TO_LOOKUP[entityType];
     if (!key) return null;
     return lookup[key][entityId] || null;
   };
 
-  // รายการ Entity Type ที่มีจริงในข้อมูล
-  const availableEntityTypes = useMemo(() => {
-    const typesInData = new Set(logs.map((l) => l.entityType));
-    const ordered = Object.keys(ENTITY_LABEL).filter((t) => typesInData.has(t));
-    const extras = Array.from(typesInData).filter((t) => !ENTITY_LABEL[t]);
-    return [...ordered, ...extras];
-  }, [logs]);
-
-  const availableActions = useMemo(() => {
-    const set = new Set(logs.map((l) => l.action));
-    return Array.from(set).sort();
-  }, [logs]);
-
-  // Filtered logs (Client Side)
-  const filteredLogs = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return logs.filter((log) => {
-      if (actionFilters.length > 0 && !actionFilters.includes(log.action)) return false;
-      if (entityFilters.length > 0 && !entityFilters.includes(log.entityType)) return false;
-      if (q) {
-        const entityName = resolveEntityName(log.entityType, log.entityId) || '';
-        const haystack = [
-          entityName,
-          log.entityType,
-          ENTITY_LABEL[log.entityType] || '',
-          log.adminId,
-          log.entityId,
-          log.ipAddress || '',
-        ]
-          .join(' ')
-          .toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
-      return true;
-    });
-  }, [logs, search, actionFilters, entityFilters, lookup]);
-
-  const totalActiveFilters =
-    (actionFilters.length > 0 ? 1 : 0) + (entityFilters.length > 0 ? 1 : 0);
-
   const clearAllFilters = () => {
     setActionFilters([]);
     setEntityFilters([]);
     setSearch('');
+    setPage(1);
   };
 
   const renderEntity = (log: AuditLog) => {
@@ -414,16 +394,14 @@ export default function AuditLogsPage() {
         </p>
       </div>
 
-      {/* Toolbar: Search + Filters */}
+      {/* Toolbar */}
       <div className={cn(CARD_STYLE.container, 'p-3')}>
         <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center">
           <div className="flex-1 min-w-0">
             <SearchInput
               value={search}
               onChange={setSearch}
-              placeholder="ค้นหา... (ชื่อ Entity, ประเภท, Admin ID, IP)"
-              resultCount={filteredLogs.length}
-              resultLabel="รายการ"
+              placeholder="ค้นหา... (Admin ID, Entity ID, IP)"
             />
           </div>
           <FilterDropdown
@@ -433,15 +411,21 @@ export default function AuditLogsPage() {
                 label: 'Action',
                 type: 'multi',
                 selected: actionFilters,
-                onChange: setActionFilters,
-                options: availableActions.map((a) => ({
+                onChange: (next) => {
+                  setActionFilters(next);
+                  setPage(1);
+                },
+                options: ACTION_OPTIONS.map((a) => ({
                   value: a,
                   label: ACTION_CONFIG[a]?.label || a,
                 })),
               },
             ]}
             totalActiveFilters={actionFilters.length}
-            onClearAll={() => setActionFilters([])}
+            onClearAll={() => {
+              setActionFilters([]);
+              setPage(1);
+            }}
           />
           <FilterDropdown
             label="Entity"
@@ -450,17 +434,23 @@ export default function AuditLogsPage() {
                 label: 'Entity Type',
                 type: 'multi',
                 selected: entityFilters,
-                onChange: setEntityFilters,
-                options: availableEntityTypes.map((t) => ({
+                onChange: (next) => {
+                  setEntityFilters(next);
+                  setPage(1);
+                },
+                options: ENTITY_OPTIONS.map((t) => ({
                   value: t,
                   label: ENTITY_LABEL[t] || t,
                 })),
               },
             ]}
             totalActiveFilters={entityFilters.length}
-            onClearAll={() => setEntityFilters([])}
+            onClearAll={() => {
+              setEntityFilters([]);
+              setPage(1);
+            }}
           />
-          {totalActiveFilters > 0 || search ? (
+          {actionFilters.length > 0 || entityFilters.length > 0 || search ? (
             <button
               type="button"
               onClick={clearAllFilters}
@@ -477,7 +467,7 @@ export default function AuditLogsPage() {
         <div className={CARD_STYLE.header}>
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-slate-700">
-              รายการ ({filteredLogs.length.toLocaleString('th-TH')})
+              รายการ ({total.toLocaleString('th-TH')})
             </h2>
             {loading && (
               <span className="text-xs text-slate-400">กำลังโหลด…</span>
@@ -490,58 +480,73 @@ export default function AuditLogsPage() {
             ⚠️ โหลดข้อมูลไม่สำเร็จ: {error}
             <button
               type="button"
-              onClick={() => window.location.reload()}
+              onClick={() => fetchLogs()}
               className="ml-3 underline text-blue-600 hover:text-blue-700"
             >
               ลองใหม่
             </button>
           </div>
-        ) : logs.length === 0 && !loading ? (
+        ) : total === 0 && !loading ? (
           <NoDataEmptyState
             title="ยังไม่มีข้อมูล Audit Log"
             description="เมื่อมีการแก้ไขข้อมูลในระบบ รายการจะปรากฏที่นี่"
           />
-        ) : filteredLogs.length === 0 ? (
+        ) : items.length === 0 ? (
           <NoResultsEmptyState
             keyword={search}
             onClearFilters={clearAllFilters}
           />
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[160px]">เวลา</TableHead>
-                <TableHead className="w-[200px]">Admin</TableHead>
-                <TableHead className="w-[110px]">Action</TableHead>
-                <TableHead className="min-w-[220px]">Entity</TableHead>
-                <TableHead>รายละเอียด</TableHead>
-                <TableHead className="w-[140px]">IP</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredLogs.map((log) => {
-                const entityName = resolveEntityName(log.entityType, log.entityId);
-                return (
-                  <TableRow key={log.id}>
-                    <TableCell className="text-xs text-slate-600">
-                      {formatDateTime(log.createdAt)}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-slate-600">
-                      {log.adminId}
-                    </TableCell>
-                    <TableCell>{renderActionBadge(log.action)}</TableCell>
-                    <TableCell>{renderEntity(log)}</TableCell>
-                    <TableCell className="text-sm text-slate-700">
-                      {buildDescription(log, entityName)}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-slate-500">
-                      {log.ipAddress || '-'}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[160px]">เวลา</TableHead>
+                  <TableHead className="w-[200px]">Admin</TableHead>
+                  <TableHead className="w-[110px]">Action</TableHead>
+                  <TableHead className="min-w-[220px]">Entity</TableHead>
+                  <TableHead>รายละเอียด</TableHead>
+                  <TableHead className="w-[140px]">IP</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.map((log) => {
+                  const entityName = resolveEntityName(log.entityType, log.entityId);
+                  return (
+                    <TableRow key={log.id}>
+                      <TableCell className="text-xs text-slate-600">
+                        {formatDateTime(log.createdAt)}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs text-slate-600">
+                        {log.adminId}
+                      </TableCell>
+                      <TableCell>{renderActionBadge(log.action)}</TableCell>
+                      <TableCell>{renderEntity(log)}</TableCell>
+                      <TableCell className="text-sm text-slate-700">
+                        {buildDescription(log, entityName)}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs text-slate-500">
+                        {log.ipAddress || '-'}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+
+            <Pagination
+              currentPage={page}
+              totalItems={total}
+              pageSize={pageSize}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size);
+                setPage(1);
+              }}
+              pageSizeOptions={PAGE_SIZE_OPTIONS}
+              resultLabel="รายการ"
+            />
+          </>
         )}
       </div>
     </div>

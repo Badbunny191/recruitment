@@ -146,7 +146,12 @@ export const auditLogs = sqliteTable('audit_logs', {
   ipAddress: text('ip_address'),
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
 }, (table) => ({
-  entityIdx: index('idx_audit_entity').on(table.entityType, table.entityId)
+  entityIdx: index('idx_audit_entity').on(table.entityType, table.entityId),
+  // Performance indexes for server-side pagination (Migration 017)
+  createdAtIdx: index('idx_audit_created_at_desc').on(sql`${table.createdAt} DESC`),
+  actionIdx: index('idx_audit_action').on(table.action),
+  adminIdx: index('idx_audit_admin_id').on(table.adminId),
+  entityIdIdx: index('idx_audit_entity_id').on(table.entityId),
 }));
 
 export const organizations = sqliteTable('organizations', {
