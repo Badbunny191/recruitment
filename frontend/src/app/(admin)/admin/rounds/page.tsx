@@ -110,9 +110,9 @@ const CARD_STYLE = {
 };
 
 const STATUS_CONFIG = {
-  ACTIVE: { label: 'ใช้งาน', dot: 'bg-emerald-500' },
-  CLOSED: { label: 'ปิดแล้ว', dot: 'bg-slate-400' },
-  DRAFT: { label: 'ร่าง', dot: 'bg-amber-500' },
+  ACTIVE: { label: 'ใช้งาน', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  CLOSED: { label: 'ปิดแล้ว', className: 'bg-slate-100 text-slate-600 border-slate-200' },
+  DRAFT: { label: 'ร่าง', className: 'bg-amber-100 text-amber-700 border-amber-200' },
 } as const;
 
 // ============================================
@@ -196,12 +196,14 @@ function VersionBadge({
   return (
     <button
       onClick={onCompare}
-      className="group inline-flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-800 transition-colors"
+      className="group inline-flex items-center gap-1.5 text-[11px] text-blue-600 hover:text-blue-800 transition-colors"
     >
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-700 font-medium group-hover:bg-blue-100">
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-blue-50 border border-blue-200 text-blue-700 font-medium group-hover:bg-blue-100">
         🆕 v{version}
       </span>
-      <span className="opacity-0 group-hover:opacity-100 transition-opacity">ดูความต่าง</span>
+      <span className="opacity-0 group-hover:opacity-100 transition-opacity underline-offset-2">
+        ดูความต่าง
+      </span>
     </button>
   );
 }
@@ -658,17 +660,17 @@ export default function RoundsPage() {
           </div>
         </div>
 
-        {/* 3.2 TABLE - Compact rows */}
+        {/* 3.2 TABLE */}
         <div className="overflow-x-auto">
-          <Table>
+          <Table className="w-full table-fixed">
             <TableHeader>
               <TableRow className="bg-slate-50/50 hover:bg-slate-50/50">
-                <TableHead className="h-8 text-[11px] font-medium text-slate-600">ชื่อรอบ</TableHead>
-                <TableHead className="h-8 text-[11px] font-medium text-slate-600 hidden md:table-cell">ระดับ</TableHead>
-                <TableHead className="h-8 text-[11px] font-medium text-slate-600 hidden lg:table-cell">Template</TableHead>
-                <TableHead className="h-8 text-[11px] font-medium text-slate-600 hidden sm:table-cell">เปิด-ปิด</TableHead>
-                <TableHead className="h-8 text-[11px] font-medium text-slate-600">สถานะ</TableHead>
-                <TableHead className="h-8 text-[11px] font-medium text-slate-600 text-right w-[50px]">จัดการ</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 w-[40%]">ชื่อรอบ</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden md:table-cell w-[10%]">ระดับ</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden lg:table-cell w-[22%]">Template</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden sm:table-cell w-[15%]">เปิด-ปิด</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 w-[8%]">สถานะ</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 text-right w-[5%]">จัดการ</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -705,10 +707,13 @@ export default function RoundsPage() {
                   
                   return (
                     <TableRow key={r.id} className="group">
-                      {/* ชื่อรอบ */}
-                      <TableCell className="py-2">
-                        <div className="flex flex-col gap-0.5 min-w-0">
-                          <div className="font-medium text-sm text-slate-900 truncate max-w-[240px]" title={r.title}>
+                      {/* ชื่อรอบ - line-clamp-2 */}
+                      <TableCell className="py-3 align-top">
+                        <div className="flex flex-col gap-1.5 min-w-0">
+                          <div 
+                            className="font-medium text-sm text-slate-900 leading-snug line-clamp-2" 
+                            title={r.title}
+                          >
                             {r.title}
                           </div>
                           {versionWarning && (
@@ -721,33 +726,38 @@ export default function RoundsPage() {
                       </TableCell>
                       
                       {/* ระดับ */}
-                      <TableCell className="py-2 text-sm text-slate-600 hidden md:table-cell">
+                      <TableCell className="py-3 text-sm text-slate-600 hidden md:table-cell align-top">
                         {r.positionLevel}
                       </TableCell>
                       
-                      {/* Template */}
-                      <TableCell className="py-2 text-xs text-slate-500 hidden lg:table-cell">
-                        <div className="truncate max-w-[150px]" title={formatTemplateCell(r)}>
+                      {/* Template - line-clamp-2 */}
+                      <TableCell className="py-3 text-xs text-slate-500 hidden lg:table-cell align-top">
+                        <div 
+                          className="leading-snug line-clamp-2" 
+                          title={formatTemplateCell(r)}
+                        >
                           {formatTemplateCell(r)}
                         </div>
                       </TableCell>
                       
                       {/* วันที่ */}
-                      <TableCell className="py-2 text-xs text-slate-500 whitespace-nowrap hidden sm:table-cell">
+                      <TableCell className="py-3 text-xs text-slate-500 whitespace-nowrap hidden sm:table-cell align-top">
                         <div>{formatDate(r.openDate)}</div>
                         <div className="text-slate-400">– {formatDate(r.closeDate)}</div>
                       </TableCell>
                       
-                      {/* สถานะ */}
-                      <TableCell className="py-2">
-                        <div className="inline-flex items-center gap-1">
-                          <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", status.dot)} />
-                          <span className="text-xs text-slate-700">{status.label}</span>
-                        </div>
+                      {/* สถานะ - Pill Badge */}
+                      <TableCell className="py-3 align-top">
+                        <span className={cn(
+                          "inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border whitespace-nowrap",
+                          status.className
+                        )}>
+                          {status.label}
+                        </span>
                       </TableCell>
                       
                       {/* Actions - ⋮ only */}
-                      <TableCell className="py-2 text-right">
+                      <TableCell className="py-3 text-right align-top">
                         <ActionMenu
                           size="sm"
                           items={[
