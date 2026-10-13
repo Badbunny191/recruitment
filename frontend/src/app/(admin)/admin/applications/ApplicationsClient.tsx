@@ -1,12 +1,13 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import { SearchInput } from '@/components/ui/search-input';
 import { SortDropdown } from '@/components/ui/sort-dropdown';
 import { Pagination } from '@/components/ui/pagination';
@@ -18,7 +19,20 @@ interface Round {
   id: string;
   title: string;
   status: string;
+  deletedAt?: string | number | Date | null;
 }
+
+const ROUND_STATUS_META: Record<string, { label: string; dot: string; text: string }> = {
+  ACTIVE:   { label: 'ACTIVE',   dot: 'bg-emerald-500', text: 'text-emerald-700' },
+  DRAFT:    { label: 'DRAFT',    dot: 'bg-amber-500',   text: 'text-amber-700' },
+  CLOSED:   { label: 'CLOSED',   dot: 'bg-slate-500',   text: 'text-slate-600' },
+  ARCHIVED: { label: 'ARCHIVED', dot: 'bg-purple-500',  text: 'text-purple-700' },
+};
+
+const getRoundStatusMeta = (round: Round) => {
+  if (round.deletedAt) return ROUND_STATUS_META.ARCHIVED;
+  return ROUND_STATUS_META[round.status] || ROUND_STATUS_META.DRAFT;
+};
 
 interface Application {
   id: string;
@@ -146,6 +160,26 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
 export default function ApplicationsClient() {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  // URL State
+  const urlRoundId = searchParams.get('round') || '';
+  const showArchived = searchParams.get('archived') === '1';
+
+  // Helper: อัปเดต URL (ไม่ trigger re-mount)
+  const updateUrl = useCallback((patch: Record<string, string | null>) => {
+    const params = new URLSearchParams(searchParams.toString());
+    Object.entries(patch).forEach(([key, value]) => {
+      if (value === null || value === '') {
+        params.delete(key);
+      } else {
+        params.set(key, value);
+      }
+    });
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [searchParams, pathname, router]);
 
   // State
   const [rounds, setRounds] = useState<Round[]>([]);
@@ -185,20 +219,52 @@ export default function ApplicationsClient() {
 
   // Fetch rounds
   useEffect(() => {
-    fetch(`${API_URL}/admin/rounds`, {
+    const view = showArchived ? 'all' : 'active';
+    fetch(`${API_URL}/admin/rounds?view=${view}`, {
       headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` }
     })
       .then(res => res.json())
       .then(res => {
         const roundList = res.data || [];
         setRounds(roundList);
-        // Select first active round or first round
-        const activeRound = roundList.find((r: Round) => r.status === 'ACTIVE') || roundList[0];
-        if (activeRound) {
-          setSelectedRoundId(activeRound.id);
+
+        // ลำดับการเลือก Round:
+        // 1) URL ?round=... (ถ้ามีและอยู่ในลิสต์)
+        // 2) LocalStorage cache (ถ้ามีและอยู่ในลิสต์)
+        // 3) Default: ACTIVE ก่อน, ไม่มี → เอาตัวแรก
+        let chosen: Round | undefined;
+        if (urlRoundId) {
+          chosen = roundList.find((r: Round) => r.id === urlRoundId);
+        }
+        if (!chosen) {
+          const cached = localStorage.getItem('applications:lastRoundId');
+          if (cached) {
+            chosen = roundList.find((r: Round) => r.id === cached);
+          }
+        }
+        if (!chosen) {
+          chosen = roundList.find((r: Round) => r.status === 'ACTIVE' && !r.deletedAt) || roundList[0];
+        }
+        if (chosen) {
+          setSelectedRoundId(chosen.id);
+          // Sync URL ถ้า URL ว่างหรือไม่ตรงกับที่เลือก
+          if (!urlRoundId) {
+            updateUrl({ round: chosen.id });
+          }
+          localStorage.setItem('applications:lastRoundId', chosen.id);
         }
       });
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showArchived]);
+
+  // Sync URL เมื่อผู้ใช้เปลี่ยน Round
+  useEffect(() => {
+    if (!selectedRoundId) return;
+    if (urlRoundId === selectedRoundId) return;
+    updateUrl({ round: selectedRoundId });
+    localStorage.setItem('applications:lastRoundId', selectedRoundId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRoundId]);
 
   // Fetch applications and summary
   const fetchData = useCallback(async () => {
@@ -449,36 +515,172 @@ export default function ApplicationsClient() {
     archived: totalArchived,
   };
 
+  // =====================
+  // Searchable Round Selector (Combobox) - local state
+  // =====================
+  const [roundSearchOpen, setRoundSearchOpen] = useState(false);
+  const [roundSearchQuery, setRoundSearchQuery] = useState('');
+  const roundSelectorRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!roundSearchOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (roundSelectorRef.current && !roundSelectorRef.current.contains(e.target as Node)) {
+        setRoundSearchOpen(false);
+        setRoundSearchQuery('');
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [roundSearchOpen]);
+
+  const filteredRounds = useMemo(() => {
+    if (!roundSearchQuery.trim()) return rounds;
+    const q = roundSearchQuery.toLowerCase();
+    return rounds.filter(r => r.title.toLowerCase().includes(q));
+  }, [rounds, roundSearchQuery]);
+
+  const selectedRound = rounds.find(r => r.id === selectedRoundId);
+  const selectedMeta = selectedRound ? getRoundStatusMeta(selectedRound) : null;
+
   return (
     <div className="p-4 md:p-6 space-y-3">
       {/* ============================================ */}
       {/* 1. PAGE HEADER */}
       {/* ============================================ */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-lg">📋</span>
-          <div>
-            <h1 className="text-lg font-bold text-slate-900 leading-tight">ใบสมัคร (Applications)</h1>
-            <p className="text-[11px] text-slate-500">จัดการใบสมัครและตรวจสอบคุณสมบัติผู้สมัคร</p>
-          </div>
+      <div className="flex items-center gap-2">
+        <span className="text-lg">📋</span>
+        <div>
+          <h1 className="text-lg font-bold text-slate-900 leading-tight">ใบสมัคร (Applications)</h1>
+          <p className="text-[11px] text-slate-500">จัดการใบสมัครและตรวจสอบคุณสมบัติผู้สมัคร</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Label className="text-[11px] text-slate-500 whitespace-nowrap">รอบรับสมัคร</Label>
-          <Select
-            value={selectedRoundId}
-            onChange={(e) => setSelectedRoundId(e.target.value)}
-            className="h-8 text-xs min-w-[180px]"
-          >
-            {rounds.length === 0 ? (
-              <option value="">-- ไม่มีรอบ --</option>
-            ) : (
-              rounds.map((round) => (
-                <option key={round.id} value={round.id}>
-                  {round.title} {round.status === 'ACTIVE' ? '(เปิดรับ)' : ''}
-                </option>
-              ))
+      </div>
+
+      {/* ============================================ */}
+      {/* 1.5 CONTEXT BAR - Round Selector (NEW) */}
+      {/* ============================================ */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3">
+        <div className="flex flex-col md:flex-row md:items-center gap-3">
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-base">🎯</span>
+            <span className="text-sm font-medium text-slate-700">กำลังดูข้อมูลของรอบ</span>
+          </div>
+
+          {/* Searchable Round Selector */}
+          <div className="relative flex-1 min-w-0 md:max-w-[500px]" ref={roundSelectorRef}>
+            <button
+              type="button"
+              onClick={() => setRoundSearchOpen(o => !o)}
+              className={cn(
+                "w-full h-10 px-3 text-sm text-left bg-white border rounded-lg flex items-center justify-between gap-2 transition-colors",
+                roundSearchOpen ? "border-blue-500 ring-2 ring-blue-100" : "border-slate-300 hover:border-slate-400"
+              )}
+            >
+              {selectedRound ? (
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <span className={cn("w-2 h-2 rounded-full shrink-0", selectedMeta?.dot)} />
+                  <span className="font-medium text-slate-900 truncate" title={selectedRound.title}>
+                    {selectedRound.title}
+                  </span>
+                  {selectedMeta && (
+                    <span className={cn(
+                      "shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border",
+                      selectedMeta.text,
+                      "border-current/20"
+                    )}>
+                      {selectedMeta.label}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <span className="text-slate-400">-- เลือกรอบ --</span>
+              )}
+              <svg className={cn("h-4 w-4 text-slate-400 shrink-0 transition-transform", roundSearchOpen && "rotate-180")} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {roundSearchOpen && (
+              <div className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden">
+                {/* Search Input */}
+                <div className="p-2 border-b border-slate-100">
+                  <div className="relative">
+                    <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <input
+                      type="text"
+                      value={roundSearchQuery}
+                      onChange={(e) => setRoundSearchQuery(e.target.value)}
+                      placeholder="ค้นหารอบ..."
+                      className="w-full h-9 pl-8 pr-3 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+
+                {/* List */}
+                <div className="max-h-[300px] overflow-y-auto py-1">
+                  {filteredRounds.length === 0 ? (
+                    <div className="px-3 py-6 text-center text-xs text-slate-500">
+                      {roundSearchQuery ? 'ไม่พบรอบที่ค้นหา' : 'ไม่มีรอบรับสมัคร'}
+                    </div>
+                  ) : (
+                    filteredRounds.map((round) => {
+                      const meta = getRoundStatusMeta(round);
+                      const isSelected = round.id === selectedRoundId;
+                      return (
+                        <button
+                          key={round.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedRoundId(round.id);
+                            setRoundSearchOpen(false);
+                            setRoundSearchQuery('');
+                          }}
+                          className={cn(
+                            "w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-slate-50 transition-colors",
+                            isSelected && "bg-blue-50"
+                          )}
+                        >
+                          <span className={cn("w-2 h-2 rounded-full shrink-0", meta.dot)} />
+                          <span className={cn("text-sm flex-1 truncate", isSelected ? "font-medium text-slate-900" : "text-slate-700")} title={round.title}>
+                            {round.title}
+                          </span>
+                          <span className={cn(
+                            "shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border border-current/20",
+                            meta.text
+                          )}>
+                            {meta.label}
+                          </span>
+                          {isSelected && (
+                            <svg className="h-4 w-4 text-blue-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
             )}
-          </Select>
+          </div>
+
+          {/* Show Archived toggle */}
+          <label className="flex items-center gap-2 cursor-pointer shrink-0 md:ml-auto">
+            <Checkbox
+              checked={showArchived}
+              onChange={(e) => {
+                updateUrl({ archived: e.target.checked ? '1' : null });
+              }}
+            />
+            <span className="text-sm text-slate-700 whitespace-nowrap">
+              แสดงรอบที่จัดเก็บแล้ว
+              <span className="ml-1 text-slate-400">📦</span>
+            </span>
+          </label>
         </div>
       </div>
 
