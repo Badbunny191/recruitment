@@ -282,8 +282,9 @@ export default function RoundsPage() {
 
   const loadRounds = async () => {
     setLoading(true);
+    // ดึงข้อมูลทั้งหมดเสมอ เพื่อให้ KPI เป็น System Summary (ไม่ใช่ Filter Summary)
     const res = await fetch(
-      `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds?view=${view}`,
+      `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds?view=all`,
       { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
     ).then((r) => r.json());
     setRounds(res.data || []);
@@ -388,10 +389,12 @@ export default function RoundsPage() {
   };
 
   useEffect(() => {
+    // โหลดข้อมูลครั้งเดียวตอน mount — KPI ใช้ System State เสมอ
     loadRounds();
     loadPublishedVersions();
     loadRoundsWithVersionInfo();
-  }, [view]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -529,8 +532,17 @@ export default function RoundsPage() {
   ];
 
   // Filter & Sort & Paginate
+  // หมายเหตุ: KPI คำนวณจาก `rounds` (System State - ข้อมูลทั้งหมด)
+  // แต่ Table คำนวณจาก `filteredAndSortedRounds` (ผ่าน filter/sort แล้ว)
   const filteredAndSortedRounds = useMemo(() => {
     let result = [...rounds];
+
+    // View filter (ทำฝั่ง client — ไม่กระทบ KPI)
+    if (view === 'active') {
+      result = result.filter(r => r.status === 'ACTIVE' && !r.deletedAt);
+    } else if (view === 'archived') {
+      result = result.filter(r => !!r.deletedAt);
+    }
 
     if (search.trim()) {
       const s = search.toLowerCase();
@@ -562,7 +574,7 @@ export default function RoundsPage() {
     });
 
     return result;
-  }, [rounds, search, sortField, sortDirection]);
+  }, [rounds, view, search, sortField, sortDirection]);
 
   const totalItems = filteredAndSortedRounds.length;
   const paginatedRounds = filteredAndSortedRounds.slice(
@@ -655,7 +667,7 @@ export default function RoundsPage() {
               <FilterPill label="จัดเก็บแล้ว" isActive={view === 'archived'} onClick={() => setView('archived')} count={viewCounts.archived} />
             </div>
             <span className="text-[11px] text-slate-500 whitespace-nowrap">
-              {search.trim() ? `พบ ${totalItems}` : `ทั้งหมด ${totalItems}`}
+              {search.trim() ? `พบทั้งหมด ${totalItems} รายการ` : `ทั้งหมด ${totalItems} รายการ`}
             </span>
           </div>
         </div>
@@ -689,8 +701,15 @@ export default function RoundsPage() {
               ) : filteredAndSortedRounds.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="py-0">
-                    {search ? (
-                      <NoResultsEmptyState keyword={search} onClearFilters={() => setSearch('')} />
+                    {/* ถ้ามี search หรือ filter (ที่ไม่ใช่ all) → ไม่พบผลลัพธ์ */}
+                    {search || view !== 'all' ? (
+                      <NoResultsEmptyState
+                        keyword={search}
+                        onClearFilters={() => {
+                          setSearch('');
+                          setView('all');
+                        }}
+                      />
                     ) : (
                       <NoDataEmptyState
                         title="ยังไม่มีรอบรับสมัคร"

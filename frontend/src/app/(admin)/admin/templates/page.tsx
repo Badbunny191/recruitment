@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
@@ -8,7 +8,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Badge } from '@/components/ui/badge';
+import { SearchInput } from '@/components/ui/search-input';
+import { SortDropdown } from '@/components/ui/sort-dropdown';
+import { Pagination } from '@/components/ui/pagination';
+import { ActionMenu } from '@/components/ui/action-menu';
+import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
+import { cn } from '@/lib/utils';
 
 interface TemplateVersion {
   id: string;
@@ -24,11 +29,9 @@ interface Template {
   createdAt: string | number | Date;
   versionCount: number;
   currentVersion: TemplateVersion | null;
-  // Round counts (active = ใช้งานอยู่, archived = จัดเก็บแล้ว, total = รวมทั้งหมด)
   activeRoundsCount: number;
   archivedRoundsCount: number;
   totalRoundsCount: number;
-  // Backward-compat (legacy field)
   roundsCount?: number;
   deletedAt: string | number | Date | null;
 }
@@ -40,6 +43,58 @@ interface RoundRef {
   deletedAt: string | number | Date | null;
 }
 
+// ============================================
+// DESIGN SYSTEM - Smart Family Style (คัดลอกจาก Recruitment Rounds)
+// ============================================
+const CARD_STYLE = {
+  container: 'bg-white rounded-xl border border-slate-200 shadow-sm',
+  header: 'px-4 py-3 border-b border-slate-100',
+  body: 'px-4 py-3',
+};
+
+// ============================================
+// SUB-COMPONENTS
+// ============================================
+
+/** Filter Pill - Ultra Compact (คัดลอกจาก Recruitment Rounds) */
+function FilterPill({
+  label,
+  isActive,
+  onClick,
+  count,
+}: {
+  label: string;
+  isActive: boolean;
+  onClick: () => void;
+  count?: number;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap",
+        isActive
+          ? "bg-slate-900 text-white"
+          : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+      )}
+    >
+      {label}
+      {count !== undefined && (
+        <span className={cn(
+          "text-[10px] px-1 rounded min-w-[16px] text-center leading-none",
+          isActive ? "bg-white/20" : "bg-slate-100 text-slate-600"
+        )}>
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// ============================================
+// MAIN PAGE
+// ============================================
+
 export default function TemplatesPage() {
   const router = useRouter();
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -49,8 +104,18 @@ export default function TemplatesPage() {
   const [form, setForm] = useState({ name: '', description: '' });
   const [submitting, setSubmitting] = useState(false);
 
-  // View filter: all | active | archived
-  const [view, setView] = useState<'all' | 'active' | 'archived'>('active');
+  // View filter: all | active | archived (default 'all' เพื่อให้ KPI แสดง System State ตั้งแต่แรก)
+  const [view, setView] = useState<'all' | 'active' | 'archived'>('all');
+
+  // Search & Sort state
+  const [search, setSearch] = useState('');
+  const [sortId, setSortId] = useState<string>('createdAt-desc');
+  const [sortField, setSortField] = useState<string>('createdAt');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(10);
 
   // Archive / Restore / Permanent Delete dialogs
   const [archiveDialog, setArchiveDialog] = useState<{ open: boolean; tpl: Template | null }>({ open: false, tpl: null });
@@ -70,8 +135,9 @@ export default function TemplatesPage() {
 
   const load = async () => {
     setLoading(true);
+    // ดึงข้อมูลทั้งหมดเสมอ เพื่อให้ KPI เป็น System Summary (ไม่ใช่ Filter Summary)
     const res = await fetch(
-      `${process.env.NEXT_PUBLIC_API_URL}/admin/templates?view=${view}`,
+      `${process.env.NEXT_PUBLIC_API_URL}/admin/templates?view=all`,
       { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
     ).then((r) => r.json());
     setTemplates(res.data || []);
@@ -79,9 +145,14 @@ export default function TemplatesPage() {
   };
 
   useEffect(() => {
+    // โหลดข้อมูลครั้งเดียวตอน mount — KPI ใช้ System State เสมอ
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view]);
+  }, []);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [view, search, sortId]);
 
   const openCreate = () => {
     setEditing(null);
@@ -219,19 +290,6 @@ export default function TemplatesPage() {
     }
   };
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'PUBLISHED':
-        return <Badge variant="default" className="bg-green-600">Published</Badge>;
-      case 'DRAFT':
-        return <Badge variant="secondary" className="bg-yellow-100 text-yellow-800 border-yellow-300">Draft</Badge>;
-      case 'ARCHIVED':
-        return <Badge variant="outline" className="bg-gray-100 text-gray-600 border-gray-300">จัดเก็บแล้ว</Badge>;
-      default:
-        return <Badge variant="outline">{status}</Badge>;
-    }
-  };
-
   // แสดงรายชื่อ Round สูงสุด 10 รายการ พร้อม "...และอีก X รายการ"
   const renderRoundList = (rounds: RoundRef[], kind: 'active' | 'archived') => {
     const filtered = rounds.filter(r =>
@@ -250,18 +308,16 @@ export default function TemplatesPage() {
             <span className="text-slate-500">•</span>
             <span>{r.roundName}</span>
             {kind === 'active' && (
-              <Badge
-                variant="outline"
-                className={`text-[10px] px-1.5 py-0 ${
-                  r.roundStatus === 'ACTIVE'
-                    ? 'bg-green-50 text-green-700 border-green-300'
-                    : r.roundStatus === 'CLOSED'
-                    ? 'bg-slate-100 text-slate-600 border-slate-300'
-                    : 'bg-yellow-50 text-yellow-700 border-yellow-300'
-                }`}
-              >
+              <span className={cn(
+                "inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border",
+                r.roundStatus === 'ACTIVE'
+                  ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+                  : r.roundStatus === 'CLOSED'
+                  ? 'bg-slate-100 text-slate-600 border-slate-200'
+                  : 'bg-amber-100 text-amber-700 border-amber-200'
+              )}>
                 {r.roundStatus}
-              </Badge>
+              </span>
             )}
           </li>
         ))}
@@ -272,178 +328,325 @@ export default function TemplatesPage() {
     );
   };
 
+  const formatDate = (value: string | number | Date | null | undefined): string => {
+    if (!value) return 'ไม่กำหนด';
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return 'ไม่กำหนด';
+    return d.toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' });
+  };
+
+  // Sort options
+  const sortOptions = [
+    { id: 'createdAt-desc', field: 'createdAt', label: 'ล่าสุด', direction: 'desc' as const },
+    { id: 'createdAt-asc', field: 'createdAt', label: 'เก่าสุด', direction: 'asc' as const },
+    { id: 'name-asc', field: 'name', label: 'ชื่อ A-Z', direction: 'asc' as const },
+    { id: 'name-desc', field: 'name', label: 'ชื่อ Z-A', direction: 'desc' as const },
+  ];
+
+  // Filter & Sort & Paginate
+  // หมายเหตุ: KPI คำนวณจาก `templates` (System State - ข้อมูลทั้งหมด)
+  // แต่ Table คำนวณจาก `filteredAndSortedTemplates` (ผ่าน filter/sort แล้ว)
+  const filteredAndSortedTemplates = useMemo(() => {
+    let result = [...templates];
+
+    // View filter (ทำฝั่ง client — ไม่กระทบ KPI)
+    if (view === 'active') {
+      result = result.filter(t => !t.deletedAt);
+    } else if (view === 'archived') {
+      result = result.filter(t => !!t.deletedAt);
+    }
+
+    if (search.trim()) {
+      const s = search.toLowerCase();
+      result = result.filter(t =>
+        t.name.toLowerCase().includes(s) ||
+        (t.description?.toLowerCase().includes(s))
+      );
+    }
+
+    result.sort((a, b) => {
+      let aVal: any, bVal: any;
+      if (sortField === 'createdAt') {
+        aVal = new Date(a.createdAt).getTime();
+        bVal = new Date(b.createdAt).getTime();
+      } else if (sortField === 'name') {
+        aVal = a.name.toLowerCase();
+        bVal = b.name.toLowerCase();
+      } else {
+        return 0;
+      }
+      if (isNaN(aVal) && isNaN(bVal)) return 0;
+      if (isNaN(aVal)) return 1;
+      if (isNaN(bVal)) return -1;
+
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    return result;
+  }, [templates, view, search, sortField, sortDirection]);
+
+  const totalItems = filteredAndSortedTemplates.length;
+  const paginatedTemplates = filteredAndSortedTemplates.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  );
+
+  const totalTemplates = templates.length;
+  const activeTemplates = templates.filter(t => !t.deletedAt).length;
+  const archivedTemplates = templates.filter(t => t.deletedAt).length;
+
+  const viewCounts = {
+    all: totalTemplates,
+    active: activeTemplates,
+    archived: archivedTemplates,
+  };
+
   return (
-    <div className="p-8 space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold">Form Templates (แม่แบบฟอร์ม)</h1>
-        <Button onClick={openCreate}>+ สร้าง Template</Button>
-      </div>
-
-      {/* View filter: All / Active / Archived */}
-      <div className="flex gap-2 items-center">
-        <span className="text-sm text-slate-600">มุมมอง:</span>
-        <div className="inline-flex rounded-md border border-slate-200 overflow-hidden">
-          <button
-            onClick={() => setView('all')}
-            className={`px-3 py-1.5 text-sm ${view === 'all' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'}`}
-          >
-            ทั้งหมด
-          </button>
-          <button
-            onClick={() => setView('active')}
-            className={`px-3 py-1.5 text-sm border-l border-slate-200 ${view === 'active' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'}`}
-          >
-            ใช้งานอยู่
-          </button>
-          <button
-            onClick={() => setView('archived')}
-            className={`px-3 py-1.5 text-sm border-l border-slate-200 ${view === 'archived' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'}`}
-          >
-            จัดเก็บแล้ว
-          </button>
+    <div className="p-4 md:p-6 space-y-3">
+      {/* ============================================ */}
+      {/* 1. PAGE HEADER */}
+      {/* ============================================ */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">📄</span>
+          <div>
+            <h1 className="text-lg font-bold text-slate-900 leading-tight">แม่แบบฟอร์ม (Form Templates)</h1>
+            <p className="text-[11px] text-slate-500">จัดการแม่แบบฟอร์มสำหรับการรับสมัครทั้งหมดในระบบ</p>
+          </div>
         </div>
-        <span className="text-xs text-slate-500 ml-2">
-          {view === 'active' && 'แสดงเฉพาะแม่แบบที่ยังใช้งานอยู่'}
-          {view === 'archived' && 'แสดงเฉพาะแม่แบบที่จัดเก็บแล้ว'}
-          {view === 'all' && 'แสดงแม่แบบทั้งหมด'}
-        </span>
+        <Button onClick={openCreate} size="sm" className="h-8">
+          + สร้าง Template
+        </Button>
       </div>
 
-      <div className="border rounded-md">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>ชื่อแม่แบบ</TableHead>
-              <TableHead>Version ปัจจุบัน</TableHead>
-              <TableHead>จำนวน Version</TableHead>
-              <TableHead>รอบรับสมัคร</TableHead>
-              <TableHead>สร้างเมื่อ</TableHead>
-              <TableHead className="text-right">การจัดการ</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loading ? (
-              <TableRow>
-                <TableCell colSpan={6} className="text-center text-slate-500 py-6">
-                  กำลังโหลด...
-                </TableCell>
+      {/* ============================================ */}
+      {/* 2. KPI CARDS - Ultra Compact */}
+      {/* ============================================ */}
+      <div className="grid grid-cols-3 gap-2">
+        <KpiCard icon="📊" value={totalTemplates} label="ทั้งหมด" />
+        <KpiCard icon="✅" value={activeTemplates} label="ใช้งานอยู่" variant="success" />
+        <KpiCard icon="📁" value={archivedTemplates} label="จัดเก็บแล้ว" variant="muted" />
+      </div>
+
+      {/* ============================================ */}
+      {/* 3. CONTENT CARD - Smart Family Style */}
+      {/* ============================================ */}
+      <div className={cn(CARD_STYLE.container, "overflow-hidden")}>
+        {/* 3.1 UNIFIED TOOLBAR */}
+        <div className={cn(CARD_STYLE.header, "flex flex-col gap-2")}>
+          {/* Row 1: Search + Sort */}
+          <div className="flex items-center gap-2">
+            <div className="flex-1 min-w-0">
+              <SearchInput
+                value={search}
+                onChange={setSearch}
+                placeholder="ค้นหาชื่อแม่แบบ..."
+                resultCount={totalItems}
+                resultLabel="รายการ"
+                size="sm"
+                hideResultCount
+              />
+            </div>
+            <SortDropdown
+              value={sortId}
+              onChange={(id, field, direction) => {
+                setSortId(id);
+                setSortField(field);
+                if (direction) setSortDirection(direction);
+              }}
+              options={sortOptions}
+              size="sm"
+            />
+          </div>
+
+          {/* Row 2: Filter Pills + Result Count */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1">
+              <FilterPill label="ทั้งหมด" isActive={view === 'all'} onClick={() => setView('all')} count={viewCounts.all} />
+              <FilterPill label="ใช้งานอยู่" isActive={view === 'active'} onClick={() => setView('active')} count={viewCounts.active} />
+              <FilterPill label="จัดเก็บแล้ว" isActive={view === 'archived'} onClick={() => setView('archived')} count={viewCounts.archived} />
+            </div>
+            <span className="text-[11px] text-slate-500 whitespace-nowrap">
+              {search.trim() ? `พบทั้งหมด ${totalItems} รายการ` : `ทั้งหมด ${totalItems} รายการ`}
+            </span>
+          </div>
+        </div>
+
+        {/* 3.2 TABLE */}
+        <div className="overflow-x-auto">
+          <Table className="w-full table-fixed">
+            <TableHeader>
+              <TableRow className="bg-slate-50/50 hover:bg-slate-50/50">
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 w-[35%]">ชื่อแม่แบบ</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden md:table-cell w-[18%]">Version ปัจจุบัน</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden sm:table-cell w-[10%]">จำนวน Version</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden lg:table-cell w-[18%]">รอบรับสมัคร</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden md:table-cell w-[14%]">สร้างเมื่อ</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 text-right w-[5%]">จัดการ</TableHead>
               </TableRow>
-            ) : templates.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6} className="text-center text-slate-500 py-6">
-                  ยังไม่มี Template — คลิก "+ สร้าง Template" เพื่อเริ่มต้น
-                </TableCell>
-              </TableRow>
-            ) : (
-              templates.map((tpl) => (
-                <TableRow
-                  key={tpl.id}
-                  className="cursor-pointer hover:bg-slate-50"
-                  onClick={() => router.push(`/admin/templates/builder?id=${tpl.id}`)}
-                >
-                  <TableCell className="font-medium">{tpl.name}</TableCell>
-                  <TableCell>
-                    {tpl.currentVersion ? (
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">v{tpl.currentVersion.versionNumber}</span>
-                        {getStatusBadge(tpl.currentVersion.status)}
-                      </div>
+            </TableHeader>
+            <TableBody>
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center py-8">
+                    <div className="flex items-center justify-center gap-2 text-slate-500">
+                      <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      <span className="text-xs">กำลังโหลด...</span>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : filteredAndSortedTemplates.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="py-0">
+                    {/* ถ้ามี search หรือ filter (ที่ไม่ใช่ all) → ไม่พบผลลัพธ์ */}
+                    {search || view !== 'all' ? (
+                      <NoResultsEmptyState
+                        keyword={search}
+                        onClearFilters={() => {
+                          setSearch('');
+                          setView('all');
+                        }}
+                      />
                     ) : (
-                      <span className="text-slate-400 text-sm">ยังไม่มี Published</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-slate-600">{tpl.versionCount} version</span>
-                  </TableCell>
-                  <TableCell>
-                    {(() => {
-                      const active = tpl.activeRoundsCount ?? 0;
-                      const archived = tpl.archivedRoundsCount ?? 0;
-                      const total = tpl.totalRoundsCount ?? (active + archived);
-                      if (total === 0) {
-                        return <span className="text-slate-400 text-sm">ไม่มีรอบ</span>;
-                      }
-                      if (active === 0 && archived > 0) {
-                        return (
-                          <div className="text-sm">
-                            <div className="text-slate-400">ใช้งานอยู่ 0 รอบ</div>
-                            <div className="text-amber-600 font-medium">จัดเก็บแล้ว {archived} รอบ</div>
-                          </div>
-                        );
-                      }
-                      return (
-                        <div className="text-sm">
-                          <div className="font-medium text-slate-700">{total} รอบ</div>
-                          <div className="text-xs text-slate-500">
-                            (ใช้งานอยู่ {active} / จัดเก็บแล้ว {archived})
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </TableCell>
-                  <TableCell className="text-slate-500 text-sm">
-                    {tpl.createdAt ? new Date(tpl.createdAt).toLocaleDateString('th-TH') : '-'}
-                  </TableCell>
-                  <TableCell className="text-right space-x-2" onClick={(e) => e.stopPropagation()}>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={(e) => openEdit(tpl, e)}
-                    >
-                      แก้ไข
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => router.push(`/admin/templates/builder?id=${tpl.id}`)}
-                    >
-                      Builder
-                    </Button>
-                    {/* Archive / Restore / Delete Permanently actions */}
-                    {!tpl.deletedAt ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="text-slate-700 border-slate-300 hover:bg-slate-50"
-                        onClick={() => setArchiveDialog({ open: true, tpl })}
-                        title="จัดเก็บ (ซ่อนจากรายการปกติ แต่ไม่ลบข้อมูล)"
-                      >
-                        📁 จัดเก็บ
-                      </Button>
-                    ) : (
-                      <>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="text-green-700 border-green-300 hover:bg-green-50"
-                          onClick={() => setRestoreDialog({ open: true, tpl })}
-                          title="เรียกคืนกลับมาเป็นแม่แบบที่ใช้งานอยู่"
-                        >
-                          ↩ เรียกคืน
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="text-red-700 border-red-300 hover:bg-red-50"
-                          onClick={() => openDeleteDialog(tpl)}
-                          title="ลบถาวร (เฉพาะผู้ดูแลระบบ)"
-                        >
-                          🗑 ลบถาวร
-                        </Button>
-                      </>
+                      <NoDataEmptyState
+                        title="ยังไม่มีแม่แบบ"
+                        description="เริ่มต้นโดยการสร้างแม่แบบฟอร์มใหม่"
+                        action={{ label: '+ สร้าง Template', onClick: openCreate, variant: 'primary' }}
+                      />
                     )}
                   </TableCell>
                 </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
+              ) : (
+                paginatedTemplates.map((tpl) => {
+                  const active = tpl.activeRoundsCount ?? 0;
+                  const archived = tpl.archivedRoundsCount ?? 0;
+                  const total = tpl.totalRoundsCount ?? (active + archived);
+
+                  return (
+                    <TableRow
+                      key={tpl.id}
+                      className="group"
+                    >
+                      {/* ชื่อแม่แบบ */}
+                      <TableCell className="py-3 align-top">
+                        <div
+                          className="font-medium text-sm text-slate-900 leading-snug line-clamp-2 cursor-pointer hover:text-blue-600"
+                          title={tpl.name}
+                          onClick={() => router.push(`/admin/templates/builder?id=${tpl.id}`)}
+                        >
+                          {tpl.name}
+                        </div>
+                        {tpl.description && (
+                          <div className="text-[11px] text-slate-500 line-clamp-1 mt-0.5" title={tpl.description}>
+                            {tpl.description}
+                          </div>
+                        )}
+                      </TableCell>
+
+                      {/* Version ปัจจุบัน */}
+                      <TableCell className="py-3 text-sm text-slate-600 hidden md:table-cell align-top">
+                        {tpl.currentVersion ? (
+                          <div className="flex flex-col gap-1">
+                            <span className="font-medium">v{tpl.currentVersion.versionNumber}</span>
+                            <span className={cn(
+                              "inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border w-fit",
+                              tpl.currentVersion.status === 'PUBLISHED'
+                                ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+                                : tpl.currentVersion.status === 'DRAFT'
+                                ? "bg-amber-100 text-amber-700 border-amber-200"
+                                : "bg-slate-100 text-slate-600 border-slate-200"
+                            )}>
+                              {tpl.currentVersion.status}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-400 text-xs">ยังไม่มี Published</span>
+                        )}
+                      </TableCell>
+
+                      {/* จำนวน Version */}
+                      <TableCell className="py-3 text-xs text-slate-500 hidden sm:table-cell align-top">
+                        {tpl.versionCount} version
+                      </TableCell>
+
+                      {/* รอบรับสมัคร */}
+                      <TableCell className="py-3 text-xs text-slate-500 hidden lg:table-cell align-top">
+                        {total === 0 ? (
+                          <span className="text-slate-400">ไม่มีรอบ</span>
+                        ) : active === 0 && archived > 0 ? (
+                          <div>
+                            <div className="text-slate-400">ใช้งานอยู่ 0 รอบ</div>
+                            <div className="text-amber-600 font-medium">จัดเก็บแล้ว {archived} รอบ</div>
+                          </div>
+                        ) : (
+                          <div>
+                            <div className="font-medium text-slate-700">{total} รอบ</div>
+                            <div className="text-[10px] text-slate-500">
+                              (ใช้งานอยู่ {active} / จัดเก็บแล้ว {archived})
+                            </div>
+                          </div>
+                        )}
+                      </TableCell>
+
+                      {/* สร้างเมื่อ */}
+                      <TableCell className="py-3 text-xs text-slate-500 whitespace-nowrap hidden md:table-cell align-top">
+                        {formatDate(tpl.createdAt)}
+                      </TableCell>
+
+                      {/* Actions - ⋮ only */}
+                      <TableCell className="py-3 text-right align-top">
+                        <ActionMenu
+                          size="sm"
+                          items={[
+                            { label: '✏️ แก้ไข', onClick: () => openEdit(tpl, { stopPropagation: () => {} } as React.MouseEvent) },
+                            { label: '🛠 Builder', onClick: () => router.push(`/admin/templates/builder?id=${tpl.id}`) },
+                            { type: 'separator', label: '', onClick: () => {} },
+                            ...(!tpl.deletedAt
+                              ? [{ label: '📁 จัดเก็บ', onClick: () => setArchiveDialog({ open: true, tpl }) }]
+                              : [
+                                  { label: '↩ เรียกคืน', onClick: () => setRestoreDialog({ open: true, tpl }) },
+                                  { label: '🗑 ลบถาวร', type: 'danger' as const, onClick: () => openDeleteDialog(tpl) },
+                                ]
+                            ),
+                          ]}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </div>
+
+        {/* 3.3 PAGINATION */}
+        <div className={cn(CARD_STYLE.header, "flex items-center justify-between")}>
+          <span className="text-[11px] text-slate-500">
+            {search.trim() ? `พบ ${totalItems} รายการ` : `แสดง ${paginatedTemplates.length} จาก ${totalItems}`}
+          </span>
+          <Pagination
+            currentPage={currentPage}
+            totalItems={totalItems}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            showPageSizeSelector={false}
+            showResultCount={false}
+          />
+        </div>
       </div>
 
+      {/* ============================================ */}
+      {/* 4. FORM DIALOG */}
+      {/* ============================================ */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editing ? 'แก้ไข Template' : 'สร้าง Template ใหม่'}</DialogTitle>
+            <DialogTitle>{editing ? '✏️ แก้ไข Template' : '➕ สร้าง Template ใหม่'}</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
@@ -620,6 +823,37 @@ export default function TemplatesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/** KPI Card - Smart Family Style (คัดลอกจาก Recruitment Rounds) */
+function KpiCard({
+  icon,
+  value,
+  label,
+  variant = 'default'
+}: {
+  icon: string;
+  value: number | string;
+  label: string;
+  variant?: 'default' | 'success' | 'muted';
+}) {
+  const valueColor = {
+    default: 'text-slate-900',
+    success: 'text-emerald-600',
+    muted: 'text-slate-500',
+  }[variant];
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4">
+      <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center text-2xl shrink-0">
+        {icon}
+      </div>
+      <div className="flex flex-col">
+        <span className={cn("text-3xl font-bold tabular-nums leading-none", valueColor)}>{value}</span>
+        <span className="text-sm text-slate-500 mt-1.5">{label}</span>
+      </div>
     </div>
   );
 }

@@ -1,8 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -10,13 +9,15 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Card, CardContent } from '@/components/ui/card';
+import { SearchInput } from '@/components/ui/search-input';
+import { SortDropdown } from '@/components/ui/sort-dropdown';
+import { Pagination } from '@/components/ui/pagination';
+import { ActionMenu } from '@/components/ui/action-menu';
+import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
+import { cn } from '@/lib/utils';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_ID' | 'REGEX';
-
-// Phase 1 supports only 'organizations'. Keep in sync with MASTER_DATA_SOURCES in
-// backend/src/schemas/validators.ts
 type MasterDataSource = 'organizations';
 
 interface FileConfig {
@@ -29,7 +30,6 @@ interface FieldMaster {
   id: string;
   fieldType: FieldType;
   labelTh: string;
-  // string[] for DROPDOWN/RADIO, { source } for MASTER_DATA
   defaultOptions: string[] | { source: MasterDataSource } | null;
   pdfMappingKey: string | null;
   isActive: boolean;
@@ -117,6 +117,89 @@ const FILE_TYPE_OPTIONS = [
   { value: 'docx', label: 'DOCX (เอกสาร Word)' },
 ];
 
+// ============================================
+// DESIGN SYSTEM - Smart Family Style (คัดลอกจาก Recruitment Rounds)
+// ============================================
+const CARD_STYLE = {
+  container: 'bg-white rounded-xl border border-slate-200 shadow-sm',
+  header: 'px-4 py-3 border-b border-slate-100',
+  body: 'px-4 py-3',
+};
+
+// ============================================
+// SUB-COMPONENTS
+// ============================================
+
+/** KPI Card - Smart Family Style (คัดลอกจาก Recruitment Rounds) */
+function KpiCard({
+  icon,
+  value,
+  label,
+  variant = 'default'
+}: {
+  icon: string;
+  value: number | string;
+  label: string;
+  variant?: 'default' | 'success' | 'muted';
+}) {
+  const valueColor = {
+    default: 'text-slate-900',
+    success: 'text-emerald-600',
+    muted: 'text-slate-500',
+  }[variant];
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4">
+      <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center text-2xl shrink-0">
+        {icon}
+      </div>
+      <div className="flex flex-col">
+        <span className={cn("text-3xl font-bold tabular-nums leading-none", valueColor)}>{value}</span>
+        <span className="text-sm text-slate-500 mt-1.5">{label}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Filter Pill - Ultra Compact (คัดลอกจาก Recruitment Rounds) */
+function FilterPill({
+  label,
+  isActive,
+  onClick,
+  count,
+}: {
+  label: string;
+  isActive: boolean;
+  onClick: () => void;
+  count?: number;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap",
+        isActive
+          ? "bg-slate-900 text-white"
+          : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+      )}
+    >
+      {label}
+      {count !== undefined && (
+        <span className={cn(
+          "text-[10px] px-1 rounded min-w-[16px] text-center leading-none",
+          isActive ? "bg-white/20" : "bg-slate-100 text-slate-600"
+        )}>
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// ============================================
+// MAIN PAGE
+// ============================================
+
 export default function FieldMasterPage() {
   const [fields, setFields] = useState<FieldMaster[]>([]);
   const [loading, setLoading] = useState(true);
@@ -125,6 +208,19 @@ export default function FieldMasterPage() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<FieldMaster | null>(null);
+
+  // View filter: all | active | inactive
+  const [view, setView] = useState<'all' | 'active' | 'inactive'>('all');
+
+  // Search & Sort state
+  const [search, setSearch] = useState('');
+  const [sortId, setSortId] = useState<string>('labelTh-asc');
+  const [sortField, setSortField] = useState<string>('labelTh');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(10);
 
   // Field Delete Impact Modal
   const [impactModalOpen, setImpactModalOpen] = useState(false);
@@ -143,6 +239,10 @@ export default function FieldMasterPage() {
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [view, search, sortId]);
 
   // เรียก Impact API ก่อนลบ
   const checkFieldImpact = async (fieldId: string) => {
@@ -169,7 +269,7 @@ export default function FieldMasterPage() {
 
   const openEdit = (f: FieldMaster) => {
     setEditing(f);
-    
+
     // Parse file config
     let fileConfig: FileConfig = { maxFiles: 1, maxSizeMB: 10 };
     if (f.fileConfig) {
@@ -183,7 +283,7 @@ export default function FieldMasterPage() {
         fileConfig = f.fileConfig;
       }
     }
-    
+
     // Parse defaultOptions - could be array, { source }, or JSON string from DB
     let parsedOptions: string[] = [];
     let masterDataSource: MasterDataSource = 'organizations';
@@ -232,7 +332,6 @@ export default function FieldMasterPage() {
       const payload: any = {
         fieldType: form.fieldType,
         labelTh: form.labelTh,
-        // MASTER_DATA stores a source ref, DROPDOWN/RADIO store a string[]
         defaultOptions:
           form.fieldType === 'MASTER_DATA'
             ? { source: form.masterDataSource }
@@ -245,7 +344,7 @@ export default function FieldMasterPage() {
       if (form.helpText.trim()) payload.helpText = form.helpText.trim();
       if (form.placeholder.trim()) payload.placeholder = form.placeholder.trim();
       if (form.section) payload.section = form.section;
-      
+
       // Validation fields
       if (form.validationType !== 'NONE') {
         payload.validationType = form.validationType;
@@ -253,7 +352,7 @@ export default function FieldMasterPage() {
           payload.validationMessage = form.validationMessage.trim();
         }
       }
-      
+
       // File config - ALWAYS send if FILE type
       if (form.fieldType === 'FILE') {
         payload.fileConfig = {
@@ -319,137 +418,287 @@ export default function FieldMasterPage() {
 
   const getTypeBadgeColor = (type: FieldType) => {
     const colors: Record<FieldType, string> = {
-      TEXT: 'bg-blue-100 text-blue-800',
-      TEXTAREA: 'bg-blue-100 text-blue-800',
-      NUMBER: 'bg-green-100 text-green-800',
-      DATE: 'bg-purple-100 text-purple-800',
-      DROPDOWN: 'bg-yellow-100 text-yellow-800',
-      RADIO: 'bg-orange-100 text-orange-800',
-      CHECKBOX: 'bg-teal-100 text-teal-800',
-      FILE: 'bg-pink-100 text-pink-800',
-      MASTER_DATA: 'bg-indigo-100 text-indigo-800',
+      TEXT: 'bg-blue-100 text-blue-700 border-blue-200',
+      TEXTAREA: 'bg-blue-100 text-blue-700 border-blue-200',
+      NUMBER: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+      DATE: 'bg-purple-100 text-purple-700 border-purple-200',
+      DROPDOWN: 'bg-amber-100 text-amber-700 border-amber-200',
+      RADIO: 'bg-orange-100 text-orange-700 border-orange-200',
+      CHECKBOX: 'bg-teal-100 text-teal-700 border-teal-200',
+      FILE: 'bg-pink-100 text-pink-700 border-pink-200',
+      MASTER_DATA: 'bg-indigo-100 text-indigo-700 border-indigo-200',
     };
-    return colors[type] || 'bg-gray-100 text-gray-800';
+    return colors[type] || 'bg-slate-100 text-slate-600 border-slate-200';
+  };
+
+  // Sort options
+  const sortOptions = [
+    { id: 'labelTh-asc', field: 'labelTh', label: 'ชื่อ A-Z', direction: 'asc' as const },
+    { id: 'labelTh-desc', field: 'labelTh', label: 'ชื่อ Z-A', direction: 'desc' as const },
+    { id: 'fieldType-asc', field: 'fieldType', label: 'ประเภท A-Z', direction: 'asc' as const },
+    { id: 'fieldType-desc', field: 'fieldType', label: 'ประเภท Z-A', direction: 'desc' as const },
+  ];
+
+  // Filter & Sort & Paginate
+  // หมายเหตุ: KPI คำนวณจาก `fields` (System State - ข้อมูลทั้งหมด) — ไม่ถูกกระทบโดย filter
+  // แต่ Table คำนวณจาก `filteredAndSortedFields` (ผ่าน filter/sort แล้ว)
+  const filteredAndSortedFields = useMemo(() => {
+    let result = [...fields];
+
+    // View filter (ทำฝั่ง client — ไม่กระทบ KPI เพราะ KPI ใช้ `fields` ทั้งหมด)
+    if (view === 'active') {
+      result = result.filter(f => f.isActive);
+    } else if (view === 'inactive') {
+      result = result.filter(f => !f.isActive);
+    }
+
+    if (search.trim()) {
+      const s = search.toLowerCase();
+      result = result.filter(f =>
+        f.labelTh.toLowerCase().includes(s) ||
+        f.fieldType.toLowerCase().includes(s) ||
+        (f.section?.toLowerCase().includes(s))
+      );
+    }
+
+    result.sort((a, b) => {
+      let aVal: any, bVal: any;
+      if (sortField === 'labelTh') {
+        aVal = a.labelTh.toLowerCase();
+        bVal = b.labelTh.toLowerCase();
+      } else if (sortField === 'fieldType') {
+        aVal = a.fieldType.toLowerCase();
+        bVal = b.fieldType.toLowerCase();
+      } else {
+        return 0;
+      }
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    return result;
+  }, [fields, view, search, sortField, sortDirection]);
+
+  const totalItems = filteredAndSortedFields.length;
+  const paginatedFields = filteredAndSortedFields.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  );
+
+  const totalFields = fields.length;
+  const activeFields = fields.filter(f => f.isActive).length;
+  const inactiveFields = fields.filter(f => !f.isActive).length;
+
+  const viewCounts = {
+    all: totalFields,
+    active: activeFields,
+    inactive: inactiveFields,
   };
 
   return (
-    <div className="p-4 md:p-8 space-y-6">
-      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
-        <h1 className="text-2xl font-bold">Field Master (คลังฟิลด์)</h1>
-        <Button onClick={openCreate}>
-          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          เพิ่ม Field ใหม่
+    <div className="p-4 md:p-6 space-y-3">
+      {/* ============================================ */}
+      {/* 1. PAGE HEADER */}
+      {/* ============================================ */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">🧩</span>
+          <div>
+            <h1 className="text-lg font-bold text-slate-900 leading-tight">คลังฟิลด์ (Field Library)</h1>
+            <p className="text-[11px] text-slate-500">จัดการฟิลด์ที่ใช้ซ้ำได้ในแบบฟอร์มทั้งหมดในระบบ</p>
+          </div>
+        </div>
+        <Button onClick={openCreate} size="sm" className="h-8">
+          + เพิ่ม Field ใหม่
         </Button>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        {FIELD_TYPE_OPTIONS.slice(0, 5).map((opt) => {
-          const count = fields.filter(f => f.fieldType === opt.value).length;
-          return (
-            <Card key={opt.value} className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => {}}>
-              <CardContent className="p-4 text-center">
-                <p className="text-2xl font-bold">{count}</p>
-                <p className="text-xs text-gray-500 truncate">{opt.value}</p>
-              </CardContent>
-            </Card>
-          );
-        })}
+      {/* ============================================ */}
+      {/* 2. KPI CARDS - Ultra Compact */}
+      {/* ============================================ */}
+      <div className="grid grid-cols-3 gap-2">
+        <KpiCard icon="📊" value={totalFields} label="ทั้งหมด" />
+        <KpiCard icon="✅" value={activeFields} label="ใช้งานอยู่" variant="success" />
+        <KpiCard icon="⏸" value={inactiveFields} label="ปิดใช้งาน" variant="muted" />
       </div>
 
-      <div className="border rounded-lg bg-white overflow-hidden">
+      {/* ============================================ */}
+      {/* 3. CONTENT CARD - Smart Family Style */}
+      {/* ============================================ */}
+      <div className={cn(CARD_STYLE.container, "overflow-hidden")}>
+        {/* 3.1 UNIFIED TOOLBAR */}
+        <div className={cn(CARD_STYLE.header, "flex flex-col gap-2")}>
+          {/* Row 1: Search + Sort */}
+          <div className="flex items-center gap-2">
+            <div className="flex-1 min-w-0">
+              <SearchInput
+                value={search}
+                onChange={setSearch}
+                placeholder="ค้นหาชื่อฟิลด์, ประเภท, section..."
+                resultCount={totalItems}
+                resultLabel="รายการ"
+                size="sm"
+                hideResultCount
+              />
+            </div>
+            <SortDropdown
+              value={sortId}
+              onChange={(id, field, direction) => {
+                setSortId(id);
+                setSortField(field);
+                if (direction) setSortDirection(direction);
+              }}
+              options={sortOptions}
+              size="sm"
+            />
+          </div>
+
+          {/* Row 2: Filter Pills + Result Count */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1">
+              <FilterPill label="ทั้งหมด" isActive={view === 'all'} onClick={() => setView('all')} count={viewCounts.all} />
+              <FilterPill label="ใช้งานอยู่" isActive={view === 'active'} onClick={() => setView('active')} count={viewCounts.active} />
+              <FilterPill label="ปิดใช้งาน" isActive={view === 'inactive'} onClick={() => setView('inactive')} count={viewCounts.inactive} />
+            </div>
+            <span className="text-[11px] text-slate-500 whitespace-nowrap">
+              {search.trim() ? `พบทั้งหมด ${totalItems} รายการ` : `ทั้งหมด ${totalItems} รายการ`}
+            </span>
+          </div>
+        </div>
+
+        {/* 3.2 TABLE */}
         <div className="overflow-x-auto">
-          <Table>
-            <TableHeader className="bg-gray-50">
-              <TableRow>
-                <TableHead>Label (TH)</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Validation</TableHead>
-                <TableHead>Section</TableHead>
-                <TableHead>สถานะ</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+          <Table className="w-full table-fixed">
+            <TableHeader>
+              <TableRow className="bg-slate-50/50 hover:bg-slate-50/50">
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 w-[30%]">ชื่อฟิลด์</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden sm:table-cell w-[12%]">ประเภท</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden md:table-cell w-[15%]">Validation</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden lg:table-cell w-[18%]">Section</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 w-[10%]">สถานะ</TableHead>
+                <TableHead className="h-10 text-[11px] font-medium text-slate-600 text-right w-[5%]">จัดการ</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-12">
-                    <div className="flex items-center justify-center gap-2">
-                      <svg className="animate-spin h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24">
+                  <TableCell colSpan={6} className="text-center py-8">
+                    <div className="flex items-center justify-center gap-2 text-slate-500">
+                      <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                       </svg>
-                      <span className="text-gray-500">กำลังโหลด...</span>
+                      <span className="text-xs">กำลังโหลด...</span>
                     </div>
                   </TableCell>
                 </TableRow>
-              ) : fields.length === 0 ? (
+              ) : filteredAndSortedFields.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-12 text-gray-500">
-                    ยังไม่มี Field
+                  <TableCell colSpan={6} className="py-0">
+                    {/* ถ้ามี search หรือ filter (ที่ไม่ใช่ all) → ไม่พบผลลัพธ์ */}
+                    {search || view !== 'all' ? (
+                      <NoResultsEmptyState
+                        keyword={search}
+                        onClearFilters={() => {
+                          setSearch('');
+                          setView('all');
+                        }}
+                      />
+                    ) : (
+                      <NoDataEmptyState
+                        title="ยังไม่มี Field"
+                        description="เริ่มต้นโดยการเพิ่ม Field ใหม่"
+                        action={{ label: '+ เพิ่ม Field ใหม่', onClick: openCreate, variant: 'primary' }}
+                      />
+                    )}
                   </TableCell>
                 </TableRow>
               ) : (
-                fields.map((field) => (
-                  <TableRow key={field.id} className="hover:bg-gray-50 transition-colors">
-                    <TableCell>
-                      <div>
-                        <p className="font-medium">{field.labelTh}</p>
+                paginatedFields.map((field) => (
+                  <TableRow key={field.id} className="group">
+                    {/* Label (TH) */}
+                    <TableCell className="py-3 align-top">
+                      <div className="flex flex-col gap-1 min-w-0">
+                        <div
+                          className="font-medium text-sm text-slate-900 leading-snug line-clamp-2"
+                          title={field.labelTh}
+                        >
+                          {field.labelTh}
+                        </div>
                         {field.helpText && (
-                          <p className="text-xs text-gray-500 mt-1 truncate max-w-xs">{field.helpText}</p>
+                          <div className="text-[11px] text-slate-500 line-clamp-1" title={field.helpText}>
+                            {field.helpText}
+                          </div>
                         )}
                       </div>
                     </TableCell>
-                    <TableCell>
-                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${getTypeBadgeColor(field.fieldType)}`}>
-                        {field.fieldType}
-                      </span>
-                      {field.fieldType === 'FILE' && field.fileConfig && (
-                        <p className="text-xs text-gray-500 mt-1">
-                          {typeof field.fileConfig === 'object' 
-                            ? `${field.fileConfig.maxFiles || 1} ไฟล์ • ${field.fileConfig.maxSizeMB || 10}MB`
-                            : 'ตั้งค่าแล้ว'}
-                        </p>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {field.validationType && field.validationType !== 'NONE' ? (
-                        <Badge variant="outline" className="text-orange-600 border-orange-200">
-                          {VALIDATION_TYPE_OPTIONS.find(v => v.value === field.validationType)?.label}
-                        </Badge>
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {field.section ? (
-                        <Badge variant="outline">{field.section}</Badge>
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={field.isActive ? 'default' : 'secondary'}>
-                        {field.isActive ? 'ใช้งาน' : 'ปิดใช้งาน'}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex gap-2 justify-end">
-                        <Button variant="outline" size="sm" onClick={() => openEdit(field)}>
-                          แก้ไข
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteClick(field)}
-                          disabled={!field.isActive}
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                        >
-                          ลบ
-                        </Button>
+
+                    {/* Type */}
+                    <TableCell className="py-3 hidden sm:table-cell align-top">
+                      <div className="flex flex-col gap-1">
+                        <span className={cn(
+                          "inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border w-fit",
+                          getTypeBadgeColor(field.fieldType)
+                        )}>
+                          {field.fieldType}
+                        </span>
+                        {field.fieldType === 'FILE' && field.fileConfig && (
+                          <span className="text-[10px] text-slate-500">
+                            {typeof field.fileConfig === 'object'
+                              ? `${field.fileConfig.maxFiles || 1} ไฟล์ • ${field.fileConfig.maxSizeMB || 10}MB`
+                              : 'ตั้งค่าแล้ว'}
+                          </span>
+                        )}
                       </div>
+                    </TableCell>
+
+                    {/* Validation */}
+                    <TableCell className="py-3 text-xs text-slate-500 hidden md:table-cell align-top">
+                      {field.validationType && field.validationType !== 'NONE' ? (
+                        <span className="text-orange-600 text-[11px] font-medium">
+                          {VALIDATION_TYPE_OPTIONS.find(v => v.value === field.validationType)?.label}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">-</span>
+                      )}
+                    </TableCell>
+
+                    {/* Section */}
+                    <TableCell className="py-3 text-xs text-slate-500 hidden lg:table-cell align-top">
+                      {field.section ? (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border bg-slate-50 text-slate-700 border-slate-200">
+                          {field.section}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">-</span>
+                      )}
+                    </TableCell>
+
+                    {/* Status */}
+                    <TableCell className="py-3 align-top">
+                      <span className={cn(
+                        "inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border whitespace-nowrap",
+                        field.isActive
+                          ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+                          : "bg-slate-100 text-slate-600 border-slate-200"
+                      )}>
+                        {field.isActive ? 'ใช้งาน' : 'ปิดใช้งาน'}
+                      </span>
+                    </TableCell>
+
+                    {/* Actions - ⋮ only */}
+                    <TableCell className="py-3 text-right align-top">
+                      <ActionMenu
+                        size="sm"
+                        items={[
+                          { label: '✏️ แก้ไข', onClick: () => openEdit(field) },
+                          ...(field.isActive
+                            ? [{ label: '🗑 ลบ (Soft Delete)', type: 'danger' as const, onClick: () => handleDeleteClick(field) }]
+                            : []
+                          ),
+                        ]}
+                      />
                     </TableCell>
                   </TableRow>
                 ))
@@ -457,19 +706,36 @@ export default function FieldMasterPage() {
             </TableBody>
           </Table>
         </div>
+
+        {/* 3.3 PAGINATION */}
+        <div className={cn(CARD_STYLE.header, "flex items-center justify-between")}>
+          <span className="text-[11px] text-slate-500">
+            {search.trim() ? `พบ ${totalItems} รายการ` : `แสดง ${paginatedFields.length} จาก ${totalItems}`}
+          </span>
+          <Pagination
+            currentPage={currentPage}
+            totalItems={totalItems}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            showPageSizeSelector={false}
+            showResultCount={false}
+          />
+        </div>
       </div>
 
-      {/* Form Dialog */}
+      {/* ============================================ */}
+      {/* 4. FORM DIALOG */}
+      {/* ============================================ */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editing ? 'แก้ไข Field' : 'เพิ่ม Field ใหม่'}</DialogTitle>
+            <DialogTitle>{editing ? '✏️ แก้ไข Field' : '➕ เพิ่ม Field ใหม่'}</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-6">
             {/* Basic Info */}
             <div className="space-y-4">
               <h3 className="font-medium text-gray-800 border-b pb-2">ข้อมูลพื้นฐาน</h3>
-              
+
               <div className="space-y-2">
                 <Label htmlFor="fieldType">ประเภทฟิลด์ *</Label>
                 <Select
@@ -569,7 +835,7 @@ export default function FieldMasterPage() {
             {form.fieldType === 'FILE' && (
               <div className="space-y-4">
                 <h3 className="font-medium text-gray-800 border-b pb-2">การตั้งค่าไฟล์</h3>
-                
+
                 <div className="space-y-2">
                   <Label>ประเภทไฟล์ที่อนุญาต</Label>
                   <div className="flex flex-wrap gap-3">
@@ -621,7 +887,7 @@ export default function FieldMasterPage() {
             {/* Help & Placeholder */}
             <div className="space-y-4">
               <h3 className="font-medium text-gray-800 border-b pb-2">ข้อความช่วยเหลือ</h3>
-              
+
               <div className="space-y-2">
                 <Label htmlFor="helpText">ข้อความอธิบาย (Help Text)</Label>
                 <Input
@@ -648,7 +914,7 @@ export default function FieldMasterPage() {
             {/* Validation Section */}
             <div className="space-y-4">
               <h3 className="font-medium text-gray-800 border-b pb-2">การตรวจสอบข้อมูล</h3>
-              
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="validationType">ประเภทการตรวจสอบ</Label>
@@ -665,7 +931,7 @@ export default function FieldMasterPage() {
                     ))}
                   </Select>
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label htmlFor="validationMessage">ข้อความแจ้งเตือน</Label>
                   <Input
@@ -732,7 +998,7 @@ export default function FieldMasterPage() {
           <DialogHeader>
             <DialogTitle>ผลกระทบจากการลบ Field</DialogTitle>
           </DialogHeader>
-          
+
           {impactLoading ? (
             <div className="flex items-center justify-center py-8">
               <div className="flex items-center gap-2 text-gray-500">
@@ -823,9 +1089,14 @@ export default function FieldMasterPage() {
                               <span>{v.templateName}</span>
                             </div>
                             <div className="flex items-center gap-2">
-                              <Badge variant={v.status === 'PUBLISHED' ? 'default' : 'secondary'} className="text-xs">
+                              <span className={cn(
+                                "inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border",
+                                v.status === 'PUBLISHED'
+                                  ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+                                  : "bg-amber-100 text-amber-700 border-amber-200"
+                              )}>
                                 v{v.versionNumber} ({v.status})
-                              </Badge>
+                              </span>
                             </div>
                           </div>
                         ))}
@@ -844,9 +1115,14 @@ export default function FieldMasterPage() {
                               <span className="text-gray-600">📌</span>
                               <span>{r.title}</span>
                             </div>
-                            <Badge variant={r.status === 'ACTIVE' ? 'default' : 'secondary'} className="text-xs">
+                            <span className={cn(
+                              "inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border",
+                              r.status === 'ACTIVE'
+                                ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+                                : "bg-slate-100 text-slate-600 border-slate-200"
+                            )}>
                               {r.status}
-                            </Badge>
+                            </span>
                           </div>
                         ))}
                       </div>
@@ -856,7 +1132,7 @@ export default function FieldMasterPage() {
                   {/* Alternative: Deactivate */}
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                     <p className="text-sm text-gray-700">
-                      <strong>ทางเลือก:</strong> หากต้องการให้ Field นี้ไม่ปรากฏใน Form Builder ใหม่ 
+                      <strong>ทางเลือก:</strong> หากต้องการให้ Field นี้ไม่ปรากฏใน Form Builder ใหม่
                       สามารถตั้งค่าเป็น "ปิดใช้งาน" แทนการลบ
                     </p>
                     <p className="text-xs text-gray-500 mt-2">
@@ -867,7 +1143,7 @@ export default function FieldMasterPage() {
               )}
             </div>
           ) : null}
-          
+
           <DialogFooter>
             <Button variant="outline" onClick={() => {
               setImpactModalOpen(false);
@@ -876,8 +1152,8 @@ export default function FieldMasterPage() {
               ปิด
             </Button>
             {impactData?.canDelete && (
-              <Button 
-                variant="destructive" 
+              <Button
+                variant="destructive"
                 onClick={handleDelete}
                 disabled={submitting}
               >
