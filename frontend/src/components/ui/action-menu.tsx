@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { createPortal } from 'react-dom';
 import { cn } from '@/lib/utils';
 
 export interface ActionMenuItem {
@@ -39,6 +40,22 @@ export interface ActionMenuProps {
   className?: string;
 }
 
+/** ระยะห่างจาก trigger (px) */
+const MENU_OFFSET = 4;
+/** ความสูงโดยประมาณของแต่ละ item (px) */
+const ESTIMATED_ITEM_HEIGHT = 36;
+/** ความกว้างขั้นต่ำของเมนู (px) */
+const MENU_MIN_WIDTH = 160;
+/** ความสูงขั้นต่ำของเมนู (px) — กัน false positive flip เมื่อเมนูสั้น */
+const MIN_MENU_HEIGHT = 80;
+
+interface MenuPosition {
+  top: number;
+  left: number;
+  width: number;
+  direction: 'down' | 'up';
+}
+
 export function ActionMenu({
   items,
   align = 'right',
@@ -51,36 +68,197 @@ export function ActionMenu({
   className,
 }: ActionMenuProps) {
   const [isOpen, setIsOpen] = React.useState(false);
+  const [mounted, setMounted] = React.useState(false);
+
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
   const menuRef = React.useRef<HTMLDivElement>(null);
 
-  // Close on click outside
+  // ใช้ state ที่มี initial value เพื่อ break deadlock
+  // คำนวณครั้งแรกตอนเปิด (sync) เพื่อให้ render แรกมี position พร้อมเลย
+  const [menuPosition, setMenuPosition] = React.useState<MenuPosition | null>(null);
+
+  // ติดตามการ mount
   React.useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    setMounted(true);
   }, []);
 
-  // Close on Escape
+  /**
+   * คำนวณตำแหน่งจาก trigger + estimated menu size (ไม่ต้องการ menu DOM)
+   * ใช้สำหรับ initial render เพื่อ break deadlock
+   */
+  const computeInitialPosition = React.useCallback((): MenuPosition | null => {
+    const trigger = triggerRef.current;
+    if (!trigger) return null;
+
+    const triggerRect = trigger.getBoundingClientRect();
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
+
+    // ใช้ estimated size (ไม่ต้องวัด DOM)
+    const nonSeparatorCount = items.filter(i => i.type !== 'separator').length;
+    const estimatedMenuHeight = Math.max(
+      nonSeparatorCount * ESTIMATED_ITEM_HEIGHT + 8, // +8 for padding
+      MIN_MENU_HEIGHT
+    );
+    const menuWidth = MENU_MIN_WIDTH;
+
+    // พื้นที่ที่มีให้เปิดลง/ขึ้น
+    const spaceBelow = viewportHeight - triggerRect.bottom - MENU_OFFSET;
+    const spaceAbove = triggerRect.top - MENU_OFFSET;
+
+    // ตัดสินใจ flip
+    const direction: 'down' | 'up' =
+      spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow ? 'up' : 'down';
+
+    let top: number;
+    if (direction === 'down') {
+      top = triggerRect.bottom + MENU_OFFSET;
+    } else {
+      top = triggerRect.top - estimatedMenuHeight - MENU_OFFSET;
+    }
+
+    let left: number;
+    if (align === 'right') {
+      left = triggerRect.right - menuWidth;
+    } else {
+      left = triggerRect.left;
+    }
+
+    // กันเมนูล้น viewport
+    const overflowRight = (left + menuWidth) - viewportWidth;
+    if (overflowRight > 0) left = left - overflowRight - 8;
+    if (left < 8) left = 8;
+
+    return { top, left, width: menuWidth, direction };
+  }, [align, items]);
+
+  /**
+   * คำนวณตำแหน่งแบบ real (ใช้ measured menu size)
+   * รันหลังจาก render เพื่อ refine ตำแหน่ง
+   */
+  const refinePosition = React.useCallback(() => {
+    const trigger = triggerRef.current;
+    const menu = menuRef.current;
+    if (!trigger || !menu) return;
+
+    const triggerRect = trigger.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
+
+    const menuHeight = menuRect.height;
+    const menuWidth = menuRect.width;
+
+    const spaceBelow = viewportHeight - triggerRect.bottom - MENU_OFFSET;
+    const spaceAbove = triggerRect.top - MENU_OFFSET;
+
+    const direction: 'down' | 'up' =
+      spaceBelow < Math.max(menuHeight, MIN_MENU_HEIGHT) && spaceAbove > spaceBelow
+        ? 'up'
+        : 'down';
+
+    let top: number;
+    if (direction === 'down') {
+      top = triggerRect.bottom + MENU_OFFSET;
+    } else {
+      top = triggerRect.top - menuHeight - MENU_OFFSET;
+    }
+
+    let left: number;
+    if (align === 'right') {
+      left = triggerRect.right - menuWidth;
+    } else {
+      left = triggerRect.left;
+    }
+
+    const overflowRight = (left + menuWidth) - viewportWidth;
+    if (overflowRight > 0) left = left - overflowRight - 8;
+    if (left < 8) left = 8;
+
+    setMenuPosition({ top, left, width: menuWidth, direction });
+  }, [align]);
+
+  /**
+   * เมื่อเปิดเมนู:
+   * 1. คำนวณ initial position sync (ก่อน paint) เพื่อให้ render แรกมี position
+   * 2. หลัง render แล้ว refine ด้วย measured size
+   *
+   * ใช้ useLayoutEffect เพื่อให้ position ถูก set ก่อน browser paint
+   * →ไม่มี flicker (menu ปรากฏในตำแหน่งที่ถูกตั้งแต่ render แรก)
+   */
+  const useIsomorphicLayoutEffect =
+    typeof window !== 'undefined' ? React.useLayoutEffect : React.useEffect;
+
+  useIsomorphicLayoutEffect(() => {
+    if (!isOpen) {
+      setMenuPosition(null);
+      return;
+    }
+
+    // Step 1: คำนวณ initial position ก่อน paint (sync)
+    const initial = computeInitialPosition();
+    if (initial) {
+      setMenuPosition(initial);
+    }
+
+    // Step 2: refine ด้วย measured size หลัง render (rAF)
+    const rafId = requestAnimationFrame(() => {
+      refinePosition();
+    });
+
+    const handleScroll = () => refinePosition();
+    const handleResize = () => refinePosition();
+
+    window.addEventListener('scroll', handleScroll, true);
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [isOpen, computeInitialPosition, refinePosition]);
+
+  // ปิดเมื่อคลิกนอก
   React.useEffect(() => {
+    if (!isOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        triggerRef.current?.contains(target) ||
+        menuRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setIsOpen(false);
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isOpen]);
+
+  // ปิดเมื่อกด Escape
+  React.useEffect(() => {
+    if (!isOpen) return;
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setIsOpen(false);
+        triggerRef.current?.focus();
       }
     };
-    if (isOpen) {
-      document.addEventListener('keydown', handleKeyDown);
-      return () => document.removeEventListener('keydown', handleKeyDown);
-    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
   }, [isOpen]);
 
   const handleItemClick = (item: ActionMenuItem) => {
     if (item.type === 'separator' || item.disabled) return;
-    item.onClick();
+    const callback = item.onClick;
     setIsOpen(false);
+    // ปิดก่อนแล้วค่อยรัน callback (เพื่อให้ UI responsive)
+    callback();
   };
 
   const sizeClasses = {
@@ -92,7 +270,9 @@ export function ActionMenu({
   const getItemClasses = (item: ActionMenuItem) => {
     const baseClasses =
       'w-full px-3 py-2 text-left text-sm flex items-center gap-2 transition-colors';
-    const disabledClasses = item.disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50';
+    const disabledClasses = item.disabled
+      ? 'opacity-50 cursor-not-allowed'
+      : 'hover:bg-gray-50';
     const typeClasses = {
       default: 'text-gray-700',
       danger: 'text-red-600 hover:bg-red-50',
@@ -101,13 +281,71 @@ export function ActionMenu({
     return cn(baseClasses, disabledClasses, typeClasses[item.type || 'default']);
   };
 
+  // Render dropdown ผ่าน portal
+  const renderDropdown = () => {
+    if (!isOpen || !menuPosition || !mounted) return null;
+    return createPortal(
+      <div
+        ref={menuRef}
+        role="menu"
+        aria-orientation="vertical"
+        style={{
+          position: 'fixed',
+          top: menuPosition.top,
+          left: menuPosition.left,
+          width: menuPosition.width,
+          // z-index สูงกว่า Dialog (z-50), Navbar (z-30), Drawer backdrop (z-40), Drawer (z-50)
+          zIndex: 9999,
+        }}
+        className={cn(
+          'rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden',
+          'transition-opacity duration-100',
+          menuClassName
+        )}
+      >
+        <div className="py-1 max-h-[60vh] overflow-y-auto">
+          {items.map((item, index) =>
+            item.type === 'separator' ? (
+              <div
+                key={`sep-${index}`}
+                role="separator"
+                className="border-t border-gray-100 my-1"
+              />
+            ) : (
+              <button
+                key={`item-${index}`}
+                type="button"
+                role="menuitem"
+                onClick={() => handleItemClick(item)}
+                disabled={item.disabled}
+                className={getItemClasses(item)}
+                title={item.title}
+              >
+                {item.icon && <span className="w-4 h-4 shrink-0">{item.icon}</span>}
+                <span className="truncate">{item.label}</span>
+              </button>
+            )
+          )}
+        </div>
+      </div>,
+      document.body
+    );
+  };
+
   return (
-    <div ref={menuRef} className={cn('relative', className)}>
+    <span className={cn('inline-block', className)}>
       {/* Trigger Button */}
       <button
+        ref={triggerRef}
         type="button"
-        onClick={() => !disabled && setIsOpen(!isOpen)}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (disabled) return;
+          setIsOpen((prev) => !prev);
+        }}
         disabled={disabled}
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
         className={cn(
           'inline-flex items-center justify-center rounded-md border border-gray-300 bg-white font-medium transition-colors',
           'hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
@@ -134,40 +372,9 @@ export function ActionMenu({
         )}
       </button>
 
-      {/* Dropdown Menu */}
-      {isOpen && (
-        <div
-          className={cn(
-            'absolute z-50 mt-1 min-w-[160px] rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden',
-            align === 'right' ? 'right-0' : 'left-0',
-            menuClassName
-          )}
-        >
-          <div className="py-1">
-            {items.map((item, index) =>
-              item.type === 'separator' ? (
-                <div
-                  key={`sep-${index}`}
-                  className="border-t border-gray-100 my-1"
-                />
-              ) : (
-                <button
-                  key={index}
-                  type="button"
-                  onClick={() => handleItemClick(item)}
-                  disabled={item.disabled}
-                  className={getItemClasses(item)}
-                  title={item.title}
-                >
-                  {item.icon && <span className="w-4 h-4">{item.icon}</span>}
-                  <span>{item.label}</span>
-                </button>
-              )
-            )}
-          </div>
-        </div>
-      )}
-    </div>
+      {/* Dropdown Menu — render via portal */}
+      {renderDropdown()}
+    </span>
   );
 }
 
