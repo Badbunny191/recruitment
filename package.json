@@ -9,7 +9,8 @@
     "build": "npm run build:backend && npm run build:frontend",
     "build:backend": "cd backend && npm run build || true",
     "build:frontend": "cd frontend && npm run build",
-    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install"
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
+    "migration:check": "node scripts/check-migrations.js"
   },
   "devDependencies": {
     "concurrently": "^8.2.0"
