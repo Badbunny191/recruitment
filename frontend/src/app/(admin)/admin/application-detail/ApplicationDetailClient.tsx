@@ -328,7 +328,7 @@ export default function ApplicationDetailClient() {
         </Card>
       )}
 
-      {/* Personal Info Card */}
+      {/* Personal Info Card - Template-driven */}
       <Card>
         <CardHeader className="bg-gray-50 border-b">
           <CardTitle className="flex items-center gap-2">
@@ -339,20 +339,68 @@ export default function ApplicationDetailClient() {
           </CardTitle>
         </CardHeader>
         <CardContent className="p-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-gray-50 rounded-lg p-4">
-              <p className="text-sm text-gray-500 mb-1">ชื่อ-นามสกุล</p>
-              <p className="font-semibold text-lg">{app.fullname}</p>
-            </div>
-            <div className="bg-gray-50 rounded-lg p-4">
-              <p className="text-sm text-gray-500 mb-1">อีเมล</p>
-              <p className="font-medium">{app.email}</p>
-            </div>
-            <div className="bg-gray-50 rounded-lg p-4">
-              <p className="text-sm text-gray-500 mb-1">เลขบัตรประชาชน</p>
-              <p className="font-medium">{app.nationalId}</p>
-            </div>
-          </div>
+          {(() => {
+            const parsedFormData = parseFormData(app.formData);
+            
+            // Extract core fields from formData based on template schema
+            // field-email → email, field-fullname → fullname, etc.
+            const coreFieldMappings: Record<string, string> = {
+              'field-email': 'email',
+              'field-fullname': 'fullname',
+              'field-national-id': 'nationalId',
+              'field-phone': 'phone',
+            };
+            
+            // Find which core fields exist in template schema
+            const coreFieldsInTemplate = app.schema?.filter(f => 
+              Object.keys(coreFieldMappings).includes(f.fieldId)
+            ) || [];
+            
+            // If no core fields in template, fall back to legacy root columns
+            if (coreFieldsInTemplate.length === 0) {
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    <p className="text-sm text-gray-500 mb-1">ชื่อ-นามสกุล</p>
+                    <p className="font-semibold text-lg">{app.fullname || '-'}</p>
+                  </div>
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    <p className="text-sm text-gray-500 mb-1">อีเมล</p>
+                    <p className="font-medium">{app.email || '-'}</p>
+                  </div>
+                  {app.nationalId && (
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <p className="text-sm text-gray-500 mb-1">เลขบัตรประชาชน</p>
+                      <p className="font-medium">{app.nationalId}</p>
+                    </div>
+                  )}
+                </div>
+              );
+            }
+            
+            // Template-driven: render core fields from formData + schema
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {coreFieldsInTemplate.map(field => {
+                  const legacyKey = coreFieldMappings[field.fieldId];
+                  const legacyValue = legacyKey ? (app as any)[legacyKey] : null;
+                  const formDataValue = parsedFormData[field.fieldId];
+                  const displayValue = formDataValue || legacyValue || '-';
+                  
+                  return (
+                    <div key={field.fieldId} className="bg-gray-50 rounded-lg p-4">
+                      <p className="text-sm text-gray-500 mb-1">
+                        {field.overrideLabel || field.label}
+                      </p>
+                      <p className="font-semibold text-lg">
+                        {typeof displayValue === 'boolean' ? (displayValue ? 'ตกลง' : 'ไม่ตกลง') : displayValue}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </CardContent>
       </Card>
 

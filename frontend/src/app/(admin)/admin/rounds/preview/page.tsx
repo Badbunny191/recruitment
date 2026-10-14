@@ -643,7 +643,8 @@ function AdminPreviewInner() {
               </div>
             )}
 
-            {/* Disabled consent block removed - Dynamic Template is the source of truth. */}
+            {/* Consent fields removed - Dynamic Template is the source of truth.
+                If the template needs a consent checkbox, add a CHECKBOX field via Template Builder. */}
 
             <Button
               type="submit"

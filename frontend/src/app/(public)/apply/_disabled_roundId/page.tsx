@@ -141,8 +141,7 @@ function FormInner() {
               </div>
             )}
 
-            {/* Consent section removed - Dynamic Template is the source of truth. */}
-
+            {/* Submit Button */}
             <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 h-12 text-lg" disabled={isSubmitting}>
               {isSubmitting ? 'กำลังส่งข้อมูล...' : 'ยืนยันการส่งใบสมัคร'}
             </Button>

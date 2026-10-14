@@ -866,10 +866,9 @@ function FormInner() {
               </div>
             )}
 
-            {/* Consent Section removed - Dynamic Template is the source of truth.
-                If the template needs a consent checkbox, add a CHECKBOX field
-                via Template Builder. Hardcoded block deleted to prevent duplicates. */}
-
+            {/* Consent fields removed - Dynamic Template is the source of truth.
+                If the template needs a consent checkbox, add a CHECKBOX field via Template Builder. */}
+            {/* Submit Button */}
             <Button 
               type="submit" 
               className="w-full bg-blue-600 hover:bg-blue-700 h-12 text-lg"

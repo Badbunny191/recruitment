@@ -14,6 +14,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ViewVersionModal } from '@/components/ViewVersionModal';
 import { CompareVersionModal } from '@/components/CompareVersionModal';
 import { TemplatePreviewModal } from '@/components/TemplatePreviewModal';
+import { FieldSortableItem } from '@/components/FieldSortableItem';
+import { SectionFieldList } from '@/components/SectionFieldList';
 
 interface MasterField {
   id: string;
@@ -45,6 +47,7 @@ interface VersionField {
   overrideOptions: string[] | null;
   helpText: string | null;
   placeholder: string | null;
+  validationMessage: string | null;
   validationRules: Record<string, any> | null;
   // Rich Field Metadata
   rows: number | null;
@@ -60,6 +63,7 @@ interface BuilderField {
   overrideOptionsText: string;
   helpText: string;
   placeholder: string;
+  validationMessage: string;
   validationRulesText: string;
   // Rich Field Metadata
   rows: string;
@@ -69,8 +73,9 @@ interface BuilderField {
   fieldType?: string;
   label?: string;
   defaultOptions?: string[] | null;
-  helpTextOriginal?: string;
-  placeholderOriginal?: string;
+  helpTextMaster?: string;
+  placeholderMaster?: string;
+  validationMessageMaster?: string;
   validationTypeOriginal?: string;
   // Sprint 4
   sectionId: string | null;
@@ -117,6 +122,47 @@ const StatusBadge = ({ status }: { status: string }) => {
   }
 };
 
+/**
+ * OverrideStatusBadge
+ * -------------------
+ * แสดงสถานะ "ใช้ค่าเริ่มต้น" vs "กำหนดค่าเอง" สำหรับ Help Text / Placeholder / Validation Message
+ *
+ * Logic:
+ *   - ถ้า currentValue เท่ากับ masterValue (ทั้งคู่ว่าง หรือเหมือนกัน) → ✅ ใช้ค่าเริ่มต้น (เขียว)
+ *   - ถ้า currentValue ต่างจาก masterValue → 🟠 กำหนดค่าเอง (ส้ม)
+ *
+ * Tooltip (HTML title):
+ *   - "ใช้ค่าเริ่มต้น" → "ใช้ค่าที่กำหนดไว้จากคลังคำถาม"
+ *   - "กำหนดค่าเอง" → "ฟิลด์นี้มีการกำหนดค่าเฉพาะสำหรับแบบฟอร์มนี้"
+ */
+const OverrideStatusBadge = ({
+  currentValue,
+  masterValue,
+}: {
+  currentValue: string;
+  masterValue: string;
+}) => {
+  const isUsingDefault = (currentValue || '') === (masterValue || '');
+  if (isUsingDefault) {
+    return (
+      <p
+        className="text-[10px] text-green-700 mt-0.5"
+        title="ใช้ค่าที่กำหนดไว้จากคลังคำถาม"
+      >
+        ✅ ใช้ค่าเริ่มต้น
+      </p>
+    );
+  }
+  return (
+    <p
+      className="text-[10px] text-orange-600 mt-0.5"
+      title="ฟิลด์นี้มีการกำหนดค่าเฉพาะสำหรับแบบฟอร์มนี้"
+    >
+      🟠 กำหนดค่าเอง
+    </p>
+  );
+};
+
 function BuilderInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -133,6 +179,11 @@ function BuilderInner() {
   const [submitting, setSubmitting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
+
+  // Phase 1: Collapse state for field cards (default = all collapsed)
+  const [expandedFields, setExpandedFields] = useState<Set<string>>(new Set());
+  // Phase 2: Collapse state for Version History (default = collapsed)
+  const [versionHistoryExpanded, setVersionHistoryExpanded] = useState(false);
 
   // View Version Modal
   const [viewModalOpen, setViewModalOpen] = useState(false);
@@ -249,8 +300,10 @@ function BuilderInner() {
             isRequired: vf.isRequired,
             overrideLabelTh: vf.overrideLabelTh || '',
             overrideOptionsText: opts.join('\n'),
-            helpText: vf.helpText || '',
-            placeholder: vf.placeholder || '',
+            // Effective value = override ?? master (เพื่อให้ HR เห็นค่าที่ใช้จริง)
+            helpText: vf.helpText ?? mf?.helpText ?? '',
+            placeholder: vf.placeholder ?? mf?.placeholder ?? '',
+            validationMessage: vf.validationMessage ?? mf?.validationMessage ?? '',
             validationRulesText: vf.validationRules ? JSON.stringify(vf.validationRules) : '',
             rows: vf.rows?.toString() || '',
             minLength: vf.minLength?.toString() || '',
@@ -258,8 +311,10 @@ function BuilderInner() {
             fieldType: mf?.fieldType,
             label: vf.overrideLabelTh || mf?.labelTh || '',
             defaultOptions: parseOptions(mf?.defaultOptions),
-            helpTextOriginal: mf?.helpText,
-            placeholderOriginal: mf?.placeholder,
+            // Master values (เก็บไว้เปรียบเทียบ)
+            helpTextMaster: mf?.helpText,
+            placeholderMaster: mf?.placeholder,
+            validationMessageMaster: mf?.validationMessage,
             validationTypeOriginal: mf?.validationType,
             // Sprint 4
             sectionId: (vf as any).sectionId ?? null,
@@ -316,6 +371,7 @@ function BuilderInner() {
       overrideOptionsText: opts.join('\n'),
       helpText: mf.helpText || '',
       placeholder: mf.placeholder || '',
+      validationMessage: mf.validationMessage || '',
       validationRulesText: '',
       rows: '',
       minLength: '',
@@ -323,8 +379,9 @@ function BuilderInner() {
       fieldType: mf.fieldType,
       label: mf.labelTh,
       defaultOptions: opts,
-      helpTextOriginal: mf.helpText,
-      placeholderOriginal: mf.placeholder,
+      helpTextMaster: mf.helpText,
+      placeholderMaster: mf.placeholder,
+      validationMessageMaster: mf.validationMessage,
       validationTypeOriginal: mf.validationType,
       sectionId,
     });
@@ -377,15 +434,115 @@ function BuilderInner() {
     setHasUnsavedChanges(true);
   };
 
-  const moveField = (index: number, direction: -1 | 1) => {
-    const currentFields = watch('fields');
-    const newIndex = index + direction;
-    if (newIndex < 0 || newIndex >= currentFields.length) return;
-    const current = [...currentFields];
-    [current[index], current[newIndex]] = [current[newIndex], current[index]];
-    const formValues = current.map((f, i) => ({ ...f, displayOrder: i + 1 }));
-    replace(formValues);
+  // Phase 2: Move field within its Section only (per-Section displayOrder)
+  // - sectionIdx: index of section in watchedSections array
+  // - fieldIdxInSection: index of field WITHIN that section (0-based)
+  const moveField = (sectionIdx: number, fieldIdxInSection: number, direction: -1 | 1) => {
+    const section = watchedSections[sectionIdx];
+    if (!section) return;
+
+    // Build section-local list (preserving current global order)
+    const allFields = watch('fields');
+    const sectionFieldIds = allFields
+      .filter((f) => f.sectionId === section.id)
+      .map((f) => f.fieldId);
+
+    const newIdx = fieldIdxInSection + direction;
+    if (newIdx < 0 || newIdx >= sectionFieldIds.length) return;
+
+    // Swap fieldIds within section
+    const reordered = [...sectionFieldIds];
+    [reordered[fieldIdxInSection], reordered[newIdx]] = [reordered[newIdx], reordered[fieldIdxInSection]];
+
+    // Rebuild global array: keep sections in order, replace section's fields with reordered set
+    const byId = new Map(allFields.map((f) => [f.fieldId, f]));
+    const newFields: typeof allFields = [];
+    const used = new Set<string>();
+
+    // Iterate sections in order; for each section, append its fields in section-local order
+    watchedSections.forEach((sec) => {
+      const secFields = sec.id === section.id
+        ? reordered.map((fid) => byId.get(fid)!).filter(Boolean)
+        : allFields.filter((f) => f.sectionId === sec.id);
+      secFields.forEach((f) => {
+        newFields.push(f);
+        used.add(f.fieldId);
+      });
+    });
+
+    // Append any orphaned fields (no section) at the end
+    allFields.forEach((f) => {
+      if (!used.has(f.fieldId) && !f.sectionId) {
+        newFields.push(f);
+      }
+    });
+
+    // Renumber displayOrder globally (sequential 1..N)
+    const renumbered = newFields.map((f, i) => ({ ...f, displayOrder: i + 1 }));
+    replace(renumbered);
     setHasUnsavedChanges(true);
+  };
+
+  // Phase 3: Handle drag & drop reorder within a Section
+  // - sectionIdx: index of section in watchedSections array
+  // - newSectionOrderIds: section-local fieldIds in new order
+  // - Same rebuild logic as moveField, but takes a full section-local order array
+  const handleDragReorder = (sectionIdx: number, newSectionOrderIds: string[]) => {
+    const section = watchedSections[sectionIdx];
+    if (!section) return;
+
+    const allFields = watch('fields');
+    const reordered = newSectionOrderIds;
+
+    // Rebuild global array: keep sections in order, replace section's fields with reordered set
+    const byId = new Map(allFields.map((f) => [f.fieldId, f]));
+    const newFields: typeof allFields = [];
+    const used = new Set<string>();
+
+    watchedSections.forEach((sec) => {
+      const secFields = sec.id === section.id
+        ? reordered.map((fid) => byId.get(fid)!).filter(Boolean)
+        : allFields.filter((f) => f.sectionId === sec.id);
+      secFields.forEach((f) => {
+        newFields.push(f);
+        used.add(f.fieldId);
+      });
+    });
+
+    // Append any orphaned fields (no section) at the end
+    allFields.forEach((f) => {
+      if (!used.has(f.fieldId) && !f.sectionId) {
+        newFields.push(f);
+      }
+    });
+
+    // Renumber displayOrder globally (sequential 1..N)
+    const renumbered = newFields.map((f, i) => ({ ...f, displayOrder: i + 1 }));
+    replace(renumbered);
+    setHasUnsavedChanges(true);
+  };
+
+  // Phase 2: Normalize displayOrder for ALL fields (utility — used after add/remove)
+  const normalizeDisplayOrder = () => {
+    const allFields = watch('fields');
+    const renumbered = allFields.map((f, i) => ({ ...f, displayOrder: i + 1 }));
+    if (renumbered.some((f, i) => f.displayOrder !== allFields[i].displayOrder)) {
+      replace(renumbered);
+      setHasUnsavedChanges(true);
+    }
+  };
+
+  // Phase 1: Toggle field card collapse
+  const toggleFieldExpanded = (fieldId: string) => {
+    setExpandedFields(prev => {
+      const next = new Set(prev);
+      if (next.has(fieldId)) {
+        next.delete(fieldId);
+      } else {
+        next.add(fieldId);
+      }
+      return next;
+    });
   };
 
   // Save as Draft - RFC Phase 2
@@ -427,12 +584,22 @@ function BuilderInner() {
               : null,
             sectionId: f.sectionId || null,
           };
-          if (f.helpText && f.helpText !== f.helpTextOriginal) {
-            fieldData.helpText = f.helpText;
-          }
-          if (f.placeholder && f.placeholder !== f.placeholderOriginal) {
-            fieldData.placeholder = f.placeholder;
-          }
+          // เก็บเฉพาะ "สิ่งที่แตกต่างจาก Master"
+          // - ถ้าค่าที่ HR กรอก "เท่ากับค่า Master" → บันทึกเป็น null (ใช้ค่าเริ่มต้น)
+          // - ถ้าค่าที่ HR กรอก "ต่างจากค่า Master" → บันทึกเป็น override
+          // - ถ้าค่าว่าง → บันทึกเป็น null (ใช้ค่าเริ่มต้น)
+          fieldData.helpText =
+            f.helpText && f.helpText !== (f.helpTextMaster || '')
+              ? f.helpText
+              : null;
+          fieldData.placeholder =
+            f.placeholder && f.placeholder !== (f.placeholderMaster || '')
+              ? f.placeholder
+              : null;
+          fieldData.validationMessage =
+            f.validationMessage && f.validationMessage !== (f.validationMessageMaster || '')
+              ? f.validationMessage
+              : null;
           if (f.validationRulesText) {
             try {
               fieldData.validationRules = JSON.parse(f.validationRulesText);
@@ -867,126 +1034,121 @@ function BuilderInner() {
         </div>
       </div>
 
-      {/* Status Info with Badges */}
-      <div className="bg-blue-50 border border-blue-200 rounded p-4">
-        <div className="flex items-center gap-6 text-sm">
-          <div className="flex items-center gap-2">
-            <span className="text-slate-600">Latest Published:</span>
-            {latestPublished ? (
-              <>
-                <span className="font-medium">v{latestPublished.versionNumber}</span>
-                <StatusBadge status="PUBLISHED" />
-              </>
-            ) : (
-              <span className="text-slate-400">ยังไม่มี Published</span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-slate-600">Current Draft:</span>
-            {latestDraft ? (
-              <>
-                <span className="font-medium">v{latestDraft.versionNumber}</span>
-                <StatusBadge status="DRAFT" />
-              </>
-            ) : (
-              <span className="text-slate-400">ไม่มี Draft</span>
-            )}
-          </div>
-        </div>
-      </div>
+      {/* Phase 4: Status Info Banner — REMOVED (ซ้ำกับ Active Context Banner) */}
 
-      {/* Version History */}
+      {/* Phase 2: Version History — collapsed by default */}
       {versions.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">ประวัติ Version ({versions.length})</CardTitle>
+            <div className="flex items-center justify-between">
+              <div
+                className="flex items-center gap-2 cursor-pointer flex-1"
+                onClick={() => setVersionHistoryExpanded(!versionHistoryExpanded)}
+              >
+                <span className="text-base">📜</span>
+                <CardTitle className="text-base">ประวัติ Version ({versions.length})</CardTitle>
+                <span className="text-slate-400 text-xs ml-1 select-none">{versionHistoryExpanded ? '▲' : '▼'}</span>
+              </div>
+              {!versionHistoryExpanded && (
+                <div className="flex items-center gap-3 text-xs text-slate-600">
+                  {latestDraft && (
+                    <span>Current Draft: <span className="font-medium">v{latestDraft.versionNumber}</span></span>
+                  )}
+                  {latestPublished && (
+                    <span>Latest Published: <span className="font-medium">v{latestPublished.versionNumber}</span></span>
+                  )}
+                </div>
+              )}
+            </div>
           </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {versions
-                .sort((a, b) => b.versionNumber - a.versionNumber)
-                .map((v) => {
-                  const isLatestPublished = latestPublished?.id === v.id;
-                  const isLatestDraft = latestDraft?.id === v.id;
-                  return (
-                    <div key={v.id} className="border rounded-lg p-4 bg-slate-50">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-bold text-lg">v{v.versionNumber}</span>
-                            <StatusBadge status={v.status} />
-                            {isLatestPublished && (
-                              <Badge className="bg-purple-100 text-purple-700 border-purple-300 text-xs">
-                                Latest Published
-                              </Badge>
-                            )}
-                            {isLatestDraft && (
-                              <Badge className="bg-blue-100 text-blue-700 border-blue-300 text-xs">
-                                Current Draft
-                              </Badge>
-                            )}
+          {versionHistoryExpanded && (
+            <CardContent>
+              <div className="space-y-3">
+                {versions
+                  .sort((a, b) => b.versionNumber - a.versionNumber)
+                  .map((v) => {
+                    const isLatestPublished = latestPublished?.id === v.id;
+                    const isLatestDraft = latestDraft?.id === v.id;
+                    return (
+                      <div key={v.id} className="border rounded-lg p-4 bg-slate-50">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-lg">v{v.versionNumber}</span>
+                              <StatusBadge status={v.status} />
+                              {isLatestPublished && (
+                                <Badge className="bg-purple-100 text-purple-700 border-purple-300 text-xs">
+                                  Latest Published
+                                </Badge>
+                              )}
+                              {isLatestDraft && (
+                                <Badge className="bg-blue-100 text-blue-700 border-blue-300 text-xs">
+                                  Current Draft
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="text-xs text-slate-500 mt-1">
+                              {v.status === 'DRAFT' && `สร้างเมื่อ ${formatDate(v.createdAt)}`}
+                              {v.status === 'PUBLISHED' && `เผยแพร่เมื่อ ${formatDate(v.createdAt)}`}
+                              {v.status === 'ARCHIVED' && `เก็บไว้เมื่อ ${formatDate(v.createdAt)}`}
+                            </div>
                           </div>
-                          <div className="text-xs text-slate-500 mt-1">
-                            {v.status === 'DRAFT' && `สร้างเมื่อ ${formatDate(v.createdAt)}`}
-                            {v.status === 'PUBLISHED' && `เผยแพร่เมื่อ ${formatDate(v.createdAt)}`}
-                            {v.status === 'ARCHIVED' && `เก็บไว้เมื่อ ${formatDate(v.createdAt)}`}
+                          <div className="flex gap-2">
+                            {/* View button - all versions */}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openViewModal(v)}
+                            >
+                              View
+                            </Button>
+                            {/* Compare button - all versions */}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                // Find another version to compare with
+                                const otherVersions = versions.filter(vv => vv.id !== v.id);
+                                if (otherVersions.length > 0) {
+                                  openCompareModal(v, otherVersions[0]);
+                                } else {
+                                  alert('ต้องมีอย่างน้อย 2 versions จึงจะเปรียบเทียบได้');
+                                }
+                              }}
+                            >
+                              Compare
+                            </Button>
+                            {/* PUBLISHED: สร้าง Draft ใหม่จาก Published */}
+                            {v.status === 'PUBLISHED' && (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => onCloneVersion(v.id, v.versionNumber)}
+                                disabled={submitting}
+                              >
+                                📝 สร้าง Draft ใหม่
+                              </Button>
+                            )}
+                            {/* DRAFT: Delete เท่านั้น (Publish ทำจาก Edit Mode Banner) */}
+                            {v.status === 'DRAFT' && (
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => onDeleteVersion(v.id, v.versionNumber)}
+                                disabled={submitting}
+                              >
+                                Delete
+                              </Button>
+                            )}
+                            {/* ARCHIVED: View only - no action buttons */}
                           </div>
-                        </div>
-                        <div className="flex gap-2">
-                          {/* View button - all versions */}
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => openViewModal(v)}
-                          >
-                            View
-                          </Button>
-                          {/* Compare button - all versions */}
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              // Find another version to compare with
-                              const otherVersions = versions.filter(vv => vv.id !== v.id);
-                              if (otherVersions.length > 0) {
-                                openCompareModal(v, otherVersions[0]);
-                              } else {
-                                alert('ต้องมีอย่างน้อย 2 versions จึงจะเปรียบเทียบได้');
-                              }
-                            }}
-                          >
-                            Compare
-                          </Button>
-                          {/* PUBLISHED: สร้าง Draft ใหม่จาก Published */}
-                          {v.status === 'PUBLISHED' && (
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => onCloneVersion(v.id, v.versionNumber)}
-                              disabled={submitting}
-                            >
-                              📝 สร้าง Draft ใหม่
-                            </Button>
-                          )}
-                          {/* DRAFT: Delete เท่านั้น (Publish ทำจาก Edit Mode Banner) */}
-                          {v.status === 'DRAFT' && (
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              onClick={() => onDeleteVersion(v.id, v.versionNumber)}
-                              disabled={submitting}
-                            >
-                              Delete
-                            </Button>
-                          )}
-                          {/* ARCHIVED: View only - no action buttons */}
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-            </div>
-          </CardContent>
+                    );
+                  })}
+              </div>
+            </CardContent>
+          )}
         </Card>
       )}
 
@@ -1124,64 +1286,112 @@ function BuilderInner() {
                             ยังไม่มีฟิลด์ใน Section นี้ — คลิก "เพิ่ม" จากคลังคำถาม (จะเพิ่มเข้า Section แรกอัตโนมัติ)
                           </p>
                         ) : (
-                          sectionFields.map(({ f: field, idx: index }) => {
-                            const opts = watchedFields[index]?.defaultOptions;
-                            const hasValidation = watchedFields[index]?.validationTypeOriginal && watchedFields[index]?.validationTypeOriginal !== 'NONE';
-                            return (
-                              <div key={field.fieldId} className="p-4 border rounded bg-white space-y-3">
-                                <div className="flex items-center gap-3">
-                                  <span className="font-bold text-lg w-8">{index + 1}</span>
-                                  <div className="flex-1">
-                                    <div className="font-medium">{field.label}</div>
-                                    <div className="flex items-center gap-2 mt-1">
-                                      <Badge variant="outline" className="text-xs">
-                                        {field.fieldType}
+                          <SectionFieldList
+                            items={sectionFields.map(({ f }) => f.fieldId)}
+                            onReorder={(newOrder) => handleDragReorder(sectionIdx, newOrder)}
+                          >
+                            {(fieldId) => {
+                              const found = sectionFields.find(({ f }) => f.fieldId === fieldId);
+                              if (!found) return null;
+                              const { f: field, idx: globalIdx } = found;
+                              const fieldIdxInSection = sectionFields.findIndex(({ f }) => f.fieldId === fieldId);
+                              const opts = field.defaultOptions;
+                              const hasValidation = field.validationTypeOriginal && field.validationTypeOriginal !== 'NONE';
+                              const isExpanded = expandedFields.has(field.fieldId);
+                              return (
+                                <FieldSortableItem
+                                  key={field.fieldId}
+                                  id={field.fieldId}
+                                  disabled={!isEditMode}
+                                  renderHandle={({ setActivatorNodeRef, attributes, listeners }) => (
+                                    <span
+                                      ref={setActivatorNodeRef}
+                                      {...attributes}
+                                      {...listeners}
+                                      className={`absolute left-1 top-1/2 -translate-y-1/2 z-10 px-1 py-2 text-slate-400 select-none touch-none ${
+                                        isEditMode
+                                          ? 'cursor-grab active:cursor-grabbing hover:text-slate-700'
+                                          : 'cursor-default opacity-50'
+                                      }`}
+                                      title={isEditMode ? 'ลากเพื่อเรียงลำดับ' : undefined}
+                                    >
+                                      ☰
+                                    </span>
+                                  )}
+                                >
+                                  <div className="border rounded bg-white pl-5">
+                                {/* Phase 1: Compact Header (always visible) — ~60-80px */}
+                                <div
+                                  className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-slate-50 ${
+                                    isExpanded ? 'border-b border-slate-200' : ''
+                                  }`}
+                                  onClick={() => toggleFieldExpanded(field.fieldId)}
+                                >
+                                  <span className="font-medium text-slate-500 w-6 text-center">{fieldIdxInSection + 1}.</span>
+                                  <span className="font-medium text-sm flex-1 truncate">{field.label}</span>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <Badge variant="outline" className="text-[10px]">
+                                      {field.fieldType}
+                                    </Badge>
+                                    {hasValidation && (
+                                      <Badge variant="outline" className="text-[10px] text-orange-600 border-orange-200">
+                                        {field.validationTypeOriginal}
                                       </Badge>
-                                      {hasValidation && (
-                                        <Badge variant="outline" className="text-xs text-orange-600 border-orange-200">
-                                          {watchedFields[index].validationTypeOriginal}
-                                        </Badge>
-                                      )}
-                                    </div>
-                                  </div>
-                                  <div className="flex gap-1">
-                                    {isEditMode && (
-                                      <>
-                                        <Button
-                                          type="button"
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={() => moveField(index, -1)}
-                                          disabled={index === 0}
-                                        >
-                                          ↑
-                                        </Button>
-                                        <Button
-                                          type="button"
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={() => moveField(index, 1)}
-                                          disabled={index === fields.length - 1}
-                                        >
-                                          ↓
-                                        </Button>
-                                        <Button
-                                          type="button"
-                                          variant="destructive"
-                                          size="sm"
-                                          onClick={() => remove(index)}
-                                        >
-                                          ลบ
-                                        </Button>
-                                      </>
+                                    )}
+                                    {field.isRequired ? (
+                                      <Badge variant="outline" className="text-[10px] text-red-600 border-red-200 bg-red-50">
+                                        Required
+                                      </Badge>
+                                    ) : (
+                                      <Badge variant="outline" className="text-[10px] text-slate-500 border-slate-200">
+                                        Optional
+                                      </Badge>
                                     )}
                                   </div>
+                                  {isEditMode && (
+                                    <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => moveField(sectionIdx, fieldIdxInSection, -1)}
+                                        disabled={fieldIdxInSection === 0}
+                                        className="h-7 w-7 p-0"
+                                      >
+                                        ↑
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => moveField(sectionIdx, fieldIdxInSection, 1)}
+                                        disabled={fieldIdxInSection === sectionFields.length - 1}
+                                        className="h-7 w-7 p-0"
+                                      >
+                                        ↓
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        variant="destructive"
+                                        size="sm"
+                                        onClick={() => remove(globalIdx)}
+                                        className="h-7"
+                                      >
+                                        ลบ
+                                      </Button>
+                                    </div>
+                                  )}
+                                  <span className="text-slate-400 ml-1 select-none">{isExpanded ? '▲' : '▼'}</span>
                                 </div>
-                                <div className="grid grid-cols-2 gap-3 pl-11">
+
+                                {/* Phase 1: Expanded body (only when clicked) */}
+                                {isExpanded && (
+                                <div className="p-3 space-y-3">
+                                <div className="grid grid-cols-2 gap-3">
                                   <div className="space-y-1 col-span-2">
                                     <Label className="text-xs">Section (ไม่บังคับ - เปลี่ยน Section ของ Field นี้)</Label>
                                     <select
-                                      {...register(`fields.${index}.sectionId`)}
+                                      {...register(`fields.${globalIdx}.sectionId`)}
                                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                                     >
                                       <option value="">— ไม่มี Section —</option>
@@ -1193,7 +1403,7 @@ function BuilderInner() {
                                   <div className="space-y-1 col-span-2">
                                     <Label className="text-xs">คำถามใหม่ (ไม่บังคับ)</Label>
                                     <Input
-                                      {...register(`fields.${index}.overrideLabelTh`)}
+                                      {...register(`fields.${globalIdx}.overrideLabelTh`)}
                                       placeholder="ปล่อยว่างเพื่อใช้คำถามเดิม"
                                     />
                                   </div>
@@ -1201,7 +1411,7 @@ function BuilderInner() {
                                     <div className="space-y-1 col-span-2">
                                       <Label className="text-xs">ตัวเลือกใหม่ (ไม่บังคับ)</Label>
                                       <Textarea
-                                        {...register(`fields.${index}.overrideOptionsText`)}
+                                        {...register(`fields.${globalIdx}.overrideOptionsText`)}
                                         rows={3}
                                         placeholder={
                                           opts && opts.length > 0
@@ -1211,77 +1421,21 @@ function BuilderInner() {
                                       />
                                     </div>
                                   )}
-                                  <div className="space-y-1 col-span-2">
-                                    <Label className="text-xs">Help Text ใหม่ (ไม่บังคับ)</Label>
-                                    <Input
-                                      {...register(`fields.${index}.helpText`)}
-                                      placeholder={field.helpTextOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
-                                    />
-                                  </div>
-                                  <div className="space-y-1 col-span-2">
-                                    <Label className="text-xs">Placeholder ใหม่ (ไม่บังคับ)</Label>
-                                    <Input
-                                      {...register(`fields.${index}.placeholder`)}
-                                      placeholder={field.placeholderOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
-                                    />
-                                  </div>
-                                  {hasValidation && (
-                                    <div className="space-y-1 col-span-2">
-                                      <Label className="text-xs">Validation Rules JSON (ไม่บังคับ)</Label>
-                                      <Input
-                                        {...register(`fields.${index}.validationRulesText`)}
-                                        placeholder='{"minLength": 5, "maxLength": 100}'
-                                      />
-                                    </div>
-                                  )}
-
-                                  {/* Rich Field Metadata - แสดงสำหรับ TEXT และ TEXTAREA */}
-                                  {(field.fieldType === 'TEXT' || field.fieldType === 'TEXTAREA') && (
-                                    <>
-                                      <div className="space-y-1">
-                                        <Label className="text-xs">จำนวนบรรทัด (TEXTAREA)</Label>
-                                        <Input
-                                          type="number"
-                                          min={1}
-                                          {...register(`fields.${index}.rows`)}
-                                          placeholder="เช่น 3"
-                                        />
-                                      </div>
-                                      <div className="space-y-1">
-                                        <Label className="text-xs">ความยาวขั้นต่ำ</Label>
-                                        <Input
-                                          type="number"
-                                          min={0}
-                                          {...register(`fields.${index}.minLength`)}
-                                          placeholder="เช่น 0"
-                                        />
-                                      </div>
-                                      <div className="space-y-1">
-                                        <Label className="text-xs">ความยาวสูงสุด</Label>
-                                        <Input
-                                          type="number"
-                                          min={1}
-                                          {...register(`fields.${index}.maxLength`)}
-                                          placeholder="เช่น 500"
-                                        />
-                                      </div>
-                                    </>
-                                  )}
 
                                   <Controller
                                     control={control}
-                                    name={`fields.${index}.isRequired`}
+                                    name={`fields.${globalIdx}.isRequired`}
                                     render={({ field: f }) => (
                                       <div className={`flex items-center space-x-2 col-span-2 p-3 rounded border ${
                                         isEditMode ? 'bg-blue-50 border-blue-100' : 'bg-gray-50 border-gray-200'
                                       }`}>
                                         <Checkbox
-                                          id={`req-${index}`}
+                                          id={`req-${globalIdx}`}
                                           checked={f.value}
                                           onChange={(e) => isEditMode && f.onChange(e.target.checked)}
                                           disabled={!isEditMode}
                                         />
-                                        <Label htmlFor={`req-${index}`} className={`cursor-pointer font-medium ${
+                                        <Label htmlFor={`req-${globalIdx}`} className={`cursor-pointer font-medium ${
                                           isEditMode ? 'text-blue-800' : 'text-gray-600'
                                         }`}>
                                           ต้องตอบ (Required)
@@ -1290,9 +1444,160 @@ function BuilderInner() {
                                     )}
                                   />
                                 </div>
-                              </div>
-                            );
-                          })
+
+                                {/* Phase 2: Advanced Settings (collapsed by default) */}
+                                <details className="border border-slate-200 rounded">
+                                  <summary className="px-3 py-2 cursor-pointer text-sm font-medium text-slate-700 hover:bg-slate-50 select-none">
+                                    ▼ Advanced Settings
+                                  </summary>
+                                  <div className="p-3 space-y-3 border-t border-slate-200">
+                                    {/* Help Text */}
+                                    <div className="space-y-1">
+                                      <div className="flex items-center justify-between">
+                                        <Label className="text-xs">Help Text ใหม่ (ไม่บังคับ)</Label>
+                                        {isEditMode && (watch(`fields.${globalIdx}.helpText`) || '') !== (field.helpTextMaster || '') && (
+                                          <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => setValue(`fields.${globalIdx}.helpText`, field.helpTextMaster || '')}
+                                            className="h-5 text-[10px] text-blue-600 px-1"
+                                          >
+                                            ↺ ใช้ค่าเริ่มต้น
+                                          </Button>
+                                        )}
+                                      </div>
+                                      <Input
+                                        {...register(`fields.${globalIdx}.helpText`)}
+                                        placeholder={field.helpTextMaster || 'ปล่อยว่างเพื่อใช้ค่าเริ่มต้น'}
+                                        disabled={!isEditMode}
+                                      />
+                                      <OverrideStatusBadge
+                                        currentValue={watch(`fields.${globalIdx}.helpText`) || ''}
+                                        masterValue={field.helpTextMaster || ''}
+                                      />
+                                    </div>
+
+                                    {/* Placeholder */}
+                                    <div className="space-y-1">
+                                      <div className="flex items-center justify-between">
+                                        <Label className="text-xs">Placeholder ใหม่ (ไม่บังคับ)</Label>
+                                        {isEditMode && (watch(`fields.${globalIdx}.placeholder`) || '') !== (field.placeholderMaster || '') && (
+                                          <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => setValue(`fields.${globalIdx}.placeholder`, field.placeholderMaster || '')}
+                                            className="h-5 text-[10px] text-blue-600 px-1"
+                                          >
+                                            ↺ ใช้ค่าเริ่มต้น
+                                          </Button>
+                                        )}
+                                      </div>
+                                      <Input
+                                        {...register(`fields.${globalIdx}.placeholder`)}
+                                        placeholder={field.placeholderMaster || 'ปล่อยว่างเพื่อใช้ค่าเริ่มต้น'}
+                                        disabled={!isEditMode}
+                                      />
+                                      <OverrideStatusBadge
+                                        currentValue={watch(`fields.${globalIdx}.placeholder`) || ''}
+                                        masterValue={field.placeholderMaster || ''}
+                                      />
+                                    </div>
+
+                                    {/* Validation Message - แสดงเฉพาะเมื่อ Master มี validation type ที่ไม่ใช่ NONE */}
+                                    {hasValidation && (
+                                      <div className="space-y-1">
+                                        <div className="flex items-center justify-between">
+                                          <Label className="text-xs">Validation Message ใหม่ (ไม่บังคับ)</Label>
+                                          {isEditMode && (watch(`fields.${globalIdx}.validationMessage`) || '') !== (field.validationMessageMaster || '') && (
+                                            <Button
+                                              type="button"
+                                              variant="ghost"
+                                              size="sm"
+                                              onClick={() => setValue(`fields.${globalIdx}.validationMessage`, field.validationMessageMaster || '')}
+                                              className="h-5 text-[10px] text-blue-600 px-1"
+                                            >
+                                              ↺ ใช้ค่าเริ่มต้น
+                                            </Button>
+                                          )}
+                                        </div>
+                                        <Input
+                                          {...register(`fields.${globalIdx}.validationMessage`)}
+                                          placeholder={field.validationMessageMaster || 'ปล่อยว่างเพื่อใช้ค่าเริ่มต้น'}
+                                          disabled={!isEditMode}
+                                        />
+                                        <OverrideStatusBadge
+                                          currentValue={watch(`fields.${globalIdx}.validationMessage`) || ''}
+                                          masterValue={field.validationMessageMaster || ''}
+                                        />
+                                      </div>
+                                    )}
+
+                                    {hasValidation && (
+                                      <div className="space-y-1">
+                                        <Label className="text-xs">Validation Rules (ไม่บังคับ)</Label>
+                                        <Input
+                                          {...register(`fields.${globalIdx}.validationRulesText`)}
+                                          placeholder='{"minLength": 5, "maxLength": 100}'
+                                          disabled={!isEditMode}
+                                        />
+                                      </div>
+                                    )}
+
+                                    {/* Rich Field Metadata - TEXT / TEXTAREA */}
+                                    {(field.fieldType === 'TEXT' || field.fieldType === 'TEXTAREA') && (
+                                      <div className="grid grid-cols-3 gap-2">
+                                        {field.fieldType === 'TEXTAREA' && (
+                                          <div className="space-y-1">
+                                            <Label className="text-xs">จำนวนบรรทัด</Label>
+                                            <Input
+                                              type="number"
+                                              min={1}
+                                              {...register(`fields.${globalIdx}.rows`)}
+                                              placeholder="3"
+                                            />
+                                          </div>
+                                        )}
+                                        <div className="space-y-1">
+                                          <Label className="text-xs">ความยาวขั้นต่ำ</Label>
+                                          <Input
+                                            type="number"
+                                            min={0}
+                                            {...register(`fields.${globalIdx}.minLength`)}
+                                            placeholder="0"
+                                          />
+                                        </div>
+                                        <div className="space-y-1">
+                                          <Label className="text-xs">ความยาวสูงสุด</Label>
+                                          <Input
+                                            type="number"
+                                            min={1}
+                                            {...register(`fields.${globalIdx}.maxLength`)}
+                                            placeholder="500"
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* FILE Config */}
+                                    {field.fieldType === 'FILE' && (
+                                      <div className="space-y-1 p-2 bg-slate-50 rounded border border-slate-200">
+                                        <Label className="text-xs">File Config</Label>
+                                        <p className="text-xs text-slate-500">
+                                          ประเภทไฟล์ที่อนุญาต / จำนวนสูงสุด / ขนาดสูงสุด — ตั้งค่าใน Master Field
+                                        </p>
+                                      </div>
+                                    )}
+                                  </div>
+                                </details>
+                                </div>
+                                )}
+                                  </div>
+                                </FieldSortableItem>
+                              );
+                            }}
+                          </SectionFieldList>
                         )}
                       </div>
                     </div>

@@ -34,6 +34,15 @@ export const FieldMasterCreateSchema = z.object({
   defaultOptions: FieldOptionsSchema.nullable().optional(),
   pdfMappingKey: z.string().nullable().optional(),
   isActive: z.boolean().default(true),
+  // UI enhancement fields
+  section: z.string().nullable().optional(),
+  helpText: z.string().nullable().optional(),
+  placeholder: z.string().nullable().optional(),
+  // Validation
+  validationType: z.string().nullable().optional(),
+  validationMessage: z.string().nullable().optional(),
+  // File config (JSON)
+  fileConfig: z.record(z.string(), z.any()).nullable().optional(),
 });
 
 export const FieldMasterUpdateSchema = FieldMasterCreateSchema.partial();
@@ -53,6 +62,8 @@ export const TemplateFieldCreateSchema = z.object({
   overrideLabelTh: z.string().nullable().optional(),
   helpText: z.string().nullable().optional(),
   placeholder: z.string().nullable().optional(),
+  // Validation Message override (null = ใช้ค่า master)
+  validationMessage: z.string().nullable().optional(),
   validationRules: z.record(z.string(), z.any()).nullable().optional(),
   // Rich Field Metadata
   rows: z.number().int().positive().nullable().optional(),
@@ -187,8 +198,10 @@ export const ApplicationAttachmentSchema = z.object({
   fileUrl: z.string().min(1), // Accept relative or absolute URL
 });
 
-// Core field IDs - these are required for mapping formData to core columns
-export const CORE_FIELD_IDS = ['field-fullname', 'field-email', 'field-national-id'] as const;
+// Core field IDs - these map to legacy root columns (backward compatibility)
+// NOTE: field-national-id is NO LONGER hardcoded - only email and fullname are required
+// All other fields come from template schema
+export const CORE_FIELD_IDS = ['field-fullname', 'field-email'] as const;
 
 export const ApplicationSubmitSchema = z.object({
   roundId: z.string(),

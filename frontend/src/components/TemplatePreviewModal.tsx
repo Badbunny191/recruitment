@@ -635,7 +635,8 @@ export function TemplatePreviewModal({
                 </div>
               )}
 
-              {/* Consent placeholder removed - Dynamic Template is the source of truth. */}
+              {/* NOTE: Consent fields should be added as CHECKBOX type in Template Builder.
+                  If template has CHECKBOX fields, they will render in the schema fields loop above. */}
 
               {/* Submit button placeholder */}
               {hasSchemaFields && (

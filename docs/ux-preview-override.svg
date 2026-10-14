@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1400" font-family="-apple-system, sans-serif" xml:lang="en">
+  <defs>
+    <style>
+      .h { font-weight: 700; }
+      .label { font-size: 11px; fill: #475569; }
+      .input { font-size: 12px; fill: #0f172a; }
+      .input-border { fill: white; stroke: #cbd5e1; stroke-width: 1; }
+      .input-border-orange { fill: white; stroke: #fdba74; stroke-width: 2; }
+      .badge-default { font-size: 10px; fill: #15803d; }
+      .badge-custom { font-size: 10px; fill: #ea580c; }
+      .btn { font-size: 9px; fill: #2563eb; }
+      .panel { fill: white; stroke-width: 2; }
+      .panel-green { stroke: #86efac; }
+      .panel-orange { stroke: #fdba74; }
+      .panel-slate { stroke: #cbd5e1; }
+      .panel-blue { stroke: #93c5fd; }
+      .title { font-size: 16px; font-weight: 700; }
+      .subtitle { font-size: 11px; fill: #64748b; }
+      .db-text { font-family: monospace; font-size: 10px; fill: #1e293b; }
+    </style>
+  </defs>
+
+  <rect width="900" height="1400" fill="#f1f5f9" />
+  <text x="40" y="40" class="title" fill="#1e293b">Template Builder: Override UX Preview</text>
+  <text x="40" y="60" class="subtitle">Help Text / Placeholder / Validation Message</text>
+
+  <!-- CASE A: Use Default -->
+  <g transform="translate(40, 90)">
+    <rect class="panel panel-green" width="820" height="270" rx="8" />
+    <text x="20" y="30" class="title" fill="#166534">Case A: Use Default</text>
+    <text x="20" y="50" class="subtitle">Override = null ? show Master value (effective)</text>
+
+    <g transform="translate(20, 75)">
+      <text x="0" y="14" class="label h">Help Text (optional)</text>
+      <rect class="input-border" x="0" y="22" width="780" height="32" rx="6" />
+      <text x="10" y="42" class="input">Please enter your full name</text>
+      <text x="0" y="68" class="badge-default">Use Default</text>
+    </g>
+
+    <g transform="translate(20, 155)">
+      <text x="0" y="14" class="label h">Placeholder (optional)</text>
+      <rect class="input-border" x="0" y="22" width="780" height="32" rx="6" />
+      <text x="10" y="42" class="input">e.g. John Doe</text>
+      <text x="0" y="68" class="badge-default">Use Default</text>
+    </g>
+  </g>
+
+  <!-- CASE B: Custom Override -->
+  <g transform="translate(40, 380)">
+    <rect class="panel panel-orange" width="820" height="350" rx="8" />
+    <text x="20" y="30" class="title" fill="#9a3412">Case B: Custom Override</text>
+    <text x="20" y="50" class="subtitle">HR edits value to differ from Master ? save as override</text>
+
+    <g transform="translate(20, 75)">
+      <text x="0" y="14" class="label h">Help Text (optional)</text>
+      <text x="780" y="14" text-anchor="end" class="btn">reset: Use Default</text>
+      <rect class="input-border-orange" x="0" y="22" width="780" height="32" rx="6" />
+      <text x="10" y="42" class="input">Please enter your full name as on your ID card</text>
+      <text x="0" y="68" class="badge-custom">Custom Override</text>
+    </g>
+
+    <g transform="translate(20, 155)">
+      <text x="0" y="14" class="label h">Placeholder (optional)</text>
+      <text x="780" y="14" text-anchor="end" class="btn">reset: Use Default</text>
+      <rect class="input-border-orange" x="0" y="22" width="780" height="32" rx="6" />
+      <text x="10" y="42" class="input">e.g. Mr. John Doe (as on ID card)</text>
+      <text x="0" y="68" class="badge-custom">Custom Override</text>
+    </g>
+
+    <g transform="translate(20, 235)">
+      <text x="0" y="14" class="label h">Validation Message (optional)</text>
+      <text x="780" y="14" text-anchor="end" class="btn">reset: Use Default</text>
+      <rect class="input-border-orange" x="0" y="22" width="780" height="32" rx="6" />
+      <text x="10" y="42" class="input">Please enter a valid email like name@company.com</text>
+      <text x="0" y="68" class="badge-custom">Custom Override</text>
+    </g>
+  </g>
+
+  <!-- CASE C: Validation Type = NONE (hidden) -->
+  <g transform="translate(40, 750)">
+    <rect class="panel panel-slate" width="820" height="240" rx="8" />
+    <text x="20" y="30" class="title" fill="#334155">Case C: Validation Type = NONE</text>
+    <text x="20" y="50" class="subtitle">System hides Validation Message automatically</text>
+
+    <g transform="translate(20, 75)">
+      <text x="0" y="14" class="label h">Help Text (optional)</text>
+      <rect class="input-border" x="0" y="22" width="780" height="32" rx="6" />
+      <text x="10" y="42" class="input">Please enter phone number</text>
+      <text x="0" y="68" class="badge-default">Use Default</text>
+    </g>
+
+    <g transform="translate(20, 155)">
+      <text x="0" y="14" class="label h">Placeholder (optional)</text>
+      <rect class="input-border" x="0" y="22" width="780" height="32" rx="6" />
+      <text x="10" y="42" class="input">081-234-5678</text>
+      <text x="0" y="68" class="badge-default">Use Default</text>
+    </g>
+  </g>
+
+  <g transform="translate(60, 1000)">
+    <rect fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="4,2" width="780" height="60" rx="6" />
+    <text x="390" y="25" text-anchor="middle" class="label" fill="#94a3b8" text-decoration="line-through">Validation Message (optional)</text>
+    <text x="390" y="45" text-anchor="middle" class="label" fill="#94a3b8">(hidden - Validation Type = NONE)</text>
+  </g>
+
+  <!-- CASE D: Reset Flow -->
+  <g transform="translate(40, 1100)">
+    <rect class="panel panel-blue" width="820" height="270" rx="8" />
+    <text x="20" y="30" class="title" fill="#1e40af">[RESET] Case D: Reset ? Use Default</text>
+    <text x="20" y="50" class="subtitle">HR clicks "Use Default" ? save as null (does NOT copy master)</text>
+
+    <g transform="translate(20, 75)">
+      <rect class="panel panel-orange" width="380" height="170" rx="6" />
+      <text x="15" y="20" font-size="11" font-weight="700" fill="#9a3412">Before click</text>
+      <rect class="input-border" x="15" y="35" width="350" height="32" rx="6" />
+      <text x="25" y="55" class="input">Please enter full name as on ID card</text>
+      <text x="15" y="82" class="badge-custom">Custom Override</text>
+      <text x="15" y="115" class="label">DB:</text>
+      <text x="15" y="135" class="db-text">override_help_text =</text>
+      <text x="15" y="152" class="db-text" fill="#9a3412">"Please enter full name as on ID card"</text>
+    </g>
+
+    <g transform="translate(400, 130)">
+      <line x1="0" y1="30" x2="20" y2="30" stroke="#2563eb" stroke-width="2" />
+      <polygon points="20,25 30,30 20,35" fill="#2563eb" />
+      <text x="0" y="10" class="label" fill="#2563eb">click</text>
+    </g>
+
+    <g transform="translate(440, 75)">
+      <rect class="panel panel-green" width="360" height="170" rx="6" />
+      <text x="15" y="20" font-size="11" font-weight="700" fill="#166534">After click</text>
+      <rect class="input-border" x="15" y="35" width="330" height="32" rx="6" />
+      <text x="25" y="55" class="input">Please enter your full name</text>
+      <text x="15" y="82" class="badge-default">Use Default</text>
+      <text x="15" y="115" class="label">DB:</text>
+      <text x="15" y="135" class="db-text">override_help_text =</text>
+      <text x="15" y="152" class="db-text" fill="#166534">NULL (no copy)</text>
+    </g>
+  </g>
+</svg>
