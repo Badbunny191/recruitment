@@ -37,3 +37,11 @@ drizzle/*.tmp
 
 # OS
 Thumbs.db
+
+*.backup.sql
+*.local.sql
+
+backend/backups/*.sql
+backend/test-*.sql
+
+docs/*.html
