@@ -134,6 +134,9 @@ function BuilderInner() {
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
 
+  // Phase 1: Collapse state for field cards (default = all collapsed)
+  const [expandedFields, setExpandedFields] = useState<Set<string>>(new Set());
+
   // View Version Modal
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [viewVersionId, setViewVersionId] = useState('');
@@ -386,6 +389,19 @@ function BuilderInner() {
     const formValues = current.map((f, i) => ({ ...f, displayOrder: i + 1 }));
     replace(formValues);
     setHasUnsavedChanges(true);
+  };
+
+  // Phase 1: Toggle field card collapse
+  const toggleFieldExpanded = (fieldId: string) => {
+    setExpandedFields(prev => {
+      const next = new Set(prev);
+      if (next.has(fieldId)) {
+        next.delete(fieldId);
+      } else {
+        next.add(fieldId);
+      }
+      return next;
+    });
   };
 
   // Save as Draft - RFC Phase 2
@@ -867,33 +883,7 @@ function BuilderInner() {
         </div>
       </div>
 
-      {/* Status Info with Badges */}
-      <div className="bg-blue-50 border border-blue-200 rounded p-4">
-        <div className="flex items-center gap-6 text-sm">
-          <div className="flex items-center gap-2">
-            <span className="text-slate-600">Latest Published:</span>
-            {latestPublished ? (
-              <>
-                <span className="font-medium">v{latestPublished.versionNumber}</span>
-                <StatusBadge status="PUBLISHED" />
-              </>
-            ) : (
-              <span className="text-slate-400">ยังไม่มี Published</span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-slate-600">Current Draft:</span>
-            {latestDraft ? (
-              <>
-                <span className="font-medium">v{latestDraft.versionNumber}</span>
-                <StatusBadge status="DRAFT" />
-              </>
-            ) : (
-              <span className="text-slate-400">ไม่มี Draft</span>
-            )}
-          </div>
-        </div>
-      </div>
+      {/* Phase 4: Status Info Banner — REMOVED (ซ้ำกับ Active Context Banner) */}
 
       {/* Version History */}
       {versions.length > 0 && (
@@ -1127,57 +1117,78 @@ function BuilderInner() {
                           sectionFields.map(({ f: field, idx: index }) => {
                             const opts = watchedFields[index]?.defaultOptions;
                             const hasValidation = watchedFields[index]?.validationTypeOriginal && watchedFields[index]?.validationTypeOriginal !== 'NONE';
+                            const isExpanded = expandedFields.has(field.fieldId);
                             return (
-                              <div key={field.fieldId} className="p-4 border rounded bg-white space-y-3">
-                                <div className="flex items-center gap-3">
-                                  <span className="font-bold text-lg w-8">{index + 1}</span>
-                                  <div className="flex-1">
-                                    <div className="font-medium">{field.label}</div>
-                                    <div className="flex items-center gap-2 mt-1">
-                                      <Badge variant="outline" className="text-xs">
-                                        {field.fieldType}
+                              <div key={field.fieldId} className="border rounded bg-white">
+                                {/* Phase 1: Compact Header (always visible) — ~60-80px */}
+                                <div
+                                  className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-slate-50 ${
+                                    isExpanded ? 'border-b border-slate-200' : ''
+                                  }`}
+                                  onClick={() => toggleFieldExpanded(field.fieldId)}
+                                >
+                                  <span className="text-slate-400 select-none">☰</span>
+                                  <span className="font-medium text-slate-500 w-6 text-center">{index + 1}.</span>
+                                  <span className="font-medium text-sm flex-1 truncate">{field.label}</span>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <Badge variant="outline" className="text-[10px]">
+                                      {field.fieldType}
+                                    </Badge>
+                                    {hasValidation && (
+                                      <Badge variant="outline" className="text-[10px] text-orange-600 border-orange-200">
+                                        {watchedFields[index].validationTypeOriginal}
                                       </Badge>
-                                      {hasValidation && (
-                                        <Badge variant="outline" className="text-xs text-orange-600 border-orange-200">
-                                          {watchedFields[index].validationTypeOriginal}
-                                        </Badge>
-                                      )}
-                                    </div>
-                                  </div>
-                                  <div className="flex gap-1">
-                                    {isEditMode && (
-                                      <>
-                                        <Button
-                                          type="button"
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={() => moveField(index, -1)}
-                                          disabled={index === 0}
-                                        >
-                                          ↑
-                                        </Button>
-                                        <Button
-                                          type="button"
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={() => moveField(index, 1)}
-                                          disabled={index === fields.length - 1}
-                                        >
-                                          ↓
-                                        </Button>
-                                        <Button
-                                          type="button"
-                                          variant="destructive"
-                                          size="sm"
-                                          onClick={() => remove(index)}
-                                        >
-                                          ลบ
-                                        </Button>
-                                      </>
+                                    )}
+                                    {field.isRequired ? (
+                                      <Badge variant="outline" className="text-[10px] text-red-600 border-red-200 bg-red-50">
+                                        Required
+                                      </Badge>
+                                    ) : (
+                                      <Badge variant="outline" className="text-[10px] text-slate-500 border-slate-200">
+                                        Optional
+                                      </Badge>
                                     )}
                                   </div>
+                                  {isEditMode && (
+                                    <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => moveField(index, -1)}
+                                        disabled={index === 0}
+                                        className="h-7 w-7 p-0"
+                                      >
+                                        ↑
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => moveField(index, 1)}
+                                        disabled={index === fields.length - 1}
+                                        className="h-7 w-7 p-0"
+                                      >
+                                        ↓
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        variant="destructive"
+                                        size="sm"
+                                        onClick={() => remove(index)}
+                                        className="h-7"
+                                      >
+                                        ลบ
+                                      </Button>
+                                    </div>
+                                  )}
+                                  <span className="text-slate-400 ml-1 select-none">{isExpanded ? '▲' : '▼'}</span>
                                 </div>
-                                <div className="grid grid-cols-2 gap-3 pl-11">
+
+                                {/* Phase 1: Expanded body (only when clicked) */}
+                                {isExpanded && (
+                                <div className="p-3 space-y-3">
+                                <div className="grid grid-cols-2 gap-3">
                                   <div className="space-y-1 col-span-2">
                                     <Label className="text-xs">Section (ไม่บังคับ - เปลี่ยน Section ของ Field นี้)</Label>
                                     <select
@@ -1211,62 +1222,6 @@ function BuilderInner() {
                                       />
                                     </div>
                                   )}
-                                  <div className="space-y-1 col-span-2">
-                                    <Label className="text-xs">Help Text ใหม่ (ไม่บังคับ)</Label>
-                                    <Input
-                                      {...register(`fields.${index}.helpText`)}
-                                      placeholder={field.helpTextOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
-                                    />
-                                  </div>
-                                  <div className="space-y-1 col-span-2">
-                                    <Label className="text-xs">Placeholder ใหม่ (ไม่บังคับ)</Label>
-                                    <Input
-                                      {...register(`fields.${index}.placeholder`)}
-                                      placeholder={field.placeholderOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
-                                    />
-                                  </div>
-                                  {hasValidation && (
-                                    <div className="space-y-1 col-span-2">
-                                      <Label className="text-xs">Validation Rules JSON (ไม่บังคับ)</Label>
-                                      <Input
-                                        {...register(`fields.${index}.validationRulesText`)}
-                                        placeholder='{"minLength": 5, "maxLength": 100}'
-                                      />
-                                    </div>
-                                  )}
-
-                                  {/* Rich Field Metadata - แสดงสำหรับ TEXT และ TEXTAREA */}
-                                  {(field.fieldType === 'TEXT' || field.fieldType === 'TEXTAREA') && (
-                                    <>
-                                      <div className="space-y-1">
-                                        <Label className="text-xs">จำนวนบรรทัด (TEXTAREA)</Label>
-                                        <Input
-                                          type="number"
-                                          min={1}
-                                          {...register(`fields.${index}.rows`)}
-                                          placeholder="เช่น 3"
-                                        />
-                                      </div>
-                                      <div className="space-y-1">
-                                        <Label className="text-xs">ความยาวขั้นต่ำ</Label>
-                                        <Input
-                                          type="number"
-                                          min={0}
-                                          {...register(`fields.${index}.minLength`)}
-                                          placeholder="เช่น 0"
-                                        />
-                                      </div>
-                                      <div className="space-y-1">
-                                        <Label className="text-xs">ความยาวสูงสุด</Label>
-                                        <Input
-                                          type="number"
-                                          min={1}
-                                          {...register(`fields.${index}.maxLength`)}
-                                          placeholder="เช่น 500"
-                                        />
-                                      </div>
-                                    </>
-                                  )}
 
                                   <Controller
                                     control={control}
@@ -1290,6 +1245,91 @@ function BuilderInner() {
                                     )}
                                   />
                                 </div>
+
+                                {/* Phase 2: Advanced Settings (collapsed by default) */}
+                                <details className="border border-slate-200 rounded">
+                                  <summary className="px-3 py-2 cursor-pointer text-sm font-medium text-slate-700 hover:bg-slate-50 select-none">
+                                    ▼ Advanced Settings
+                                  </summary>
+                                  <div className="p-3 space-y-3 border-t border-slate-200">
+                                    <div className="space-y-1">
+                                      <Label className="text-xs">Help Text ใหม่ (ไม่บังคับ)</Label>
+                                      <Input
+                                        {...register(`fields.${index}.helpText`)}
+                                        placeholder={field.helpTextOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
+                                      />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <Label className="text-xs">Placeholder ใหม่ (ไม่บังคับ)</Label>
+                                      <Input
+                                        {...register(`fields.${index}.placeholder`)}
+                                        placeholder={field.placeholderOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
+                                      />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <Label className="text-xs">Validation Message ใหม่ (ไม่บังคับ)</Label>
+                                      <Input
+                                        placeholder="ข้อความแจ้งเตือนเมื่อข้อมูลไม่ถูกต้อง"
+                                      />
+                                    </div>
+                                    {hasValidation && (
+                                      <div className="space-y-1">
+                                        <Label className="text-xs">Validation Rules (ไม่บังคับ)</Label>
+                                        <Input
+                                          {...register(`fields.${index}.validationRulesText`)}
+                                          placeholder='{"minLength": 5, "maxLength": 100}'
+                                        />
+                                      </div>
+                                    )}
+
+                                    {/* Rich Field Metadata - TEXT / TEXTAREA */}
+                                    {(field.fieldType === 'TEXT' || field.fieldType === 'TEXTAREA') && (
+                                      <div className="grid grid-cols-3 gap-2">
+                                        {field.fieldType === 'TEXTAREA' && (
+                                          <div className="space-y-1">
+                                            <Label className="text-xs">จำนวนบรรทัด</Label>
+                                            <Input
+                                              type="number"
+                                              min={1}
+                                              {...register(`fields.${index}.rows`)}
+                                              placeholder="3"
+                                            />
+                                          </div>
+                                        )}
+                                        <div className="space-y-1">
+                                          <Label className="text-xs">ความยาวขั้นต่ำ</Label>
+                                          <Input
+                                            type="number"
+                                            min={0}
+                                            {...register(`fields.${index}.minLength`)}
+                                            placeholder="0"
+                                          />
+                                        </div>
+                                        <div className="space-y-1">
+                                          <Label className="text-xs">ความยาวสูงสุด</Label>
+                                          <Input
+                                            type="number"
+                                            min={1}
+                                            {...register(`fields.${index}.maxLength`)}
+                                            placeholder="500"
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* FILE Config */}
+                                    {field.fieldType === 'FILE' && (
+                                      <div className="space-y-1 p-2 bg-slate-50 rounded border border-slate-200">
+                                        <Label className="text-xs">File Config</Label>
+                                        <p className="text-xs text-slate-500">
+                                          ประเภทไฟล์ที่อนุญาต / จำนวนสูงสุด / ขนาดสูงสุด — ตั้งค่าใน Master Field
+                                        </p>
+                                      </div>
+                                    )}
+                                  </div>
+                                </details>
+                                </div>
+                                )}
                               </div>
                             );
                           })

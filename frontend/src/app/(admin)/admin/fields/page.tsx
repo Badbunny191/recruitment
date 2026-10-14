@@ -117,6 +117,71 @@ const FILE_TYPE_OPTIONS = [
   { value: 'docx', label: 'DOCX (เอกสาร Word)' },
 ];
 
+// Phase 1: Auto-generate PDF Mapping Key from Thai label
+// Examples: "ชื่อ-นามสกุล" → "full_name", "อีเมล" → "email", "เบอร์โทรศัพท์" → "phone"
+const generatePdfMappingKey = (label: string): string => {
+  if (!label) return '';
+  const trimmed = label.trim().toLowerCase();
+
+  // Common Thai → English mappings for HR fields
+  const commonMappings: Record<string, string> = {
+    'อีเมล': 'email',
+    'อีเมล์': 'email',
+    'email': 'email',
+    'เบอร์โทรศัพท์': 'phone',
+    'เบอร์โทร': 'phone',
+    'โทรศัพท์': 'phone',
+    'phone': 'phone',
+    'tel': 'phone',
+    'ชื่อ-นามสกุล': 'full_name',
+    'ชื่อ นามสกุล': 'full_name',
+    'ชื่อนามสกุล': 'full_name',
+    'ชื่อ-สกุล': 'full_name',
+    'full name': 'full_name',
+    'fullname': 'full_name',
+    'name': 'full_name',
+    'ชื่อ': 'first_name',
+    'first name': 'first_name',
+    'firstname': 'first_name',
+    'นามสกุล': 'last_name',
+    'last name': 'last_name',
+    'lastname': 'last_name',
+    'เลขบัตรประชาชน': 'citizen_id',
+    'เลขประจำตัวประชาชน': 'citizen_id',
+    'citizen id': 'citizen_id',
+    'national id': 'citizen_id',
+    'ที่อยู่': 'address',
+    'address': 'address',
+    'วันเกิด': 'birthdate',
+    'วันที่เกิด': 'birthdate',
+    'birthdate': 'birthdate',
+    'birth date': 'birthdate',
+    'อายุ': 'age',
+    'age': 'age',
+    'เพศ': 'gender',
+    'gender': 'gender',
+    'ตำแหน่ง': 'position',
+    'position': 'position',
+    'หน่วยงาน': 'organization',
+    'organization': 'organization',
+    'องค์กร': 'organization',
+  };
+
+  if (commonMappings[trimmed]) {
+    return commonMappings[trimmed];
+  }
+
+  // Generic: transliterate basic Thai consonants + slugify
+  // For unknown Thai text, just slugify what we can
+  const slug = trimmed
+    .replace(/[^\w\sก-๙]/g, '') // keep word chars + Thai
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+
+  return slug || trimmed.replace(/\s+/g, '_');
+};
+
 // ============================================
 // DESIGN SYSTEM - Smart Family Style (คัดลอกจาก Recruitment Rounds)
 // ============================================
@@ -208,6 +273,8 @@ export default function FieldMasterPage() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<FieldMaster | null>(null);
+  // Phase 1: Track if user has manually edited pdfMappingKey (to enable auto-generate)
+  const [pdfMappingKeyTouched, setPdfMappingKeyTouched] = useState(false);
 
   // View filter: all | active | inactive
   const [view, setView] = useState<'all' | 'active' | 'inactive'>('all');
@@ -264,6 +331,7 @@ export default function FieldMasterPage() {
   const openCreate = () => {
     setEditing(null);
     setForm(EMPTY_FORM);
+    setPdfMappingKeyTouched(false);
     setDialogOpen(true);
   };
 
@@ -317,6 +385,7 @@ export default function FieldMasterPage() {
       validationType: (f.validationType as any) || 'NONE',
       validationMessage: f.validationMessage || '',
     });
+    setPdfMappingKeyTouched(!!f.pdfMappingKey);
     setDialogOpen(true);
   };
 
@@ -755,7 +824,15 @@ export default function FieldMasterPage() {
                 <Input
                   id="labelTh"
                   value={form.labelTh}
-                  onChange={(e) => setForm({ ...form, labelTh: e.target.value })}
+                  onChange={(e) => {
+                    const newLabel = e.target.value;
+                    // Phase 1: Auto-generate PDF Mapping Key if user hasn't manually edited it
+                    const updates: Partial<FormState> = { labelTh: newLabel };
+                    if (!pdfMappingKeyTouched) {
+                      updates.pdfMappingKey = generatePdfMappingKey(newLabel);
+                    }
+                    setForm({ ...form, ...updates });
+                  }}
                   required
                   placeholder="เช่น อีเมล, เบอร์โทรศัพท์"
                 />
@@ -774,16 +851,6 @@ export default function FieldMasterPage() {
                       <option key={opt} value={opt}>{opt}</option>
                     ))}
                   </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="pdfMappingKey">PDF Mapping Key</Label>
-                  <Input
-                    id="pdfMappingKey"
-                    value={form.pdfMappingKey}
-                    onChange={(e) => setForm({ ...form, pdfMappingKey: e.target.value })}
-                    placeholder="เช่น email, phone"
-                  />
                 </div>
               </div>
             </div>
@@ -958,6 +1025,43 @@ export default function FieldMasterPage() {
                 </div>
               )}
             </div>
+
+            {/* Phase 1: Advanced Settings (collapsed by default) — Phase 2 moved PDF Mapping Key here */}
+            <details className="border border-slate-200 rounded-lg">
+              <summary className="px-4 py-2 cursor-pointer text-sm font-medium text-slate-700 hover:bg-slate-50 select-none">
+                ▼ Advanced Settings
+              </summary>
+              <div className="p-4 space-y-4 border-t border-slate-200">
+                <div className="space-y-2">
+                  <Label htmlFor="pdfMappingKey">PDF Mapping Key</Label>
+                  <Input
+                    id="pdfMappingKey"
+                    value={form.pdfMappingKey}
+                    onChange={(e) => {
+                      setPdfMappingKeyTouched(true);
+                      setForm({ ...form, pdfMappingKey: e.target.value });
+                    }}
+                    placeholder="auto-generated from label"
+                  />
+                  <p className="text-xs text-gray-500">
+                    ใช้สำหรับระบบ PDF Export — ระบบจะสร้างค่าเริ่มต้นจากชื่อฟิลด์ให้อัตโนมัติ (เช่น &quot;อีเมล&quot; → email, &quot;ชื่อ-นามสกุล&quot; → full_name)
+                  </p>
+                  {form.labelTh && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setForm({ ...form, pdfMappingKey: generatePdfMappingKey(form.labelTh) });
+                        setPdfMappingKeyTouched(true);
+                      }}
+                    >
+                      ✨ ใช้ค่าเริ่มต้นจากชื่อฟิลด์
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </details>
 
             {/* Status */}
             <div className="space-y-4">
