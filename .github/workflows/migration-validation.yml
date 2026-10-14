@@ -1,0 +1,282 @@
+name: Migration Validation
+
+on:
+  pull_request:
+    paths:
+      - 'backend/migrations/**'
+      - 'backend/drizzle/**'
+      - 'scripts/check-migrations.js'
+      - '.github/workflows/migration-validation.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend/migrations/**'
+      - 'backend/drizzle/**'
+
+jobs:
+  validate-migrations:
+    name: Validate Migration Files
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run migration linter
+        run: |
+          echo "Running migration linter (excludes legacy baseline)..."
+          node scripts/check-migrations.js
+
+          if [ $? -eq 0 ]; then
+            echo ""
+            echo "✅ Linter passed"
+          else
+            echo ""
+            echo "❌ Linter failed"
+            echo ""
+            echo "หมายเหตุ: Linter จะตรวจเฉพาะ migration ใหม่"
+            echo "Migration เดิม (legacy) จะถูก exclude จากการตรวจสอบ"
+            echo "ดูรายละเอียดใน: docs/MIGRATION_GOVERNANCE.md > Legacy Migrations Exception Policy"
+            exit 1
+          fi
+
+      - name: Check filename format (regex) - NEW migrations only
+        run: |
+          echo "Checking filename format for NEW migrations: ^[0-9]{4}_[a-z0-9_]+\.sql$"
+          echo ""
+          echo "⚠️  Legacy migrations ถูก exclude (ดู Legacy Baseline Policy)"
+          echo ""
+
+          # Get list of files in the PR (compared to base branch)
+          NEW_FILES=$(git diff --name-only --diff-filter=A origin/main...HEAD -- 'backend/migrations/*.sql' 2>/dev/null || true)
+
+          if [ -z "$NEW_FILES" ]; then
+            echo "ℹ️  ไม่มี migration ใหม่ใน PR นี้ (เฉพาะ legacy files)"
+            exit 0
+          fi
+
+          echo "📁 New migration files:"
+          echo "$NEW_FILES"
+          echo ""
+
+          INVALID_FILES=""
+
+          for file in $NEW_FILES; do
+            if ! echo "$file" | grep -qE '/[0-9]{4}_[a-z0-9_]+\.sql$'; then
+              INVALID_FILES="$INVALID_FILES\n$file"
+            fi
+          done
+
+          if [ -n "$INVALID_FILES" ]; then
+            echo "❌ พบไฟล์ใหม่ที่ชื่อไม่ตรง format:"
+            echo -e "$INVALID_FILES"
+            echo ""
+            echo "Format ที่ถูกต้อง: NNNN_description.sql"
+            echo "ตัวอย่าง: 0001_applications_management.sql"
+            exit 1
+          fi
+
+          echo "✅ ไฟล์ migration ใหม่ทุกไฟล์มีชื่อตรง format"
+
+      - name: Check duplicate prefix - NEW migrations only
+        run: |
+          echo "Checking for duplicate prefixes in NEW migrations..."
+          echo ""
+          echo "⚠️  Legacy migrations ถูก exclude (ดู Legacy Baseline Policy)"
+          echo ""
+
+          # Get list of NEW migration files in this PR
+          NEW_FILES=$(git diff --name-only --diff-filter=A origin/main...HEAD -- 'backend/migrations/*.sql' 2>/dev/null | xargs -n1 basename || true)
+
+          if [ -z "$NEW_FILES" ]; then
+            echo "ℹ️  ไม่มี migration ใหม่ใน PR นี้"
+            exit 0
+          fi
+
+          # Extract prefixes from NEW files only
+          NEW_PREFIXES=$(echo "$NEW_FILES" | sed -E 's/^([0-9]{4})_.*/\1/' | sort)
+
+          # Get all prefixes in migrations folder (for context only)
+          ALL_PREFIXES=$(ls backend/migrations/*.sql 2>/dev/null | xargs -n1 basename | sed -E 's/^([0-9]{4})_.*/\1/' | sort)
+
+          echo "📁 New prefixes in this PR:"
+          echo "$NEW_PREFIXES"
+          echo ""
+
+          # Check if any NEW prefix already exists in the all-migrations list
+          DUPLICATES=""
+
+          for prefix in $NEW_PREFIXES; do
+            COUNT=$(echo "$ALL_PREFIXES" | grep -c "^${prefix}$")
+            if [ "$COUNT" -gt 1 ]; then
+              DUPLICATES="$DUPLICATES\n$prefix"
+            fi
+          done
+
+          if [ -n "$DUPLICATES" ]; then
+            echo "❌ พบ duplicate prefix ใน migration ใหม่:"
+            echo -e "$DUPLICATES" | grep -v '^$'
+            echo ""
+            echo "Migration ไฟล์ที่มี prefix ซ้ำ:"
+            for prefix in $(echo -e "$DUPLICATES" | grep -v '^$'); do
+              ls backend/migrations/${prefix}_*.sql 2>/dev/null
+            done
+            echo ""
+            echo "วิธีแก้: เปลี่ยน prefix ของ migration ใหม่ให้ไม่ซ้ำกับของเดิม"
+            exit 1
+          fi
+
+          echo "✅ ไม่มี duplicate prefix ใน migration ใหม่"
+
+      - name: Check for forbidden keywords - NEW migrations only
+        run: |
+          echo "Checking for forbidden keywords in NEW migrations..."
+          echo ""
+          echo "⚠️  Legacy migrations ถูก exclude (ดู Legacy Baseline Policy)"
+          echo ""
+
+          # Get list of NEW migration files in this PR
+          NEW_FILES=$(git diff --name-only --diff-filter=A origin/main...HEAD -- 'backend/migrations/*.sql' 2>/dev/null | xargs -n1 basename || true)
+
+          if [ -z "$NEW_FILES" ]; then
+            echo "ℹ️  ไม่มี migration ใหม่ใน PR นี้"
+            exit 0
+          fi
+
+          echo "📁 New migration files:"
+          echo "$NEW_FILES"
+          echo ""
+
+          FORBIDDEN=""
+
+          for file in $NEW_FILES; do
+            if echo "$file" | grep -qiE '(rollback|down|revert|fix|drop)'; then
+              FORBIDDEN="$FORBIDDEN\n$file"
+            fi
+          done
+
+          if [ -n "$FORBIDDEN" ]; then
+            echo "❌ พบไฟล์ migration ใหม่ที่มีคำต้องห้าม:"
+            echo -e "$FORBIDDEN" | grep -v '^$'
+            echo ""
+            echo "คำต้องห้าม: rollback, down, revert, fix, drop"
+            echo "ไฟล์เหล่านี้ควรอยู่ใน backend/fixes/ แทน"
+            exit 1
+          fi
+
+          echo "✅ ไม่มีไฟล์ migration ใหม่ที่มีคำต้องห้าม"
+
+      - name: Check for new files in drizzle/ (should be frozen)
+        run: |
+          echo "Checking for new files in backend/drizzle/..."
+          echo ""
+          echo "⚠️  backend/drizzle/ ควรเป็น frozen read-only reference"
+          echo "ห้ามสร้าง migration ใหม่ใน folder นี้"
+          echo ""
+
+          NEW_DRIZZLE_FILES=$(git diff --name-only origin/main...HEAD -- 'backend/drizzle/' | grep -E '\.sql$' || true)
+
+          if [ -n "$NEW_DRIZZLE_FILES" ]; then
+            echo "❌ พบ migration ใหม่ใน backend/drizzle/:"
+            echo "$NEW_DRIZZLE_FILES"
+            echo ""
+            echo "backend/drizzle/ เป็น frozen folder"
+            echo "กรุณาย้าย migration ไป backend/migrations/ แทน"
+            exit 1
+          fi
+
+          echo "✅ ไม่มี migration ใหม่ใน backend/drizzle/"
+
+      - name: Check for modifications to drizzle/ (should be immutable)
+        run: |
+          echo "Checking for modifications to existing files in backend/drizzle/..."
+          echo ""
+          echo "⚠️  ไฟล์ใน backend/drizzle/ ไม่ควรถูกแก้ไข (immutable)"
+          echo ""
+
+          MODIFIED_DRIZZLE=$(git diff --name-only origin/main...HEAD -- 'backend/drizzle/' | xargs -I{} sh -c 'git diff --quiet origin/main...HEAD -- {} && echo {} || echo "MODIFIED:{}"' | grep '^MODIFIED:' || true)
+
+          if [ -n "$MODIFIED_DRIZZLE" ]; then
+            echo "❌ พบการแก้ไขไฟล์ใน backend/drizzle/:"
+            echo "$MODIFIED_DRIZZLE"
+            echo ""
+            echo "ไฟล์ใน backend/drizzle/ เป็น immutable record"
+            echo "ห้ามแก้ไข ให้ revert การเปลี่ยนแปลง"
+            exit 1
+          fi
+
+          echo "✅ ไม่มีการแก้ไขไฟล์ใน backend/drizzle/"
+
+      - name: Check for renames/deletes in migrations/ (immutable - applies to ALL migrations)
+        run: |
+          echo "Checking for renames or deletes in backend/migrations/..."
+          echo ""
+          echo "⚠️  Migration ทั้งหมด (รวม legacy) เป็น immutable record"
+          echo "ห้าม rename, delete, หรือ modify"
+          echo ""
+
+          # Check for deleted files
+          DELETED=$(git diff --name-only --diff-filter=D origin/main...HEAD -- 'backend/migrations/' || true)
+
+          if [ -n "$DELETED" ]; then
+            echo "❌ พบการลบ migration files:"
+            echo "$DELETED"
+            echo ""
+            echo "Migration ทุกไฟล์ห้ามลบ (รวม legacy)"
+            exit 1
+          fi
+
+          # Check for renames
+          RENAMED=$(git diff --name-only --diff-filter=R origin/main...HEAD -- 'backend/migrations/' || true)
+
+          if [ -n "$RENAMED" ]; then
+            echo "❌ พบการ rename migration files:"
+            echo "$RENAMED"
+            echo ""
+            echo "Migration ทุกไฟล์ห้าม rename (Cloudflare Wrangler ใช้ filename เป็น identity)"
+            echo "แม้แต่ legacy migrations ก็ห้าม rename เพราะ production ledger อ้างอิงชื่อเดิม"
+            exit 1
+          fi
+
+          # Check for modifications to existing files (legacy or not)
+          MODIFIED=$(git diff --name-only --diff-filter=M origin/main...HEAD -- 'backend/migrations/' || true)
+
+          if [ -n "$MODIFIED" ]; then
+            echo "❌ พบการแก้ไข migration files:"
+            echo "$MODIFIED"
+            echo ""
+            echo "Migration ทุกไฟล์ห้ามแก้ไข (รวม legacy)"
+            echo "ถ้าจำเป็นต้องแก้ ให้ revert แล้วเขียน migration ใหม่"
+            exit 1
+          fi
+
+          echo "✅ ไม่มีการ rename, delete, หรือ modify migration files (รวม legacy)"
+
+      - name: Summary
+        if: success()
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ Migration Validation PASSED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "หมายเหตุ: Legacy migrations ถูก exclude จาก filename/duplicate checks"
+          echo "แต่ยังคงถูก enforce immutability (ห้าม rename/delete/modify)"
+
+      - name: Summary
+        if: failure()
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "❌ Migration Validation FAILED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "กรุณาแก้ไขปัญหาที่พบแล้ว commit ใหม่"
+          echo "ดูเอกสาร: docs/MIGRATION_GOVERNANCE.md"
+          echo ""
