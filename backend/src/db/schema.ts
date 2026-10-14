@@ -79,6 +79,8 @@ export const templateFields = sqliteTable('template_fields', {
   rows: integer('rows'),
   minLength: integer('min_length'),
   maxLength: integer('max_length'),
+  // Override Validation Message (null = use Master validation_message)
+  validationMessage: text('validation_message'),
 }, (table) => ({
   tplVerIdx: index('idx_tpl_fields_version').on(table.templateVersionId),
   sectionIdx: index('idx_tpl_fields_section').on(table.sectionId),

@@ -156,10 +156,10 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
     isRequired: templateFields.isRequired,
     helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
     placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
+    validationMessage: sql`COALESCE(${templateFields.validationMessage}, ${fieldMaster.validationMessage})`,
     section: fieldMaster.section, // Legacy: ใช้สำหรับ fallback (Sprint 3 behavior)
     fileConfig: fieldMaster.fileConfig,
     validationType: fieldMaster.validationType,
-    validationMessage: fieldMaster.validationMessage,
     order: templateFields.displayOrder
   })
   .from(templateFields)

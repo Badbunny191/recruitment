@@ -502,10 +502,10 @@ adminRoutes.get('/templates/:templateId/preview-schema', async (c) => {
       isRequired: templateFields.isRequired,
       helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
       placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
+      validationMessage: sql`COALESCE(${templateFields.validationMessage}, ${fieldMaster.validationMessage})`,
       section: fieldMaster.section,
       fileConfig: fieldMaster.fileConfig,
       validationType: fieldMaster.validationType,
-      validationMessage: fieldMaster.validationMessage,
       order: templateFields.displayOrder,
       // Sprint 4: Additional fields
       rows: templateFields.rows,
@@ -582,9 +582,20 @@ adminRoutes.get('/template-fields/:versionId', async (c) => {
     isRequired: templateFields.isRequired,
     overrideLabelTh: templateFields.overrideLabelTh,
     overrideOptions: templateFields.overrideOptions,
-    helpText: templateFields.helpText,
-    placeholder: templateFields.placeholder,
+    // Effective values (override ?? master) — used by Template Builder
+    helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
+    placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
+    validationMessage: sql`COALESCE(${templateFields.validationMessage}, ${fieldMaster.validationMessage})`,
     validationRules: templateFields.validationRules,
+    // Raw override values (so Builder can detect "differs from master")
+    helpTextOverride: templateFields.helpText,
+    placeholderOverride: templateFields.placeholder,
+    validationMessageOverride: templateFields.validationMessage,
+    // Master values (for Builder to compare)
+    helpTextMaster: fieldMaster.helpText,
+    placeholderMaster: fieldMaster.placeholder,
+    validationMessageMaster: fieldMaster.validationMessage,
+    validationType: fieldMaster.validationType,
     // Rich Field Metadata
     rows: templateFields.rows,
     minLength: templateFields.minLength,
@@ -718,6 +729,9 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
         placeholder: (typeof f.placeholder === 'string' && f.placeholder.trim().length > 0)
           ? f.placeholder.trim()
           : null,
+        validationMessage: (typeof f.validationMessage === 'string' && f.validationMessage.trim().length > 0)
+          ? f.validationMessage.trim()
+          : null,
         validationRules:
           f.validationRules && typeof f.validationRules === 'object' && Object.keys(f.validationRules).length > 0
             ? JSON.stringify(f.validationRules)
@@ -764,6 +778,9 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
           : null,
         placeholder: (typeof f.placeholder === 'string' && f.placeholder.trim().length > 0)
           ? f.placeholder.trim()
+          : null,
+        validationMessage: (typeof f.validationMessage === 'string' && f.validationMessage.trim().length > 0)
+          ? f.validationMessage.trim()
           : null,
         validationRules:
           f.validationRules && typeof f.validationRules === 'object' && Object.keys(f.validationRules).length > 0
@@ -864,6 +881,9 @@ adminRoutes.put('/template-versions/:versionId',
             : null,
           placeholder: (typeof f.placeholder === 'string' && f.placeholder.trim().length > 0)
             ? f.placeholder.trim()
+            : null,
+          validationMessage: (typeof f.validationMessage === 'string' && f.validationMessage.trim().length > 0)
+            ? f.validationMessage.trim()
             : null,
           validationRules:
             f.validationRules && typeof f.validationRules === 'object' && Object.keys(f.validationRules).length > 0
@@ -2918,10 +2938,10 @@ adminRoutes.get('/rounds/:id/preview-schema', async (c) => {
       isRequired: templateFields.isRequired,
       helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
       placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
+      validationMessage: sql`COALESCE(${templateFields.validationMessage}, ${fieldMaster.validationMessage})`,
       section: fieldMaster.section, // legacy fallback
       fileConfig: fieldMaster.fileConfig,
       validationType: fieldMaster.validationType,
-      validationMessage: fieldMaster.validationMessage,
       order: templateFields.displayOrder,
     })
     .from(templateFields)

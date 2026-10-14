@@ -62,6 +62,8 @@ export const TemplateFieldCreateSchema = z.object({
   overrideLabelTh: z.string().nullable().optional(),
   helpText: z.string().nullable().optional(),
   placeholder: z.string().nullable().optional(),
+  // Validation Message override (null = ใช้ค่า master)
+  validationMessage: z.string().nullable().optional(),
   validationRules: z.record(z.string(), z.any()).nullable().optional(),
   // Rich Field Metadata
   rows: z.number().int().positive().nullable().optional(),

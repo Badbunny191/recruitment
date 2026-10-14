@@ -47,6 +47,7 @@ interface VersionField {
   overrideOptions: string[] | null;
   helpText: string | null;
   placeholder: string | null;
+  validationMessage: string | null;
   validationRules: Record<string, any> | null;
   // Rich Field Metadata
   rows: number | null;
@@ -62,6 +63,7 @@ interface BuilderField {
   overrideOptionsText: string;
   helpText: string;
   placeholder: string;
+  validationMessage: string;
   validationRulesText: string;
   // Rich Field Metadata
   rows: string;
@@ -71,8 +73,9 @@ interface BuilderField {
   fieldType?: string;
   label?: string;
   defaultOptions?: string[] | null;
-  helpTextOriginal?: string;
-  placeholderOriginal?: string;
+  helpTextMaster?: string;
+  placeholderMaster?: string;
+  validationMessageMaster?: string;
   validationTypeOriginal?: string;
   // Sprint 4
   sectionId: string | null;
@@ -117,6 +120,47 @@ const StatusBadge = ({ status }: { status: string }) => {
     default:
       return <Badge variant="outline">{status}</Badge>;
   }
+};
+
+/**
+ * OverrideStatusBadge
+ * -------------------
+ * แสดงสถานะ "ใช้ค่าเริ่มต้น" vs "กำหนดค่าเอง" สำหรับ Help Text / Placeholder / Validation Message
+ *
+ * Logic:
+ *   - ถ้า currentValue เท่ากับ masterValue (ทั้งคู่ว่าง หรือเหมือนกัน) → ✅ ใช้ค่าเริ่มต้น (เขียว)
+ *   - ถ้า currentValue ต่างจาก masterValue → 🟠 กำหนดค่าเอง (ส้ม)
+ *
+ * Tooltip (HTML title):
+ *   - "ใช้ค่าเริ่มต้น" → "ใช้ค่าที่กำหนดไว้จากคลังคำถาม"
+ *   - "กำหนดค่าเอง" → "ฟิลด์นี้มีการกำหนดค่าเฉพาะสำหรับแบบฟอร์มนี้"
+ */
+const OverrideStatusBadge = ({
+  currentValue,
+  masterValue,
+}: {
+  currentValue: string;
+  masterValue: string;
+}) => {
+  const isUsingDefault = (currentValue || '') === (masterValue || '');
+  if (isUsingDefault) {
+    return (
+      <p
+        className="text-[10px] text-green-700 mt-0.5"
+        title="ใช้ค่าที่กำหนดไว้จากคลังคำถาม"
+      >
+        ✅ ใช้ค่าเริ่มต้น
+      </p>
+    );
+  }
+  return (
+    <p
+      className="text-[10px] text-orange-600 mt-0.5"
+      title="ฟิลด์นี้มีการกำหนดค่าเฉพาะสำหรับแบบฟอร์มนี้"
+    >
+      🟠 กำหนดค่าเอง
+    </p>
+  );
 };
 
 function BuilderInner() {
@@ -256,8 +300,10 @@ function BuilderInner() {
             isRequired: vf.isRequired,
             overrideLabelTh: vf.overrideLabelTh || '',
             overrideOptionsText: opts.join('\n'),
-            helpText: vf.helpText || '',
-            placeholder: vf.placeholder || '',
+            // Effective value = override ?? master (เพื่อให้ HR เห็นค่าที่ใช้จริง)
+            helpText: vf.helpText ?? mf?.helpText ?? '',
+            placeholder: vf.placeholder ?? mf?.placeholder ?? '',
+            validationMessage: vf.validationMessage ?? mf?.validationMessage ?? '',
             validationRulesText: vf.validationRules ? JSON.stringify(vf.validationRules) : '',
             rows: vf.rows?.toString() || '',
             minLength: vf.minLength?.toString() || '',
@@ -265,8 +311,10 @@ function BuilderInner() {
             fieldType: mf?.fieldType,
             label: vf.overrideLabelTh || mf?.labelTh || '',
             defaultOptions: parseOptions(mf?.defaultOptions),
-            helpTextOriginal: mf?.helpText,
-            placeholderOriginal: mf?.placeholder,
+            // Master values (เก็บไว้เปรียบเทียบ)
+            helpTextMaster: mf?.helpText,
+            placeholderMaster: mf?.placeholder,
+            validationMessageMaster: mf?.validationMessage,
             validationTypeOriginal: mf?.validationType,
             // Sprint 4
             sectionId: (vf as any).sectionId ?? null,
@@ -323,6 +371,7 @@ function BuilderInner() {
       overrideOptionsText: opts.join('\n'),
       helpText: mf.helpText || '',
       placeholder: mf.placeholder || '',
+      validationMessage: mf.validationMessage || '',
       validationRulesText: '',
       rows: '',
       minLength: '',
@@ -330,8 +379,9 @@ function BuilderInner() {
       fieldType: mf.fieldType,
       label: mf.labelTh,
       defaultOptions: opts,
-      helpTextOriginal: mf.helpText,
-      placeholderOriginal: mf.placeholder,
+      helpTextMaster: mf.helpText,
+      placeholderMaster: mf.placeholder,
+      validationMessageMaster: mf.validationMessage,
       validationTypeOriginal: mf.validationType,
       sectionId,
     });
@@ -534,12 +584,22 @@ function BuilderInner() {
               : null,
             sectionId: f.sectionId || null,
           };
-          if (f.helpText && f.helpText !== f.helpTextOriginal) {
-            fieldData.helpText = f.helpText;
-          }
-          if (f.placeholder && f.placeholder !== f.placeholderOriginal) {
-            fieldData.placeholder = f.placeholder;
-          }
+          // เก็บเฉพาะ "สิ่งที่แตกต่างจาก Master"
+          // - ถ้าค่าที่ HR กรอก "เท่ากับค่า Master" → บันทึกเป็น null (ใช้ค่าเริ่มต้น)
+          // - ถ้าค่าที่ HR กรอก "ต่างจากค่า Master" → บันทึกเป็น override
+          // - ถ้าค่าว่าง → บันทึกเป็น null (ใช้ค่าเริ่มต้น)
+          fieldData.helpText =
+            f.helpText && f.helpText !== (f.helpTextMaster || '')
+              ? f.helpText
+              : null;
+          fieldData.placeholder =
+            f.placeholder && f.placeholder !== (f.placeholderMaster || '')
+              ? f.placeholder
+              : null;
+          fieldData.validationMessage =
+            f.validationMessage && f.validationMessage !== (f.validationMessageMaster || '')
+              ? f.validationMessage
+              : null;
           if (f.validationRulesText) {
             try {
               fieldData.validationRules = JSON.parse(f.validationRulesText);
@@ -1391,32 +1451,96 @@ function BuilderInner() {
                                     ▼ Advanced Settings
                                   </summary>
                                   <div className="p-3 space-y-3 border-t border-slate-200">
+                                    {/* Help Text */}
                                     <div className="space-y-1">
-                                      <Label className="text-xs">Help Text ใหม่ (ไม่บังคับ)</Label>
+                                      <div className="flex items-center justify-between">
+                                        <Label className="text-xs">Help Text ใหม่ (ไม่บังคับ)</Label>
+                                        {isEditMode && (watch(`fields.${globalIdx}.helpText`) || '') !== (field.helpTextMaster || '') && (
+                                          <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => setValue(`fields.${globalIdx}.helpText`, field.helpTextMaster || '')}
+                                            className="h-5 text-[10px] text-blue-600 px-1"
+                                          >
+                                            ↺ ใช้ค่าเริ่มต้น
+                                          </Button>
+                                        )}
+                                      </div>
                                       <Input
                                         {...register(`fields.${globalIdx}.helpText`)}
-                                        placeholder={field.helpTextOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
+                                        placeholder={field.helpTextMaster || 'ปล่อยว่างเพื่อใช้ค่าเริ่มต้น'}
+                                        disabled={!isEditMode}
+                                      />
+                                      <OverrideStatusBadge
+                                        currentValue={watch(`fields.${globalIdx}.helpText`) || ''}
+                                        masterValue={field.helpTextMaster || ''}
                                       />
                                     </div>
+
+                                    {/* Placeholder */}
                                     <div className="space-y-1">
-                                      <Label className="text-xs">Placeholder ใหม่ (ไม่บังคับ)</Label>
+                                      <div className="flex items-center justify-between">
+                                        <Label className="text-xs">Placeholder ใหม่ (ไม่บังคับ)</Label>
+                                        {isEditMode && (watch(`fields.${globalIdx}.placeholder`) || '') !== (field.placeholderMaster || '') && (
+                                          <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => setValue(`fields.${globalIdx}.placeholder`, field.placeholderMaster || '')}
+                                            className="h-5 text-[10px] text-blue-600 px-1"
+                                          >
+                                            ↺ ใช้ค่าเริ่มต้น
+                                          </Button>
+                                        )}
+                                      </div>
                                       <Input
                                         {...register(`fields.${globalIdx}.placeholder`)}
-                                        placeholder={field.placeholderOriginal || 'ปล่อยว่างเพื่อใช้ค่าเดิม'}
+                                        placeholder={field.placeholderMaster || 'ปล่อยว่างเพื่อใช้ค่าเริ่มต้น'}
+                                        disabled={!isEditMode}
+                                      />
+                                      <OverrideStatusBadge
+                                        currentValue={watch(`fields.${globalIdx}.placeholder`) || ''}
+                                        masterValue={field.placeholderMaster || ''}
                                       />
                                     </div>
-                                    <div className="space-y-1">
-                                      <Label className="text-xs">Validation Message ใหม่ (ไม่บังคับ)</Label>
-                                      <Input
-                                        placeholder="ข้อความแจ้งเตือนเมื่อข้อมูลไม่ถูกต้อง"
-                                      />
-                                    </div>
+
+                                    {/* Validation Message - แสดงเฉพาะเมื่อ Master มี validation type ที่ไม่ใช่ NONE */}
+                                    {hasValidation && (
+                                      <div className="space-y-1">
+                                        <div className="flex items-center justify-between">
+                                          <Label className="text-xs">Validation Message ใหม่ (ไม่บังคับ)</Label>
+                                          {isEditMode && (watch(`fields.${globalIdx}.validationMessage`) || '') !== (field.validationMessageMaster || '') && (
+                                            <Button
+                                              type="button"
+                                              variant="ghost"
+                                              size="sm"
+                                              onClick={() => setValue(`fields.${globalIdx}.validationMessage`, field.validationMessageMaster || '')}
+                                              className="h-5 text-[10px] text-blue-600 px-1"
+                                            >
+                                              ↺ ใช้ค่าเริ่มต้น
+                                            </Button>
+                                          )}
+                                        </div>
+                                        <Input
+                                          {...register(`fields.${globalIdx}.validationMessage`)}
+                                          placeholder={field.validationMessageMaster || 'ปล่อยว่างเพื่อใช้ค่าเริ่มต้น'}
+                                          disabled={!isEditMode}
+                                        />
+                                        <OverrideStatusBadge
+                                          currentValue={watch(`fields.${globalIdx}.validationMessage`) || ''}
+                                          masterValue={field.validationMessageMaster || ''}
+                                        />
+                                      </div>
+                                    )}
+
                                     {hasValidation && (
                                       <div className="space-y-1">
                                         <Label className="text-xs">Validation Rules (ไม่บังคับ)</Label>
                                         <Input
                                           {...register(`fields.${globalIdx}.validationRulesText`)}
                                           placeholder='{"minLength": 5, "maxLength": 100}'
+                                          disabled={!isEditMode}
                                         />
                                       </div>
                                     )}
