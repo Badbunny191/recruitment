@@ -1,28 +1,101 @@
 'use client';
 
-import { useState, useId } from 'react';
+import { useState, useId, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
+
+export interface UploadedFileMeta {
+  name: string;
+  url: string;
+  contentType?: string;
+}
 
 interface FileUploadProps {
   onUploadSuccess: (fileUrl: string | string[]) => void;
+  /**
+   * Optional callback that receives the full list of uploaded files
+   * (with name + url + contentType) on every change. PR #2 needs this
+   * so the review page can show "filename.pdf" instead of just the URL.
+   *
+   * If omitted, the component still works exactly as before.
+   */
+  onFilesChange?: (files: UploadedFileMeta[]) => void;
+  /**
+   * Optional initial file list used to rehydrate the component from a
+   * previously-saved draft. Two consumption rules:
+   *
+   *   1. Used as the seed for `useState` on first mount, so a fully
+   *      synchronous restore (e.g. when the parent already has the
+   *      rehydrated `attachmentMeta` on first render) works.
+   *   2. Watched by an effect: if the prop transitions from
+   *      `undefined` → `UploadedFileMeta[]` *after* mount (the typical
+   *      "schema loaded → restoration effect ran" timeline), the
+   *      component adopts the new value.
+   *
+   * The "adopt" path is **one-shot**: after a successful upload or
+   * remove, we stop watching the prop to avoid a feedback loop with
+   * `onFilesChange`.
+   */
+  defaultFiles?: UploadedFileMeta[];
   accept?: string;
   maxFiles?: number;
   maxSizeMB?: number;
   multiple?: boolean;
 }
 
-export function FileUpload({ 
-  onUploadSuccess, 
-  accept = 'application/pdf', 
+export function FileUpload({
+  onUploadSuccess,
+  onFilesChange,
+  defaultFiles,
+  accept = 'application/pdf',
   maxFiles = 1,
   maxSizeMB = 10,
-  multiple = false 
+  multiple = false
 }: FileUploadProps) {
   const [isUploading, setIsUploading] = useState(false);
-  const [files, setFiles] = useState<{ name: string; url: string }[]>([]);
+  // Seed from `defaultFiles` if provided at first render. The effect
+  // below handles the case where `defaultFiles` arrives after mount.
+  const [files, setFiles] = useState<UploadedFileMeta[]>(defaultFiles ?? []);
   const [error, setError] = useState<string | null>(null);
-  
+
   const inputId = useId();
+
+  // Once the user has touched the component (upload or remove), we stop
+  // reacting to `defaultFiles` changes so a re-render of the parent
+  // with a fresh array reference doesn't clobber the user's choice.
+  const userTouchedRef = useRef(false);
+
+  // Consume a `defaultFiles` change that happens after mount. This is
+  // the "schema loaded → restoration effect ran → setAttachmentMeta
+  // updated the prop" sequence.
+  useEffect(() => {
+    if (userTouchedRef.current) return;
+    if (!defaultFiles) return;
+    // Skip if it's the same content we already have (avoids the initial
+    // double-set when the parent re-renders for unrelated reasons).
+    if (
+      defaultFiles.length === files.length &&
+      defaultFiles.every((f, i) => f.url === files[i]?.url && f.name === files[i]?.name)
+    ) {
+      return;
+    }
+    setFiles(defaultFiles);
+  }, [defaultFiles, files]);
+
+  /**
+   * Replace the local `files` state and notify both upward callbacks.
+   * Centralised so remove + upload + initial-mount restore all go
+   * through the same path and the parent always sees a consistent view.
+   */
+  const updateFiles = (next: UploadedFileMeta[]) => {
+    userTouchedRef.current = true;
+    setFiles(next);
+    if (onFilesChange) onFilesChange(next);
+    if (maxFiles === 1) {
+      onUploadSuccess(next[0]?.url || '');
+    } else {
+      onUploadSuccess(next.map((f) => f.url));
+    }
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files;
@@ -37,12 +110,12 @@ export function FileUpload({
     setError(null);
     setIsUploading(true);
 
-    const newFiles: { name: string; url: string }[] = [];
-    
+    const newFiles: UploadedFileMeta[] = [];
+
     try {
       for (let i = 0; i < fileList.length; i++) {
         const file = fileList[i];
-        
+
         // Validate file type
         if (accept !== '*') {
           const acceptTypes = accept.split(',').map(t => t.trim());
@@ -57,7 +130,7 @@ export function FileUpload({
             }
             return file.type === type || fileExtension === type.toLowerCase();
           });
-          
+
           if (!isValidType) {
             throw new Error(`ไฟล์ "${file.name}" ไม่ใช่ประเภทที่อนุญาต (${accept})`);
           }
@@ -78,28 +151,22 @@ export function FileUpload({
           method: 'POST',
           body: formData,
         });
-        
+
         const responseData = await res.json();
-        
+
         if (!responseData.success) {
           throw new Error(responseData.error || 'ไม่สามารถอัปโหลดไฟล์ได้');
         }
 
         newFiles.push({
           name: file.name,
-          url: responseData.data.fileUrl
+          url: responseData.data.fileUrl,
+          contentType: file.type || responseData.data.contentType,
         });
       }
 
       const allFiles = [...files, ...newFiles];
-      setFiles(allFiles);
-      
-      // Return single URL or array based on maxFiles
-      if (maxFiles === 1) {
-        onUploadSuccess(allFiles[0]?.url || '');
-      } else {
-        onUploadSuccess(allFiles.map(f => f.url));
-      }
+      updateFiles(allFiles);
 
     } catch (err) {
       console.error('Upload error:', err);
@@ -111,13 +178,7 @@ export function FileUpload({
 
   const handleRemove = (index: number) => {
     const newFiles = files.filter((_, i) => i !== index);
-    setFiles(newFiles);
-    
-    if (maxFiles === 1) {
-      onUploadSuccess('');
-    } else {
-      onUploadSuccess(newFiles.map(f => f.url));
-    }
+    updateFiles(newFiles);
   };
 
   // Format accept string for display

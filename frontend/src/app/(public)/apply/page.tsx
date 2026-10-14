@@ -9,8 +9,16 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
-import { FileUpload } from '@/components/FileUpload';
+import { FileUpload, UploadedFileMeta } from '@/components/FileUpload';
 import { SearchableDropdown } from '@/components/SearchableDropdown';
+import {
+  loadApplyDraft,
+  saveApplyDraft,
+  type FileAttachmentDraft,
+} from '@/lib/applyDraft';
+import {
+  getOrCreateSubmissionToken,
+} from '@/lib/submissionToken';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_ID' | 'REGEX';
@@ -149,7 +157,7 @@ function FormInner() {
   const [organizations, setOrganizations] = useState<MasterDataOption[]>([]);
   const [masterDataError, setMasterDataError] = useState<string | null>(null);
 
-  const { register, handleSubmit, control, formState: { errors } } = useForm<FormValues>();
+  const { register, handleSubmit, control, formState: { errors }, reset } = useForm<FormValues>();
 
   const getApiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
 
@@ -332,17 +340,116 @@ function FormInner() {
     return () => controller.abort();
   }, [roundId]);
 
+  // =========================================================================
+  //  PR #2 — Draft restoration
+  // =========================================================================
+  // When the user lands on /apply with a `?id=<roundId>` in the URL, we
+  // check sessionStorage for an existing draft for that round (saved when
+  // they last clicked "ตรวจสอบข้อมูล"). If present, we rehydrate the
+  // form values AND the file-upload metadata so the FILE field shows the
+  // previously uploaded file name. The attachmentMeta map is the
+  // authoritative source of {name, contentType, url} for FILE fields —
+  // `useForm` only stores the URL.
+  const [attachmentMeta, setAttachmentMeta] = useState<Record<string, UploadedFileMeta[]>>({});
+  // Two-stage restoration flag: we want to wait until the schema is
+  // loaded before we run the FILE-field rehydration. `draftRestored` is
+  // flipped to `true` after the schema-aware pass completes; the
+  // "no-schema" early-return still flips it to avoid infinite re-runs.
+  const [draftRestored, setDraftRestored] = useState(false);
+
+  useEffect(() => {
+    if (!roundId) return;
+    if (draftRestored) return; // only run once
+    // We need the schema to know which fields are FILE. If the schema
+    // hasn't loaded yet, defer — the effect will re-run when it does.
+    if (schema.length === 0) return;
+    const draft = loadApplyDraft(roundId);
+    if (!draft) {
+      setDraftRestored(true);
+      return;
+    }
+    // Rehydrate react-hook-form values.
+    const rehydrated: Record<string, unknown> = { ...draft.formData };
+    // For FILE fields the stored value is the URL string/array. We feed
+    // it back into the form so the FileUpload component sees "value" =
+    // url, and the user can still see the file name from `attachmentMeta`.
+    schema.forEach((field) => {
+      if (field.type === 'FILE') {
+        const att = draft.attachments.find((a) => a.fieldId === field.fieldId);
+        if (att) {
+          rehydrated[field.fieldId] = field.fileConfig?.maxFiles && field.fileConfig.maxFiles > 1
+            ? draft.attachments.filter((a) => a.fieldId === field.fieldId).map((a) => a.fileUrl)
+            : att.fileUrl;
+        }
+      }
+    });
+    reset(rehydrated as FormValues);
+
+    // Rehydrate file metadata so the FILE rows show the file name.
+    const meta: Record<string, UploadedFileMeta[]> = {};
+    draft.attachments.forEach((att) => {
+      if (!meta[att.fieldId]) meta[att.fieldId] = [];
+      meta[att.fieldId].push({
+        name: att.fileName || extractNameFromUrl(att.fileUrl),
+        url: att.fileUrl,
+        contentType: att.contentType,
+      });
+    });
+    setAttachmentMeta(meta);
+    setDraftRestored(true);
+  }, [roundId, schema, reset, draftRestored]);
+
+  // Best-effort: extract a filename from a fileKey-shaped URL.
+  // The backend uses `<year>/<uuid>-<sanitizedName>` as the file key, so
+  // the last `-<name>` segment is a reasonable display fallback.
+  function extractNameFromUrl(url: string): string {
+    if (!url) return 'ไฟล์แนบ';
+    try {
+      const cleaned = url.split('?')[0].split('#')[0];
+      const last = cleaned.split('/').pop() || '';
+      // fileKey format: `<uuid>-<sanitizedName>`
+      const dashIdx = last.indexOf('-');
+      return dashIdx >= 0 ? last.slice(dashIdx + 1) : last;
+    } catch {
+      return 'ไฟล์แนบ';
+    }
+  }
+
   const onSubmit: SubmitHandler<FormValues> = async (data) => {
     setIsSubmitting(true);
+
+    // PR #2 — Two-step flow:
+    //   1. Validate the form (handled by react-hook-form via zodResolver-equivalent rules)
+    //   2. Build the payload (formData + attachments) and SAVE IT as a draft
+    //   3. Redirect to /apply/review where the user confirms + submits
+    //
+    // The actual POST /public/applications/submit is moved to the
+    // review page so we can show a confirm-checkbox + double-submit guard.
 
     // NEW MODE: Send formData only (no root fields)
     // Core fields are already included in formData from schema
     const formData: Record<string, any> = {};
-    const attachments: { fieldId: string; fileUrl: string }[] = [];
+    const attachments: FileAttachmentDraft[] = [];
 
     schema.forEach(field => {
       if (field.type === 'FILE') {
-        if (data[field.fieldId]) attachments.push({ fieldId: field.fieldId, fileUrl: data[field.fieldId] });
+        const value = data[field.fieldId];
+        const meta = attachmentMeta[field.fieldId] || [];
+        if (field.fileConfig?.maxFiles && field.fileConfig.maxFiles > 1) {
+          // Multi-file: meta is the source of truth.
+          meta.forEach((m) => {
+            attachments.push({ fieldId: field.fieldId, fileUrl: m.url, fileName: m.name, contentType: m.contentType });
+          });
+        } else if (value) {
+          // Single-file: prefer meta (has name + type); fall back to bare URL.
+          const m = meta[0];
+          attachments.push({
+            fieldId: field.fieldId,
+            fileUrl: value,
+            fileName: m?.name,
+            contentType: m?.contentType,
+          });
+        }
       } else if (field.type === 'CHECKBOX') {
         formData[field.fieldId] = data[field.fieldId] === true;
       } else if (field.type === 'MASTER_DATA') {
@@ -357,32 +464,29 @@ function FormInner() {
     });
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8788/api/v1';
-      const res = await fetch(`${apiUrl}/public/applications/submit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roundId, formData, attachments }),
-      });
-      const result = await res.json();
-
-      // ✅ Business rule gate: if the round is DRAFT or CLOSED, the backend
-      // returns 403. Show a friendly error card instead of a generic alert.
-      if (res.status === 403) {
-        setRoundError({
-          message: result?.error ?? 'ขณะนี้ยังไม่เปิดรับสมัคร',
-          status: result?.status ?? 'DRAFT',
-        });
+      // Ensure we have a submissionToken for the upcoming review page.
+      const token = getOrCreateSubmissionToken();
+      if (!roundId) {
+        alert('ไม่พบรหัสรอบรับสมัคร');
+        setIsSubmitting(false);
         return;
       }
 
-      if (result.success) {
-        router.push(`/apply/success?appNo=${result.data.applicationNo}`);
-      } else {
-        alert('เกิดข้อผิดพลาด: ' + (result.error || 'กรุณาตรวจสอบข้อมูล'));
-      }
+      // Persist the draft to sessionStorage. The review page will read
+      // it back to render the read-only summary. We deliberately do NOT
+      // call the submit API yet — that happens after the user ticks the
+      // confirmation checkbox on the review page.
+      saveApplyDraft({
+        roundId,
+        formData,
+        attachments,
+        submissionToken: token,
+      });
+
+      router.push('/apply/review');
     } catch (error) {
-      console.error('Submit error:', error);
-      alert('เกิดข้อผิดพลาดในการส่งใบสมัคร: ' + (error instanceof Error ? error.message : 'ไม่ทราบสาเหตุ'));
+      console.error('Save draft error:', error);
+      alert('เกิดข้อผิดพลาด: ' + (error instanceof Error ? error.message : 'ไม่ทราบสาเหตุ'));
     } finally {
       setIsSubmitting(false);
     }
@@ -625,8 +729,12 @@ function FormInner() {
             control={control}
             rules={validationRules}
             render={({ field: { onChange, value } }) => (
-              <FileUpload 
-                onUploadSuccess={onChange} 
+              <FileUpload
+                onUploadSuccess={onChange}
+                onFilesChange={(files) => {
+                  setAttachmentMeta((prev) => ({ ...prev, [field.fieldId]: files }));
+                }}
+                defaultFiles={attachmentMeta[field.fieldId]}
                 accept={getFileAccept(field)}
                 maxSizeMB={field.fileConfig?.maxSizeMB}
                 maxFiles={field.fileConfig?.maxFiles || 1}
@@ -868,9 +976,12 @@ function FormInner() {
 
             {/* Consent fields removed - Dynamic Template is the source of truth.
                 If the template needs a consent checkbox, add a CHECKBOX field via Template Builder. */}
-            {/* Submit Button */}
-            <Button 
-              type="submit" 
+            {/* Submit Button — PR #2: this is now "ตรวจสอบข้อมูล" (review)
+                which saves the draft and navigates to /apply/review.
+                The actual API submission happens on the review page after
+                the user ticks the confirmation checkbox. */}
+            <Button
+              type="submit"
               className="w-full bg-blue-600 hover:bg-blue-700 h-12 text-lg"
               disabled={isSubmitting}
             >
@@ -880,9 +991,9 @@ function FormInner() {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
-                  กำลังส่งข้อมูล...
+                  กำลังบันทึก...
                 </span>
-              ) : 'ยืนยันการส่งใบสมัคร'}
+              ) : 'ตรวจสอบข้อมูล'}
             </Button>
           </form>
         </CardContent>
