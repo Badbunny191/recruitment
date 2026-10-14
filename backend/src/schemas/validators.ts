@@ -34,6 +34,15 @@ export const FieldMasterCreateSchema = z.object({
   defaultOptions: FieldOptionsSchema.nullable().optional(),
   pdfMappingKey: z.string().nullable().optional(),
   isActive: z.boolean().default(true),
+  // UI enhancement fields
+  section: z.string().nullable().optional(),
+  helpText: z.string().nullable().optional(),
+  placeholder: z.string().nullable().optional(),
+  // Validation
+  validationType: z.string().nullable().optional(),
+  validationMessage: z.string().nullable().optional(),
+  // File config (JSON)
+  fileConfig: z.record(z.string(), z.any()).nullable().optional(),
 });
 
 export const FieldMasterUpdateSchema = FieldMasterCreateSchema.partial();

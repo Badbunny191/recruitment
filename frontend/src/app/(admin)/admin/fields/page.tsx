@@ -409,26 +409,24 @@ export default function FieldMasterPage() {
         isActive: form.isActive,
       };
 
-      // UI fields
-      if (form.helpText.trim()) payload.helpText = form.helpText.trim();
-      if (form.placeholder.trim()) payload.placeholder = form.placeholder.trim();
-      if (form.section) payload.section = form.section;
+      // UI fields - always send (null if empty to clear DB)
+      payload.section = form.section || null;
+      payload.helpText = form.helpText.trim() || null;
+      payload.placeholder = form.placeholder.trim() || null;
 
-      // Validation fields
-      if (form.validationType !== 'NONE') {
-        payload.validationType = form.validationType;
-        if (form.validationMessage.trim()) {
-          payload.validationMessage = form.validationMessage.trim();
-        }
-      }
+      // Validation fields - always send
+      payload.validationType = form.validationType === 'NONE' ? null : form.validationType;
+      payload.validationMessage = form.validationMessage.trim() || null;
 
-      // File config - ALWAYS send if FILE type
+      // File config - send if FILE type, else null
       if (form.fieldType === 'FILE') {
         payload.fileConfig = {
           allowedFileTypes: form.fileConfig.allowedFileTypes || ['pdf'],
           maxFiles: form.fileConfig.maxFiles || 1,
           maxSizeMB: form.fileConfig.maxSizeMB || 10,
         };
+      } else {
+        payload.fileConfig = null;
       }
 
       const url = editing

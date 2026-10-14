@@ -53,7 +53,7 @@ adminRoutes.patch('/fields/:id', auditMiddleware('FIELD_MASTER'), zValidator('js
   const id = c.req.param('id');
   const data = c.req.valid('json') as any;
   const updateValues: any = { ...data };
-  
+
   // Parse defaultOptions to JSON string (or null to clear)
   if (data.defaultOptions !== undefined) {
     updateValues.defaultOptions = data.defaultOptions ? JSON.stringify(data.defaultOptions) : null;
@@ -62,7 +62,14 @@ adminRoutes.patch('/fields/:id', auditMiddleware('FIELD_MASTER'), zValidator('js
   if (data.fileConfig !== undefined) {
     updateValues.fileConfig = data.fileConfig ? JSON.stringify(data.fileConfig) : null;
   }
-  
+  // Convert empty strings to null for nullable fields
+  const nullableStringFields = ['section', 'helpText', 'placeholder', 'validationType', 'validationMessage', 'pdfMappingKey'];
+  for (const field of nullableStringFields) {
+    if (updateValues[field] === '') {
+      updateValues[field] = null;
+    }
+  }
+
   await db.update(fieldMaster).set(updateValues).where(eq(fieldMaster.id, id));
   return c.json({ success: true });
 });
