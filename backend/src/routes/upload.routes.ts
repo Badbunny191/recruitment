@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { FileUploadRequestSchema } from '../schemas/validators';
 import { Bindings } from '../types';
+import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 
 const uploadRoutes = new Hono<{ Bindings: Bindings }>();
 
@@ -15,7 +16,7 @@ const uploadRoutes = new Hono<{ Bindings: Bindings }>();
  * 3. Backend บันทึกไฟล์ลง R2 ผ่าน c.env.R2_BUCKET.put()
  * 4. Frontend ได้ fileKey กลับมา
  */
-uploadRoutes.post('/direct', async (c) => {
+uploadRoutes.post('/direct', rateLimitMiddleware(), async (c) => {
   try {
     // อ่าน Content-Type
     const contentType = c.req.header('Content-Type') || '';

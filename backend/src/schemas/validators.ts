@@ -203,6 +203,33 @@ export const ApplicationAttachmentSchema = z.object({
 // All other fields come from template schema
 export const CORE_FIELD_IDS = ['field-fullname', 'field-email'] as const;
 
+/**
+ * Optional idempotency token. The client should generate a UUID per
+ * submission attempt and send it on the wire. The backend uses it to
+ * reject duplicate submissions within the configured TTL window.
+ *
+ * We accept up to 128 chars which is generous for any UUID or ULID
+ * variant. Empty / missing is allowed: if the client does not send a
+ * token, the idempotency middleware falls back to no-op (the
+ * per-round+email duplicate check still guards the database).
+ */
+export const SubmissionTokenSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .optional();
+
+/**
+ * Honeypot field schema. The frontend is NOT supposed to render this;
+ * the backend uses it to detect naive bots. Always optional; when
+ * present and non-empty, the request is dropped with 400.
+ *
+ * Validators accept this as part of the body so it propagates from the
+ * zValidator call to the handler without re-parsing. The actual decision
+ * is made by the honeypot middleware, not by Zod.
+ */
+export const HoneypotFieldSchema = z.string().optional();
+
 export const ApplicationSubmitSchema = z.object({
   roundId: z.string(),
   // Support BOTH modes for backward compatibility during transition:
@@ -214,7 +241,12 @@ export const ApplicationSubmitSchema = z.object({
   email: z.string().email().optional(),
   fullname: z.string().optional(),
   nationalId: z.string().optional(),
-  status: ApplicationStatusEnum.default('SUBMITTED'), 
+  status: ApplicationStatusEnum.default('SUBMITTED'),
+  // PR #1: hardening fields
+  // - submissionToken: idempotency key (any opaque client-generated string)
+  // - website_url:    honeypot (must be absent or empty for real users)
+  submissionToken: SubmissionTokenSchema,
+  website_url: HoneypotFieldSchema,
 });
 
 export const FileUploadRequestSchema = z.object({

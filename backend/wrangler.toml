@@ -38,3 +38,32 @@ bucket_name = "sao-storage"
 [vars]
 # ตัวแปรเหล่านี้ตั้งค่าผ่าน .env หรือ Cloudflare Dashboard สำหรับ Production
 JWT_SECRET = "REPLACE_WITH_SUPER_SECRET_KEY"
+
+# =============================================================================
+# PR #1 - Hardening / Anti-bot foundation
+# =============================================================================
+# All flags below have safe defaults applied at the call site. The values
+# shown here are *documentation* — the runtime will read either these
+# [vars] values OR (preferred for production) values set in the
+# Cloudflare Dashboard. The middleware layer also accepts missing values
+# without crashing, so a fresh deploy is always functional.
+#
+#  HONEYPOT_FIELD_NAME       Hidden form field checked by honeypot middleware.
+#                            Default: "website_url" if unset.
+#  RATE_LIMIT_ENABLED        Per-IP rate limiter master switch. Default: true.
+#  RATE_LIMIT_PER_MINUTE     Max requests per minute per IP. Default: 5.
+#  IDEMPOTENCY_ENABLED       Idempotency-token master switch. Default: true.
+#  IDEMPOTENCY_TTL_SECONDS   Token TTL in seconds. Default: 900 (15 min).
+#  TURNSTILE_ENABLED         Cloudflare Turnstile widget switch. Default: false.
+#  TURNSTILE_SITE_KEY        Public site key served via /public/config.
+#  TURNSTILE_SECRET_KEY      Server-side secret for token verification
+#                            (not used in PR #1; verification is out of scope).
+# =============================================================================
+HONEYPOT_FIELD_NAME = "website_url"
+RATE_LIMIT_ENABLED = "true"
+RATE_LIMIT_PER_MINUTE = "5"
+IDEMPOTENCY_ENABLED = "true"
+IDEMPOTENCY_TTL_SECONDS = "900"
+TURNSTILE_ENABLED = "false"
+TURNSTILE_SITE_KEY = ""
+TURNSTILE_SECRET_KEY = ""
