@@ -14,6 +14,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { ActionMenu } from '@/components/ui/action-menu';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
 import { cn } from '@/lib/utils';
+import { useRole } from '@/lib/useRole';
 
 interface Round {
   id: string;
@@ -162,6 +163,7 @@ export default function ApplicationsClient() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { canWrite } = useRole();
 
   // URL State
   const urlRoundId = searchParams.get('round') || '';
@@ -703,7 +705,7 @@ export default function ApplicationsClient() {
       </div>
 
       {/* Bulk Action Bar */}
-      {selectedIds.size > 0 && (
+      {selectedIds.size > 0 && canWrite && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <span className="bg-blue-500 text-white rounded-full px-2.5 py-0.5 text-[11px] font-medium">
@@ -898,7 +900,9 @@ export default function ApplicationsClient() {
                         <ActionMenu
                           size="sm"
                           items={[
-                            { label: '✏️ เปลี่ยนสถานะ', onClick: () => openStatusModal(app, { stopPropagation: () => {} } as React.MouseEvent) },
+                            ...(canWrite
+                              ? [{ label: '✏️ เปลี่ยนสถานะ', onClick: () => openStatusModal(app, { stopPropagation: () => {} } as React.MouseEvent) }]
+                              : []),
                             { label: '👁 ดูรายละเอียด', onClick: () => router.push(`/admin/application-detail?id=${app.id}`) },
                           ]}
                         />

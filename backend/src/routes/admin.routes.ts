@@ -9,7 +9,9 @@ import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middlew
 import { auditMiddleware } from '../middlewares/audit.middleware';
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
-import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema } from '../schemas/validators';
+import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
+import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
+import { ensureNotLastSuperAdmin } from '../services/rbac.service';
 import {
   validateApplicationPattern,
   validateRoundCode,
@@ -3165,5 +3167,386 @@ adminRoutes.get('/rounds/:id/preview-schema', async (c) => {
     },
   });
 });
+
+// =============================================================================
+// FEATURE: User Management (RBAC v1 — Phase 2 P0)
+// =============================================================================
+//
+// All routes below require SUPER_ADMIN via superAdminOnlyMiddleware.
+// Frontend contract: frontend/src/lib/api/users.ts and src/types/user.ts.
+//
+// SECURITY:
+// - SUPER_ADMIN cannot be created via the public API (CreateUserSchema
+//   rejects it). The first SUPER_ADMIN is seeded out-of-band.
+// - Demoting / disabling the LAST active SUPER_ADMIN is rejected by
+//   ensureNotLastSuperAdmin (services/rbac.service.ts).
+// =============================================================================
+
+/**
+ * GET /admin/auth/me
+ * Returns the current authenticated user's profile (no password hash).
+ */
+adminRoutes.get('/auth/me', async (c) => {
+  const user = c.get('jwtPayload');
+  if (!user) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const db = drizzle(c.env.DB);
+  const row = await db
+    .select({
+      id: adminUsers.id,
+      email: adminUsers.email,
+      role: adminUsers.role,
+      isActive: adminUsers.isActive,
+      mustChangePassword: adminUsers.mustChangePassword,
+      passwordChangedAt: adminUsers.passwordChangedAt,
+      failedLoginAttempts: adminUsers.failedLoginAttempts,
+      lockedUntil: adminUsers.lockedUntil,
+      passwordMigrated: adminUsers.passwordMigrated,
+      createdAt: adminUsers.createdAt,
+    })
+    .from(adminUsers)
+    .where(eq(adminUsers.id, user.id))
+    .get();
+
+  if (!row) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  return c.json({ data: row });
+});
+
+/**
+ * GET /admin/users
+ * Lists all admin users. SUPER_ADMIN only.
+ */
+adminRoutes.get('/users', superAdminOnlyMiddleware, async (c) => {
+  const db = drizzle(c.env.DB);
+  const rows = await db
+    .select({
+      id: adminUsers.id,
+      email: adminUsers.email,
+      role: adminUsers.role,
+      isActive: adminUsers.isActive,
+      mustChangePassword: adminUsers.mustChangePassword,
+      passwordChangedAt: adminUsers.passwordChangedAt,
+      failedLoginAttempts: adminUsers.failedLoginAttempts,
+      lockedUntil: adminUsers.lockedUntil,
+      passwordMigrated: adminUsers.passwordMigrated,
+      createdAt: adminUsers.createdAt,
+    })
+    .from(adminUsers)
+    .orderBy(asc(adminUsers.createdAt));
+
+  return c.json({ data: rows });
+});
+
+/**
+ * GET /admin/users/:id
+ */
+adminRoutes.get('/users/:id', superAdminOnlyMiddleware, async (c) => {
+  const id = c.req.param('id');
+  const db = drizzle(c.env.DB);
+  const row = await db
+    .select({
+      id: adminUsers.id,
+      email: adminUsers.email,
+      role: adminUsers.role,
+      isActive: adminUsers.isActive,
+      mustChangePassword: adminUsers.mustChangePassword,
+      passwordChangedAt: adminUsers.passwordChangedAt,
+      failedLoginAttempts: adminUsers.failedLoginAttempts,
+      lockedUntil: adminUsers.lockedUntil,
+      passwordMigrated: adminUsers.passwordMigrated,
+      createdAt: adminUsers.createdAt,
+    })
+    .from(adminUsers)
+    .where(eq(adminUsers.id, id))
+    .get();
+
+  if (!row) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+  return c.json({ data: row });
+});
+
+/**
+ * Helper: generate a random temporary password (16 chars, URL-safe).
+ * Avoids 0/O/1/l/I for readability in printed form.
+ */
+function generateTempPassword(): string {
+  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const out = new Uint8Array(16);
+  crypto.getRandomValues(out);
+  let pw = '';
+  for (let i = 0; i < out.length; i++) {
+    pw += alphabet[out[i] % alphabet.length];
+  }
+  return pw;
+}
+
+/**
+ * POST /admin/users
+ * Creates a new admin user (non-SUPER_ADMIN).
+ * Returns the generated temporary password once (admin must hand it to the user).
+ */
+adminRoutes.post(
+  '/users',
+  superAdminOnlyMiddleware,
+  auditMiddleware('ADMIN_USER'),
+  zValidator('json', CreateUserSchema),
+  async (c) => {
+    const data = c.req.valid('json') as { email: string; role: 'ADMIN' | 'VIEWER'; mustChangePassword?: boolean };
+    const db = drizzle(c.env.DB);
+
+    // Reject duplicate email.
+    const existing = await db
+      .select({ id: adminUsers.id })
+      .from(adminUsers)
+      .where(eq(adminUsers.email, data.email))
+      .get();
+    if (existing) {
+      return c.json({ error: 'EMAIL_TAKEN', message: 'อีเมลนี้ถูกใช้แล้ว' }, 409);
+    }
+
+    const id = uuidv4();
+    const tempPassword = generateTempPassword();
+    const now = Math.floor(Date.now() / 1000);
+
+    await db.insert(adminUsers).values({
+      id,
+      email: data.email,
+      // NOTE: /admin/auth/login currently does a plaintext compare on
+      // passwordHash. We follow the same convention here; the passwordMigrated
+      // flag is set to false so a future hardening pass can detect and
+      // re-hash this user.
+      passwordHash: tempPassword,
+      role: data.role,
+      isActive: true,
+      mustChangePassword: data.mustChangePassword ?? true,
+      passwordChangedAt: now,
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      passwordMigrated: false,
+    } as any);
+
+    return c.json(
+      {
+        success: true,
+        id,
+        tempPassword,
+        message: 'สร้างผู้ใช้สำเร็จ — กรุณาส่งรหัสผ่านชั่วคราวให้ผู้ใช้อย่างปลอดภัย',
+      },
+      201,
+    );
+  },
+);
+
+/**
+ * PATCH /admin/users/:id
+ * Updates email, role, or active status of an existing user.
+ * Last-SUPER_ADMIN protection is enforced for role / isActive changes.
+ */
+adminRoutes.patch(
+  '/users/:id',
+  superAdminOnlyMiddleware,
+  auditMiddleware('ADMIN_USER'),
+  zValidator('json', UpdateUserSchema),
+  async (c) => {
+    const id = c.req.param('id');
+    const data = c.req.valid('json') as { email?: string; role?: 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER'; isActive?: boolean };
+    const db = drizzle(c.env.DB);
+
+    const target = await db
+      .select()
+      .from(adminUsers)
+      .where(eq(adminUsers.id, id))
+      .get();
+    if (!target) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+
+    // Disallow promoting to SUPER_ADMIN through the API.
+    if (data.role === 'SUPER_ADMIN' && target.role !== 'SUPER_ADMIN') {
+      return c.json(
+        { error: 'CANNOT_PROMOTE', message: 'ห้ามเลื่อนขั้นเป็น SUPER_ADMIN ผ่าน API' },
+        403,
+      );
+    }
+
+    // Last-SUPER_ADMIN guard: any change that would reduce active SUPER_ADMINs.
+    if (target.role === 'SUPER_ADMIN') {
+      const nextRole = data.role ?? target.role;
+      const nextIsActive = data.isActive ?? !!target.isActive;
+      const guard = await ensureNotLastSuperAdmin(c.env, target.id, nextRole, nextIsActive);
+      if (!guard.ok) {
+        const status = guard.reason === 'DB_ERROR' ? 500 : 409;
+        return c.json(
+          {
+            error: guard.reason ?? 'FORBIDDEN',
+            message: 'ไม่สามารถดำเนินการกับ SUPER_ADMIN คนสุดท้ายได้',
+            activeSuperAdminCount: guard.activeSuperAdminCount,
+          },
+          status,
+        );
+      }
+    }
+
+    // Email uniqueness check (if changed).
+    if (data.email && data.email !== target.email) {
+      const dup = await db
+        .select({ id: adminUsers.id })
+        .from(adminUsers)
+        .where(eq(adminUsers.email, data.email))
+        .get();
+      if (dup) {
+        return c.json({ error: 'EMAIL_TAKEN', message: 'อีเมลนี้ถูกใช้แล้ว' }, 409);
+      }
+    }
+
+    const updateValues: Record<string, any> = {};
+    if (data.email !== undefined) updateValues.email = data.email;
+    if (data.role !== undefined) updateValues.role = data.role;
+    if (data.isActive !== undefined) updateValues.isActive = data.isActive;
+
+    if (Object.keys(updateValues).length === 0) {
+      return c.json({ success: true, message: 'ไม่มีการเปลี่ยนแปลง' });
+    }
+
+    await db.update(adminUsers).set(updateValues).where(eq(adminUsers.id, id));
+    return c.json({ success: true });
+  },
+);
+
+/**
+ * POST /admin/users/:id/reset-password
+ * Generates a new temporary password and forces the user to change it on next login.
+ * Returns the new password once.
+ */
+adminRoutes.post(
+  '/users/:id/reset-password',
+  superAdminOnlyMiddleware,
+  auditMiddleware('ADMIN_USER'),
+  async (c) => {
+    const id = c.req.param('id');
+    const db = drizzle(c.env.DB);
+
+    const target = await db.select().from(adminUsers).where(eq(adminUsers.id, id)).get();
+    if (!target) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+
+    const tempPassword = generateTempPassword();
+    const now = Math.floor(Date.now() / 1000);
+
+    await db
+      .update(adminUsers)
+      .set({
+        passwordHash: tempPassword,
+        mustChangePassword: true,
+        passwordChangedAt: now,
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+        passwordMigrated: false,
+      } as any)
+      .where(eq(adminUsers.id, id));
+
+    return c.json({
+      success: true,
+      tempPassword,
+      message: 'รีเซ็ตรหัสผ่านสำเร็จ',
+    });
+  },
+);
+
+/**
+ * POST /admin/users/:id/force-change-password
+ * Toggles the mustChangePassword flag without rotating the password.
+ */
+adminRoutes.post(
+  '/users/:id/force-change-password',
+  superAdminOnlyMiddleware,
+  auditMiddleware('ADMIN_USER'),
+  zValidator('json', ForceChangePasswordSchema),
+  async (c) => {
+    const id = c.req.param('id');
+    const { mustChangePassword } = c.req.valid('json') as { mustChangePassword: boolean };
+    const db = drizzle(c.env.DB);
+
+    const target = await db.select().from(adminUsers).where(eq(adminUsers.id, id)).get();
+    if (!target) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+
+    await db
+      .update(adminUsers)
+      .set({ mustChangePassword } as any)
+      .where(eq(adminUsers.id, id));
+    return c.json({ success: true });
+  },
+);
+
+/**
+ * POST /admin/users/:id/disable
+ * Disables a user (isActive=false). Last-SUPER_ADMIN protection applies.
+ */
+adminRoutes.post(
+  '/users/:id/disable',
+  superAdminOnlyMiddleware,
+  auditMiddleware('ADMIN_USER'),
+  zValidator('json', DisableUserSchema),
+  async (c) => {
+    const id = c.req.param('id');
+    const { reason } = c.req.valid('json') as { reason: string };
+    const db = drizzle(c.env.DB);
+
+    const target = await db.select().from(adminUsers).where(eq(adminUsers.id, id)).get();
+    if (!target) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+
+    // Don't disable yourself.
+    const me = c.get('jwtPayload');
+    if (me && me.id === id) {
+      return c.json(
+        { error: 'CANNOT_DISABLE_SELF', message: 'ไม่สามารถปิดใช้งานบัญชีตัวเองได้' },
+        400,
+      );
+    }
+
+    // Last-SUPER_ADMIN protection: we are transitioning target (currently
+    // active) to isActive=false. Pass nextIsActive=false to the guard.
+    if (target.role === 'SUPER_ADMIN' && target.isActive) {
+      const guard = await ensureNotLastSuperAdmin(c.env, target.id, target.role, false);
+      if (!guard.ok) {
+        const status = guard.reason === 'DB_ERROR' ? 500 : 409;
+        return c.json(
+          {
+            error: guard.reason ?? 'FORBIDDEN',
+            message: 'ไม่สามารถปิดใช้งาน SUPER_ADMIN คนสุดท้ายได้',
+            activeSuperAdminCount: guard.activeSuperAdminCount,
+          },
+          status,
+        );
+      }
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    await db
+      .update(adminUsers)
+      .set({
+        isActive: false,
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+        // Persist reason in the audit log via payload capture. We also
+        // stash it on the user record briefly via a JSON-less side channel:
+        // the audit middleware already records the request body, so we
+        // don't need a column here.
+      } as any)
+      .where(eq(adminUsers.id, id));
+
+    return c.json({ success: true, disabledAt: now, reason });
+  },
+);
 
 export { adminRoutes };

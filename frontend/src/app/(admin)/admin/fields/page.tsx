@@ -15,6 +15,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { ActionMenu } from '@/components/ui/action-menu';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
 import { cn } from '@/lib/utils';
+import { useRole } from '@/lib/useRole';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_ID' | 'REGEX';
@@ -266,6 +267,7 @@ function FilterPill({
 // ============================================
 
 export default function FieldMasterPage() {
+  const { canWrite } = useRole();
   const [fields, setFields] = useState<FieldMaster[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -576,9 +578,11 @@ export default function FieldMasterPage() {
             <p className="text-[11px] text-slate-500">จัดการฟิลด์ที่ใช้ซ้ำได้ในแบบฟอร์มทั้งหมดในระบบ</p>
           </div>
         </div>
-        <Button onClick={openCreate} size="sm" className="h-8">
-          + เพิ่ม Field ใหม่
-        </Button>
+        {canWrite && (
+          <Button onClick={openCreate} size="sm" className="h-8">
+            + เพิ่ม Field ใหม่
+          </Button>
+        )}
       </div>
 
       {/* ============================================ */}
@@ -756,16 +760,18 @@ export default function FieldMasterPage() {
 
                     {/* Actions - ⋮ only */}
                     <TableCell className="py-3 text-right align-top">
-                      <ActionMenu
-                        size="sm"
-                        items={[
-                          { label: '✏️ แก้ไข', onClick: () => openEdit(field) },
-                          ...(field.isActive
-                            ? [{ label: '🗑 ลบ (Soft Delete)', type: 'danger' as const, onClick: () => handleDeleteClick(field) }]
-                            : []
-                          ),
-                        ]}
-                      />
+                      {canWrite ? (
+                        <ActionMenu
+                          size="sm"
+                          items={[
+                            { label: '✏️ แก้ไข', onClick: () => openEdit(field) },
+                            ...(field.isActive
+                              ? [{ label: '🗑 ลบ (Soft Delete)', type: 'danger' as const, onClick: () => handleDeleteClick(field) }]
+                              : []
+                            ),
+                          ]}
+                        />
+                      ) : null}
                     </TableCell>
                   </TableRow>
                 ))

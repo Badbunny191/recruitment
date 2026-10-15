@@ -24,6 +24,7 @@ import {
 } from '@/lib/api/users';
 import type { AdminUser, UserRole } from '@/types/user';
 import { ROLE_LABELS, ROLE_DESCRIPTIONS, ROLE_COLORS } from '@/types/user';
+import { useRole } from '@/lib/useRole';
 
 // =============================================================================
 // DESIGN SYSTEM - Smart Family Style
@@ -71,6 +72,7 @@ const EMPTY_CREATE_FORM: CreateUserForm = {
 // MAIN COMPONENT
 // =============================================================================
 export default function UsersPage() {
+  const { canManageUsers, canWrite } = useRole();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -130,11 +132,8 @@ export default function UsersPage() {
   // =============================================================================
   // PERMISSIONS
   // =============================================================================
-  const canManageUsers = useMemo(() => {
-    if (!currentUser) return false;
-    return currentUser.role === 'SUPER_ADMIN' || currentUser.role === 'ADMIN';
-  }, [currentUser]);
-
+  // canManageUsers is sourced from useRole() (centralized).
+  // canWrite is exposed for symmetry (e.g. hide non-essential write actions for viewers).
   const canModifyUser = (user: AdminUser): boolean => {
     if (!currentUser) return false;
     if (currentUser.role === 'SUPER_ADMIN') return true;

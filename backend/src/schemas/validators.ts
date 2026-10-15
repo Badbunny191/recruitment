@@ -23,6 +23,59 @@ export const LoginRequestSchema = z.object({
 // (the database has been migrated to the new set in migration 020).
 export const UserRoleEnum = z.enum(USER_ROLES);
 
+// =============================================================================
+// User Management Schemas (Phase 2 P0)
+// =============================================================================
+
+/**
+ * Body of POST /admin/users
+ * - email: unique, valid
+ * - role : must be in USER_ROLES
+ * - mustChangePassword: default true (always require user to change on first login)
+ *
+ * SUPER_ADMIN is NOT creatable via the public endpoint. The first SUPER_ADMIN
+ * is seeded out-of-band; subsequent SUPER_ADMINs are created directly in the DB.
+ */
+export const CreateUserSchema = z.object({
+  email: z.string().email('อีเมลไม่ถูกต้อง'),
+  role: UserRoleEnum.refine((r) => r !== 'SUPER_ADMIN', {
+    message: 'ห้ามสร้าง SUPER_ADMIN ผ่าน API (ต้องสร้างผ่านช่องทาง DB เท่านั้น)',
+  }),
+  mustChangePassword: z.boolean().optional().default(true),
+});
+
+/**
+ * Body of PATCH /admin/users/:id
+ * - email: optional, unique
+ * - role : optional, but cannot be set to SUPER_ADMIN here
+ * - isActive: optional
+ *
+ * Demoting a SUPER_ADMIN to ADMIN is gated by services/rbac.service.ts
+ * (ensureNotLastSuperAdmin). Demoting the LAST SUPER_ADMIN is rejected.
+ */
+export const UpdateUserSchema = z.object({
+  email: z.string().email('อีเมลไม่ถูกต้อง').optional(),
+  role: UserRoleEnum.optional(),
+  isActive: z.boolean().optional(),
+});
+
+/**
+ * Body of POST /admin/users/:id/force-change-password
+ * Caller is the SUPER_ADMIN. The boolean indicates whether the target user
+ * MUST change their password on the next login.
+ */
+export const ForceChangePasswordSchema = z.object({
+  mustChangePassword: z.boolean(),
+});
+
+/**
+ * Body of POST /admin/users/:id/disable
+ * A reason is required and recorded in the audit log.
+ */
+export const DisableUserSchema = z.object({
+  reason: z.string().min(1, 'กรุณาระบุเหตุผล').max(500),
+});
+
 // Master data sources available to MASTER_DATA fields (Phase 1: organizations only)
 export const MASTER_DATA_SOURCES = ['organizations'] as const;
 export type MasterDataSource = (typeof MASTER_DATA_SOURCES)[number];

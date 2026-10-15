@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Card, CardContent } from '@/components/ui/card';
 import { SearchableDropdown } from '@/components/SearchableDropdown';
+import { useRole } from '@/lib/useRole';
 
 interface Position {
   id: string;
@@ -46,6 +47,7 @@ const EMPTY_FORM: FormState = {
 };
 
 export default function PositionsPage() {
+  const { canWrite } = useRole();
   const [positions, setPositions] = useState<Position[]>([]);
   const [jobFamilies, setJobFamilies] = useState<JobFamily[]>([]);
   const [positionLevels, setPositionLevels] = useState<PositionLevel[]>([]);
@@ -216,12 +218,14 @@ export default function PositionsPage() {
             ใช้ SearchableDropdown ในการเลือก Job Family และ Position Level
           </p>
         </div>
-        <Button onClick={openCreate}>
-          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          เพิ่มตำแหน่งใหม่
-        </Button>
+        {canWrite && (
+          <Button onClick={openCreate}>
+            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            เพิ่มตำแหน่งใหม่
+          </Button>
+        )}
       </div>
 
       {/* Stats */}
@@ -301,20 +305,22 @@ export default function PositionsPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      <div className="flex gap-2 justify-end">
-                        <Button variant="outline" size="sm" onClick={() => openEdit(p)}>แก้ไข</Button>
-                        <Button variant="ghost" size="sm" onClick={() => handleToggle(p)} className="text-slate-600">
-                          {p.isActive ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => openDeleteConfirm(p)}
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                        >
-                          ลบ
-                        </Button>
-                      </div>
+                      {canWrite ? (
+                        <div className="flex gap-2 justify-end">
+                          <Button variant="outline" size="sm" onClick={() => openEdit(p)}>แก้ไข</Button>
+                          <Button variant="ghost" size="sm" onClick={() => handleToggle(p)} className="text-slate-600">
+                            {p.isActive ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openDeleteConfirm(p)}
+                            className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          >
+                            ลบ
+                          </Button>
+                        </div>
+                      ) : null}
                     </TableCell>
                   </TableRow>
                 ))

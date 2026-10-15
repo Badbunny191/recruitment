@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Card, CardContent } from '@/components/ui/card';
+import { useRole } from '@/lib/useRole';
 
 interface Organization {
   id: string;
@@ -29,6 +30,7 @@ const EMPTY_FORM: FormState = {
 };
 
 export default function OrganizationsPage() {
+  const { canWrite } = useRole();
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -154,12 +156,14 @@ export default function OrganizationsPage() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
         <h1 className="text-2xl font-bold">หน่วยงาน (Organizations)</h1>
-        <Button onClick={openCreate}>
-          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          เพิ่มหน่วยงานใหม่
-        </Button>
+        {canWrite && (
+          <Button onClick={openCreate}>
+            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            เพิ่มหน่วยงานใหม่
+          </Button>
+        )}
       </div>
 
       {/* Stats */}
@@ -266,19 +270,21 @@ export default function OrganizationsPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      <div className="flex gap-2 justify-end">
-                        <Button variant="outline" size="sm" onClick={() => openEdit(org)}>
-                          แก้ไข
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleToggle(org)}
-                          className="text-slate-600 hover:text-slate-800"
-                        >
-                          {org.isActive ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
-                        </Button>
-                      </div>
+                      {canWrite ? (
+                        <div className="flex gap-2 justify-end">
+                          <Button variant="outline" size="sm" onClick={() => openEdit(org)}>
+                            แก้ไข
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleToggle(org)}
+                            className="text-slate-600 hover:text-slate-800"
+                          >
+                            {org.isActive ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
+                          </Button>
+                        </div>
+                      ) : null}
                     </TableCell>
                   </TableRow>
                 ))

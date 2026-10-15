@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAdminAuth } from '@/lib/useAdminAuth';
+import { useRole } from '@/lib/useRole';
 import { cn } from '@/lib/utils';
 
 // ============================================
@@ -11,76 +12,94 @@ import { cn } from '@/lib/utils';
 type NavItem = {
   label: string;
   href: string;
+  /** Minimum role required to see this menu item. */
+  minRole: 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER';
 };
 
 type NavGroup = {
   id: string;
   label: string;
   icon: string;
+  /** Minimum role required to see this group. */
+  minRole: 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER';
   items: NavItem[];
 };
+
+const ROLE_RANK: Record<'SUPER_ADMIN' | 'ADMIN' | 'VIEWER', number> = {
+  VIEWER: 1,
+  ADMIN: 2,
+  SUPER_ADMIN: 3,
+};
+
+function canSeeNav(
+  minRole: 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER',
+  role: 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER' | null
+): boolean {
+  if (!role) return false;
+  return ROLE_RANK[role] >= ROLE_RANK[minRole];
+}
 
 const NAV_GROUPS: NavGroup[] = [
   {
     id: 'dashboard',
     label: 'Dashboard',
     icon: '📊',
-    items: [{ label: 'Dashboard', href: '/admin/dashboard' }],
+    minRole: 'VIEWER',
+    items: [{ label: 'Dashboard', href: '/admin/dashboard', minRole: 'VIEWER' }],
   },
   {
     id: 'recruitment',
     label: 'Recruitment',
     icon: '📋',
+    minRole: 'VIEWER',
     items: [
-      { label: 'รอบรับสมัคร', href: '/admin/rounds' },
-      { label: 'ใบสมัคร', href: '/admin/applications' },
-      
+      { label: 'ใบสมัคร', href: '/admin/applications', minRole: 'VIEWER' },
+      { label: 'รอบรับสมัคร', href: '/admin/rounds', minRole: 'ADMIN' },
     ],
   },
   {
     id: 'form-builder',
     label: 'Form Builder',
     icon: '🧩',
+    minRole: 'ADMIN',
     items: [
-      { label: 'Templates', href: '/admin/templates' },
-      { label: 'Field Library', href: '/admin/fields' },
+      { label: 'Templates', href: '/admin/templates', minRole: 'ADMIN' },
+      { label: 'Field Library', href: '/admin/fields', minRole: 'ADMIN' },
     ],
   },
   {
     id: 'organization',
     label: 'Organization',
     icon: '🏢',
+    minRole: 'ADMIN',
     items: [
-      { label: 'หน่วยงาน', href: '/admin/organizations' },
-      { label: 'Job Family', href: '/admin/job-families' },
-      { label: 'Position Level', href: '/admin/position-levels' },
-      { label: 'Positions', href: '/admin/positions' },
+      { label: 'หน่วยงาน', href: '/admin/organizations', minRole: 'ADMIN' },
+      { label: 'Job Family', href: '/admin/job-families', minRole: 'ADMIN' },
+      { label: 'Position Level', href: '/admin/position-levels', minRole: 'ADMIN' },
+      { label: 'Positions', href: '/admin/positions', minRole: 'ADMIN' },
     ],
   },
   {
     id: 'system',
     label: 'System',
     icon: '⚙️',
+    minRole: 'VIEWER',
     items: [
-      { label: 'จัดการผู้ใช้งาน', href: '/admin/users' },
-      { label: 'Audit Logs', href: '/admin/audit-logs' },
+      { label: 'Audit Logs', href: '/admin/audit-logs', minRole: 'VIEWER' },
+      { label: 'จัดการผู้ใช้งาน', href: '/admin/users', minRole: 'SUPER_ADMIN' },
     ],
   },
-
-
-
-
 ];
 
 // ============================================
 // NAV GROUP DROPDOWN (Desktop)
 // ============================================
-function NavGroupDropdown({ 
-  group, 
-  isActive, 
-  pathname 
-}: { 
-  group: NavGroup; 
+function NavGroupDropdown({
+  group,
+  isActive,
+  pathname
+}: {
+  group: NavGroup;
   isActive: boolean;
   pathname: string;
 }) {
@@ -108,8 +127,8 @@ function NavGroupDropdown({
         href={group.items[0].href}
         className={cn(
           "px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5",
-          isActive 
-            ? "bg-slate-700 text-white" 
+          isActive
+            ? "bg-slate-700 text-white"
             : "text-slate-300 hover:bg-slate-700/50 hover:text-white"
         )}
       >
@@ -125,8 +144,8 @@ function NavGroupDropdown({
         onClick={() => setOpen(!open)}
         className={cn(
           "px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5",
-          isActive 
-            ? "bg-slate-700 text-white" 
+          isActive
+            ? "bg-slate-700 text-white"
             : "text-slate-300 hover:bg-slate-700/50 hover:text-white"
         )}
       >
@@ -154,8 +173,8 @@ function NavGroupDropdown({
                   onClick={() => setOpen(false)}
                   className={cn(
                     "block px-4 py-2 text-sm transition-colors",
-                    isItemActive 
-                      ? "bg-blue-50 text-blue-700 font-medium" 
+                    isItemActive
+                      ? "bg-blue-50 text-blue-700 font-medium"
                       : "text-slate-700 hover:bg-slate-50"
                   )}
                 >
@@ -173,14 +192,16 @@ function NavGroupDropdown({
 // ============================================
 // MOBILE DRAWER
 // ============================================
-function MobileDrawer({ 
-  isOpen, 
-  onClose, 
-  pathname 
-}: { 
-  isOpen: boolean; 
-  onClose: () => void; 
+function MobileDrawer({
+  isOpen,
+  onClose,
+  pathname,
+  visibleGroups
+}: {
+  isOpen: boolean;
+  onClose: () => void;
   pathname: string;
+  visibleGroups: NavGroup[];
 }) {
   const router = useRouter();
   const { logout } = useAdminAuth();
@@ -194,12 +215,12 @@ function MobileDrawer({
     <>
       {/* Backdrop */}
       {isOpen && (
-        <div 
-          className="fixed inset-0 bg-black/50 z-40 md:hidden" 
+        <div
+          className="fixed inset-0 bg-black/50 z-40 md:hidden"
           onClick={onClose}
         />
       )}
-      
+
       {/* Drawer */}
       <div
         className={cn(
@@ -221,9 +242,9 @@ function MobileDrawer({
             </svg>
           </button>
         </div>
-        
+
         <nav className="p-3 space-y-1">
-          {NAV_GROUPS.map((group) => {
+          {visibleGroups.map((group) => {
             const isGroupActive = group.items.some(item => pathname === item.href || pathname.startsWith(item.href + '/'));
             return (
               <div key={group.id} className="space-y-0.5">
@@ -243,8 +264,8 @@ function MobileDrawer({
                       onClick={onClose}
                       className={cn(
                         "block pl-8 pr-3 py-2 rounded-md text-sm transition-colors",
-                        isItemActive 
-                          ? "bg-slate-700 text-white font-medium" 
+                        isItemActive
+                          ? "bg-slate-700 text-white font-medium"
                           : "text-slate-300 hover:bg-slate-700/50 hover:text-white"
                       )}
                     >
@@ -277,6 +298,7 @@ export function AdminNavbar() {
   const pathname = usePathname();
   const router = useRouter();
   const { logout } = useAdminAuth();
+  const { role } = useRole();
   const [drawerOpen, setDrawerOpen] = React.useState(false);
 
   // Close drawer on route change
@@ -288,6 +310,12 @@ export function AdminNavbar() {
     logout();
     router.push('/admin/login');
   };
+
+  // Filter groups by role (centralized — no hardcoded duplicates).
+  const visibleGroups = React.useMemo(
+    () => NAV_GROUPS.filter((g) => canSeeNav(g.minRole, role)),
+    [role]
+  );
 
   return (
     <>
@@ -312,7 +340,7 @@ export function AdminNavbar() {
 
             {/* Desktop Nav Groups */}
             <div className="hidden md:flex items-center gap-1 flex-1 justify-center">
-              {NAV_GROUPS.map((group) => {
+              {visibleGroups.map((group) => {
                 const isGroupActive = group.items.some(item => pathname === item.href || pathname.startsWith(item.href + '/'));
                 return (
                   <NavGroupDropdown
@@ -339,7 +367,12 @@ export function AdminNavbar() {
         </div>
       </nav>
 
-      <MobileDrawer isOpen={drawerOpen} onClose={() => setDrawerOpen(false)} pathname={pathname} />
+      <MobileDrawer
+        isOpen={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        pathname={pathname}
+        visibleGroups={visibleGroups}
+      />
     </>
   );
 }

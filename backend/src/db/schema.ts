@@ -6,8 +6,17 @@ export const adminUsers = sqliteTable('admin_users', {
   email: text('email').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
   role: text('role').notNull().default('ADMIN'),
-  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
-});
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  // User Management (Migration 021) — additive
+  isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
+  mustChangePassword: integer('must_change_password', { mode: 'boolean' }).notNull().default(false),
+  passwordChangedAt: integer('password_changed_at', { mode: 'timestamp' }),
+  failedLoginAttempts: integer('failed_login_attempts').notNull().default(0),
+  lockedUntil: integer('locked_until', { mode: 'timestamp' }),
+  passwordMigrated: integer('password_migrated', { mode: 'boolean' }).notNull().default(false),
+}, (table) => ({
+  roleActiveIdx: index('idx_admin_users_role_active').on(table.role, table.isActive),
+}));
 
 export const fieldMaster = sqliteTable('field_master', {
   id: text('id').primaryKey(),

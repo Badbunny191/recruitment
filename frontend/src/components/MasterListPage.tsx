@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Card, CardContent } from '@/components/ui/card';
+import { useRole } from '@/lib/useRole';
 
 export interface MasterItem {
   id: string;
@@ -31,6 +32,7 @@ export interface MasterListPageConfig {
 }
 
 export function MasterListPage({ config }: { config: MasterListPageConfig }) {
+  const { canWrite } = useRole();
   const nameField = config.nameField || 'name';
   const allowDelete = config.allowDelete ?? false;
   const entityNameThForDelete = config.entityNameThForDelete || config.entityNameTh;
@@ -200,12 +202,14 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
         <h1 className="text-2xl font-bold">{config.title}</h1>
-        <Button onClick={openCreate}>
-          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          {config.addButtonLabel}
-        </Button>
+        {canWrite && (
+          <Button onClick={openCreate}>
+            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            {config.addButtonLabel}
+          </Button>
+        )}
       </div>
 
       {/* Stats */}
@@ -312,29 +316,31 @@ export function MasterListPage({ config }: { config: MasterListPageConfig }) {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      <div className="flex gap-2 justify-end">
-                        <Button variant="outline" size="sm" onClick={() => openEdit(item)}>
-                          แก้ไข
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleToggle(item)}
-                          className="text-slate-600 hover:text-slate-800"
-                        >
-                          {item.isActive ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
-                        </Button>
-                        {allowDelete && (
+                      {canWrite ? (
+                        <div className="flex gap-2 justify-end">
+                          <Button variant="outline" size="sm" onClick={() => openEdit(item)}>
+                            แก้ไข
+                          </Button>
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => openDeleteConfirm(item)}
-                            className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={() => handleToggle(item)}
+                            className="text-slate-600 hover:text-slate-800"
                           >
-                            ลบ
+                            {item.isActive ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
                           </Button>
-                        )}
-                      </div>
+                          {allowDelete && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => openDeleteConfirm(item)}
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                            >
+                              ลบ
+                            </Button>
+                          )}
+                        </div>
+                      ) : null}
                     </TableCell>
                   </TableRow>
                 ))

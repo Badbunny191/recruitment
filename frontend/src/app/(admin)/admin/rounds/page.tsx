@@ -17,6 +17,7 @@ import { ActionMenu } from '@/components/ui/action-menu';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
 import { ApplicationPatternField } from '@/components/ApplicationPatternField';
 import { cn } from '@/lib/utils';
+import { useRole } from '@/lib/useRole';
 
 interface Round {
   id: string;
@@ -226,6 +227,7 @@ function VersionBadge({
 // ============================================
 
 export default function RoundsPage() {
+  const { canWrite } = useRole();
   const [rounds, setRounds] = useState<Round[]>([]);
   const [roundsWithVersionInfo, setRoundsWithVersionInfo] = useState<RoundVersionInfo[]>([]);
   const [publishedVersions, setPublishedVersions] = useState<PublishedTemplateVersion[]>([]);
@@ -630,9 +632,11 @@ export default function RoundsPage() {
             <p className="text-[11px] text-slate-500">จัดการรอบการรับสมัครทั้งหมดในระบบ</p>
           </div>
         </div>
-        <Button onClick={openCreate} disabled={publishedVersions.length === 0} size="sm" className="h-8">
-          + สร้างรอบใหม่
-        </Button>
+        {canWrite && (
+          <Button onClick={openCreate} disabled={publishedVersions.length === 0} size="sm" className="h-8">
+            + สร้างรอบใหม่
+          </Button>
+        )}
       </div>
 
       {/* Warning Banner */}
@@ -802,23 +806,33 @@ export default function RoundsPage() {
                       
                       {/* Actions - ⋮ only */}
                       <TableCell className="py-3 text-right align-top">
-                        <ActionMenu
-                          size="sm"
-                          items={[
-                            { label: '✏️ แก้ไข', onClick: () => openEdit(r) },
-                            { label: '👁 ดูตัวอย่าง', onClick: () => window.open(`/admin/rounds/preview?id=${r.id}`, '_blank') },
-                            { label: '📋 ทำสำเนา', onClick: () => openCloneModal(r.id) },
-                            ...(versionWarning ? [{ label: '🔍 ดูความต่าง', onClick: () => openCompareModal(versionWarning.currentVersionId, versionWarning.latestVersionId) }] : []),
-                            { type: 'separator', label: '', onClick: () => {} },
-                            ...(!r.deletedAt 
-                              ? [{ label: '📁 จัดเก็บ', onClick: () => setArchiveDialog({ open: true, round: r }) }]
-                              : [
-                                  { label: '↩ เรียกคืน', onClick: () => setRestoreDialog({ open: true, round: r }) },
-                                  { label: '🗑 ลบถาวร', type: 'danger' as const, onClick: () => openDeleteDialog(r) },
-                                ]
-                            ),
-                          ]}
-                        />
+                        {canWrite ? (
+                          <ActionMenu
+                            size="sm"
+                            items={[
+                              { label: '✏️ แก้ไข', onClick: () => openEdit(r) },
+                              { label: '👁 ดูตัวอย่าง', onClick: () => window.open(`/admin/rounds/preview?id=${r.id}`, '_blank') },
+                              { label: '📋 ทำสำเนา', onClick: () => openCloneModal(r.id) },
+                              ...(versionWarning ? [{ label: '🔍 ดูความต่าง', onClick: () => openCompareModal(versionWarning.currentVersionId, versionWarning.latestVersionId) }] : []),
+                              { type: 'separator', label: '', onClick: () => {} },
+                              ...(!r.deletedAt
+                                ? [{ label: '📁 จัดเก็บ', onClick: () => setArchiveDialog({ open: true, round: r }) }]
+                                : [
+                                    { label: '↩ เรียกคืน', onClick: () => setRestoreDialog({ open: true, round: r }) },
+                                    { label: '🗑 ลบถาวร', type: 'danger' as const, onClick: () => openDeleteDialog(r) },
+                                  ]
+                              ),
+                            ]}
+                          />
+                        ) : (
+                          <ActionMenu
+                            size="sm"
+                            items={[
+                              { label: '👁 ดูตัวอย่าง', onClick: () => window.open(`/admin/rounds/preview?id=${r.id}`, '_blank') },
+                              ...(versionWarning ? [{ label: '🔍 ดูความต่าง', onClick: () => openCompareModal(versionWarning.currentVersionId, versionWarning.latestVersionId) }] : []),
+                            ]}
+                          />
+                        )}
                       </TableCell>
                     </TableRow>
                   );

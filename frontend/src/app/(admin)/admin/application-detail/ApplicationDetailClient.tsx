@@ -8,6 +8,7 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import { useRole } from '@/lib/useRole';
 
 interface ApplicationAttachment {
   id: string;
@@ -70,6 +71,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 export default function ApplicationDetailClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { canWrite } = useRole();
   const [app, setApp] = useState<Application | null>(null);
   const [history, setHistory] = useState<StatusHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -294,9 +296,11 @@ export default function ApplicationDetailClient() {
           <div className="px-4 py-2 bg-gray-100 rounded-lg">
             <StatusBadge status={app.status as any} className="text-base px-3 py-1" />
           </div>
-          <Button onClick={openStatusModal} size="sm">
-            เปลี่ยนสถานะ
-          </Button>
+          {canWrite && (
+            <Button onClick={openStatusModal} size="sm">
+              เปลี่ยนสถานะ
+            </Button>
+          )}
         </div>
       </div>
 

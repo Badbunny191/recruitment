@@ -14,6 +14,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { ActionMenu } from '@/components/ui/action-menu';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
 import { cn } from '@/lib/utils';
+import { useRole } from '@/lib/useRole';
 
 interface TemplateVersion {
   id: string;
@@ -97,6 +98,7 @@ function FilterPill({
 
 export default function TemplatesPage() {
   const router = useRouter();
+  const { canWrite } = useRole();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -416,9 +418,11 @@ export default function TemplatesPage() {
             <p className="text-[11px] text-slate-500">จัดการแม่แบบฟอร์มสำหรับการรับสมัครทั้งหมดในระบบ</p>
           </div>
         </div>
-        <Button onClick={openCreate} size="sm" className="h-8">
-          + สร้าง Template
-        </Button>
+        {canWrite && (
+          <Button onClick={openCreate} size="sm" className="h-8">
+            + สร้าง Template
+          </Button>
+        )}
       </div>
 
       {/* ============================================ */}
@@ -600,21 +604,30 @@ export default function TemplatesPage() {
 
                       {/* Actions - ⋮ only */}
                       <TableCell className="py-3 text-right align-top">
-                        <ActionMenu
-                          size="sm"
-                          items={[
-                            { label: '✏️ แก้ไข', onClick: () => openEdit(tpl, { stopPropagation: () => {} } as React.MouseEvent) },
-                            { label: '🛠 Builder', onClick: () => router.push(`/admin/templates/builder?id=${tpl.id}`) },
-                            { type: 'separator', label: '', onClick: () => {} },
-                            ...(!tpl.deletedAt
-                              ? [{ label: '📁 จัดเก็บ', onClick: () => setArchiveDialog({ open: true, tpl }) }]
-                              : [
-                                  { label: '↩ เรียกคืน', onClick: () => setRestoreDialog({ open: true, tpl }) },
-                                  { label: '🗑 ลบถาวร', type: 'danger' as const, onClick: () => openDeleteDialog(tpl) },
-                                ]
-                            ),
-                          ]}
-                        />
+                        {canWrite ? (
+                          <ActionMenu
+                            size="sm"
+                            items={[
+                              { label: '✏️ แก้ไข', onClick: () => openEdit(tpl, { stopPropagation: () => {} } as React.MouseEvent) },
+                              { label: '🛠 Builder', onClick: () => router.push(`/admin/templates/builder?id=${tpl.id}`) },
+                              { type: 'separator', label: '', onClick: () => {} },
+                              ...(!tpl.deletedAt
+                                ? [{ label: '📁 จัดเก็บ', onClick: () => setArchiveDialog({ open: true, tpl }) }]
+                                : [
+                                    { label: '↩ เรียกคืน', onClick: () => setRestoreDialog({ open: true, tpl }) },
+                                    { label: '🗑 ลบถาวร', type: 'danger' as const, onClick: () => openDeleteDialog(tpl) },
+                                  ]
+                              ),
+                            ]}
+                          />
+                        ) : (
+                          <ActionMenu
+                            size="sm"
+                            items={[
+                              { label: '🛠 Builder', onClick: () => router.push(`/admin/templates/builder?id=${tpl.id}`) },
+                            ]}
+                          />
+                        )}
                       </TableCell>
                     </TableRow>
                   );
