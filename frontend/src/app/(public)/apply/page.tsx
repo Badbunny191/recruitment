@@ -27,6 +27,8 @@ type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_I
 // backend/src/schemas/validators.ts
 type MasterDataSource = 'organizations';
 
+type MasterDataValue = { id: string; name: string } | null;
+
 interface MasterDataOption {
   id: string;
   name: string;
@@ -369,6 +371,12 @@ function FormInner() {
       return;
     }
     // Rehydrate react-hook-form values.
+    //
+    // Pass-through: the draft format and the RHF format are the SAME for every
+    // field (including MASTER_DATA = `{ id, name } | null`). We do NOT remap
+    // here. The legacy string-id normalisation belongs to the Controller's
+    // read-side (defensive against old drafts); the write-side is already
+    // shape-correct thanks to the Controller onChange.
     const rehydrated: Record<string, unknown> = { ...draft.formData };
     // For FILE fields the stored value is the URL string/array. We feed
     // it back into the form so the FileUpload component sees "value" =
@@ -453,11 +461,45 @@ function FormInner() {
       } else if (field.type === 'CHECKBOX') {
         formData[field.fieldId] = data[field.fieldId] === true;
       } else if (field.type === 'MASTER_DATA') {
-        // Persist { id, name } so the value stays human-readable for admin
-        // views even if the master record is later renamed.
-        const selectedId = data[field.fieldId];
-        const selected = organizations.find((o) => o.id === selectedId);
-        formData[field.fieldId] = selected ? { id: selected.id, name: selected.name } : null;
+        // =================================================================
+        //  PR #fix-masterdata-dual-rep: SINGLE REPRESENTATION (pass-through)
+        // =================================================================
+        // RHF state is already `{ id, name } | null` thanks to the Controller
+        // above. We pass it straight through to the draft — no remap, no
+        // lookup, no `organizations.find()` that could silently fail.
+        //
+        // Why no lookup here?
+        //   - The Controller's onChange already validated the id by resolving
+        //     it against the live `organizations` list before writing to RHF.
+        //   - If a user picked something, it was a real org; if they cleared,
+        //     RHF holds `null`. Both are valid draft values.
+        //   - We DO still defensively normalise legacy string-ids and refs
+        //     to orgs that may have been deleted since the draft was saved.
+        const value = data[field.fieldId] as unknown;
+        if (value && typeof value === 'object' && 'id' in (value as object)) {
+          const obj = value as { id?: string; name?: string };
+          if (obj.id && obj.name) {
+            formData[field.fieldId] = { id: obj.id, name: obj.name };
+          } else if (obj.id) {
+            // Legacy / partially-populated: resolve name from current orgs
+            const match = organizations.find((o) => o.id === obj.id);
+            formData[field.fieldId] = match
+              ? { id: match.id, name: match.name }
+              : { id: obj.id, name: '' };
+          } else {
+            formData[field.fieldId] = null;
+          }
+        } else if (typeof value === 'string' && value) {
+          // Legacy draft that was saved as a bare string id. Upgrade to object
+          // shape so the rest of the pipeline (server, review) sees a uniform
+          // representation. Resolve the name from the live orgs list.
+          const match = organizations.find((o) => o.id === value);
+          formData[field.fieldId] = match
+            ? { id: match.id, name: match.name }
+            : { id: value, name: '' };
+        } else {
+          formData[field.fieldId] = null;
+        }
       } else {
         formData[field.fieldId] = data[field.fieldId];
       }
@@ -677,10 +719,25 @@ function FormInner() {
             control={control}
             rules={validationRules}
             render={({ field: rhfField }) => {
-              // Legacy apps may hold a plain string; normalise to the id.
-              const rawValue = rhfField.value;
-              const legacyValue =
-                rawValue && typeof rawValue === 'object'
+              // =================================================================
+              //  PR #fix-masterdata-dual-rep: SINGLE REPRESENTATION
+              // =================================================================
+              // RHF state for MASTER_DATA fields is **always** `{ id, name } | null`.
+              // We never store a raw string id here. This is the SINGLE source of
+              // truth that flows through:
+              //   1. User picks an option  → onChange writes { id, name }
+              //   2. Draft save (onSubmit) → already in that shape, no remap needed
+              //   3. Draft restore (reset) → pass-through, no remap needed
+              //   4. Review page           → reads { id, name } directly
+              //
+              // `legacyValue` below is ONLY a defensive read for old drafts that
+              // may have been written before this fix (or for accidental raw-id
+              // inputs from external code). In normal flow `rhfField.value` is
+              // either `{ id, name }` or `null`, so the dropdown receives a clean
+              // string id via the `.id` lookup.
+              const rawValue = rhfField.value as unknown;
+              const selectedId =
+                rawValue && typeof rawValue === 'object' && 'id' in (rawValue as object)
                   ? ((rawValue as { id?: string }).id ?? null)
                   : (typeof rawValue === 'string' && rawValue) || null;
 
@@ -696,8 +753,20 @@ function FormInner() {
                 <>
                   <SearchableDropdown
                     options={organizations.map((o) => ({ id: o.id, label: o.name }))}
-                    value={legacyValue}
-                    onChange={(id) => rhfField.onChange(id)}
+                    value={selectedId}
+                    onChange={(id) => {
+                      // ✅ Single representation: write the SAME shape into RHF
+                      // that the draft persists and the review page reads.
+                      // No more dual `string | { id, name }` ambiguity.
+                      if (id === null) {
+                        rhfField.onChange(null);
+                        return;
+                      }
+                      const selected = organizations.find((o) => o.id === id);
+                      rhfField.onChange(
+                        selected ? { id: selected.id, name: selected.name } : null
+                      );
+                    }}
                     placeholder={placeholder || 'พิมพ์เพื่อค้นหาหน่วยงาน...'}
                     emptyText="ไม่พบหน่วยงานที่ค้นหา"
                   />
