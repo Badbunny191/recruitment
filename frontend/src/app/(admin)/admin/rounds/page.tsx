@@ -15,6 +15,7 @@ import { SortDropdown } from '@/components/ui/sort-dropdown';
 import { Pagination } from '@/components/ui/pagination';
 import { ActionMenu } from '@/components/ui/action-menu';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
+import { ApplicationPatternField } from '@/components/ApplicationPatternField';
 import { cn } from '@/lib/utils';
 
 interface Round {
@@ -31,6 +32,9 @@ interface Round {
   status: 'DRAFT' | 'ACTIVE' | 'CLOSED';
   createdAt: string | number | Date;
   deletedAt: string | number | Date | null;
+  // Migration 019 - Application Number Pattern
+  applicationPattern?: string | null;
+  roundCode?: string | null;
 }
 
 interface PublishedTemplateVersion {
@@ -52,6 +56,12 @@ interface FormState {
   announcementDescription: string;
   contactInformation: string;
   remark: string;
+  // Migration 019 - Application Number Pattern
+  // string = pattern (ทุก round ใหม่ต้องมี pattern)
+  // null = legacy round (readonly banner)
+  applicationPattern: string | null;
+  // รหัสรอบ (Admin กำหนด เช่น CHM01, TEMP01) — required
+  roundCode: string;
 }
 
 interface RoundVersionInfo {
@@ -88,6 +98,9 @@ const EMPTY_FORM: FormState = {
   announcementDescription: '',
   contactInformation: '',
   remark: '',
+  // Migration 019 - Default ใช้ standard pattern ทันที (ไม่มี "ใช้ format เดิม" ใน Create Round)
+  applicationPattern: '{YEAR}-{ROUND_CODE}-{RUNNING:4}',
+  roundCode: '',
 };
 
 const toLocalInput = (value: string | number | Date) => {
@@ -455,6 +468,9 @@ export default function RoundsPage() {
       announcementDescription: (r as any).announcementDescription || '',
       contactInformation: (r as any).contactInformation || '',
       remark: (r as any).remark || '',
+      // Migration 019 - เก็บ pattern เดิม (อาจเป็น null สำหรับ legacy round)
+      applicationPattern: r.applicationPattern ?? null,
+      roundCode: r.roundCode ?? '',
     });
     setDialogOpen(true);
   };
@@ -467,7 +483,7 @@ export default function RoundsPage() {
     }
     setSubmitting(true);
     try {
-      const payload = {
+      const payload: any = {
         title: form.title,
         positionLevel: form.positionLevel,
         templateVersionId: form.templateVersionId,
@@ -478,22 +494,31 @@ export default function RoundsPage() {
         announcementDescription: form.announcementDescription || null,
         contactInformation: form.contactInformation || null,
         remark: form.remark || null,
+        // Migration 019 - Application Number Pattern
+        applicationPattern: form.applicationPattern,
+        roundCode: form.roundCode,
       };
-      
+
       if (editing) {
         const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${editing.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) throw new Error('update failed');
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || err.message || 'update failed');
+        }
       } else {
         const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/rounds', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) throw new Error('create failed');
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || err.message || 'create failed');
+        }
       }
       setDialogOpen(false);
       await loadRounds();
@@ -827,112 +852,236 @@ export default function RoundsPage() {
           <DialogHeader>
             <DialogTitle>{editing ? '✏️ แก้ไขรอบรับสมัคร' : '➕ สร้างรอบรับสมัครใหม่'}</DialogTitle>
           </DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="title">ชื่อรอบ</Label>
-                <Input id="title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required placeholder="เช่น รับสมัครนักตรวจเงินแผ่นดิน รุ่นที่ 12" />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="positionLevel">ระดับตำแหน่ง</Label>
-                <Input id="positionLevel" value={form.positionLevel} onChange={(e) => setForm({ ...form, positionLevel: e.target.value })} required placeholder="เช่น ปฏิบัติการ / ชำนาญการ" />
-              </div>
-            </div>
-
-            {!editing && (
-              <div className="space-y-2">
-                <Label htmlFor="templateVersionId">Template Version</Label>
-                <Select id="templateVersionId" value={form.templateVersionId} onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })} required>
-                  <option value="">-- เลือก Published Version --</option>
-                  {publishedVersions.map((v) => (
-                    <option key={v.id} value={v.id}>{v.templateName} v{v.versionNumber}</option>
-                  ))}
-                </Select>
-                <p className="text-xs text-slate-500">เฉพาะ Published Version เท่านั้นที่สร้าง Round ได้</p>
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {/* ====== LOCK WARNING (เฉพาะตอน edit + มี application) ====== */}
+            {editing && editingAppCount !== null && editingAppCount > 0 && (
+              <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">🔒</span>
+                  <div className="text-sm font-semibold text-amber-900">
+                    รอบนี้มีผู้สมัครแล้ว {editingAppCount} คน
+                  </div>
+                </div>
+                <div className="text-xs text-amber-800 space-y-1">
+                  <p>ไม่สามารถแก้ไข:</p>
+                  <ul className="list-disc list-inside ml-1 space-y-0.5">
+                    <li>รหัสรอบ (Round Code)</li>
+                    <li>รูปแบบเลขที่ใบสมัคร</li>
+                  </ul>
+                  <p className="pt-1">
+                    หากต้องการรูปแบบใหม่{' '}
+                    <button
+                      type="button"
+                      onClick={() => openCloneModal(editing.id)}
+                      className="underline font-semibold hover:text-amber-950"
+                    >
+                      กรุณา Clone Round
+                    </button>
+                  </p>
+                </div>
               </div>
             )}
 
-            {editing && (
-              <div className="space-y-2">
-                <Label>Template Version</Label>
-                {editing.status === 'DRAFT' ? (
-                  <>
-                    <Select value={form.templateVersionId} onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })}>
+            {/* ============================================ */}
+            {/* SECTION 1: ข้อมูลรอบรับสมัคร */}
+            {/* ============================================ */}
+            <section className="space-y-3">
+              <div className="flex items-center gap-2 pb-1 border-b border-slate-200">
+                <span className="text-base">📝</span>
+                <h3 className="text-sm font-semibold text-slate-900">ข้อมูลรอบรับสมัคร</h3>
+              </div>
+
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="title">ชื่อรอบ <span className="text-red-500">*</span></Label>
+                  <Input
+                    id="title"
+                    value={form.title}
+                    onChange={(e) => setForm({ ...form, title: e.target.value })}
+                    required
+                    placeholder="เช่น รับสมัครนักตรวจเงินแผ่นดิน รุ่นที่ 12"
+                    disabled={editingAppCount !== null && editingAppCount > 0}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="positionLevel">ระดับตำแหน่ง <span className="text-red-500">*</span></Label>
+                    <Input
+                      id="positionLevel"
+                      value={form.positionLevel}
+                      onChange={(e) => setForm({ ...form, positionLevel: e.target.value })}
+                      required
+                      placeholder="เช่น ปฏิบัติการ / ชำนาญการ"
+                      disabled={editingAppCount !== null && editingAppCount > 0}
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label htmlFor="roundCode">
+                      รหัสรอบ (round_code) <span className="text-red-500">*</span>
+                    </Label>
+                    <Input
+                      id="roundCode"
+                      value={form.roundCode}
+                      onChange={(e) => {
+                        // Auto uppercase + filter invalid chars
+                        const cleaned = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                        setForm({ ...form, roundCode: cleaned });
+                      }}
+                      placeholder="CHM01"
+                      className="font-mono"
+                      maxLength={20}
+                      minLength={3}
+                      required
+                      disabled={editingAppCount !== null && editingAppCount > 0}
+                    />
+                    <p className="text-[11px] text-slate-500">
+                      A-Z และ 0-9 เท่านั้น (3-20 ตัว)
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* ============================================ */}
+            {/* SECTION 2: เลขที่ใบสมัคร */}
+            {/* ============================================ */}
+            <section className="space-y-3">
+              <div className="flex items-center gap-2 pb-1 border-b border-slate-200">
+                <span className="text-base">🔢</span>
+                <h3 className="text-sm font-semibold text-slate-900">เลขที่ใบสมัคร</h3>
+              </div>
+
+              <ApplicationPatternField
+                value={form.applicationPattern}
+                onChange={(pattern) => setForm({ ...form, applicationPattern: pattern })}
+                context={{
+                  year: form.openDate
+                    ? new Date(form.openDate).getFullYear()
+                    : new Date().getFullYear(),
+                  roundCode: form.roundCode || '?',
+                }}
+                locked={editingAppCount !== null && editingAppCount > 0}
+                lockedReason={
+                  editingAppCount
+                    ? `ล็อก — มีผู้สมัครแล้ว ${editingAppCount} คน (หากต้องการรูปแบบใหม่ กรุณา Clone Round)`
+                    : undefined
+                }
+              />
+            </section>
+
+            {/* ============================================ */}
+            {/* SECTION 3: การตั้งค่ารอบ */}
+            {/* ============================================ */}
+            <section className="space-y-3">
+              <div className="flex items-center gap-2 pb-1 border-b border-slate-200">
+                <span className="text-base">⚙️</span>
+                <h3 className="text-sm font-semibold text-slate-900">การตั้งค่ารอบ</h3>
+              </div>
+
+              <div className="space-y-3">
+                {!editing && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="templateVersionId">Template Version <span className="text-red-500">*</span></Label>
+                    <Select id="templateVersionId" value={form.templateVersionId} onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })} required>
                       <option value="">-- เลือก Published Version --</option>
                       {publishedVersions.map((v) => (
                         <option key={v.id} value={v.id}>{v.templateName} v{v.versionNumber}</option>
                       ))}
                     </Select>
-                    <p className="text-xs text-blue-600">Draft Round: สามารถเปลี่ยน Version ได้</p>
-                  </>
-                ) : editing.status === 'ACTIVE' ? (
-                  <div className="p-3 bg-slate-100 rounded-lg">
-                    <span className="text-sm font-medium">{formatTemplateVersionLabel(form.templateVersionId)}</span>
-                    {loadingAppCount ? (
-                      <p className="text-xs text-slate-500 mt-2">กำลังโหลด...</p>
-                    ) : editingAppCount !== null && editingAppCount > 0 ? (
-                      <div className="mt-3 p-2 bg-amber-50 border border-amber-200 rounded text-xs">
-                        <div className="flex items-center gap-2 text-amber-800">
-                          <span>🔒</span>
-                          <span>ล็อกแล้ว — มีผู้สมัครแล้ว {editingAppCount} คน</span>
-                        </div>
-                        <p className="text-amber-700 mt-1">ไม่สามารถเปลี่ยน Version ได้ กรุณา Clone Round ใหม่</p>
-                        <Button size="sm" variant="outline" className="mt-2 text-xs" onClick={() => openCloneModal(editing.id)}>
-                          Clone Round
-                        </Button>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-red-600 mt-2">ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบเปิดรับสมัครแล้ว</p>
-                    )}
-                  </div>
-                ) : (
-                  <div className="p-3 bg-slate-100 rounded-lg">
-                    <span className="text-sm font-medium">{formatTemplateVersionLabel(form.templateVersionId)}</span>
-                    <p className="text-xs text-red-600 mt-2">ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบปิดรับสมัครแล้ว</p>
+                    <p className="text-[11px] text-slate-500">เฉพาะ Published Version เท่านั้นที่สร้าง Round ได้</p>
                   </div>
                 )}
-              </div>
-            )}
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="openDate">วันเปิดรับสมัคร</Label>
-                <Input id="openDate" type="datetime-local" value={form.openDate} onChange={(e) => setForm({ ...form, openDate: e.target.value })} required />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="closeDate">วันปิดรับสมัคร</Label>
-                <Input id="closeDate" type="datetime-local" value={form.closeDate} onChange={(e) => setForm({ ...form, closeDate: e.target.value })} required />
-              </div>
-            </div>
+                {editing && (
+                  <div className="space-y-1.5">
+                    <Label>Template Version</Label>
+                    {editing.status === 'DRAFT' ? (
+                      <>
+                        <Select value={form.templateVersionId} onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })}>
+                          <option value="">-- เลือก Published Version --</option>
+                          {publishedVersions.map((v) => (
+                            <option key={v.id} value={v.id}>{v.templateName} v{v.versionNumber}</option>
+                          ))}
+                        </Select>
+                        <p className="text-[11px] text-blue-600">Draft Round: สามารถเปลี่ยน Version ได้</p>
+                      </>
+                    ) : editing.status === 'ACTIVE' ? (
+                      <div className="p-3 bg-slate-100 rounded-lg">
+                        <span className="text-sm font-medium">{formatTemplateVersionLabel(form.templateVersionId)}</span>
+                        {loadingAppCount ? (
+                          <p className="text-[11px] text-slate-500 mt-2">กำลังโหลด...</p>
+                        ) : editingAppCount !== null && editingAppCount > 0 ? (
+                          <p className="text-[11px] text-amber-700 mt-2">ล็อก — มีผู้สมัครแล้ว {editingAppCount} คน</p>
+                        ) : (
+                          <p className="text-[11px] text-red-600 mt-2">ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบเปิดรับสมัครแล้ว</p>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="p-3 bg-slate-100 rounded-lg">
+                        <span className="text-sm font-medium">{formatTemplateVersionLabel(form.templateVersionId)}</span>
+                        <p className="text-[11px] text-red-600 mt-2">ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบปิดรับสมัครแล้ว</p>
+                      </div>
+                    )}
+                  </div>
+                )}
 
-            <div className="space-y-2">
-              <Label htmlFor="status">สถานะ</Label>
-              <Select id="status" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as FormState['status'] })}>
-                <option value="DRAFT">ร่าง — ยังไม่เปิดรับ</option>
-                <option value="ACTIVE">เปิดรับ — รับสมัครอยู่</option>
-                <option value="CLOSED">ปิดแล้ว — หยุดรับสมัคร</option>
-              </Select>
-            </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="openDate">วันเปิดรับสมัคร <span className="text-red-500">*</span></Label>
+                    <Input id="openDate" type="datetime-local" value={form.openDate} onChange={(e) => setForm({ ...form, openDate: e.target.value })} required />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="closeDate">วันปิดรับสมัคร <span className="text-red-500">*</span></Label>
+                    <Input id="closeDate" type="datetime-local" value={form.closeDate} onChange={(e) => setForm({ ...form, closeDate: e.target.value })} required />
+                  </div>
+                </div>
 
-            <div className="border-t pt-4 space-y-3">
-              <h3 className="font-medium text-slate-800">ข้อมูลประกาศรับสมัคร</h3>
-              <div className="space-y-2">
-                <Label htmlFor="announcementTitle">หัวข้อประกาศ</Label>
-                <Input id="announcementTitle" value={form.announcementTitle} onChange={(e) => setForm({ ...form, announcementTitle: e.target.value })} placeholder="เช่น ประกาศรับสมัครนักตรวจเงินแผ่นดิน" />
+                <div className="space-y-1.5">
+                  <Label htmlFor="status">สถานะ</Label>
+                  <Select id="status" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as FormState['status'] })}>
+                    <option value="DRAFT">ร่าง — ยังไม่เปิดรับ</option>
+                    <option value="ACTIVE">เปิดรับ — รับสมัครอยู่</option>
+                    <option value="CLOSED">ปิดแล้ว — หยุดรับสมัคร</option>
+                  </Select>
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="announcementDescription">รายละเอียดประกาศ</Label>
-                <Textarea id="announcementDescription" value={form.announcementDescription} onChange={(e) => setForm({ ...form, announcementDescription: e.target.value })} rows={2} placeholder="รายละเอียดเพิ่มเติมเกี่ยวกับการรับสมัคร" />
+            </section>
+
+            {/* ============================================ */}
+            {/* SECTION 4: ข้อมูลประกาศรับสมัคร */}
+            {/* ============================================ */}
+            <section className="space-y-3">
+              <div className="flex items-center gap-2 pb-1 border-b border-slate-200">
+                <span className="text-base">📢</span>
+                <div className="flex-1">
+                  <h3 className="text-sm font-semibold text-slate-900">ข้อมูลประกาศรับสมัคร</h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    ข้อมูลที่จะแสดงบนหน้าประกาศรับสมัครสำหรับผู้สมัคร
+                  </p>
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="contactInformation">ข้อมูลติดต่อ</Label>
-                <Input id="contactInformation" value={form.contactInformation} onChange={(e) => setForm({ ...form, contactInformation: e.target.value })} placeholder="เช่น ติดต่อ 02-xxx-xxxx ต่อ xxx" />
+
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="announcementTitle">หัวข้อประกาศ</Label>
+                  <Input id="announcementTitle" value={form.announcementTitle} onChange={(e) => setForm({ ...form, announcementTitle: e.target.value })} placeholder="เช่น ประกาศรับสมัครนักตรวจเงินแผ่นดิน" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="announcementDescription">รายละเอียดประกาศ</Label>
+                  <Textarea id="announcementDescription" value={form.announcementDescription} onChange={(e) => setForm({ ...form, announcementDescription: e.target.value })} rows={2} placeholder="รายละเอียดเพิ่มเติม" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="contactInformation">ข้อมูลติดต่อ</Label>
+                  <Input id="contactInformation" value={form.contactInformation} onChange={(e) => setForm({ ...form, contactInformation: e.target.value })} placeholder="เช่น ติดต่อ 02-xxx-xxxx ต่อ xxx" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="remark">หมายเหตุ</Label>
+                  <Textarea id="remark" value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} rows={2} placeholder="หมายเหตุเพิ่มเติม" />
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="remark">หมายเหตุ</Label>
-                <Textarea id="remark" value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} rows={2} placeholder="หมายเหตุเพิ่มเติม" />
-              </div>
-            </div>
+            </section>
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>ยกเลิก</Button>
