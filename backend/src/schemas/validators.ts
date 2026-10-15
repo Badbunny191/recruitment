@@ -230,6 +230,24 @@ export const SubmissionTokenSchema = z
  */
 export const HoneypotFieldSchema = z.string().optional();
 
+/**
+ * Cloudflare Turnstile token (PR #3). The frontend widget — when the
+ * `TURNSTILE_ENABLED` flag is on — includes this field on submit and
+ * the backend's `turnstileMiddleware` verifies it against Cloudflare's
+ * `siteverify` endpoint before allowing the request through.
+ *
+ * The schema accepts an optional string here for two reasons:
+ *   1. When Turnstile is disabled the field will not be present.
+ *   2. The middleware, not Zod, is the authoritative gate. If we
+ *      required it here we'd break clients that haven't rolled out
+ *      the widget yet (e.g. programmatic callers) — and the
+ *      middleware would still need to do the work anyway.
+ *
+ * Length bound mirrors Cloudflare's documented maximum (~2048 chars)
+ * with a defensive cap of 4096 to absorb any future format change.
+ */
+export const TurnstileTokenSchema = z.string().min(1).max(4096).optional();
+
 export const ApplicationSubmitSchema = z.object({
   roundId: z.string(),
   // Support BOTH modes for backward compatibility during transition:
@@ -247,6 +265,9 @@ export const ApplicationSubmitSchema = z.object({
   // - website_url:    honeypot (must be absent or empty for real users)
   submissionToken: SubmissionTokenSchema,
   website_url: HoneypotFieldSchema,
+  // PR #3: Cloudflare Turnstile token. Required when TURNSTILE_ENABLED=true;
+  // the turnstileMiddleware enforces this server-side, not Zod.
+  turnstileToken: TurnstileTokenSchema,
 });
 
 export const FileUploadRequestSchema = z.object({

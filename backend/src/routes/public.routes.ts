@@ -10,6 +10,7 @@ import { getCurrentBangkokYear, buildApplicationNo, parseApplicationNo } from '.
 import { idempotencyMiddleware } from '../middlewares/idempotency.middleware';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { honeypotMiddleware } from '../middlewares/honeypot.middleware';
+import { turnstileMiddleware } from '../middlewares/turnstile.middleware';
 
 const publicRoutes = new Hono<{ Bindings: Bindings }>();
 
@@ -402,6 +403,12 @@ publicRoutes.post('/applications/submit',
   honeypotMiddleware(),
   rateLimitMiddleware(),
   idempotencyMiddleware(),
+  // PR #3: Cloudflare Turnstile verification. Sits AFTER the cheap,
+  // fast layers (honeypot, rate-limit, idempotency) so most bot traffic
+  // is rejected without making a siteverify round-trip. The middleware
+  // is a no-op when TURNSTILE_ENABLED=false — see
+  // `middlewares/turnstile.middleware.ts` for the full state machine.
+  turnstileMiddleware(),
   zValidator('json', ApplicationSubmitSchema),
   async (c) => {
   const db = drizzle(c.env.DB);

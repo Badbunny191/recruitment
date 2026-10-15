@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { loadApplyDraft, clearApplyDraft, listDraftRoundIds, type ApplyDraft, type FileAttachmentDraft } from '@/lib/applyDraft';
 import { clearSubmissionToken, getOrCreateSubmissionToken } from '@/lib/submissionToken';
 import { usePublicConfig } from '@/lib/usePublicConfig';
+import { TurnstileWidget } from '@/components/TurnstileWidget';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 
@@ -51,6 +52,12 @@ function ReviewContent() {
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // PR #3: Cloudflare Turnstile token. Captured from the widget
+  // callback. Stays null until the user passes verification. The submit
+  // button is disabled while the widget is enabled AND this is null;
+  // see `submitDisabled` below.
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [turnstileExpired, setTurnstileExpired] = useState(false);
   // Mobile section collapse: track which section ids are open. Default:
   // desktop = all open; mobile = only the first open.
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -303,20 +310,36 @@ function ReviewContent() {
       // a hard refresh between apply and review may have lost it).
       const token = getOrCreateSubmissionToken();
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
+      // PR #3: include `turnstileToken` only when the widget is enabled
+      // AND we have one. The backend ignores an absent field; sending
+      // an undefined JSON value would stringify to `undefined` which the
+      // browser drops, but we'd rather be explicit.
+      const body: Record<string, unknown> = {
+        roundId: draft.roundId,
+        formData: draft.formData,
+        attachments: draft.attachments.map((a) => ({ fieldId: a.fieldId, fileUrl: a.fileUrl })),
+        submissionToken: token,
+      };
+      if (turnstileEnabled && turnstileToken) {
+        body.turnstileToken = turnstileToken;
+      }
       const res = await fetch(`${apiUrl}/public/applications/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          roundId: draft.roundId,
-          formData: draft.formData,
-          attachments: draft.attachments.map((a) => ({ fieldId: a.fieldId, fileUrl: a.fileUrl })),
-          submissionToken: token,
-        }),
+        body: JSON.stringify(body),
       });
       const result = await res.json();
 
       if (res.status === 403) {
-        setSubmitError(result?.error ?? 'ขณะนี้ยังไม่เปิดรับสมัคร');
+        // Covers BOTH "round not open" AND "Human verification failed"
+        // (Turnstile failure). The backend is intentionally opaque so
+        // bots can't tell which one tripped.
+        setSubmitError(result?.error ?? 'การยืนยันตัวตนไม่สำเร็จ');
+        // If Turnstile is enabled, the token may have been spent —
+        // clear it so the user knows to verify again before retrying.
+        if (turnstileEnabled) {
+          setTurnstileToken(null);
+        }
         return;
       }
       if (res.status === 409) {
@@ -391,6 +414,28 @@ function ReviewContent() {
   //  Render
   // =========================================================================
 
+  // PR #3: derived flag for whether the backend requires a Turnstile
+  // token. We treat `publicConfig.status` anything-but-`'ready'` as
+  // "not enabled yet" so the submit button is never artificially locked.
+  // The TruthCloudflare's siteverify is the only real authority; this
+  // is just the UI mirror.
+  const turnstileEnabled =
+    publicConfig.status === 'ready' &&
+    !!publicConfig.data.turnstile.enabled &&
+    !!publicConfig.data.turnstile.siteKey;
+
+  /**
+   * Submit button is disabled when:
+   *   - the user hasn't ticked the confirm checkbox (existing rule)
+   *   - a submission is already in flight
+   *   - Turnstile is enabled but no fresh token has been issued
+   *   - the previous token just expired (clear it before re-enabling)
+   */
+  const submitDisabled =
+    !confirmed ||
+    submitting ||
+    (turnstileEnabled && (!turnstileToken || turnstileExpired));
+
   const renderFieldRow = (field: SchemaField) => {
     const label = field.overrideLabel || field.label;
     const { text, isEmpty } = renderFieldValue(field);
@@ -413,11 +458,6 @@ function ReviewContent() {
 
   return (
     <div className="max-w-3xl mx-auto p-4 md:p-8 space-y-4">
-      {/* Turnstile foundation — wire the widget here in a follow-up PR.
-          We expose `publicConfig.data.turnstile` so the future component
-          can read it without changing the page structure. */}
-      {/* publicConfig.status === 'ready' && publicConfig.data.turnstile.enabled && <TurnstileWidget ... /> */}
-
       <Card>
         <CardHeader className="bg-slate-50 border-b">
           <CardTitle className="text-xl">ตรวจสอบข้อมูลการสมัคร</CardTitle>
@@ -471,6 +511,27 @@ function ReviewContent() {
       <div className="sticky bottom-0 z-10 -mx-4 md:mx-0 px-4 md:px-0 pb-4 md:pb-0">
         <Card>
           <CardContent className="pt-6 space-y-4">
+            {/* PR #3 — Cloudflare Turnstile widget. The component is
+                responsible for short-circuiting when the feature flag
+                is off (no widget rendered, submit unaffected). We
+                mount it ABOVE the confirm checkbox per the spec: the
+                user encounters the human-verification step just before
+                ticking "ยืนยันข้อมูล" and submitting. */}
+            <TurnstileWidget
+              onVerify={(token) => {
+                setTurnstileToken(token);
+                setTurnstileExpired(false);
+              }}
+              onExpire={() => {
+                setTurnstileToken(null);
+                setTurnstileExpired(true);
+              }}
+              onError={() => {
+                setTurnstileToken(null);
+                setTurnstileExpired(true);
+              }}
+            />
+
             <div className="flex items-start gap-3">
               <Checkbox
                 id="confirm"
@@ -503,7 +564,12 @@ function ReviewContent() {
             <Button
               type="button"
               onClick={handleSubmit}
-              disabled={!confirmed || submitting}
+              disabled={submitDisabled}
+              title={
+                turnstileEnabled && (!turnstileToken || turnstileExpired)
+                  ? 'กรุณายืนยันว่าท่านไม่ใช่โปรแกรมอัตโนมัติ'
+                  : undefined
+              }
               className="w-full md:w-auto bg-green-600 hover:bg-green-700 disabled:bg-slate-300"
             >
               {submitting ? (
