@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { USER_ROLES } from '../types';
 
 // Allowed values must stay in sync with the CHECK constraint "chk_field_type"
 // in backend/src/db/schema.ts and the D1 table definition.
@@ -7,9 +8,81 @@ export const TemplateVersionStatusEnum = z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED
 export const RoundStatusEnum = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
 export const ApplicationStatusEnum = z.enum(['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED']);
 
+// =============================================================================
+// Authentication Schemas
+// =============================================================================
+
+// Role enum - synced with USER_ROLES in types.ts
+export const UserRoleEnum = z.enum(USER_ROLES);
+
+// Login schema - updated with password policy validation
 export const LoginRequestSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
+  email: z.string().email('รูปแบบอีเมลไม่ถูกต้อง'),
+  password: z.string().min(1, 'กรุณากรอกรหัสผ่าน'),
+});
+
+// Password validation regex patterns
+const PASSWORD_POLICY = {
+  minLength: 8,
+  uppercase: /[A-Z]/,
+  lowercase: /[a-z]/,
+  number: /[0-9]/,
+  special: /[!@#$%^&*()_+\-=\[\]{}|;':",.\/<>?\\]/,
+};
+
+// User create schema
+export const CreateUserSchema = z.object({
+  email: z.string().email('รูปแบบอีเมลไม่ถูกต้อง'),
+  role: UserRoleEnum,
+  mustChangePassword: z.boolean().default(true),
+}).refine(
+  (data) => data.role !== 'SUPER_ADMIN',
+  { message: 'ไม่สามารถสร้างผู้ใช้ระดับ SUPER_ADMIN ได้', path: ['role'] }
+);
+
+// User update schema
+export const UpdateUserSchema = z.object({
+  email: z.string().email('รูปแบบอีเมลไม่ถูกต้อง').optional(),
+  role: UserRoleEnum.optional(),
+  isActive: z.boolean().optional(),
+}).refine(
+  (data) => !(data.role === 'SUPER_ADMIN'),
+  { message: 'ไม่สามารถเปลี่ยนเป็น SUPER_ADMIN ได้', path: ['role'] }
+);
+
+// Password change schema (for users changing their own password)
+export const ChangePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'กรุณากรอกรหัสผ่านปัจจุบัน'),
+  newPassword: z.string()
+    .min(PASSWORD_POLICY.minLength, `รหัสผ่านต้องมีความยาวอย่างน้อย ${PASSWORD_POLICY.minLength} ตัวอักษร`)
+    .regex(PASSWORD_POLICY.uppercase, 'รหัสผ่านต้องมีตัวพิมพ์ใหญ่อย่างน้อย 1 ตัว')
+    .regex(PASSWORD_POLICY.lowercase, 'รหัสผ่านต้องมีตัวพิมพ์เล็กอย่างน้อย 1 ตัว')
+    .regex(PASSWORD_POLICY.number, 'รหัสผ่านต้องมีตัวเลขอย่างน้อย 1 ตัว')
+    .regex(PASSWORD_POLICY.special, 'รหัสผ่านต้องมีอักขระพิเศษอย่างน้อย 1 ตัว'),
+  confirmPassword: z.string().min(1, 'กรุณายืนยันรหัสผ่านใหม่'),
+}).refine((data) => data.newPassword === data.confirmPassword, {
+  message: 'รหัสผ่านใหม่ไม่ตรงกัน',
+  path: ['confirmPassword'],
+}).refine((data) => data.currentPassword !== data.newPassword, {
+  message: 'รหัสผ่านใหม่ต้องไม่เหมือนรหัสผ่านปัจจุบัน',
+  path: ['newPassword'],
+});
+
+// Password reset request schema (admin initiates)
+export const ResetPasswordSchema = z.object({
+  userId: z.string().uuid('รหัสผู้ใช้ไม่ถูกต้อง'),
+});
+
+// Force change password schema (admin forces user to change password)
+export const ForceChangePasswordSchema = z.object({
+  userId: z.string().uuid('รหัสผู้ใช้ไม่ถูกต้อง'),
+  mustChangePassword: z.boolean(),
+});
+
+// Disable user schema
+export const DisableUserSchema = z.object({
+  userId: z.string().uuid('รหัสผู้ใช้ไม่ถูกต้อง'),
+  reason: z.string().min(1, 'กรุณาระบุเหตุผล').max(500),
 });
 
 // Master data sources available to MASTER_DATA fields (Phase 1: organizations only)

@@ -49,8 +49,27 @@ export type AppVariables = {
     id: string;
     email: string;
     role: string;
+    mustChangePassword?: boolean;
   };
 };
+
+/**
+ * User roles enum - for type safety
+ */
+export const USER_ROLES = ['SUPER_ADMIN', 'ADMIN', 'REVIEWER', 'VIEWER'] as const;
+export type UserRole = typeof USER_ROLES[number];
+
+/**
+ * JWT payload type
+ */
+export interface JWTPayload {
+  id: string;
+  email: string;
+  role: string;
+  mustChangePassword?: boolean;
+  iat?: number;
+  exp?: number;
+}
 
 /**
  * Returns a boolean env flag with a default value. Accepts the usual

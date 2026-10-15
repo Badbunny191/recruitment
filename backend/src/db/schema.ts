@@ -5,7 +5,15 @@ export const adminUsers = sqliteTable('admin_users', {
   id: text('id').primaryKey(),
   email: text('email').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
-  role: text('role').notNull().default('HR_OFFICER'),
+  // Auth hardening fields
+  passwordMigrated: integer('password_migrated', { mode: 'boolean' }).default(false),
+  passwordChangedAt: integer('password_changed_at', { mode: 'timestamp' }),
+  mustChangePassword: integer('must_change_password', { mode: 'boolean' }).default(false),
+  failedLoginAttempts: integer('failed_login_attempts').default(0),
+  lockedUntil: integer('locked_until', { mode: 'timestamp' }),
+  // Role & status
+  role: text('role').notNull().default('VIEWER'),
+  isActive: integer('is_active', { mode: 'boolean' }).default(true),
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
 });
 
@@ -227,3 +235,33 @@ export const positions = sqliteTable('positions', {
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
 });
+
+// =============================================================================
+// Authentication & Authorization Tables
+// =============================================================================
+
+export const loginAttempts = sqliteTable('login_attempts', {
+  id: text('id').primaryKey(),
+  email: text('email').notNull(),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+  success: integer('success', { mode: 'boolean' }).default(false),
+  failureReason: text('failure_reason'),
+  attemptedAt: integer('attempted_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
+}, (table) => ({
+  emailIdx: index('idx_login_attempts_email').on(table.email),
+  ipIdx: index('idx_login_attempts_ip').on(table.ipAddress),
+  timeIdx: index('idx_login_attempts_time').on(sql`${table.attemptedAt} DESC`),
+}));
+
+export const passwordResetTokens = sqliteTable('password_reset_tokens', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => adminUsers.id, { onDelete: 'cascade' }),
+  tokenHash: text('token_hash').notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  usedAt: integer('used_at', { mode: 'timestamp' }),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
+}, (table) => ({
+  userIdx: index('idx_password_reset_user').on(table.userId),
+  tokenHashIdx: index('idx_password_reset_token_hash').on(table.tokenHash),
+}));

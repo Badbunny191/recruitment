@@ -3,35 +3,577 @@ import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
 import { sign } from 'hono/jwt';
 import { v4 as uuidv4 } from 'uuid';
-import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc } from 'drizzle-orm';
+import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc, gte } from 'drizzle-orm';
 import { Bindings, AppVariables } from '../types';
 import { authMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
-import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
-import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema } from '../schemas/validators';
-import {
-  validateApplicationPattern,
-  validateRoundCode,
-  DEFAULT_APPLICATION_PATTERN,
-} from '../utils/application-pattern';
+import { 
+  adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, 
+  recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, 
+  jobFamilies, positionLevels, positions, roundSequences, loginAttempts, passwordResetTokens 
+} from '../db/schema';
+import { 
+  LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, 
+  TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, 
+  TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, 
+  TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, 
+  RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema,
+  CreateUserSchema, UpdateUserSchema, ChangePasswordSchema, ResetPasswordSchema, 
+  ForceChangePasswordSchema, DisableUserSchema
+} from '../schemas/validators';
+import { validateApplicationPattern, validateRoundCode, DEFAULT_APPLICATION_PATTERN } from '../utils/application-pattern';
+import { 
+  verifyPasswordForLogin, migratePassword, hashPassword, generateSecurePassword, isBcryptHash 
+} from '../services/auth.service';
+import { validatePassword, isCommonPassword } from '../utils/password';
 
 const adminRoutes = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
 
+// =============================================================================
+// Authentication Routes (No Auth Required)
+// =============================================================================
+
+// Account lockout configuration
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCKOUT_DURATION_MINUTES = 30;
+
+/**
+ * Log a login attempt
+ */
+async function logLoginAttempt(
+  env: Bindings,
+  c: any,
+  email: string,
+  success: boolean,
+  failureReason?: string
+) {
+  const db = drizzle(env.DB);
+  await db.insert(loginAttempts).values({
+    id: uuidv4(),
+    email,
+    ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
+    userAgent: c.req.header('user-agent') || 'unknown',
+    success,
+    failureReason,
+    attemptedAt: new Date(),
+  });
+}
+
+/**
+ * Check if account is locked
+ */
+async function isAccountLocked(env: Bindings, email: string): Promise<{ locked: boolean; until?: Date }> {
+  const db = drizzle(env.DB);
+  const user = await db.select()
+    .from(adminUsers)
+    .where(eq(adminUsers.email, email))
+    .get();
+  
+  if (!user || !user.lockedUntil) {
+    return { locked: false };
+  }
+  
+  const lockedUntil = new Date(user.lockedUntil);
+  if (lockedUntil > new Date()) {
+    return { locked: true, until: lockedUntil };
+  }
+  
+  // Lock expired, reset failed attempts
+  if (user.failedLoginAttempts && user.failedLoginAttempts > 0) {
+    await db.update(adminUsers)
+      .set({ failedLoginAttempts: 0, lockedUntil: null })
+      .where(eq(adminUsers.id, user.id));
+  }
+  
+  return { locked: false };
+}
+
+/**
+ * Record failed login attempt
+ */
+async function recordFailedLogin(env: Bindings, email: string): Promise<{ locked: boolean; attempts: number }> {
+  const db = drizzle(env.DB);
+  
+  // Get or create user record
+  let user = await db.select()
+    .from(adminUsers)
+    .where(eq(adminUsers.email, email))
+    .get();
+  
+  if (!user) {
+    // Don't reveal if email exists
+    return { locked: false, attempts: 0 };
+  }
+  
+  const newAttempts = (user.failedLoginAttempts || 0) + 1;
+  
+  if (newAttempts >= MAX_FAILED_ATTEMPTS) {
+    const lockUntil = new Date(Date.now() + LOCKOUT_DURATION_MINUTES * 60 * 1000);
+    await db.update(adminUsers)
+      .set({ 
+        failedLoginAttempts: newAttempts,
+        lockedUntil: lockUntil 
+      })
+      .where(eq(adminUsers.id, user.id));
+    
+    return { locked: true, attempts: newAttempts };
+  }
+  
+  await db.update(adminUsers)
+    .set({ failedLoginAttempts: newAttempts })
+    .where(eq(adminUsers.id, user.id));
+  
+  return { locked: false, attempts: newAttempts };
+}
+
+/**
+ * Reset failed login attempts on successful login
+ */
+async function resetFailedLoginAttempts(env: Bindings, userId: string) {
+  const db = drizzle(env.DB);
+  await db.update(adminUsers)
+    .set({ failedLoginAttempts: 0, lockedUntil: null })
+    .where(eq(adminUsers.id, userId));
+}
+
+// POST /admin/auth/login
 adminRoutes.post('/auth/login', zValidator('json', LoginRequestSchema), async (c) => {
   const { email, password } = c.req.valid('json');
-  const db = drizzle(c.env.DB);
+  const env = c.env as Bindings;
+  const db = drizzle(env.DB);
+  
+  // Check if account is locked
+  const lockStatus = await isAccountLocked(env, email);
+  if (lockStatus.locked) {
+    await logLoginAttempt(env, c, email, false, 'ACCOUNT_LOCKED');
+    return c.json({ 
+      error: 'Account Locked', 
+      message: `บัญชีถูกล็อกชั่วคราว กรุณาลองใหม่หลังจาก ${lockStatus.until?.toLocaleString('th-TH')}`,
+      retryAfter: Math.ceil((lockStatus.until!.getTime() - Date.now()) / 1000)
+    }, 423);
+  }
+  
+  // Find user
   const user = await db.select().from(adminUsers).where(eq(adminUsers.email, email)).get();
   
-  if (!user || user.passwordHash !== password) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+  if (!user) {
+    // Don't reveal if email exists - still log
+    await logLoginAttempt(env, c, email, false, 'USER_NOT_FOUND');
+    return c.json({ error: 'Invalid credentials', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' }, 401);
   }
-
-  const token = await sign({ id: user.id, email: user.email, role: user.role, exp: Math.floor(Date.now() / 1000) + 28800 }, c.env.JWT_SECRET);
-  return c.json({ token, user: { id: user.id, email: user.email, role: user.role } });
+  
+  // Check if account is disabled
+  if (user.isActive === false) {
+    await logLoginAttempt(env, c, email, false, 'ACCOUNT_DISABLED');
+    return c.json({ 
+      error: 'Account Disabled', 
+      message: 'บัญชีนี้ถูกปิดใช้งาน กรุณาติดต่อผู้ดูแลระบบ' 
+    }, 403);
+  }
+  
+  // Verify password (supports dual-mode: bcrypt or plaintext for legacy)
+  const { valid, needsMigration } = await verifyPasswordForLogin(
+    password,
+    user.passwordHash,
+    user.passwordMigrated || false
+  );
+  
+  if (!valid) {
+    await logLoginAttempt(env, c, email, false, 'INVALID_PASSWORD');
+    
+    const failStatus = await recordFailedLogin(env, email);
+    
+    if (failStatus.locked) {
+      return c.json({ 
+        error: 'Account Locked', 
+        message: `บัญชีถูกล็อกเนื่องจากพยายามเข้าสู่ระบบผิดหลายครั้ง กรุณาลองใหม่ในอีก ${LOCKOUT_DURATION_MINUTES} นาที`,
+        retryAfter: LOCKOUT_DURATION_MINUTES * 60
+      }, 423);
+    }
+    
+    const remaining = MAX_FAILED_ATTEMPTS - failStatus.attempts;
+    return c.json({ 
+      error: 'Invalid credentials', 
+      message: `อีเมลหรือรหัสผ่านไม่ถูกต้อง (เหลือ ${remaining} ครั้งก่อนถูกล็อก)`,
+      remainingAttempts: remaining
+    }, 401);
+  }
+  
+  // Successful login
+  await resetFailedLoginAttempts(env, user.id);
+  await logLoginAttempt(env, c, email, true);
+  
+  // Auto-migrate password if needed (legacy plaintext → bcrypt)
+  if (needsMigration && !user.passwordMigrated) {
+    await migratePassword(env, user.id, password);
+  }
+  
+  // Generate JWT
+  const token = await sign({ 
+    id: user.id, 
+    email: user.email, 
+    role: user.role,
+    mustChangePassword: user.mustChangePassword || false,
+    exp: Math.floor(Date.now() / 1000) + 28800 // 8 hours
+  }, env.JWT_SECRET);
+  
+  return c.json({ 
+    token, 
+    user: { 
+      id: user.id, 
+      email: user.email, 
+      role: user.role,
+      mustChangePassword: user.mustChangePassword || false
+    } 
+  });
 });
 
+// =============================================================================
+// User Management Routes
+// =============================================================================
+
+// Apply auth middleware to all routes below
 adminRoutes.use('/*', authMiddleware);
+
+// GET /admin/users - List all users
+adminRoutes.get('/users', async (c) => {
+  const db = drizzle(c.env.DB);
+  
+  const users = await db.select({
+    id: adminUsers.id,
+    email: adminUsers.email,
+    role: adminUsers.role,
+    isActive: adminUsers.isActive,
+    passwordMigrated: adminUsers.passwordMigrated,
+    passwordChangedAt: adminUsers.passwordChangedAt,
+    mustChangePassword: adminUsers.mustChangePassword,
+    failedLoginAttempts: adminUsers.failedLoginAttempts,
+    lockedUntil: adminUsers.lockedUntil,
+    createdAt: adminUsers.createdAt,
+  }).from(adminUsers);
+  
+  return c.json({ data: users });
+});
+
+// GET /admin/users/:id - Get single user
+adminRoutes.get('/users/:id', async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+  
+  const user = await db.select({
+    id: adminUsers.id,
+    email: adminUsers.email,
+    role: adminUsers.role,
+    isActive: adminUsers.isActive,
+    passwordMigrated: adminUsers.passwordMigrated,
+    passwordChangedAt: adminUsers.passwordChangedAt,
+    mustChangePassword: adminUsers.mustChangePassword,
+    failedLoginAttempts: adminUsers.failedLoginAttempts,
+    lockedUntil: adminUsers.lockedUntil,
+    createdAt: adminUsers.createdAt,
+  }).from(adminUsers).where(eq(adminUsers.id, id)).get();
+  
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+  
+  return c.json({ data: user });
+});
+
+// POST /admin/users - Create user
+adminRoutes.post('/users', auditMiddleware('USER'), zValidator('json', CreateUserSchema), async (c) => {
+  const db = drizzle(c.env.DB);
+  const currentUser = c.get('jwtPayload');
+  const data = c.req.valid('json');
+  
+  // Only SUPER_ADMIN and ADMIN can create users
+  if (currentUser.role !== 'SUPER_ADMIN' && currentUser.role !== 'ADMIN') {
+    return c.json({ error: 'Forbidden', message: 'คุณไม่มีสิทธิ์สร้างผู้ใช้' }, 403);
+  }
+  
+  // Check if email already exists
+  const existing = await db.select().from(adminUsers).where(eq(adminUsers.email, data.email)).get();
+  if (existing) {
+    return c.json({ error: 'Email already exists', message: 'อีเมลนี้ถูกใช้งานแล้ว' }, 409);
+  }
+  
+  // Generate temporary password
+  const tempPassword = generateSecurePassword(12);
+  const hashedPassword = await hashPassword(tempPassword);
+  
+  const userId = uuidv4();
+  await db.insert(adminUsers).values({
+    id: userId,
+    email: data.email,
+    passwordHash: hashedPassword,
+    role: data.role,
+    passwordMigrated: true,
+    mustChangePassword: data.mustChangePassword,
+    createdAt: new Date(),
+  });
+  
+  // TODO: Send email with temporary password
+  // For now, return temp password (in production, this should be sent via email only)
+  
+  return c.json({ 
+    success: true, 
+    id: userId,
+    tempPassword, // In production, don't return this - send via email instead
+    message: 'สร้างผู้ใช้สำเร็จ รหัสผ่านชั่วคราวถูกส่งไปยังอีเมลของผู้ใช้'
+  }, 201);
+});
+
+// PATCH /admin/users/:id - Update user
+adminRoutes.patch('/users/:id', auditMiddleware('USER'), zValidator('json', UpdateUserSchema), async (c) => {
+  const db = drizzle(c.env.DB);
+  const currentUser = c.get('jwtPayload');
+  const userId = c.req.param('id');
+  const data = c.req.valid('json');
+  
+  // Only SUPER_ADMIN and ADMIN can update users
+  if (currentUser.role !== 'SUPER_ADMIN' && currentUser.role !== 'ADMIN') {
+    return c.json({ error: 'Forbidden', message: 'คุณไม่มีสิทธิ์แก้ไขผู้ใช้' }, 403);
+  }
+  
+  // Cannot update SUPER_ADMIN
+  const targetUser = await db.select().from(adminUsers).where(eq(adminUsers.id, userId)).get();
+  if (!targetUser) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+  if (targetUser.role === 'SUPER_ADMIN') {
+    return c.json({ error: 'Cannot modify SUPER_ADMIN', message: 'ไม่สามารถแก้ไขผู้ใช้ระดับ SUPER_ADMIN' }, 403);
+  }
+  
+  // Check email uniqueness if changing email
+  if (data.email && data.email !== targetUser.email) {
+    const emailExists = await db.select().from(adminUsers).where(eq(adminUsers.email, data.email)).get();
+    if (emailExists) {
+      return c.json({ error: 'Email already exists', message: 'อีเมลนี้ถูกใช้งานแล้ว' }, 409);
+    }
+  }
+  
+  const updateData: any = {};
+  if (data.email !== undefined) updateData.email = data.email;
+  if (data.role !== undefined) updateData.role = data.role;
+  if (data.isActive !== undefined) {
+    updateData.isActive = data.isActive;
+    if (!data.isActive) {
+      // Reset failed attempts when disabling
+      updateData.failedLoginAttempts = 0;
+      updateData.lockedUntil = null;
+    }
+  }
+  
+  await db.update(adminUsers).set(updateData).where(eq(adminUsers.id, userId));
+  
+  return c.json({ success: true });
+});
+
+// POST /admin/users/:id/reset-password - Reset password (admin action)
+adminRoutes.post('/users/:id/reset-password', auditMiddleware('USER'), zValidator('json', ResetPasswordSchema), async (c) => {
+  const db = drizzle(c.env.DB);
+  const currentUser = c.get('jwtPayload');
+  const targetUserId = c.req.param('id');
+  const { userId } = c.req.valid('json');
+  
+  // Only SUPER_ADMIN and ADMIN can reset passwords
+  if (currentUser.role !== 'SUPER_ADMIN' && currentUser.role !== 'ADMIN') {
+    return c.json({ error: 'Forbidden', message: 'คุณไม่มีสิทธิ์รีเซ็ตรหัสผ่าน' }, 403);
+  }
+  
+  // Validate userId matches param
+  if (userId !== targetUserId) {
+    return c.json({ error: 'Invalid request', message: 'รหัสผู้ใช้ไม่ตรงกัน' }, 400);
+  }
+  
+  const targetUser = await db.select().from(adminUsers).where(eq(adminUsers.id, userId)).get();
+  if (!targetUser) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+  
+  if (targetUser.role === 'SUPER_ADMIN') {
+    return c.json({ error: 'Cannot reset SUPER_ADMIN password', message: 'ไม่สามารถรีเซ็ตรหัสผ่าน SUPER_ADMIN' }, 403);
+  }
+  
+  // Generate new temporary password
+  const tempPassword = generateSecurePassword(12);
+  const hashedPassword = await hashPassword(tempPassword);
+  
+  await db.update(adminUsers)
+    .set({ 
+      passwordHash: hashedPassword,
+      passwordMigrated: true,
+      mustChangePassword: true,
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      passwordChangedAt: null,
+    })
+    .where(eq(adminUsers.id, userId));
+  
+  // TODO: Send email with temporary password
+  
+  return c.json({ 
+    success: true,
+    tempPassword, // In production, send via email only
+    message: 'รีเซ็ตรหัสผ่านสำเร็จ รหัสผ่านชั่วคราวถูกส่งไปยังอีเมลของผู้ใช้'
+  });
+});
+
+// POST /admin/users/:id/force-change-password - Force user to change password
+adminRoutes.post('/users/:id/force-change-password', auditMiddleware('USER'), zValidator('json', ForceChangePasswordSchema), async (c) => {
+  const db = drizzle(c.env.DB);
+  const currentUser = c.get('jwtPayload');
+  const targetUserId = c.req.param('id');
+  const { userId, mustChangePassword } = c.req.valid('json');
+  
+  // Only SUPER_ADMIN and ADMIN can force password change
+  if (currentUser.role !== 'SUPER_ADMIN' && currentUser.role !== 'ADMIN') {
+    return c.json({ error: 'Forbidden', message: 'คุณไม่มีสิทธิ์บังคับเปลี่ยนรหัสผ่าน' }, 403);
+  }
+  
+  if (userId !== targetUserId) {
+    return c.json({ error: 'Invalid request', message: 'รหัสผู้ใช้ไม่ตรงกัน' }, 400);
+  }
+  
+  const targetUser = await db.select().from(adminUsers).where(eq(adminUsers.id, userId)).get();
+  if (!targetUser) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+  
+  if (targetUser.role === 'SUPER_ADMIN') {
+    return c.json({ error: 'Cannot modify SUPER_ADMIN', message: 'ไม่สามารถแก้ไข SUPER_ADMIN' }, 403);
+  }
+  
+  await db.update(adminUsers)
+    .set({ mustChangePassword })
+    .where(eq(adminUsers.id, userId));
+  
+  return c.json({ 
+    success: true, 
+    message: mustChangePassword 
+      ? 'บังคับเปลี่ยนรหัสผ่านเมื่อเข้าสู่ระบบครั้งต่อไป'
+      : 'ยกเลิกการบังคับเปลี่ยนรหัสผ่าน'
+  });
+});
+
+// POST /admin/users/:id/disable - Disable user
+adminRoutes.post('/users/:id/disable', auditMiddleware('USER'), zValidator('json', DisableUserSchema), async (c) => {
+  const db = drizzle(c.env.DB);
+  const currentUser = c.get('jwtPayload');
+  const targetUserId = c.req.param('id');
+  const { userId, reason } = c.req.valid('json');
+  
+  // Only SUPER_ADMIN and ADMIN can disable users
+  if (currentUser.role !== 'SUPER_ADMIN' && currentUser.role !== 'ADMIN') {
+    return c.json({ error: 'Forbidden', message: 'คุณไม่มีสิทธิ์ปิดใช้งานผู้ใช้' }, 403);
+  }
+  
+  if (userId !== targetUserId) {
+    return c.json({ error: 'Invalid request', message: 'รหัสผู้ใช้ไม่ตรงกัน' }, 400);
+  }
+  
+  const targetUser = await db.select().from(adminUsers).where(eq(adminUsers.id, userId)).get();
+  if (!targetUser) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+  
+  if (targetUser.role === 'SUPER_ADMIN') {
+    return c.json({ error: 'Cannot disable SUPER_ADMIN', message: 'ไม่สามารถปิดใช้งาน SUPER_ADMIN' }, 403);
+  }
+  
+  // Cannot disable yourself
+  if (targetUserId === currentUser.id) {
+    return c.json({ error: 'Cannot disable yourself', message: 'ไม่สามารถปิดใช้งานตัวเอง' }, 400);
+  }
+  
+  await db.update(adminUsers)
+    .set({ 
+      isActive: false,
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+    })
+    .where(eq(adminUsers.id, userId));
+  
+  return c.json({ success: true, message: 'ปิดใช้งานผู้ใช้สำเร็จ' });
+});
+
+// POST /admin/auth/change-password - Change own password
+adminRoutes.post('/auth/change-password', auditMiddleware('USER'), zValidator('json', ChangePasswordSchema), async (c) => {
+  const db = drizzle(c.env.DB);
+  const currentUser = c.get('jwtPayload');
+  const { currentPassword, newPassword, confirmPassword } = c.req.valid('json');
+  
+  // Validate new password strength
+  const passwordValidation = validatePassword(newPassword);
+  if (!passwordValidation.valid) {
+    return c.json({ 
+      error: 'Password policy violation', 
+      message: passwordValidation.errors.join(', '),
+      errors: passwordValidation.errors
+    }, 400);
+  }
+  
+  // Check if common password
+  if (isCommonPassword(newPassword)) {
+    return c.json({ 
+      error: 'Weak password', 
+      message: 'รหัสผ่านนี้ถูกใช้งานบ่อยเกินไป กรุณาเลือกรหัสผ่านที่ปลอดภัยกว่า'
+    }, 400);
+  }
+  
+  // Get current user
+  const user = await db.select().from(adminUsers).where(eq(adminUsers.id, currentUser.id)).get();
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+  
+  // Verify current password
+  const { valid } = await verifyPasswordForLogin(
+    currentPassword,
+    user.passwordHash,
+    user.passwordMigrated || false
+  );
+  
+  if (!valid) {
+    return c.json({ error: 'Invalid current password', message: 'รหัสผ่านปัจจุบันไม่ถูกต้อง' }, 401);
+  }
+  
+  // Hash and update new password
+  const hashedPassword = await hashPassword(newPassword);
+  await db.update(adminUsers)
+    .set({ 
+      passwordHash: hashedPassword,
+      passwordMigrated: true,
+      passwordChangedAt: new Date(),
+      mustChangePassword: false,
+    })
+    .where(eq(adminUsers.id, currentUser.id));
+  
+  return c.json({ success: true, message: 'เปลี่ยนรหัสผ่านสำเร็จ' });
+});
+
+// GET /admin/auth/me - Get current user info
+adminRoutes.get('/auth/me', async (c) => {
+  const db = drizzle(c.env.DB);
+  const currentUser = c.get('jwtPayload');
+  
+  const user = await db.select({
+    id: adminUsers.id,
+    email: adminUsers.email,
+    role: adminUsers.role,
+    passwordMigrated: adminUsers.passwordMigrated,
+    mustChangePassword: adminUsers.mustChangePassword,
+    passwordChangedAt: adminUsers.passwordChangedAt,
+    createdAt: adminUsers.createdAt,
+  }).from(adminUsers).where(eq(adminUsers.id, currentUser.id)).get();
+  
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+  
+  return c.json({ data: user });
+});
 
 adminRoutes.get('/fields', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(fieldMaster) }));
 adminRoutes.post('/fields', auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterCreateSchema), async (c) => {

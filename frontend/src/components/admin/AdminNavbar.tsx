@@ -57,6 +57,14 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Positions', href: '/admin/positions' },
     ],
   },
+  {
+    id: 'system',
+    label: 'System',
+    icon: '⚙️',
+    items: [
+      { label: 'จัดการผู้ใช้', href: '/admin/users' },
+    ],
+  },
 ];
 
 // ============================================

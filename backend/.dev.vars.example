@@ -1,7 +1,18 @@
 # Cloudflare Workers Environment Variables
 # Copy this file to .dev.vars and fill in your actual values
 
-# JWT Secret for token signing (use a strong random string in production)
+# =============================================================================
+# CRITICAL: JWT Secret (Phase 1 - Auth Hardening)
+# =============================================================================
+# REQUIREMENTS:
+# - Minimum 32 characters
+# - Must be cryptographically random
+# - NEVER use a placeholder or default value
+# - Generate with: openssl rand -base64 48
+# 
+# The server will REFUSE TO START if this is missing, too short, or
+# appears to be a placeholder value.
+# =============================================================================
 JWT_SECRET=change_me_to_a_random_secret_string_at_least_32_chars
 
 # =============================================================================
