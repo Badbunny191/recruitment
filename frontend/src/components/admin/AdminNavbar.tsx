@@ -34,7 +34,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: 'รอบรับสมัคร', href: '/admin/rounds' },
       { label: 'ใบสมัคร', href: '/admin/applications' },
-      { label: 'Audit Logs', href: '/admin/audit-logs' },
+      
     ],
   },
   {
@@ -57,6 +57,19 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Positions', href: '/admin/positions' },
     ],
   },
+  {
+    id: 'system',
+    label: 'System',
+    icon: '⚙️',
+    items: [
+      { label: 'จัดการผู้ใช้งาน', href: '/admin/users' },
+      { label: 'Audit Logs', href: '/admin/audit-logs' },
+    ],
+  },
+
+
+
+
 ];
 
 // ============================================
