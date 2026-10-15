@@ -3,7 +3,7 @@ CREATE TABLE admin_users (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'HR_OFFICER',
+    role TEXT NOT NULL DEFAULT 'VIEWER',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
