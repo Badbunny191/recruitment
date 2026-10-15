@@ -5,7 +5,7 @@ import { Bindings, AppVariables } from '../types';
 const MIN_JWT_SECRET_LENGTH = 32;
 
 /**
- * Validate JWT_SECRET at startup
+ * Validate JWT_SECRET
  * Returns error message if invalid, null if valid
  */
 export function validateJwtSecret(secret: string | undefined): string | null {
@@ -16,11 +16,39 @@ export function validateJwtSecret(secret: string | undefined): string | null {
     return `JWT_SECRET must be at least ${MIN_JWT_SECRET_LENGTH} characters (currently ${secret.length})`;
   }
   // Warn if using default/placeholder value
-  if (secret.includes('change_me') || secret.includes('secret')) {
+  if (secret.includes('change_me') || secret.includes('placeholder')) {
     return 'JWT_SECRET appears to be a placeholder value. Please use a secure random string.';
   }
   return null;
 }
+
+/**
+ * JWT Secret validation middleware
+ * 
+ * Use this BEFORE authMiddleware on routes that require JWT.
+ * - If JWT_SECRET is invalid → return 500
+ * - Logs warning once per isolate (prevents log spam)
+ */
+const jwtSecretWarned = new Set<string>();
+
+export const jwtSecretMiddleware = createMiddleware<{ Bindings: Bindings; Variables: AppVariables }>(async (c, next) => {
+  const error = validateJwtSecret(c.env.JWT_SECRET);
+  
+  if (error) {
+    const secretHash = c.env.JWT_SECRET?.slice(0, 8) || 'undefined';
+    if (!jwtSecretWarned.has(secretHash)) {
+      console.error(`[FATAL] JWT_SECRET validation failed: ${error}`);
+      jwtSecretWarned.add(secretHash);
+    }
+    
+    return c.json({
+      error: 'Server Misconfiguration',
+      message: 'Authentication is not properly configured. Please contact administrator.',
+    }, 500);
+  }
+  
+  await next();
+});
 
 export const authMiddleware = createMiddleware<{ Bindings: Bindings; Variables: AppVariables }>(async (c, next) => {
   const authHeader = c.req.header('Authorization');
@@ -35,9 +63,7 @@ export const authMiddleware = createMiddleware<{ Bindings: Bindings; Variables: 
 
   try {
     // Verify with explicit algorithm
-    const payload = await verify(token, c.env.JWT_SECRET!, {
-      alg: 'HS256',
-    } as any);
+    const payload = await verify(token, c.env.JWT_SECRET!, 'HS256' as any);
 
     // Type guard: ensure required fields exist
     if (!payload.id || !payload.email || !payload.role) {

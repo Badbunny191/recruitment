@@ -5,7 +5,7 @@ import { sign } from 'hono/jwt';
 import { v4 as uuidv4 } from 'uuid';
 import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc, gte } from 'drizzle-orm';
 import { Bindings, AppVariables } from '../types';
-import { authMiddleware } from '../middlewares/auth.middleware';
+import { authMiddleware, jwtSecretMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { 
@@ -29,6 +29,13 @@ import {
 import { validatePassword, isCommonPassword } from '../utils/password';
 
 const adminRoutes = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
+
+// =============================================================================
+// JWT Secret Validation (Admin Routes Only)
+// =============================================================================
+// Apply to ALL admin routes (including /auth/login which needs to sign JWT)
+// Public routes and health endpoint are NOT affected
+adminRoutes.use('/*', jwtSecretMiddleware);
 
 // =============================================================================
 // Authentication Routes (No Auth Required)

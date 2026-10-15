@@ -21,46 +21,13 @@ app.route('/api/v1/admin', adminRoutes);
 app.get('/health', (c) => c.json({ status: 'ok', timestamp: Math.floor(Date.now() / 1000) }));
 
 // ==========================================
-// JWT Secret Validation (Per-Request)
-// ==========================================
-// Note: Cloudflare Workers are stateless and env vars are only
-// available at request time. We cannot validate at module load.
-// Instead, we cache the validation result per isolate.
-const MIN_JWT_SECRET_LENGTH = 32;
-let jwtSecretValidated = false;
-
-function isJwtSecretValid(secret: string | undefined): boolean {
-  if (!secret) return false;
-  if (secret.length < MIN_JWT_SECRET_LENGTH) return false;
-  if (secret.includes('change_me')) return false;
-  return true;
-}
-
-// ==========================================
 // 2. Worker Export (รวม HTTP & Queue)
 // ==========================================
 export default {
   // รับ Request แบบ HTTP
   async fetch(request: Request, env: Bindings, ctx: ExecutionContext): Promise<Response> {
-    // Validate JWT_SECRET - log error once per isolate
-    if (!isJwtSecretValid(env.JWT_SECRET)) {
-      if (!jwtSecretValidated) {
-        console.error('[FATAL] JWT_SECRET is not properly configured. ' +
-          'Must be at least 32 characters and not a placeholder value.');
-        jwtSecretValidated = true; // Prevent log spam
-      }
-      return new Response(
-        JSON.stringify({
-          error: 'Server Misconfiguration',
-          message: 'Authentication is not properly configured. Please contact administrator.'
-        }),
-        {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' }
-        }
-      );
-    }
-    
+    // Public APIs และ Health endpoint ทำงานได้เสมอ
+    // JWT_SECRET validation จะถูกตรวจสอบใน admin middleware
     return app.fetch(request, env, ctx);
   }
 
