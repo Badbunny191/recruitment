@@ -8,8 +8,13 @@ import { Bindings, AppVariables } from '../types';
 import { authMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
-import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions } from '../db/schema';
+import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
 import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema } from '../schemas/validators';
+import {
+  validateApplicationPattern,
+  validateRoundCode,
+  DEFAULT_APPLICATION_PATTERN,
+} from '../utils/application-pattern';
 
 const adminRoutes = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
 
@@ -1309,6 +1314,9 @@ adminRoutes.get('/rounds', async (c) => {
       announcementDescription: recruitmentRounds.announcementDescription,
       contactInformation: recruitmentRounds.contactInformation,
       remark: recruitmentRounds.remark,
+      // Migration 019 - Application Number Pattern
+      applicationPattern: recruitmentRounds.applicationPattern,
+      roundCode: recruitmentRounds.roundCode,
     })
     .from(recruitmentRounds)
     .leftJoin(templateVersions, eq(templateVersions.id, recruitmentRounds.templateVersionId))
@@ -1321,6 +1329,66 @@ adminRoutes.post('/rounds', auditMiddleware('RECRUITMENT_ROUND'), zValidator('js
   const db = drizzle(c.env.DB);
   const data = c.req.valid('json') as any;
   const id = uuidv4();
+
+  // Migration 019 - Validate application_pattern
+  // ถ้าส่งมา: validate
+  // ถ้าไม่ส่ง: ใช้ default pattern
+  // ถ้าส่ง null explicit: เก็บ null (ใช้ format เดิม APP-YYYY-NNNN)
+  let applicationPattern: string | null;
+  if (data.applicationPattern === undefined) {
+    // ไม่ได้ส่ง field มา → ใช้ default
+    applicationPattern = DEFAULT_APPLICATION_PATTERN;
+  } else if (data.applicationPattern === null) {
+    // ส่ง null explicit → ใช้ format เดิม
+    applicationPattern = null;
+  } else {
+    // ส่ง string → validate
+    const validation = validateApplicationPattern(data.applicationPattern);
+    if (!validation.valid) {
+      return c.json({
+        error: 'รูปแบบเลขที่ใบสมัครไม่ถูกต้อง',
+        reason: 'INVALID_PATTERN',
+        details: validation.error,
+        field: validation.errorField,
+      }, 400);
+    }
+    applicationPattern = data.applicationPattern;
+  }
+
+  // Migration 019 - Validate round_code (required)
+  const roundCodeResult = validateRoundCode(data.roundCode);
+  if (!roundCodeResult.valid) {
+    return c.json({
+      error: 'รหัสรอบไม่ถูกต้อง',
+      reason: 'INVALID_ROUND_CODE',
+      details: roundCodeResult.error,
+      field: 'roundCode',
+    }, 400);
+  }
+  const roundCode = roundCodeResult.normalized;
+
+  // ตรวจ unique: round_code ซ้ำ (active + draft ในปีเดียวกัน)
+  const year = new Date(data.openDate * 1000).getUTCFullYear();
+  const conflict = await db
+    .select({ id: recruitmentRounds.id, openDate: recruitmentRounds.openDate })
+    .from(recruitmentRounds)
+    .where(
+      and(
+        eq(recruitmentRounds.roundCode, roundCode),
+        isNull(recruitmentRounds.deletedAt),
+      ),
+    )
+    .get();
+  if (conflict) {
+    const conflictYear = new Date(conflict.openDate as any).getUTCFullYear();
+    if (conflictYear === year) {
+      return c.json({
+        error: `รหัสรอบ "${roundCode}" ปี ${year + 543} ถูกใช้แล้ว`,
+        reason: 'ROUND_CODE_CONFLICT',
+        existingRoundId: conflict.id,
+      }, 409);
+    }
+  }
 
   await db.insert(recruitmentRounds).values({
     id,
@@ -1335,6 +1403,9 @@ adminRoutes.post('/rounds', auditMiddleware('RECRUITMENT_ROUND'), zValidator('js
     announcementDescription: data.announcementDescription || null,
     contactInformation: data.contactInformation || null,
     remark: data.remark || null,
+    // Migration 019
+    applicationPattern,
+    roundCode,
   });
   return c.json({ success: true, id }, 201);
 });
@@ -1360,6 +1431,87 @@ adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidato
     }
   }
 
+  // ========================================================================
+  // Migration 019 - Lock application_pattern เมื่อมี application
+  // round_code ล็อกเสมอ (Business Data) — ห้ามเปลี่ยนเมื่อมี application
+  // ========================================================================
+  const appCountResult = await db
+    .select({ count: count() })
+    .from(applications)
+    .where(and(eq(applications.roundId, id), isNull(applications.deletedAt)))
+    .get();
+  const hasApplications = (appCountResult?.count ?? 0) > 0;
+
+  // Lock check: ถ้ามี application แล้ว ห้ามเปลี่ยน application_pattern หรือ round_code
+  if (hasApplications) {
+    if (data.applicationPattern !== undefined && data.applicationPattern !== round.applicationPattern) {
+      return c.json({
+        error: 'ไม่สามารถแก้ไขรูปแบบเลขที่ใบสมัครได้ เนื่องจากมีผู้สมัครในรอบนี้แล้ว',
+        reason: 'PATTERN_LOCKED',
+        applicationCount: appCountResult?.count ?? 0,
+        message: 'หากต้องการรูปแบบใหม่ กรุณา Clone Round หรือสร้าง Round ใหม่',
+      }, 409);
+    }
+    if (data.roundCode !== undefined && data.roundCode !== round.roundCode) {
+      return c.json({
+        error: 'ไม่สามารถแก้ไขรหัสรอบได้ เนื่องจากมีผู้สมัครในรอบนี้แล้ว',
+        reason: 'ROUND_CODE_LOCKED',
+        applicationCount: appCountResult?.count ?? 0,
+        message: 'หากต้องการรหัสใหม่ กรุณา Clone Round หรือสร้าง Round ใหม่',
+      }, 409);
+    }
+  }
+
+  // Validate application_pattern ถ้ามีการเปลี่ยน
+  if (data.applicationPattern !== undefined && data.applicationPattern !== null && data.applicationPattern !== round.applicationPattern) {
+    const validation = validateApplicationPattern(data.applicationPattern);
+    if (!validation.valid) {
+      return c.json({
+        error: 'รูปแบบเลขที่ใบสมัครไม่ถูกต้อง',
+        reason: 'INVALID_PATTERN',
+        details: validation.error,
+        field: validation.errorField,
+      }, 400);
+    }
+  }
+
+  // Validate round_code ถ้ามีการเปลี่ยน
+  if (data.roundCode !== undefined && data.roundCode !== round.roundCode) {
+    const codeResult = validateRoundCode(data.roundCode);
+    if (!codeResult.valid) {
+      return c.json({
+        error: 'รหัสรอบไม่ถูกต้อง',
+        reason: 'INVALID_ROUND_CODE',
+        details: codeResult.error,
+        field: 'roundCode',
+      }, 400);
+    }
+
+    // ตรวจ unique: round_code ซ้ำในปีเดียวกัน
+    const year = new Date(round.openDate as any).getUTCFullYear();
+    const conflict = await db
+      .select({ id: recruitmentRounds.id, openDate: recruitmentRounds.openDate })
+      .from(recruitmentRounds)
+      .where(
+        and(
+          eq(recruitmentRounds.roundCode, codeResult.normalized),
+          isNull(recruitmentRounds.deletedAt),
+          ne(recruitmentRounds.id, id),
+        ),
+      )
+      .get();
+    if (conflict) {
+      const conflictYear = new Date(conflict.openDate as any).getUTCFullYear();
+      if (conflictYear === year) {
+        return c.json({
+          error: `รหัสรอบ "${codeResult.normalized}" ปี ${year + 543} ถูกใช้แล้ว`,
+          reason: 'ROUND_CODE_CONFLICT',
+          existingRoundId: conflict.id,
+        }, 409);
+      }
+    }
+  }
+
   const updateValues: any = {
     // Form Header / Announcement
     announcementTitle: data.announcementTitle !== undefined ? (data.announcementTitle || null) : undefined,
@@ -1367,7 +1519,7 @@ adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidato
     contactInformation: data.contactInformation !== undefined ? (data.contactInformation || null) : undefined,
     remark: data.remark !== undefined ? (data.remark || null) : undefined,
   };
-  
+
   // Only update fields that are provided
   if (data.title !== undefined) updateValues.title = data.title;
   if (data.positionLevel !== undefined) updateValues.positionLevel = data.positionLevel;
@@ -1375,7 +1527,13 @@ adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidato
   if (data.templateVersionId !== undefined) updateValues.templateVersionId = data.templateVersionId;
   if (data.openDate !== undefined) updateValues.openDate = new Date(data.openDate * 1000);
   if (data.closeDate !== undefined) updateValues.closeDate = new Date(data.closeDate * 1000);
-  
+  if (data.applicationPattern !== undefined) updateValues.applicationPattern = data.applicationPattern;
+  if (data.roundCode !== undefined) {
+    // ใช้ normalized (uppercase + validated)
+    const codeResult = validateRoundCode(data.roundCode);
+    updateValues.roundCode = codeResult.valid ? codeResult.normalized : data.roundCode;
+  }
+
   await db.update(recruitmentRounds).set(updateValues).where(eq(recruitmentRounds.id, id));
   return c.json({ success: true });
 });
@@ -2139,11 +2297,16 @@ adminRoutes.post('/rounds/:id/clone', auditMiddleware('ROUND_CLONED'), async (c)
     .where(eq(applications.roundId, roundId))
     .get();
   const appCount = Number(appCountResult?.count ?? 0);
-  
+
+  // ========================================================================
+  // Migration 019 - Clone round ใช้ round_code เดิม (Admin จะต้องเปลี่ยนเองทีหลังถ้าต้องการ)
+  // (Round code เป็น business data — clone ไม่ generate ใหม่)
+  // ========================================================================
+
   // Create new round with DRAFT status
   const newRoundId = uuidv4();
   const newTitle = title || `${originalRound.title} (Copy)`;
-  
+
   await db.insert(recruitmentRounds).values({
     id: newRoundId,
     templateVersionId: newTemplateVersionId,
@@ -2152,8 +2315,11 @@ adminRoutes.post('/rounds/:id/clone', auditMiddleware('ROUND_CLONED'), async (c)
     openDate: originalRound.openDate,
     closeDate: originalRound.closeDate,
     status: 'DRAFT', // Always DRAFT for cloned round
+    // Migration 019 - inherit pattern (ใช้ format เดียวกัน)
+    applicationPattern: originalRound.applicationPattern,
+    roundCode: originalRound.roundCode,
   });
-  
+
   // Log the clone action with audit details
   const adminId = c.get('jwtPayload')?.id;
   if (adminId) {
@@ -2170,14 +2336,20 @@ adminRoutes.post('/rounds/:id/clone', auditMiddleware('ROUND_CLONED'), async (c)
         newVersionId: newTemplateVersionId,
         originalVersionNumber: originalRound.templateVersionId,
         applicationCount: appCount,
+        // Migration 019
+        applicationPattern: originalRound.applicationPattern,
+        roundCode: originalRound.roundCode,
       }),
     });
   }
-  
-  return c.json({ 
-    success: true, 
+
+  return c.json({
+    success: true,
     id: newRoundId,
-    message: `Cloned round "${newTitle}" with ${appCount} applications (not copied)`
+    message: `Cloned round "${newTitle}" with ${appCount} applications (not copied)`,
+    // Migration 019
+    roundCode: originalRound.roundCode,
+    applicationPattern: originalRound.applicationPattern,
   }, 201);
 });
 

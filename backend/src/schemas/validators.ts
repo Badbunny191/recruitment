@@ -157,6 +157,13 @@ export const RecruitmentRoundCreateSchema = z.object({
   announcementDescription: z.string().nullable().optional(),
   contactInformation: z.string().nullable().optional(),
   remark: z.string().nullable().optional(),
+  // Migration 019 - Application Number Pattern (MVP)
+  // null = ใช้ format เดิม (APP-YYYY-NNNN)
+  // string = pattern ตามที่กำหนด (validated ใน service layer)
+  applicationPattern: z.string().min(1).max(100).nullable().optional(),
+  // รหัสรอบ (Admin กำหนดเอง เช่น CHM01, TEMP01) — required
+  // validated ใน service layer (validateRoundCode)
+  roundCode: z.string().min(3).max(20),
 }).refine(data => data.closeDate > data.openDate, {
   message: "closeDate must be after openDate",
   path: ["closeDate"],
@@ -174,6 +181,11 @@ export const RecruitmentRoundUpdateSchema = z.object({
   announcementDescription: z.string().nullable().optional(),
   contactInformation: z.string().nullable().optional(),
   remark: z.string().nullable().optional(),
+  // Migration 019 - Application Number Pattern
+  // Lock behavior: ถ้า round มี application แล้ว แก้ไม่ได้ (ตรวจใน route handler)
+  applicationPattern: z.string().min(1).max(100).nullable().optional(),
+  // round_code เป็น required field — ต้องส่งมาเสมอเมื่อ patch
+  roundCode: z.string().min(3).max(20).optional(),
 }).refine(data => {
   if (data.openDate !== undefined && data.closeDate !== undefined) {
     return data.closeDate > data.openDate;

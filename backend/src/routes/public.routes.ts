@@ -7,6 +7,7 @@ import { recruitmentRounds, templateFields, templateSections, fieldMaster, appli
 import { eq, and, isNull, asc, sql, like, desc } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { getCurrentBangkokYear, buildApplicationNo, parseApplicationNo } from '../utils/application-no';
+import { buildApplicationNumber } from '../services/application-number.service';
 import { idempotencyMiddleware } from '../middlewares/idempotency.middleware';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { honeypotMiddleware } from '../middlewares/honeypot.middleware';
@@ -307,7 +308,83 @@ async function insertApplicationWithRetry(
     formData: Record<string, unknown>;
     attachments?: Array<{ fieldId: string; fileUrl: string }>;
   },
-): Promise<{ ok: true; applicationNo: string } | { ok: false; reason: 'UNIQUE_COLLISION' | 'DB_ERROR' }> {
+): Promise<{ ok: true; applicationNo: string } | { ok: false; reason: 'UNIQUE_COLLISION' | 'DB_ERROR' | 'ROUND_ERROR' | 'INVALID_PATTERN' }> {
+  // =========================================================================
+  // Migration 019 - ตรวจสอบว่า round ใช้ pattern แบบไหน
+  // - application_pattern = NULL  → ใช้ format เดิม (APP-YYYY-NNNN)
+  // - application_pattern != NULL → ใช้ pattern ใหม่
+  // =========================================================================
+  const round = await db
+    .select({
+      id: recruitmentRounds.id,
+      applicationPattern: recruitmentRounds.applicationPattern,
+    })
+    .from(recruitmentRounds)
+    .where(eq(recruitmentRounds.id, args.roundId))
+    .get();
+
+  if (!round) {
+    return { ok: false, reason: 'ROUND_ERROR' };
+  }
+
+  // === Strategy B: Pattern ใหม่ — ใช้ buildApplicationNumber service ===
+  if (round.applicationPattern) {
+    const buildResult = await buildApplicationNumber(db, { roundId: args.roundId, applicationId: args.id });
+    if (!buildResult.ok) {
+      return {
+        ok: false,
+        reason: buildResult.reason === 'INVALID_PATTERN' ? 'INVALID_PATTERN' : 'ROUND_ERROR',
+      };
+    }
+    const { applicationNo, snapshot } = buildResult;
+    const maxRetries = 5;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const statements: any[] = [
+          db.insert(applications).values({
+            id: args.id,
+            applicationNo,
+            roundId: args.roundId,
+            email: args.email,
+            fullname: args.fullname,
+            nationalId: args.nationalId,
+            formData: args.formData,
+            status: 'SUBMITTED',
+            // Migration 019 - snapshot
+            year: snapshot.year,
+            roundCode: snapshot.roundCode,
+            seqInRound: snapshot.seqInRound,
+          }),
+        ];
+        if (args.attachments && args.attachments.length) {
+          for (const att of args.attachments) {
+            statements.push(
+              db.insert(applicationAttachments).values({
+                id: uuidv4(),
+                applicationId: args.id,
+                fieldId: att.fieldId,
+                fileUrl: att.fileUrl,
+              }),
+            );
+          }
+        }
+        await db.batch(statements as [any, ...any[]]);
+        return { ok: true, applicationNo };
+      } catch (err: any) {
+        const msg = String(err?.message ?? err);
+        if (/UNIQUE constraint failed: applications\.application_no/.test(msg) && attempt < maxRetries - 1) {
+          // Pattern service already issued the number — collision shouldn't happen normally
+          // but if it does (rare race), fail
+          return { ok: false, reason: 'UNIQUE_COLLISION' };
+        }
+        return { ok: false, reason: 'DB_ERROR' };
+      }
+    }
+    return { ok: false, reason: 'UNIQUE_COLLISION' };
+  }
+
+  // === Strategy A: Format เดิม (APP-YYYY-NNNN) — per-year global ===
   const year = getCurrentBangkokYear();
   let nextSequence = (await getMaxSequenceForYear(db, year)) + 1;
   const maxRetries = 5;

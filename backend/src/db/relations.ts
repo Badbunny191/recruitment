@@ -1,7 +1,7 @@
 import { relations } from 'drizzle-orm';
-import { 
-  adminUsers, fieldMaster, templates, templateVersions, templateFields, 
-  recruitmentRounds, applications, applicationAttachments, auditLogs 
+import {
+  adminUsers, fieldMaster, templates, templateVersions, templateFields,
+  recruitmentRounds, applications, applicationAttachments, auditLogs, roundSequences
 } from './schema';
 
 export const adminUsersRelations = relations(adminUsers, ({ many }) => ({
@@ -29,7 +29,12 @@ export const templateFieldsRelations = relations(templateFields, ({ one }) => ({
 
 export const recruitmentRoundsRelations = relations(recruitmentRounds, ({ one, many }) => ({
   templateVersion: one(templateVersions, { fields: [recruitmentRounds.templateVersionId], references: [templateVersions.id] }),
-  applications: many(applications)
+  applications: many(applications),
+  sequence: one(roundSequences, { fields: [recruitmentRounds.id], references: [roundSequences.roundId] })
+}));
+
+export const roundSequencesRelations = relations(roundSequences, ({ one }) => ({
+  round: one(recruitmentRounds, { fields: [roundSequences.roundId], references: [recruitmentRounds.id] })
 }));
 
 export const applicationsRelations = relations(applications, ({ one, many }) => ({

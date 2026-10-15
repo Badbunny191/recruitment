@@ -101,10 +101,33 @@ export const recruitmentRounds = sqliteTable('recruitment_rounds', {
   announcementDescription: text('announcement_description'),
   contactInformation: text('contact_information'),
   remark: text('remark'),
+  // Migration 019 - Application Number Pattern (MVP)
+  // NULL = ใช้ format เดิม (APP-YYYY-NNNN), not NULL = ใช้ format ที่กำหนด
+  applicationPattern: text('application_pattern'),
+  // รหัสรอบ (Admin กำหนดเอง เช่น CHM01, TEMP01) — required ใน MVP
+  // ใช้กับ token {ROUND_CODE}
+  roundCode: text('round_code'),
 }, (table) => ({
   checkStatus: check('chk_round_status', sql`${table.status} IN ('DRAFT', 'ACTIVE', 'CLOSED')`),
   checkDates: check('chk_round_dates', sql`${table.closeDate} >= ${table.openDate}`),
   deletedAtIdx: index('idx_rounds_deleted_at').on(table.deletedAt),
+  roundCodeIdx: index('idx_rounds_round_code').on(table.roundCode),
+}));
+
+/**
+ * round_sequences: 1 row per round
+ * เก็บ running number ของ application number ในแต่ละ round
+ * สร้างแบบ lazy เมื่อ application แรกของ round ถูก submit
+ * - Clone round: ได้ row ใหม่ที่ current_value = 0 (เริ่มนับใหม่)
+ * - Archive round: row คงอยู่ (read-only) ไม่กระทบเลขที่ออกไปแล้ว
+ */
+export const roundSequences = sqliteTable('round_sequences', {
+  roundId: text('round_id').primaryKey().references(() => recruitmentRounds.id, { onDelete: 'cascade' }),
+  currentValue: integer('current_value').notNull().default(0),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+}, (table) => ({
+  updatedAtIdx: index('idx_round_sequences_updated_at').on(table.updatedAt),
 }));
 
 export const applications = sqliteTable('applications', {
@@ -120,11 +143,22 @@ export const applications = sqliteTable('applications', {
   verifiedAt: integer('verified_at', { mode: 'timestamp' }),
   formData: text('form_data', { mode: 'json' }).notNull(),
   submittedAt: integer('submitted_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
-  deletedAt: integer('deleted_at', { mode: 'timestamp' })
+  deletedAt: integer('deleted_at', { mode: 'timestamp' }),
+  // Migration 019 - Application Number Pattern (MVP) - Snapshot Fields
+  // nullable เพื่อรองรับ application เก่าที่ใช้ format APP-YYYY-NNNN
+  // ใช้สำหรับ query/filter โดยไม่ต้อง join rounds
+  // หมายเหตุ: ไม่ snapshot level_code เพราะไม่ได้ใช้ใน MVP (ไม่ render, ไม่ filter)
+  // ถ้าต้องการ position_level สามารถ join recruitment_rounds ได้
+  year: integer('year'),
+  roundCode: text('round_code'),
+  seqInRound: integer('seq_in_round'),
 }, (table) => ({
   roundIdx: index('idx_apps_round').on(table.roundId),
   statusIdx: index('idx_apps_status').on(table.status),
   roundStatusIdx: index('idx_apps_round_status').on(table.roundId, table.status),
+  yearIdx: index('idx_apps_year').on(table.year),
+  roundCodeIdx: index('idx_apps_round_code').on(table.roundCode),
+  yearRoundCodeIdx: index('idx_apps_year_round_code').on(table.year, table.roundCode),
   checkStatus: check('chk_app_status', sql`${table.status} IN ('DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED')`)
 }));
 
