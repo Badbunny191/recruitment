@@ -11,10 +11,10 @@ CREATE TABLE `admin_users` (
 	`id` text PRIMARY KEY NOT NULL,
 	`email` text NOT NULL,
 	`password_hash` text NOT NULL,
-	`role` text DEFAULT 'HR_OFFICER' NOT NULL,
+	`role` text DEFAULT 'ADMIN' NOT NULL,
 	`created_at` integer DEFAULT (unixepoch())
 );
-INSERT INTO "admin_users" ("id","email","password_hash","role","created_at") VALUES('seed-admin-001','admin@recruitment.go.th','admin123','HR_ADMIN',1791388515);
+INSERT INTO "admin_users" ("id","email","password_hash","role","created_at") VALUES('seed-admin-001','admin@recruitment.go.th','admin123','ADMIN',1791388515);
 CREATE TABLE `application_attachments` (
 	`id` text PRIMARY KEY NOT NULL,
 	`application_id` text NOT NULL,

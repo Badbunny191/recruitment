@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { USER_ROLES } from '../types';
 
 // Allowed values must stay in sync with the CHECK constraint "chk_field_type"
 // in backend/src/db/schema.ts and the D1 table definition.
@@ -11,6 +12,16 @@ export const LoginRequestSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
 });
+
+// =============================================================================
+// RBAC v1 — Role Enum
+// =============================================================================
+//
+// Synced with USER_ROLES in src/types.ts. Any role value that arrives
+// from the client is validated against this set; legacy values like
+// HR_ADMIN / REVIEWER / HR_OFFICER are rejected at the API boundary
+// (the database has been migrated to the new set in migration 020).
+export const UserRoleEnum = z.enum(USER_ROLES);
 
 // Master data sources available to MASTER_DATA fields (Phase 1: organizations only)
 export const MASTER_DATA_SOURCES = ['organizations'] as const;

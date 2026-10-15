@@ -5,7 +5,7 @@ export const adminUsers = sqliteTable('admin_users', {
   id: text('id').primaryKey(),
   email: text('email').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
-  role: text('role').notNull().default('HR_OFFICER'),
+  role: text('role').notNull().default('ADMIN'),
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
 });
 

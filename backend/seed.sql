@@ -4,8 +4,9 @@
  */
 
 -- สร้าง admin user (password: admin123)
+-- NOTE: RBAC v1 — ใช้ role 'ADMIN' (legacy 'HR_ADMIN' ถูก migrate แล้วใน migration 020)
 INSERT INTO admin_users (id, email, password_hash, role) VALUES 
-  ('seed-admin-001', 'admin@recruitment.go.th', 'admin123', 'HR_ADMIN');
+  ('seed-admin-001', 'admin@recruitment.go.th', 'admin123', 'ADMIN');
 
 -- สร้าง field_master (ชนิดฟิลด์สำหรับฟอร์ม)
 INSERT INTO field_master (id, field_type, label_th, default_options, pdf_mapping_key, is_active) VALUES 

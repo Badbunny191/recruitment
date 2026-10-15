@@ -5,7 +5,7 @@ import { sign } from 'hono/jwt';
 import { v4 as uuidv4 } from 'uuid';
 import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc } from 'drizzle-orm';
 import { Bindings, AppVariables } from '../types';
-import { authMiddleware } from '../middlewares/auth.middleware';
+import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware } from '../middlewares/audit.middleware';
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
@@ -34,7 +34,7 @@ adminRoutes.post('/auth/login', zValidator('json', LoginRequestSchema), async (c
 adminRoutes.use('/*', authMiddleware);
 
 adminRoutes.get('/fields', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(fieldMaster) }));
-adminRoutes.post('/fields', auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterCreateSchema), async (c) => {
+adminRoutes.post('/fields', adminOnlyMiddleware, auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const data = c.req.valid('json') as any;
   const id = uuidv4();
@@ -53,7 +53,7 @@ adminRoutes.post('/fields', auditMiddleware('FIELD_MASTER'), zValidator('json', 
   return c.json({ success: true, id }, 201);
 });
 
-adminRoutes.patch('/fields/:id', auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterUpdateSchema), async (c) => {
+adminRoutes.patch('/fields/:id', adminOnlyMiddleware, auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const data = c.req.valid('json') as any;
@@ -80,7 +80,7 @@ adminRoutes.patch('/fields/:id', auditMiddleware('FIELD_MASTER'), zValidator('js
 });
 
 // Soft delete: ตั้ง isActive=false (ห้าม hard delete เพราะ field อาจถูกใช้ใน template version แล้ว)
-adminRoutes.delete('/fields/:id', auditMiddleware('FIELD_MASTER'), async (c) => {
+adminRoutes.delete('/fields/:id', adminOnlyMiddleware, auditMiddleware('FIELD_MASTER'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   await db.update(fieldMaster).set({ isActive: false }).where(eq(fieldMaster.id, id));
@@ -238,13 +238,13 @@ adminRoutes.get('/templates', async (c) => {
 
   return c.json({ data: enrichedTemplates });
 });
-adminRoutes.post('/templates', auditMiddleware('TEMPLATE'), zValidator('json', TemplateCreateSchema), async (c) => {
+adminRoutes.post('/templates', adminOnlyMiddleware, auditMiddleware('TEMPLATE'), zValidator('json', TemplateCreateSchema), async (c) => {
   const id = uuidv4();
   await drizzle(c.env.DB).insert(templates).values({ id, ...c.req.valid('json') });
   return c.json({ success: true, id }, 201);
 });
 
-adminRoutes.patch('/templates/:id', auditMiddleware('TEMPLATE'), zValidator('json', TemplateUpdateSchema), async (c) => {
+adminRoutes.patch('/templates/:id', adminOnlyMiddleware, auditMiddleware('TEMPLATE'), zValidator('json', TemplateUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const data = c.req.valid('json');
@@ -257,7 +257,7 @@ adminRoutes.patch('/templates/:id', auditMiddleware('TEMPLATE'), zValidator('jso
 // =============================================================================
 
 // PATCH /admin/templates/:id/archive - Soft delete
-adminRoutes.patch('/templates/:id/archive', auditMiddleware('TEMPLATE'), async (c) => {
+adminRoutes.patch('/templates/:id/archive', adminOnlyMiddleware, auditMiddleware('TEMPLATE'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -278,7 +278,7 @@ adminRoutes.patch('/templates/:id/archive', auditMiddleware('TEMPLATE'), async (
 });
 
 // PATCH /admin/templates/:id/restore - Restore
-adminRoutes.patch('/templates/:id/restore', auditMiddleware('TEMPLATE'), async (c) => {
+adminRoutes.patch('/templates/:id/restore', adminOnlyMiddleware, auditMiddleware('TEMPLATE'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -361,7 +361,7 @@ adminRoutes.get('/templates/:id/usage', async (c) => {
 });
 
 // DELETE /admin/templates/:id - Hard delete (admin only, blocked if rounds reference it)
-adminRoutes.delete('/templates/:id', auditMiddleware('TEMPLATE'), async (c) => {
+adminRoutes.delete('/templates/:id', adminOnlyMiddleware, auditMiddleware('TEMPLATE'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -621,7 +621,7 @@ adminRoutes.get('/template-fields/:versionId', async (c) => {
 //   Mode A (Editor): payload has sections[] + fields[] (with sectionId as tempId)
 //   Mode B (Clone): payload has cloneFromVersionId (clone sections+fields from source)
 //   Mode C (Legacy): payload has only fields[] — auto-create default section "ข้อมูลทั่วไป"
-adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'), zValidator('json', TemplateVersionCreateSchema), async (c) => {
+adminRoutes.post('/templates/:id/versions', adminOnlyMiddleware, auditMiddleware('TEMPLATE_VERSION'), zValidator('json', TemplateVersionCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const payload = c.req.valid('json') as any;
   const versionId = uuidv4();
@@ -807,9 +807,9 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
 // Sprint 4 - Template Version Update API (Phase 1)
 // PUT /admin/template-versions/:versionId - UPDATE Draft เดิม (ไม่สร้าง Version ใหม่)
 // =============================================================================
-adminRoutes.put('/template-versions/:versionId', 
+adminRoutes.put('/template-versions/:versionId', adminOnlyMiddleware,
   auditMiddleware('TEMPLATE_VERSION'),
-  zValidator('json', TemplateVersionUpdateSchema), 
+  zValidator('json', TemplateVersionUpdateSchema),
   async (c) => {
     const db = drizzle(c.env.DB);
     const versionId = c.req.param('versionId');
@@ -928,7 +928,7 @@ adminRoutes.get('/template-sections/:versionId', async (c) => {
 });
 
 // POST /admin/template-sections - Create new section
-adminRoutes.post('/template-sections', auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionCreateSchema), async (c) => {
+adminRoutes.post('/template-sections', adminOnlyMiddleware, auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const payload = c.req.valid('json') as any;
 
@@ -958,7 +958,7 @@ adminRoutes.post('/template-sections', auditMiddleware('TEMPLATE_SECTION'), zVal
 });
 
 // PUT /admin/template-sections/:id - Update name/displayOrder/isActive
-adminRoutes.put('/template-sections/:id', auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionUpdateSchema), async (c) => {
+adminRoutes.put('/template-sections/:id', adminOnlyMiddleware, auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const payload = c.req.valid('json') as any;
@@ -989,7 +989,7 @@ adminRoutes.put('/template-sections/:id', auditMiddleware('TEMPLATE_SECTION'), z
 });
 
 // DELETE /admin/template-sections/:id - Soft delete (isActive=false)
-adminRoutes.delete('/template-sections/:id', auditMiddleware('TEMPLATE_SECTION'), async (c) => {
+adminRoutes.delete('/template-sections/:id', adminOnlyMiddleware, auditMiddleware('TEMPLATE_SECTION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -1014,7 +1014,7 @@ adminRoutes.delete('/template-sections/:id', auditMiddleware('TEMPLATE_SECTION')
 });
 
 // PATCH /admin/template-sections/:id/toggle - Toggle isActive
-adminRoutes.patch('/template-sections/:id/toggle', auditMiddleware('TEMPLATE_SECTION'), async (c) => {
+adminRoutes.patch('/template-sections/:id/toggle', adminOnlyMiddleware, auditMiddleware('TEMPLATE_SECTION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -1031,7 +1031,7 @@ adminRoutes.patch('/template-sections/:id/toggle', auditMiddleware('TEMPLATE_SEC
 
 // PATCH /admin/template-sections/reorder - Bulk reorder sections
 // Sprint 4: ใช้ negative displayOrder trick เพื่อหลีกเลี่ยง unique constraint conflict
-adminRoutes.patch('/template-sections/reorder', auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionReorderSchema), async (c) => {
+adminRoutes.patch('/template-sections/reorder', adminOnlyMiddleware, auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionReorderSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const { items } = c.req.valid('json') as any;
 
@@ -1092,7 +1092,7 @@ adminRoutes.patch('/template-sections/reorder', auditMiddleware('TEMPLATE_SECTIO
 });
 
 // PATCH /admin/template-fields/reorder - Bulk reorder fields (with optional section change)
-adminRoutes.patch('/template-fields/reorder', auditMiddleware('TEMPLATE_FIELD'), zValidator('json', TemplateFieldReorderSchema), async (c) => {
+adminRoutes.patch('/template-fields/reorder', adminOnlyMiddleware, auditMiddleware('TEMPLATE_FIELD'), zValidator('json', TemplateFieldReorderSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const { items } = c.req.valid('json') as any;
 
@@ -1149,7 +1149,7 @@ adminRoutes.patch('/template-fields/reorder', auditMiddleware('TEMPLATE_FIELD'),
 });
 
 // PUT /admin/template-fields/:id/section - Assign field to section
-adminRoutes.put('/template-fields/:id/section', auditMiddleware('TEMPLATE_FIELD'), zValidator('json', TemplateFieldSectionAssignSchema), async (c) => {
+adminRoutes.put('/template-fields/:id/section', adminOnlyMiddleware, auditMiddleware('TEMPLATE_FIELD'), zValidator('json', TemplateFieldSectionAssignSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const { sectionId } = c.req.valid('json') as any;
@@ -1177,7 +1177,7 @@ adminRoutes.put('/template-fields/:id/section', auditMiddleware('TEMPLATE_FIELD'
 
 // PATCH /admin/template-versions/:id/publish - DRAFT → PUBLISHED
 // RFC Policy: Only 1 Published version at a time. Old Published → Auto Archive
-adminRoutes.patch('/template-versions/:id/publish', auditMiddleware('TEMPLATE_VERSION'), async (c) => {
+adminRoutes.patch('/template-versions/:id/publish', adminOnlyMiddleware, auditMiddleware('TEMPLATE_VERSION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   
@@ -1219,7 +1219,7 @@ adminRoutes.patch('/template-versions/:id/publish', auditMiddleware('TEMPLATE_VE
 });
 
 // PATCH /admin/template-versions/:id/archive - PUBLISHED → ARCHIVED
-adminRoutes.patch('/template-versions/:id/archive', auditMiddleware('TEMPLATE_VERSION'), async (c) => {
+adminRoutes.patch('/template-versions/:id/archive', adminOnlyMiddleware, auditMiddleware('TEMPLATE_VERSION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   
@@ -1250,7 +1250,7 @@ adminRoutes.patch('/template-versions/:id/archive', auditMiddleware('TEMPLATE_VE
 });
 
 // DELETE /admin/template-versions/:id - Delete DRAFT version only
-adminRoutes.delete('/template-versions/:id', auditMiddleware('TEMPLATE_VERSION'), async (c) => {
+adminRoutes.delete('/template-versions/:id', adminOnlyMiddleware, auditMiddleware('TEMPLATE_VERSION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   
@@ -1325,7 +1325,7 @@ adminRoutes.get('/rounds', async (c) => {
 
   return c.json({ data });
 });
-adminRoutes.post('/rounds', auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundCreateSchema), async (c) => {
+adminRoutes.post('/rounds', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const data = c.req.valid('json') as any;
   const id = uuidv4();
@@ -1412,7 +1412,7 @@ adminRoutes.post('/rounds', auditMiddleware('RECRUITMENT_ROUND'), zValidator('js
 
 // PATCH round: แก้ได้เฉพาะ metadata เท่านั้น (title, positionLevel, openDate, closeDate, status)
 // ห้ามเปลี่ยน templateVersionId ทุกสถานะ (DRAFT, ACTIVE, CLOSED)
-adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundUpdateSchema), async (c) => {
+adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const data = c.req.valid('json') as any;
@@ -1543,7 +1543,7 @@ adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidato
 // =============================================================================
 
 // PATCH /admin/rounds/:id/archive - Soft delete (set deletedAt = now)
-adminRoutes.patch('/rounds/:id/archive', auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
+adminRoutes.patch('/rounds/:id/archive', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -1564,7 +1564,7 @@ adminRoutes.patch('/rounds/:id/archive', auditMiddleware('RECRUITMENT_ROUND'), a
 });
 
 // PATCH /admin/rounds/:id/restore - Restore archived round
-adminRoutes.patch('/rounds/:id/restore', auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
+adminRoutes.patch('/rounds/:id/restore', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -1612,7 +1612,7 @@ adminRoutes.get('/rounds/:id/usage', async (c) => {
 });
 
 // DELETE /admin/rounds/:id - Hard delete (admin only, blocked if has applications)
-adminRoutes.delete('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
+adminRoutes.delete('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -1727,7 +1727,7 @@ adminRoutes.get('/applications/summary', async (c) => {
 });
 
 // PATCH /admin/applications/:id/status - Update application status
-adminRoutes.patch('/applications/:id/status', auditMiddleware('APPLICATION'), zValidator('json', ApplicationStatusUpdateSchema), async (c) => {
+adminRoutes.patch('/applications/:id/status', adminOnlyMiddleware, auditMiddleware('APPLICATION'), zValidator('json', ApplicationStatusUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const { status, reason } = c.req.valid('json');
@@ -1898,7 +1898,7 @@ adminRoutes.get('/applications/:id/history', async (c) => {
 });
 
 // POST /admin/applications/bulk-status - Bulk update application status
-adminRoutes.post('/applications/bulk-status', auditMiddleware('APPLICATION'), async (c) => {
+adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddleware('APPLICATION'), async (c) => {
   const db = drizzle(c.env.DB);
   const { ids, status, reason } = await c.req.json();
   const adminId = c.get('jwtPayload').id;
@@ -2255,7 +2255,7 @@ adminRoutes.get('/template-versions/:fromId/compare/:toId', async (c) => {
 // FEATURE 3: Clone Round API
 // POST /admin/rounds/:id/clone
 // =============================================================================
-adminRoutes.post('/rounds/:id/clone', auditMiddleware('ROUND_CLONED'), async (c) => {
+adminRoutes.post('/rounds/:id/clone', adminOnlyMiddleware, auditMiddleware('ROUND_CLONED'), async (c) => {
   const db = drizzle(c.env.DB);
   const roundId = c.req.param('id');
   const { templateVersionId, title } = await c.req.json();
@@ -2557,7 +2557,7 @@ adminRoutes.get('/organizations/:id', async (c) => {
 });
 
 // POST /admin/organizations - Create organization
-adminRoutes.post('/organizations', auditMiddleware('ORGANIZATION'), async (c) => {
+adminRoutes.post('/organizations', adminOnlyMiddleware, auditMiddleware('ORGANIZATION'), async (c) => {
   const db = drizzle(c.env.DB);
   const body = await c.req.json();
 
@@ -2585,7 +2585,7 @@ adminRoutes.post('/organizations', auditMiddleware('ORGANIZATION'), async (c) =>
 });
 
 // PUT /admin/organizations/:id - Update organization
-adminRoutes.put('/organizations/:id', auditMiddleware('ORGANIZATION'), async (c) => {
+adminRoutes.put('/organizations/:id', adminOnlyMiddleware, auditMiddleware('ORGANIZATION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const body = await c.req.json();
@@ -2621,7 +2621,7 @@ adminRoutes.put('/organizations/:id', auditMiddleware('ORGANIZATION'), async (c)
 });
 
 // DELETE /admin/organizations/:id - Soft delete (set isActive = false)
-adminRoutes.delete('/organizations/:id', auditMiddleware('ORGANIZATION'), async (c) => {
+adminRoutes.delete('/organizations/:id', adminOnlyMiddleware, auditMiddleware('ORGANIZATION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   
@@ -2639,7 +2639,7 @@ adminRoutes.delete('/organizations/:id', auditMiddleware('ORGANIZATION'), async 
 });
 
 // PATCH /admin/organizations/:id/toggle - Toggle isActive
-adminRoutes.patch('/organizations/:id/toggle', auditMiddleware('ORGANIZATION'), async (c) => {
+adminRoutes.patch('/organizations/:id/toggle', adminOnlyMiddleware, auditMiddleware('ORGANIZATION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -2690,7 +2690,7 @@ adminRoutes.get('/job-families/:id', async (c) => {
 });
 
 // POST /admin/job-families
-adminRoutes.post('/job-families', auditMiddleware('JOB_FAMILY'), async (c) => {
+adminRoutes.post('/job-families', adminOnlyMiddleware, auditMiddleware('JOB_FAMILY'), async (c) => {
   const db = drizzle(c.env.DB);
   const body = await c.req.json();
 
@@ -2717,7 +2717,7 @@ adminRoutes.post('/job-families', auditMiddleware('JOB_FAMILY'), async (c) => {
 });
 
 // PUT /admin/job-families/:id
-adminRoutes.put('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c) => {
+adminRoutes.put('/job-families/:id', adminOnlyMiddleware, auditMiddleware('JOB_FAMILY'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const body = await c.req.json();
@@ -2746,7 +2746,7 @@ adminRoutes.put('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c) =>
 });
 
 // DELETE /admin/job-families/:id - Hard delete (ตรวจสอบ FK จาก positions ก่อน)
-adminRoutes.delete('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c) => {
+adminRoutes.delete('/job-families/:id', adminOnlyMiddleware, auditMiddleware('JOB_FAMILY'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -2774,7 +2774,7 @@ adminRoutes.delete('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c)
 });
 
 // PATCH /admin/job-families/:id/toggle
-adminRoutes.patch('/job-families/:id/toggle', auditMiddleware('JOB_FAMILY'), async (c) => {
+adminRoutes.patch('/job-families/:id/toggle', adminOnlyMiddleware, auditMiddleware('JOB_FAMILY'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -2823,7 +2823,7 @@ adminRoutes.get('/position-levels/:id', async (c) => {
 });
 
 // POST /admin/position-levels
-adminRoutes.post('/position-levels', auditMiddleware('POSITION_LEVEL'), async (c) => {
+adminRoutes.post('/position-levels', adminOnlyMiddleware, auditMiddleware('POSITION_LEVEL'), async (c) => {
   const db = drizzle(c.env.DB);
   const body = await c.req.json();
 
@@ -2850,7 +2850,7 @@ adminRoutes.post('/position-levels', auditMiddleware('POSITION_LEVEL'), async (c
 });
 
 // PUT /admin/position-levels/:id
-adminRoutes.put('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), async (c) => {
+adminRoutes.put('/position-levels/:id', adminOnlyMiddleware, auditMiddleware('POSITION_LEVEL'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const body = await c.req.json();
@@ -2879,7 +2879,7 @@ adminRoutes.put('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), async
 });
 
 // DELETE /admin/position-levels/:id - Hard delete (ตรวจสอบ FK จาก positions ก่อน)
-adminRoutes.delete('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), async (c) => {
+adminRoutes.delete('/position-levels/:id', adminOnlyMiddleware, auditMiddleware('POSITION_LEVEL'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -2907,7 +2907,7 @@ adminRoutes.delete('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), as
 });
 
 // PATCH /admin/position-levels/:id/toggle
-adminRoutes.patch('/position-levels/:id/toggle', auditMiddleware('POSITION_LEVEL'), async (c) => {
+adminRoutes.patch('/position-levels/:id/toggle', adminOnlyMiddleware, auditMiddleware('POSITION_LEVEL'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -2956,7 +2956,7 @@ adminRoutes.get('/positions/:id', async (c) => {
 });
 
 // POST /admin/positions
-adminRoutes.post('/positions', auditMiddleware('POSITION'), async (c) => {
+adminRoutes.post('/positions', adminOnlyMiddleware, auditMiddleware('POSITION'), async (c) => {
   const db = drizzle(c.env.DB);
   const body = await c.req.json();
 
@@ -2985,7 +2985,7 @@ adminRoutes.post('/positions', auditMiddleware('POSITION'), async (c) => {
 });
 
 // PUT /admin/positions/:id
-adminRoutes.put('/positions/:id', auditMiddleware('POSITION'), async (c) => {
+adminRoutes.put('/positions/:id', adminOnlyMiddleware, auditMiddleware('POSITION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const body = await c.req.json();
@@ -3016,7 +3016,7 @@ adminRoutes.put('/positions/:id', auditMiddleware('POSITION'), async (c) => {
 });
 
 // DELETE /admin/positions/:id - Hard delete
-adminRoutes.delete('/positions/:id', auditMiddleware('POSITION'), async (c) => {
+adminRoutes.delete('/positions/:id', adminOnlyMiddleware, auditMiddleware('POSITION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -3030,7 +3030,7 @@ adminRoutes.delete('/positions/:id', auditMiddleware('POSITION'), async (c) => {
 });
 
 // PATCH /admin/positions/:id/toggle
-adminRoutes.patch('/positions/:id/toggle', auditMiddleware('POSITION'), async (c) => {
+adminRoutes.patch('/positions/:id/toggle', adminOnlyMiddleware, auditMiddleware('POSITION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
