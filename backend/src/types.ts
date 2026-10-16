@@ -50,6 +50,7 @@ export type AppVariables = {
     email: string;
     role: string;
   };
+  auditPayload?: string | null;
 };
 
 // =============================================================================

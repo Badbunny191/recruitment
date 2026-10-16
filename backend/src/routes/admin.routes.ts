@@ -6,7 +6,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc } from 'drizzle-orm';
 import { Bindings, AppVariables } from '../types';
 import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middleware';
-import { auditMiddleware } from '../middlewares/audit.middleware';
+import { auditMiddleware, setAuditPayload } from '../middlewares/audit.middleware';
+import { handleApplicationStatusChange, buildAuditPayload } from '../lib/change-tracking';
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
 import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
@@ -1536,6 +1537,28 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
     updateValues.roundCode = codeResult.valid ? codeResult.normalized : data.roundCode;
   }
 
+  // Compute changes for audit log
+  const { computeChanges, buildAuditPayload } = await import('../lib/change-tracking');
+  const changes = computeChanges(
+    { 
+      title: round.title, 
+      positionLevel: round.positionLevel, 
+      status: round.status,
+      openDate: round.openDate ? new Date(round.openDate as any).toLocaleDateString('th-TH') : null,
+      closeDate: round.closeDate ? new Date(round.closeDate as any).toLocaleDateString('th-TH') : null,
+    },
+    { 
+      title: data.title, 
+      positionLevel: data.positionLevel, 
+      status: data.status,
+      openDate: data.openDate ? new Date(data.openDate * 1000).toLocaleDateString('th-TH') : null,
+      closeDate: data.closeDate ? new Date(data.closeDate * 1000).toLocaleDateString('th-TH') : null,
+    },
+    'RECRUITMENT_ROUND'
+  );
+  const auditPayload = buildAuditPayload(changes);
+  setAuditPayload(c, auditPayload);
+
   await db.update(recruitmentRounds).set(updateValues).where(eq(recruitmentRounds.id, id));
   return c.json({ success: true });
 });
@@ -1746,6 +1769,11 @@ adminRoutes.patch('/applications/:id/status', adminOnlyMiddleware, auditMiddlewa
     return c.json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' }, 400);
   }
   
+  // Generate change tracking data
+  const changeData = handleApplicationStatusChange(app.status || 'DRAFT', status, reason);
+  const auditPayload = buildAuditPayload(changeData.changes, { previousStatus: app.status });
+  setAuditPayload(c, auditPayload);
+
   // Drizzle expects Date object for timestamp fields
   const verifiedAtDate = new Date();
   
@@ -2616,6 +2644,16 @@ adminRoutes.put('/organizations/:id', adminOnlyMiddleware, auditMiddleware('ORGA
   // Drizzle expects Date object for timestamp fields, not Unix timestamp number
   updateData.updatedAt = new Date();
 
+  // Compute changes for audit log
+  const { computeChanges, buildAuditPayload } = await import('../lib/change-tracking');
+  const changes = computeChanges(
+    { name: existing.name, displayOrder: existing.displayOrder, isActive: existing.isActive },
+    { name: body.name?.trim(), displayOrder: body.displayOrder, isActive: body.isActive },
+    'ORGANIZATION'
+  );
+  const auditPayload = buildAuditPayload(changes);
+  setAuditPayload(c, auditPayload);
+
   await db.update(organizations).set(updateData).where(eq(organizations.id, id));
   
   const updated = await db.select().from(organizations).where(eq(organizations.id, id)).get();
@@ -2991,7 +3029,7 @@ adminRoutes.put('/positions/:id', adminOnlyMiddleware, auditMiddleware('POSITION
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const body = await c.req.json();
-
+  
   const existing = await db.select().from(positions).where(eq(positions.id, id)).get();
   if (!existing) return c.json({ error: 'Position not found' }, 404);
 
@@ -3011,6 +3049,28 @@ adminRoutes.put('/positions/:id', adminOnlyMiddleware, auditMiddleware('POSITION
   if (body.isActive !== undefined) updateData.isActive = body.isActive;
   // Drizzle expects Date object for timestamp fields, not Unix timestamp number
   updateData.updatedAt = new Date();
+
+  // Compute changes for audit log
+  const { computeChanges, buildAuditPayload } = await import('../lib/change-tracking');
+  const changes = computeChanges(
+    { 
+      title: existing.title, 
+      jobFamilyId: existing.jobFamilyId, 
+      positionLevelId: existing.positionLevelId,
+      displayOrder: existing.displayOrder, 
+      isActive: existing.isActive 
+    },
+    { 
+      title: body.title?.trim(), 
+      jobFamilyId: body.jobFamilyId, 
+      positionLevelId: body.positionLevelId,
+      displayOrder: body.displayOrder, 
+      isActive: body.isActive 
+    },
+    'POSITION'
+  );
+  const auditPayload = buildAuditPayload(changes);
+  setAuditPayload(c, auditPayload);
 
   await db.update(positions).set(updateData).where(eq(positions.id, id));
   const updated = await db.select().from(positions).where(eq(positions.id, id)).get();
@@ -3412,6 +3472,16 @@ adminRoutes.patch(
     if (Object.keys(updateValues).length === 0) {
       return c.json({ success: true, message: 'ไม่มีการเปลี่ยนแปลง' });
     }
+
+    // Compute changes for audit log
+    const { computeChanges, buildAuditPayload } = await import('../lib/change-tracking');
+    const changes = computeChanges(
+      { email: target.email, role: target.role, isActive: target.isActive },
+      { email: target.email, role: data.role, isActive: data.isActive },
+      'ADMIN_USER'
+    );
+    const auditPayload = buildAuditPayload(changes);
+    setAuditPayload(c, auditPayload);
 
     await db.update(adminUsers).set(updateValues).where(eq(adminUsers.id, id));
     return c.json({ success: true });
