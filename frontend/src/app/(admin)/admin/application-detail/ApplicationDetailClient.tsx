@@ -82,6 +82,46 @@ export default function ApplicationDetailClient() {
   const [rejectReason, setRejectReason] = useState('');
   const [updating, setUpdating] = useState(false);
 
+  // PDF download state
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
+  const handleDownloadPdf = async () => {
+    if (!app) return;
+    setDownloadingPdf(true);
+    setPdfError(null);
+    try {
+      const token = localStorage.getItem('adminToken');
+      const res = await fetch(`${API_URL}/admin/applications/${app.id}/pdf`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || err.error || 'ดาวน์โหลด PDF ไม่สำเร็จ');
+      }
+      // Get filename from Content-Disposition header
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
+      const filename = filenameMatch?.[1] || `${app.applicationNo || app.id}.pdf`;
+
+      // Download via Blob
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('[PDF] Download failed:', err);
+      setPdfError(err instanceof Error ? err.message : 'ดาวน์โหลด PDF ไม่สำเร็จ');
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
   useEffect(() => {
     const id = searchParams.get('id');
     if (!id) {
@@ -296,13 +336,42 @@ export default function ApplicationDetailClient() {
           <div className="px-4 py-2 bg-gray-100 rounded-lg">
             <StatusBadge status={app.status as any} className="text-base px-3 py-1" />
           </div>
-          {canWrite && (
-            <Button onClick={openStatusModal} size="sm">
-              เปลี่ยนสถานะ
+          <div className="flex gap-2 flex-wrap justify-end">
+            <Button
+              onClick={handleDownloadPdf}
+              size="sm"
+              variant="outline"
+              disabled={downloadingPdf}
+              title={pdfError || 'ดาวน์โหลดเอกสาร PDF'}
+            >
+              <span aria-hidden>📄</span>
+              {downloadingPdf ? 'กำลังสร้าง PDF...' : 'ดาวน์โหลด PDF'}
             </Button>
-          )}
+            {canWrite && (
+              <Button onClick={openStatusModal} size="sm">
+                เปลี่ยนสถานะ
+              </Button>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* PDF Error Banner */}
+      {pdfError && (
+        <div
+          role="alert"
+          className="rounded-md border border-red-300 bg-red-50 text-red-800 px-4 py-2 text-sm flex items-center justify-between"
+        >
+          <span>ดาวน์โหลด PDF ล้มเหลว: {pdfError}</span>
+          <button
+            onClick={() => setPdfError(null)}
+            className="ml-4 text-red-600 hover:text-red-800"
+            aria-label="ปิด"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Status Info Card */}
       {app.verifiedBy && (

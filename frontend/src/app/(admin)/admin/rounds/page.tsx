@@ -485,42 +485,51 @@ export default function RoundsPage() {
     }
     setSubmitting(true);
     try {
-      const payload: any = {
-        title: form.title,
-        positionLevel: form.positionLevel,
-        templateVersionId: form.templateVersionId,
-        openDate: toUnix(form.openDate),
-        closeDate: toUnix(form.closeDate),
-        status: form.status,
-        announcementTitle: form.announcementTitle || null,
-        announcementDescription: form.announcementDescription || null,
-        contactInformation: form.contactInformation || null,
-        remark: form.remark || null,
-        // Migration 019 - Application Number Pattern
-        applicationPattern: form.applicationPattern,
-        roundCode: form.roundCode,
-      };
+      // NOTE: เมื่อ editing mode - ไม่ส่ง roundCode และ applicationPattern
+      // เพราะเป็น immutable fields - backend จะใช้ค่าปัจจุบันจาก database
+      const url = editing
+        ? `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${editing.id}`
+        : `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds`;
+      const method = editing ? 'PATCH' : 'POST';
 
-      if (editing) {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${editing.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || err.message || 'update failed');
-        }
-      } else {
-        const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/rounds', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || err.message || 'create failed');
-        }
+      const payload: any = editing
+        ? {
+            title: form.title,
+            positionLevel: form.positionLevel,
+            openDate: toUnix(form.openDate),
+            closeDate: toUnix(form.closeDate),
+            status: form.status,
+            announcementTitle: form.announcementTitle || null,
+            announcementDescription: form.announcementDescription || null,
+            contactInformation: form.contactInformation || null,
+            remark: form.remark || null,
+            // templateVersionId: เปลี่ยนได้เฉพาะ DRAFT round
+            ...(form.templateVersionId ? { templateVersionId: form.templateVersionId } : {}),
+          }
+        : {
+            title: form.title,
+            positionLevel: form.positionLevel,
+            templateVersionId: form.templateVersionId,
+            openDate: toUnix(form.openDate),
+            closeDate: toUnix(form.closeDate),
+            status: form.status,
+            announcementTitle: form.announcementTitle || null,
+            announcementDescription: form.announcementDescription || null,
+            contactInformation: form.contactInformation || null,
+            remark: form.remark || null,
+            // Create mode - ต้องส่ง roundCode และ applicationPattern
+            applicationPattern: form.applicationPattern,
+            roundCode: form.roundCode,
+          };
+
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || err.message || (editing ? 'update failed' : 'create failed'));
       }
       setDialogOpen(false);
       await loadRounds();
