@@ -18,6 +18,7 @@ import { useRole } from '@/lib/useRole';
 interface AuditLog {
   id: string;
   adminId: string;
+  adminEmail?: string; // Resolved from lookup
   action: 'CREATE' | 'UPDATE' | 'DELETE' | string;
   entityType: string;
   entityId: string;
@@ -92,6 +93,7 @@ const DEFAULT_PAGE_SIZE = 50;
 // =============================================================================
 
 type EntityLookup = Record<string, string>; // entityId -> "ชื่อจริง"
+type AdminLookup = Record<string, string>; // adminId -> email
 
 interface LookupBundle {
   ROUND: EntityLookup;
@@ -101,6 +103,7 @@ interface LookupBundle {
   JOB_FAMILY: EntityLookup;
   POSITION_LEVEL: EntityLookup;
   POSITION: EntityLookup;
+  ADMIN: AdminLookup;
 }
 
 const EMPTY_LOOKUP: LookupBundle = {
@@ -111,6 +114,7 @@ const EMPTY_LOOKUP: LookupBundle = {
   JOB_FAMILY: {},
   POSITION_LEVEL: {},
   POSITION: {},
+  ADMIN: {},
 };
 
 async function loadAllLookups(apiUrl: string, token: string): Promise<LookupBundle> {
@@ -151,6 +155,7 @@ async function loadAllLookups(apiUrl: string, token: string): Promise<LookupBund
     JOB_FAMILY,
     POSITION_LEVEL,
     POSITION,
+    ADMIN,
   ] = await Promise.all([
     fetchMap(`${apiUrl}/admin/rounds?view=all`, (r) => `${r.title} (${r.positionLevel})`),
     fetchMap(`${apiUrl}/admin/templates?view=all`, (t) => t.name || t.title || 'Template'),
@@ -159,9 +164,10 @@ async function loadAllLookups(apiUrl: string, token: string): Promise<LookupBund
     fetchMap(`${apiUrl}/admin/job-families`, (j) => j.name),
     fetchMap(`${apiUrl}/admin/position-levels`, (p) => p.name),
     fetchMap(`${apiUrl}/admin/positions`, (p) => p.title),
+    fetchMap(`${apiUrl}/admin/users`, (u: any) => u.email, ''),
   ]);
 
-  return { ROUND, TEMPLATE, FIELD_MASTER, ORGANIZATION, JOB_FAMILY, POSITION_LEVEL, POSITION };
+  return { ROUND, TEMPLATE, FIELD_MASTER, ORGANIZATION, JOB_FAMILY, POSITION_LEVEL, POSITION, ADMIN };
 }
 
 const ENTITY_TO_LOOKUP: Record<string, keyof LookupBundle> = {
@@ -204,6 +210,10 @@ function shortId(id: string): string {
   if (!id) return '-';
   if (id.length <= 8) return id;
   return `${id.slice(0, 4)}…${id.slice(-4)}`;
+}
+
+function resolveAdminEmail(adminId: string, adminLookup: AdminLookup): string {
+  return adminLookup[adminId] || adminId;
 }
 
 function buildDescription(log: AuditLog, entityName: string | null): string {
@@ -550,13 +560,17 @@ export default function AuditLogsPage() {
               <TableBody>
                 {items.map((log) => {
                   const entityName = resolveEntityName(log.entityType, log.entityId);
+                  const adminEmail = resolveAdminEmail(log.adminId, lookup.ADMIN);
                   return (
                     <TableRow key={log.id}>
                       <TableCell className="text-xs text-slate-600">
                         {formatDateTime(log.createdAt)}
                       </TableCell>
-                      <TableCell className="font-mono text-xs text-slate-600">
-                        {log.adminId}
+                      <TableCell className="text-xs text-slate-600">
+                        <span className="inline-flex items-center gap-1">
+                          <span>👤</span>
+                          <span className="font-medium">{adminEmail}</span>
+                        </span>
                       </TableCell>
                       <TableCell>{renderActionBadge(log.action)}</TableCell>
                       <TableCell>{renderEntity(log)}</TableCell>

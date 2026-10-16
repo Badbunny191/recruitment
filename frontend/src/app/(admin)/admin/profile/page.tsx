@@ -72,15 +72,6 @@ export default function ProfilePage() {
               </div>
             )}
           </div>
-
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-slate-500 uppercase tracking-wider">
-              รหัสผู้ใช้
-            </label>
-            <p className="text-xs font-mono text-slate-600 break-all">
-              {user.id || '-'}
-            </p>
-          </div>
         </CardContent>
       </Card>
     </div>
