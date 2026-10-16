@@ -41,7 +41,13 @@ export function useRole(): UseRoleResult {
   const isAdmin = role === 'ADMIN';
   const isViewer = role === 'VIEWER';
 
-  const canWrite = isSuperAdmin || isAdmin; // VIEWER is strictly read-only
+  // RBAC v1 matrix:
+  //   SUPER_ADMIN → canWrite = true (full access)
+  //   ADMIN       → canWrite = true (จัดการข้อมูลทั่วไป ยกเว้น User Management)
+  //   VIEWER      → canWrite = false (read-only ทุกเมนู)
+  const canWrite = isSuperAdmin || isAdmin;
+
+  // RBAC v1: เฉพาะ SUPER_ADMIN เท่านั้นที่จัดการผู้ใช้ได้ (สร้าง/แก้ไข/ปิดใช้งาน/รีเซ็ตรหัสผ่าน)
   const canManageUsers = isSuperAdmin;
 
   return {

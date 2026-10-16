@@ -4,7 +4,7 @@
  * Types สำหรับ User Management API
  */
 
-export type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'REVIEWER' | 'VIEWER';
+export type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER';
 
 export interface AdminUser {
   id: string;
@@ -54,20 +54,30 @@ export interface ApiError {
 export const ROLE_LABELS: Record<UserRole, string> = {
   SUPER_ADMIN: 'Super Admin',
   ADMIN: 'Admin',
-  REVIEWER: 'Reviewer',
   VIEWER: 'Viewer',
 };
 
 export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
   SUPER_ADMIN: 'สิทธิ์สูงสุด จัดการทุกอย่างได้ รวมถึงจัดการผู้ใช้อื่น',
   ADMIN: 'จัดการข้อมูลหลักและผู้ใช้ (ยกเว้น Super Admin)',
-  REVIEWER: 'ตรวจสอบและอนุมัติใบสมัคร',
   VIEWER: 'ดูข้อมูลอย่างเดียว ไม่สามารถแก้ไขได้',
 };
 
+/**
+ * Role Badge Colors (RBAC v1)
+ * - SUPER_ADMIN → แดง (สิทธิ์สูงสุด)
+ * - ADMIN       → น้ำเงิน (สิทธิ์จัดการ)
+ * - VIEWER      → เทา (อ่านอย่างเดียว)
+ */
 export const ROLE_COLORS: Record<UserRole, string> = {
   SUPER_ADMIN: 'bg-red-100 text-red-800 border-red-200',
-  ADMIN: 'bg-orange-100 text-orange-800 border-orange-200',
-  REVIEWER: 'bg-blue-100 text-blue-800 border-blue-200',
+  ADMIN: 'bg-blue-100 text-blue-800 border-blue-200',
   VIEWER: 'bg-slate-100 text-slate-700 border-slate-200',
+};
+
+/** Role Badge variants สำหรับ Header (icon + label) */
+export const ROLE_BADGE: Record<UserRole, { emoji: string; label: string }> = {
+  SUPER_ADMIN: { emoji: '🛡️', label: 'SUPER_ADMIN' },
+  ADMIN: { emoji: '👤', label: 'ADMIN' },
+  VIEWER: { emoji: '👁️', label: 'VIEWER' },
 };

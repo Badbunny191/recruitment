@@ -6,7 +6,10 @@ import { SearchInput } from '@/components/ui/search-input';
 import { FilterDropdown } from '@/components/ui/filter-dropdown';
 import { Pagination } from '@/components/ui/pagination';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { useRole } from '@/lib/useRole';
 
 // =============================================================================
 // Types
@@ -237,6 +240,10 @@ function buildDescription(log: AuditLog, entityName: string | null): string {
 // =============================================================================
 
 export default function AuditLogsPage() {
+  // RBAC guard (RBAC v1): Audit Logs เข้าได้เฉพาะ SUPER_ADMIN เท่านั้น
+  // ตาม RBAC matrix ใหม่: ADMIN และ VIEWER ห้ามเข้าถึง
+  const { isSuperAdmin } = useRole();
+
   // Page state
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
@@ -383,6 +390,32 @@ export default function AuditLogsPage() {
       </span>
     );
   };
+
+  if (!isSuperAdmin) {
+    return (
+      <div className="p-8">
+        <Card>
+          <CardContent className="p-8 text-center">
+            <span className="text-5xl">🔒</span>
+            <h2 className="text-lg font-semibold mt-4 text-slate-700">
+              ไม่มีสิทธิ์เข้าถึงหน้านี้
+            </h2>
+            <p className="text-sm text-slate-500 mt-2">
+              Audit Logs สงวนสิทธิ์เฉพาะ Super Admin เท่านั้น
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => (window.location.href = '/admin/dashboard')}
+            >
+              ← กลับหน้า Dashboard
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="p-8 space-y-6">
@@ -548,7 +581,7 @@ export default function AuditLogsPage() {
             />
           </>
         )}
-      </div>
+        </div>
     </div>
   );
 }

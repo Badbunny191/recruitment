@@ -35,10 +35,21 @@ const CARD_STYLE = {
   body: 'px-4 py-3',
 };
 
+// =============================================================================
+// ROLE DROPDOWN OPTIONS (RBAC v1)
+// =============================================================================
+// - ลบ REVIEWER, HR_ADMIN, HR_OFFICER ออกแล้ว
+// - SUPER_ADMIN ห้ามแสดงใน Dropdown ตอน Create (ต้องสร้างผ่าน Bootstrap/DB เท่านั้น)
+// - ใน EDIT: ถ้า current user เป็น SUPER_ADMIN จะเห็น SUPER_ADMIN เพิ่มใน Dropdown
 const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
+  { value: 'ADMIN', label: 'Admin' },
+  { value: 'VIEWER', label: 'Viewer' },
+];
+
+/** ตัวเลือก Role สำหรับ Edit Dialog (รวม SUPER_ADMIN เมื่อ current user เป็น Super Admin) */
+const EDIT_ROLE_OPTIONS: { value: UserRole; label: string }[] = [
   { value: 'SUPER_ADMIN', label: 'Super Admin' },
   { value: 'ADMIN', label: 'Admin' },
-  { value: 'REVIEWER', label: 'Reviewer' },
   { value: 'VIEWER', label: 'Viewer' },
 ];
 
@@ -625,7 +636,7 @@ export default function UsersPage() {
                   value={createForm.role}
                   onChange={(e) => setCreateForm({ ...createForm, role: e.target.value as UserRole })}
                 >
-                  {ROLE_OPTIONS.filter((r) => r.value !== 'SUPER_ADMIN').map((opt) => (
+                  {ROLE_OPTIONS.map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label} - {ROLE_DESCRIPTIONS[opt.value]}
                     </option>
@@ -693,7 +704,7 @@ export default function UsersPage() {
                 onChange={(e) => setEditForm({ ...editForm, role: e.target.value as UserRole })}
                 disabled={editingUser?.role === 'SUPER_ADMIN'}
               >
-                {ROLE_OPTIONS
+                {EDIT_ROLE_OPTIONS
                   .filter((r) => !(r.value === 'SUPER_ADMIN' && currentUser?.role !== 'SUPER_ADMIN'))
                   .map((opt) => (
                     <option key={opt.value} value={opt.value}>
