@@ -17,7 +17,7 @@ import {
   validateRoundCode,
   DEFAULT_APPLICATION_PATTERN,
 } from '../utils/application-pattern';
-
+import bcrypt from 'bcryptjs';
 const adminRoutes = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
 
 adminRoutes.post('/auth/login', zValidator('json', LoginRequestSchema), async (c) => {
@@ -25,7 +25,7 @@ adminRoutes.post('/auth/login', zValidator('json', LoginRequestSchema), async (c
   const db = drizzle(c.env.DB);
   const user = await db.select().from(adminUsers).where(eq(adminUsers.email, email)).get();
   
-  if (!user || user.passwordHash !== password) {
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
     return c.json({ error: 'Invalid credentials' }, 401);
   }
 
