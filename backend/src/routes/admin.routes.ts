@@ -8,6 +8,8 @@ import { Bindings, AppVariables } from '../types';
 import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware, setAuditPayload } from '../middlewares/audit.middleware';
 import { handleApplicationStatusChange, buildAuditPayload } from '../lib/change-tracking';
+import { getApplicationPdf } from '../lib/pdf.service';
+
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
 import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
@@ -1515,6 +1517,13 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
     }
   }
 
+  // ========================================================================
+  // FEATURE: Immutable Fields - Business Rule
+  // roundCode และ applicationPattern เป็น immutable fields
+  // เมื่อรอบมีผู้สมัครแล้ว ห้ามเปลี่ยนแม้ request จะส่งค่ามา
+  // Backend จะ ignore ค่าจาก request และใช้ค่าปัจจุบันจาก database เสมอ
+  // ========================================================================
+
   const updateValues: any = {
     // Form Header / Announcement
     announcementTitle: data.announcementTitle !== undefined ? (data.announcementTitle || null) : undefined,
@@ -1530,12 +1539,9 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
   if (data.templateVersionId !== undefined) updateValues.templateVersionId = data.templateVersionId;
   if (data.openDate !== undefined) updateValues.openDate = new Date(data.openDate * 1000);
   if (data.closeDate !== undefined) updateValues.closeDate = new Date(data.closeDate * 1000);
-  if (data.applicationPattern !== undefined) updateValues.applicationPattern = data.applicationPattern;
-  if (data.roundCode !== undefined) {
-    // ใช้ normalized (uppercase + validated)
-    const codeResult = validateRoundCode(data.roundCode);
-    updateValues.roundCode = codeResult.valid ? codeResult.normalized : data.roundCode;
-  }
+
+  // NOTE: roundCode และ applicationPattern ถูก IGNORE จาก request เสมอ
+  // ใช้ค่าปัจจุบันจาก database เสมอ (immutable fields)
 
   // Compute changes for audit log
   const { computeChanges, buildAuditPayload } = await import('../lib/change-tracking');
@@ -1869,6 +1875,68 @@ adminRoutes.get('/applications/:id', async (c) => {
       schema
     }
   });
+});
+
+// GET /admin/applications/:id/pdf - Generate or fetch cached PDF
+adminRoutes.get('/applications/:id/pdf', async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+  const r2 = c.env.R2_BUCKET;
+  const user = c.get('jwtPayload');
+
+  // Verify application exists
+  const app = await db.select().from(applications).where(eq(applications.id, id)).get();
+  if (!app) {
+    return c.json({ error: 'Application not found' }, 404);
+  }
+
+  try {
+    const result = await getApplicationPdf(db, r2, id);
+
+    if (!result) {
+      return c.json({ error: 'Failed to generate PDF' }, 500);
+    }
+
+    // Manual audit log: PDF_DOWNLOAD (GET is skipped by auditMiddleware)
+    try {
+      await db.insert(auditLogs).values({
+        id: uuidv4(),
+        adminId: user.id,
+        action: 'PDF_DOWNLOAD',
+        entityType: 'APPLICATION',
+        entityId: id,
+        payload: JSON.stringify({
+          cacheHit: result.cacheHit,
+          pageCount: result.pageCount,
+          bytes: result.bytes.length,
+          generatedAt: result.generatedAt,
+        }),
+        ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
+      });
+    } catch (auditErr) {
+      console.error(`[PDF] Failed to log audit: ${auditErr}`);
+    }
+
+    // Build filename: {applicationNo}.pdf
+    const filename = `${app.applicationNo ?? id}.pdf`;
+
+    return new Response(result.bytes, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Length': String(result.bytes.length),
+        'X-Cache': result.cacheHit ? 'HIT' : 'MISS',
+        'Cache-Control': 'private, max-age=300',
+      },
+    });
+  } catch (err) {
+    console.error(`[PDF] Error generating PDF for application ${id}: ${err}`);
+    return c.json(
+      { error: 'Failed to generate PDF', message: err instanceof Error ? err.message : String(err) },
+      500
+    );
+  }
 });
 
 // GET /admin/applications/:id/history - Get status change history

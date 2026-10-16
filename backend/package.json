@@ -2,6 +2,10 @@
   "name": "sao-recruitment-backend",
   "version": "1.0.0",
   "scripts": {
+    "build:assets": "node --import tsx scripts/build-assets.ts",
+    "prebuild": "npm run build:assets",
+    "predev": "npm run build:assets",
+    "predeploy": "npm run build:assets",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "build": "npx wrangler types && npx tsc --noEmit",
