@@ -418,11 +418,16 @@ export default function AuditLogsPage() {
   }
 
   return (
-    <div className="p-8 space-y-6">
+    <div className="p-3 sm:p-4 md:p-5 space-y-2.5 bg-slate-50/50 min-h-[calc(100vh-3.5rem)]">
       {/* Header */}
       <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-bold text-slate-900">System Audit Logs</h1>
-        <p className="text-sm text-slate-500">
+        <div className="flex items-center gap-2">
+          <span className="text-xl">📜</span>
+          <h1 className="text-base md:text-lg font-bold text-slate-900 leading-tight">
+            System Audit Logs
+          </h1>
+        </div>
+        <p className="text-[11px] text-slate-500 ml-7">
           ประวัติการทำงานของผู้ดูแลระบบ
         </p>
       </div>

@@ -120,31 +120,6 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 // ============================================
-// ROLE BADGE (มุมขวาบน)
-// ============================================
-function RoleBadge({ role }: { role: AdminRole }) {
-  if (role === 'SUPER_ADMIN') {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold border bg-red-500 text-white border-red-600">
-        🛡️ SUPER_ADMIN
-      </span>
-    );
-  }
-  if (role === 'ADMIN') {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold border bg-blue-500 text-white border-blue-600">
-        👤 ADMIN
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold border bg-slate-500 text-white border-slate-600">
-      👁️ VIEWER
-    </span>
-  );
-}
-
-// ============================================
 // NAV GROUP DROPDOWN (Desktop)
 // ============================================
 function NavGroupDropdown({
@@ -254,7 +229,6 @@ function UserMenu({
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
   const router = useRouter();
-  const badge = ROLE_BADGE[role];
 
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -280,15 +254,33 @@ function UserMenu({
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-slate-700/50 transition-colors"
+        className={cn(
+          'flex items-center gap-2 px-2 py-1 rounded-md transition-all duration-150 cursor-pointer',
+          'hover:bg-white/10 active:bg-white/15',
+          open && 'bg-white/10',
+        )}
         aria-label="User menu"
       >
-        <RoleBadge role={role} />
-        <span className="hidden lg:inline text-sm text-slate-200 truncate max-w-[180px]" title={email}>
-          {email}
-        </span>
+        {/* Text: Role + Email, 2 lines */}
+        <div className="flex flex-col items-end min-w-0">
+          <span
+            className={cn(
+              'text-[11px] font-semibold leading-tight whitespace-nowrap',
+              role === 'SUPER_ADMIN' && 'text-red-400',
+              role === 'ADMIN' && 'text-blue-400',
+              role === 'VIEWER' && 'text-slate-300',
+            )}
+          >
+            {ROLE_BADGE[role].label}
+          </span>
+          <span className="text-[10px] text-slate-400 truncate max-w-[150px] leading-tight" title={email}>
+            {email}
+          </span>
+        </div>
+
+        {/* Chevron arrow */}
         <svg
-          className={cn("h-4 w-4 text-slate-300 transition-transform", open && "rotate-180")}
+          className={cn('h-3.5 w-3.5 text-slate-400 shrink-0 transition-transform duration-200', open && 'rotate-180')}
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -298,16 +290,29 @@ function UserMenu({
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-1 w-56 rounded-lg border border-slate-200 bg-white shadow-lg overflow-hidden z-50">
-          {/* User Identity Header */}
+        <div className="absolute right-0 mt-1 w-60 rounded-lg border border-slate-200 bg-white shadow-lg overflow-hidden z-50">
+          {/* Dropdown Header - Avatar + Email */}
           <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-base">{badge.emoji}</span>
-              <RoleBadge role={role} />
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  'inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-bold shrink-0',
+                  role === 'SUPER_ADMIN' && 'bg-red-500 text-white',
+                  role === 'ADMIN' && 'bg-blue-500 text-white',
+                  role === 'VIEWER' && 'bg-slate-500 text-white',
+                )}
+              >
+                {role === 'SUPER_ADMIN' ? 'SA' : role === 'ADMIN' ? 'A' : 'V'}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-slate-800 truncate font-medium leading-tight" title={email}>
+                  {email}
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                  {ROLE_BADGE[role].label}
+                </p>
+              </div>
             </div>
-            <p className="text-xs text-slate-700 truncate font-medium" title={email}>
-              {email}
-            </p>
           </div>
 
           {/* Menu Items */}
@@ -415,13 +420,29 @@ function MobileDrawer({
           </button>
         </div>
 
-        {/* User Identity (mobile) */}
+        {/* User Identity (mobile) - Avatar + Role + Email */}
         {user?.role && (
           <div className="px-4 py-3 border-b border-slate-700 bg-slate-900/40">
-            <RoleBadge role={user.role} />
-            <p className="text-xs text-slate-300 mt-1.5 truncate" title={email}>
-              {email}
-            </p>
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  'inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-bold shrink-0',
+                  user.role === 'SUPER_ADMIN' && 'bg-red-500 text-white',
+                  user.role === 'ADMIN' && 'bg-blue-500 text-white',
+                  user.role === 'VIEWER' && 'bg-slate-500 text-white',
+                )}
+              >
+                {email.slice(0, 2).toUpperCase()}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-slate-100 truncate font-semibold leading-tight" title={email}>
+                  {email}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-0.5 truncate">
+                  {ROLE_BADGE[user.role].label}
+                </p>
+              </div>
+            </div>
           </div>
         )}
 
