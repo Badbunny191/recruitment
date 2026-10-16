@@ -6,7 +6,11 @@ import { SearchInput } from '@/components/ui/search-input';
 import { FilterDropdown } from '@/components/ui/filter-dropdown';
 import { Pagination } from '@/components/ui/pagination';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import { useRole } from '@/lib/useRole';
 
 // =============================================================================
 // Types
@@ -15,6 +19,7 @@ import { cn } from '@/lib/utils';
 interface AuditLog {
   id: string;
   adminId: string;
+  adminEmail?: string; // Resolved from lookup
   action: 'CREATE' | 'UPDATE' | 'DELETE' | string;
   entityType: string;
   entityId: string;
@@ -29,6 +34,20 @@ interface AuditLogsResponse {
   page: number;
   pageSize: number;
   totalPages: number;
+}
+
+// Change Tracking Types
+interface FieldChange {
+  field: string;
+  fieldLabel: string;
+  oldValue: string | null;
+  newValue: string | null;
+}
+
+interface ParsedPayload {
+  changes?: FieldChange[];
+  summary?: string;
+  [key: string]: any;
 }
 
 // =============================================================================
@@ -89,6 +108,7 @@ const DEFAULT_PAGE_SIZE = 50;
 // =============================================================================
 
 type EntityLookup = Record<string, string>; // entityId -> "ชื่อจริง"
+type AdminLookup = Record<string, string>; // adminId -> email
 
 interface LookupBundle {
   ROUND: EntityLookup;
@@ -98,6 +118,7 @@ interface LookupBundle {
   JOB_FAMILY: EntityLookup;
   POSITION_LEVEL: EntityLookup;
   POSITION: EntityLookup;
+  ADMIN: AdminLookup;
 }
 
 const EMPTY_LOOKUP: LookupBundle = {
@@ -108,6 +129,7 @@ const EMPTY_LOOKUP: LookupBundle = {
   JOB_FAMILY: {},
   POSITION_LEVEL: {},
   POSITION: {},
+  ADMIN: {},
 };
 
 async function loadAllLookups(apiUrl: string, token: string): Promise<LookupBundle> {
@@ -148,6 +170,7 @@ async function loadAllLookups(apiUrl: string, token: string): Promise<LookupBund
     JOB_FAMILY,
     POSITION_LEVEL,
     POSITION,
+    ADMIN,
   ] = await Promise.all([
     fetchMap(`${apiUrl}/admin/rounds?view=all`, (r) => `${r.title} (${r.positionLevel})`),
     fetchMap(`${apiUrl}/admin/templates?view=all`, (t) => t.name || t.title || 'Template'),
@@ -156,9 +179,10 @@ async function loadAllLookups(apiUrl: string, token: string): Promise<LookupBund
     fetchMap(`${apiUrl}/admin/job-families`, (j) => j.name),
     fetchMap(`${apiUrl}/admin/position-levels`, (p) => p.name),
     fetchMap(`${apiUrl}/admin/positions`, (p) => p.title),
+    fetchMap(`${apiUrl}/admin/users`, (u: any) => u.email, ''),
   ]);
 
-  return { ROUND, TEMPLATE, FIELD_MASTER, ORGANIZATION, JOB_FAMILY, POSITION_LEVEL, POSITION };
+  return { ROUND, TEMPLATE, FIELD_MASTER, ORGANIZATION, JOB_FAMILY, POSITION_LEVEL, POSITION, ADMIN };
 }
 
 const ENTITY_TO_LOOKUP: Record<string, keyof LookupBundle> = {
@@ -174,16 +198,6 @@ const ENTITY_TO_LOOKUP: Record<string, keyof LookupBundle> = {
 // =============================================================================
 // Helpers
 // =============================================================================
-
-function parsePayload(payload: string | null | undefined): Record<string, any> | null {
-  if (!payload) return null;
-  if (typeof payload !== 'string') return payload as any;
-  try {
-    return JSON.parse(payload);
-  } catch {
-    return null;
-  }
-}
 
 function formatDateTime(value: string | number | Date): string {
   const d = new Date(value);
@@ -201,6 +215,63 @@ function shortId(id: string): string {
   if (!id) return '-';
   if (id.length <= 8) return id;
   return `${id.slice(0, 4)}…${id.slice(-4)}`;
+}
+
+function resolveAdminEmail(adminId: string, adminLookup: AdminLookup): string {
+  return adminLookup[adminId] || adminId;
+}
+
+function parsePayload(payload: string | null | undefined): ParsedPayload | null {
+  if (!payload) return null;
+  if (typeof payload !== 'string') return payload as ParsedPayload;
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return null;
+  }
+}
+
+function hasChangeTracking(payload: ParsedPayload | null): boolean {
+  return payload !== null && Array.isArray(payload.changes) && payload.changes.length > 0;
+}
+
+function getChangeSummary(payload: ParsedPayload | null): string {
+  if (!payload) return '';
+  if (payload.summary) return payload.summary;
+  if (payload.changes && payload.changes.length > 0) {
+    if (payload.changes.length === 1) {
+      const change = payload.changes[0];
+      return `${change.fieldLabel}: ${change.oldValue ?? '-'} → ${change.newValue ?? '-'}`;
+    }
+    return `${payload.changes.length} รายการ`;
+  }
+  return '';
+}
+
+/**
+ * Truncates long strings for table display
+ */
+function truncateForTable(text: string | null | undefined, maxLength: number = 30): string {
+  if (!text) return '-';
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength - 3) + '...';
+}
+
+/**
+ * Gets a short summary for table display
+ * Shows field name + truncated values: "ชื่อ: สำนัก... → สำนัก..."
+ */
+function getTableChangeSummary(payload: ParsedPayload | null): string {
+  if (!payload || !payload.changes || payload.changes.length === 0) return '';
+  
+  if (payload.changes.length === 1) {
+    const change = payload.changes[0];
+    const oldVal = truncateForTable(change.oldValue, 15);
+    const newVal = truncateForTable(change.newValue, 15);
+    return `${change.fieldLabel}: ${oldVal} → ${newVal}`;
+  }
+  
+  return `${payload.changes.length} รายการ`;
 }
 
 function buildDescription(log: AuditLog, entityName: string | null): string {
@@ -237,6 +308,10 @@ function buildDescription(log: AuditLog, entityName: string | null): string {
 // =============================================================================
 
 export default function AuditLogsPage() {
+  // RBAC guard (RBAC v1): Audit Logs เข้าได้เฉพาะ SUPER_ADMIN เท่านั้น
+  // ตาม RBAC matrix ใหม่: ADMIN และ VIEWER ห้ามเข้าถึง
+  const { isSuperAdmin } = useRole();
+
   // Page state
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
@@ -256,6 +331,9 @@ export default function AuditLogsPage() {
 
   // Lookup
   const [lookup, setLookup] = useState<LookupBundle>(EMPTY_LOOKUP);
+
+  // Modal state for change details
+  const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
   const token = useMemo(
@@ -384,12 +462,43 @@ export default function AuditLogsPage() {
     );
   };
 
+  if (!isSuperAdmin) {
+    return (
+      <div className="p-8">
+        <Card>
+          <CardContent className="p-8 text-center">
+            <span className="text-5xl">🔒</span>
+            <h2 className="text-lg font-semibold mt-4 text-slate-700">
+              ไม่มีสิทธิ์เข้าถึงหน้านี้
+            </h2>
+            <p className="text-sm text-slate-500 mt-2">
+              Audit Logs สงวนสิทธิ์เฉพาะ Super Admin เท่านั้น
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => (window.location.href = '/admin/dashboard')}
+            >
+              ← กลับหน้า Dashboard
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
-    <div className="p-8 space-y-6">
+    <div className="p-3 sm:p-4 md:p-5 space-y-2.5 bg-slate-50/50 min-h-[calc(100vh-3.5rem)]">
       {/* Header */}
       <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-bold text-slate-900">System Audit Logs</h1>
-        <p className="text-sm text-slate-500">
+        <div className="flex items-center gap-2">
+          <span className="text-xl">📜</span>
+          <h1 className="text-base md:text-lg font-bold text-slate-900 leading-tight">
+            System Audit Logs
+          </h1>
+        </div>
+        <p className="text-[11px] text-slate-500 ml-7">
           ประวัติการทำงานของผู้ดูแลระบบ
         </p>
       </div>
@@ -512,18 +621,44 @@ export default function AuditLogsPage() {
               <TableBody>
                 {items.map((log) => {
                   const entityName = resolveEntityName(log.entityType, log.entityId);
+                  const adminEmail = resolveAdminEmail(log.adminId, lookup.ADMIN);
+                  const payload = parsePayload(log.payload);
+                  const hasChanges = hasChangeTracking(payload);
+                  const tableChangeSummary = getTableChangeSummary(payload);
+                  
                   return (
                     <TableRow key={log.id}>
                       <TableCell className="text-xs text-slate-600">
                         {formatDateTime(log.createdAt)}
                       </TableCell>
-                      <TableCell className="font-mono text-xs text-slate-600">
-                        {log.adminId}
+                      <TableCell className="text-xs text-slate-600">
+                        <span className="inline-flex items-center gap-1">
+                          <span>👤</span>
+                          <span className="font-medium">{adminEmail}</span>
+                        </span>
                       </TableCell>
                       <TableCell>{renderActionBadge(log.action)}</TableCell>
                       <TableCell>{renderEntity(log)}</TableCell>
-                      <TableCell className="text-sm text-slate-700">
-                        {buildDescription(log, entityName)}
+                      <TableCell>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-sm text-slate-700">
+                            {buildDescription(log, entityName)}
+                          </span>
+                          {hasChanges && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 whitespace-nowrap">
+                                {tableChangeSummary}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedLog(log)}
+                                className="text-xs text-blue-600 hover:text-blue-700 underline whitespace-nowrap"
+                              >
+                                ดูรายละเอียด
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="font-mono text-xs text-slate-500">
                         {log.ipAddress || '-'}
@@ -548,7 +683,79 @@ export default function AuditLogsPage() {
             />
           </>
         )}
-      </div>
+        </div>
+
+      {/* Change Details Modal */}
+      <Dialog open={!!selectedLog} onOpenChange={() => setSelectedLog(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <span>📝</span>
+              <span>รายละเอียดการเปลี่ยนแปลง</span>
+            </DialogTitle>
+          </DialogHeader>
+          {selectedLog && (() => {
+            const payload = parsePayload(selectedLog.payload);
+            const changes = payload?.changes || [];
+            return (
+              <div className="space-y-4 mt-4">
+                {/* Summary */}
+                <div className="flex items-center gap-2 p-3 bg-slate-50 rounded-lg border border-slate-200">
+                  <span className="text-sm text-slate-600">
+                    {selectedLog.action === 'UPDATE' ? 'แก้ไข' : selectedLog.action === 'CREATE' ? 'สร้าง' : 'ลบ'}
+                  </span>
+                  <span className="font-medium">
+                    {ENTITY_LABEL[selectedLog.entityType] || selectedLog.entityType}
+                  </span>
+                  <span className="text-slate-400">→</span>
+                  <span className="font-medium">
+                    {resolveEntityName(selectedLog.entityType, selectedLog.entityId) || shortId(selectedLog.entityId)}
+                  </span>
+                </div>
+
+                {/* Changes List */}
+                {changes.length > 0 ? (
+                  <div className="space-y-3">
+                    <h4 className="text-sm font-semibold text-slate-700">การเปลี่ยนแปลง:</h4>
+                    {changes.map((change: FieldChange, index: number) => (
+                      <div key={index} className="p-3 bg-white rounded-lg border border-slate-200">
+                        <div className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">
+                          {change.fieldLabel}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 p-2 bg-red-50 rounded border border-red-100">
+                            <div className="text-xs text-red-500 mb-0.5">เดิม</div>
+                            <div className="text-sm text-slate-700">
+                              {change.oldValue ?? '(ว่าง)'}
+                            </div>
+                          </div>
+                          <div className="text-slate-400">↓</div>
+                          <div className="flex-1 p-2 bg-green-50 rounded border border-green-100">
+                            <div className="text-xs text-green-500 mb-0.5">ใหม่</div>
+                            <div className="text-sm text-slate-700">
+                              {change.newValue ?? '(ว่าง)'}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-500 text-center py-4">
+                    ไม่มีข้อมูลการเปลี่ยนแปลง
+                  </p>
+                )}
+
+                {/* Metadata */}
+                <div className="flex items-center justify-between text-xs text-slate-500 pt-4 border-t">
+                  <span>👤 {resolveAdminEmail(selectedLog.adminId, lookup.ADMIN)}</span>
+                  <span>{formatDateTime(selectedLog.createdAt)}</span>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

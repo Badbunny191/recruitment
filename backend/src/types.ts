@@ -51,16 +51,53 @@ export type AppVariables = {
     role: string;
     mustChangePassword?: boolean;
   };
+  auditPayload?: string | null;
 };
+
+// =============================================================================
+// RBAC v1 — Role Model
+// =============================================================================
+//
+// Final role model for the recruitment system:
+//
+//   SUPER_ADMIN
+//     - Full access to everything
+//     - User Management, Role Management, Audit Logs, System Configuration
+//
+//   ADMIN
+//     - Recruitment Rounds, Applications, Form Builder, Master Data, Export
+//     - CANNOT manage users or roles
+//
+//   VIEWER
+//     - Read-only access
+//     - Dashboard, Applications, Reports, Audit Logs
+//     - CANNOT create, update, delete, archive, restore
+//     - CANNOT access User Management
+//
+// REVIEWER has been removed (not applicable to a recruitment-only system).
+// HR_OFFICER / HR_ADMIN are legacy values and have been migrated to ADMIN.
+// =============================================================================
+
+export const USER_ROLES = ['SUPER_ADMIN', 'ADMIN', 'VIEWER'] as const;
+export type UserRole = (typeof USER_ROLES)[number];
+
+/** Returns true when role is SUPER_ADMIN (full system access). */
+export function isSuperAdmin(role: string | undefined | null): boolean {
+  return role === 'SUPER_ADMIN';
+}
+
+/** Returns true when role can perform write operations (SUPER_ADMIN or ADMIN). */
+export function isAdmin(role: string | undefined | null): boolean {
+  return role === 'SUPER_ADMIN' || role === 'ADMIN';
+}
+
+/** Returns true when role is read-only (SUPER_ADMIN, ADMIN, or VIEWER). */
+export function isViewer(role: string | undefined | null): boolean {
+  return role === 'VIEWER';
+}
 
 /**
  * User roles enum - for type safety
- */
-export const USER_ROLES = ['SUPER_ADMIN', 'ADMIN', 'REVIEWER', 'VIEWER'] as const;
-export type UserRole = typeof USER_ROLES[number];
-
-/**
- * JWT payload type
  */
 export interface JWTPayload {
   id: string;

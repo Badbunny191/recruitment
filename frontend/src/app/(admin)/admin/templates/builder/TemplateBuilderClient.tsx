@@ -16,6 +16,7 @@ import { CompareVersionModal } from '@/components/CompareVersionModal';
 import { TemplatePreviewModal } from '@/components/TemplatePreviewModal';
 import { FieldSortableItem } from '@/components/FieldSortableItem';
 import { SectionFieldList } from '@/components/SectionFieldList';
+import { useRole } from '@/lib/useRole';
 
 interface MasterField {
   id: string;
@@ -167,6 +168,7 @@ function BuilderInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const templateId = searchParams.get('id') || '';
+  const { canWrite } = useRole();
 
   const [masterFields, setMasterFields] = useState<MasterField[]>([]);
 
@@ -847,8 +849,9 @@ function BuilderInner() {
     .sort((a, b) => b.versionNumber - a.versionNumber)[0];
   
   // RFC Phase 2: Determine mode
-  const isEditMode = !!draftVersionId; // Has Draft = Editable
-  const isViewMode = !draftVersionId && !!currentVersion && currentVersion.status === 'PUBLISHED'; // No Draft but has Published = Read Only
+  // - canWrite = false (VIEWER) → force read-only view regardless of draft/published state.
+  const isEditMode = canWrite && !!draftVersionId; // Has Draft + canWrite = Editable
+  const isViewMode = !isEditMode && !!currentVersion && currentVersion.status === 'PUBLISHED'; // No Draft but has Published = Read Only
 
   // Helper to format date - handle various input formats
   const formatDate = (ts: unknown) => {

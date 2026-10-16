@@ -1,35 +1,12 @@
 /**
  * Seed script สำหรับ Demo
  * รันด้วย: wrangler d1 execute sao-db --local --file=./seed.sql
- * 
- * ⚠️ SECURITY NOTE:
- * - All demo users have bcrypt-hashed passwords
- * - must_change_password = 1 to force password change on first login
- * - Change demo passwords immediately in production!
- * 
- * Demo Credentials:
- *   admin@recruitment.go.th      | Admin@123!    | SUPER_ADMIN
- *   hr@recruitment.go.th         | Hr@123!       | ADMIN
- *   reviewer@recruitment.go.th   | Review@123!   | REVIEWER
- *   viewer@recruitment.go.th     | View@123!     | VIEWER
  */
 
--- สร้าง demo admin users with bcrypt hashed passwords
--- password: Admin@123!
-INSERT OR REPLACE INTO admin_users (id, email, password_hash, role, password_migrated, must_change_password, is_active) VALUES 
-  ('seed-admin-001', 'admin@recruitment.go.th', '$2a$10$/zC6S2tIx/y/YZdfbPTpIuNkx3ZJUJ6npcOO70HTr08zSwW1FbHny', 'SUPER_ADMIN', 1, 1, 1);
-
--- password: Hr@123!
-INSERT OR REPLACE INTO admin_users (id, email, password_hash, role, password_migrated, must_change_password, is_active) VALUES 
-  ('seed-admin-002', 'hr@recruitment.go.th', '$2a$10$FFxfD/nwtwJhr/ul.VSmNeyFFDuoKvjgUmvdoT2hCLfdyBWuFg5EO', 'ADMIN', 1, 1, 1);
-
--- password: Review@123!
-INSERT OR REPLACE INTO admin_users (id, email, password_hash, role, password_migrated, must_change_password, is_active) VALUES 
-  ('seed-admin-003', 'reviewer@recruitment.go.th', '$2a$10$ftyj8n35qTRUx5zAAWUJ0u75l/9Y6AbmS92FsX6YIWtzHHhE.pGaS', 'REVIEWER', 1, 1, 1);
-
--- password: View@123!
-INSERT OR REPLACE INTO admin_users (id, email, password_hash, role, password_migrated, must_change_password, is_active) VALUES 
-  ('seed-admin-004', 'viewer@recruitment.go.th', '$2a$10$zPMbpMqHNiiG85zwuK8rKeomYWXvImrpK152w5OWyU.qqKeT60kXW', 'VIEWER', 1, 1, 1);
+-- สร้าง admin user (password: admin123)
+-- NOTE: RBAC v1 — ใช้ role 'ADMIN' (legacy 'HR_ADMIN' ถูก migrate แล้วใน migration 020)
+INSERT INTO admin_users (id, email, password_hash, role) VALUES 
+  ('seed-admin-001', 'admin@recruitment.go.th', 'admin123', 'ADMIN');
 
 -- สร้าง field_master (ชนิดฟิลด์สำหรับฟอร์ม)
 INSERT INTO field_master (id, field_type, label_th, default_options, pdf_mapping_key, is_active) VALUES 

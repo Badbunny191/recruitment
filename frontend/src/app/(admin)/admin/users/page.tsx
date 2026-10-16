@@ -11,6 +11,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { SearchInput } from '@/components/ui/search-input';
 import { Pagination } from '@/components/ui/pagination';
 import { ActionMenu } from '@/components/ui/action-menu';
+import { FilterDropdown, type FilterGroup } from '@/components/ui/filter-dropdown';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
 import { cn } from '@/lib/utils';
 import {
@@ -23,7 +24,8 @@ import {
   getCurrentUser,
 } from '@/lib/api/users';
 import type { AdminUser, UserRole } from '@/types/user';
-import { ROLE_LABELS, ROLE_DESCRIPTIONS, ROLE_COLORS } from '@/types/user';
+import { ROLE_LABELS, ROLE_DESCRIPTIONS, ROLE_BADGE } from '@/types/user';
+import { useRole } from '@/lib/useRole';
 
 // =============================================================================
 // DESIGN SYSTEM - Smart Family Style
@@ -34,10 +36,21 @@ const CARD_STYLE = {
   body: 'px-4 py-3',
 };
 
+// =============================================================================
+// ROLE DROPDOWN OPTIONS (RBAC v1)
+// =============================================================================
+// - ลบ REVIEWER, HR_ADMIN, HR_OFFICER ออกแล้ว
+// - SUPER_ADMIN ห้ามแสดงใน Dropdown ตอน Create (ต้องสร้างผ่าน Bootstrap/DB เท่านั้น)
+// - ใน EDIT: ถ้า current user เป็น SUPER_ADMIN จะเห็น SUPER_ADMIN เพิ่มใน Dropdown
 const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
+  { value: 'ADMIN', label: 'Admin' },
+  { value: 'VIEWER', label: 'Viewer' },
+];
+
+/** ตัวเลือก Role สำหรับ Edit Dialog (รวม SUPER_ADMIN เมื่อ current user เป็น Super Admin) */
+const EDIT_ROLE_OPTIONS: { value: UserRole; label: string }[] = [
   { value: 'SUPER_ADMIN', label: 'Super Admin' },
   { value: 'ADMIN', label: 'Admin' },
-  { value: 'REVIEWER', label: 'Reviewer' },
   { value: 'VIEWER', label: 'Viewer' },
 ];
 
@@ -71,6 +84,7 @@ const EMPTY_CREATE_FORM: CreateUserForm = {
 // MAIN COMPONENT
 // =============================================================================
 export default function UsersPage() {
+  const { canManageUsers, canWrite } = useRole();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -80,6 +94,10 @@ export default function UsersPage() {
   const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 10;
+
+  // Filters (RBAC v1)
+  const [roleFilters, setRoleFilters] = useState<string[]>([]);
+  const [statusFilters, setStatusFilters] = useState<string[]>([]);
 
   // Dialogs
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -125,16 +143,13 @@ export default function UsersPage() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [search]);
+  }, [search, roleFilters, statusFilters]);
 
   // =============================================================================
   // PERMISSIONS
   // =============================================================================
-  const canManageUsers = useMemo(() => {
-    if (!currentUser) return false;
-    return currentUser.role === 'SUPER_ADMIN' || currentUser.role === 'ADMIN';
-  }, [currentUser]);
-
+  // canManageUsers is sourced from useRole() (centralized).
+  // canWrite is exposed for symmetry (e.g. hide non-essential write actions for viewers).
   const canModifyUser = (user: AdminUser): boolean => {
     if (!currentUser) return false;
     if (currentUser.role === 'SUPER_ADMIN') return true;
@@ -148,14 +163,40 @@ export default function UsersPage() {
   // FILTERING & PAGINATION
   // =============================================================================
   const filteredUsers = useMemo(() => {
-    if (!search.trim()) return users;
-    const s = search.toLowerCase();
-    return users.filter(
-      (u) =>
-        u.email.toLowerCase().includes(s) ||
-        u.role.toLowerCase().includes(s)
-    );
-  }, [users, search]);
+    let result = users;
+    // search
+    if (search.trim()) {
+      const s = search.toLowerCase();
+      result = result.filter(
+        (u) =>
+          u.email.toLowerCase().includes(s) ||
+          u.role.toLowerCase().includes(s)
+      );
+    }
+    // role filter
+    if (roleFilters.length > 0) {
+      result = result.filter((u) => roleFilters.includes(u.role));
+    }
+    // status filter
+    if (statusFilters.length > 0) {
+      result = result.filter((u) => {
+        const isActive = u.isActive !== false;
+        const matchesActive = statusFilters.includes('active') && isActive;
+        const matchesInactive = statusFilters.includes('inactive') && !isActive;
+        return matchesActive || matchesInactive;
+      });
+    }
+    return result;
+  }, [users, search, roleFilters, statusFilters]);
+
+  const totalActiveFilters = roleFilters.length + statusFilters.length;
+  const hasActiveFilters = totalActiveFilters > 0 || search.trim().length > 0;
+
+  const clearAllFilters = () => {
+    setRoleFilters([]);
+    setStatusFilters([]);
+    setSearch('');
+  };
 
   const totalItems = filteredUsers.length;
   const paginatedUsers = filteredUsers.slice(
@@ -167,8 +208,44 @@ export default function UsersPage() {
   // KPI COUNTS
   // =============================================================================
   const totalUsers = users.length;
-  const activeUsers = users.filter((u) => u.isActive !== false).length;
   const superAdminCount = users.filter((u) => u.role === 'SUPER_ADMIN').length;
+  const adminCount = users.filter((u) => u.role === 'ADMIN').length;
+  const viewerCount = users.filter((u) => u.role === 'VIEWER').length;
+
+  // =============================================================================
+  // FILTER GROUPS
+  // =============================================================================
+  const filterGroups: FilterGroup[] = [
+    {
+      label: 'Role',
+      type: 'multi',
+      selected: roleFilters,
+      onChange: setRoleFilters,
+      options: [
+        { value: 'SUPER_ADMIN', label: `${ROLE_BADGE.SUPER_ADMIN.emoji} ${ROLE_LABELS.SUPER_ADMIN}`, count: superAdminCount },
+        { value: 'ADMIN', label: `${ROLE_BADGE.ADMIN.emoji} ${ROLE_LABELS.ADMIN}`, count: adminCount },
+        { value: 'VIEWER', label: `${ROLE_BADGE.VIEWER.emoji} ${ROLE_LABELS.VIEWER}`, count: viewerCount },
+      ],
+    },
+    {
+      label: 'สถานะ',
+      type: 'multi',
+      selected: statusFilters,
+      onChange: setStatusFilters,
+      options: [
+        {
+          value: 'active',
+          label: '✅ ใช้งาน',
+          count: users.filter((u) => u.isActive !== false).length,
+        },
+        {
+          value: 'inactive',
+          label: '🚫 ปิดใช้งาน',
+          count: users.filter((u) => u.isActive === false).length,
+        },
+      ],
+    },
+  ];
 
   // =============================================================================
   // HANDLERS
@@ -300,50 +377,66 @@ export default function UsersPage() {
   // RENDER
   // =============================================================================
   return (
-    <div className="p-4 md:p-6 space-y-3">
-      {/* Page Header */}
+    <div className="p-3 sm:p-4 md:p-5 space-y-2.5 bg-slate-50/50 min-h-[calc(100vh-3.5rem)]">
+      {/* Page Header - แน่นขึ้น */}
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-lg">👥</span>
-          <div>
-            <h1 className="text-lg font-bold text-slate-900 leading-tight">จัดการผู้ใช้ (User Management)</h1>
-            <p className="text-[11px] text-slate-500">จัดการผู้ดูแลระบบ เพิ่ม แก้ไข ปิดใช้งาน และรีเซ็ตรหัสผ่าน</p>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-xl shrink-0">👥</span>
+          <div className="min-w-0">
+            <h1 className="text-base md:text-lg font-bold text-slate-900 leading-tight truncate">จัดการผู้ใช้ (User Management)</h1>
+            <p className="text-[11px] text-slate-500 truncate">จัดการผู้ดูแลระบบ · เพิ่ม · แก้ไข · ปิดใช้งาน · รีเซ็ตรหัสผ่าน</p>
           </div>
         </div>
         {canManageUsers && (
-          <Button onClick={openCreate} size="sm" className="h-8">
+          <Button onClick={openCreate} size="sm" className="h-8 shrink-0">
             + เพิ่มผู้ใช้ใหม่
           </Button>
         )}
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center text-2xl shrink-0">
+      {/* Statistics Cards (RBAC v1 breakdown) - แน่นและทันสมัย */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+        {/* ผู้ใช้ทั้งหมด */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3.5 flex items-center gap-3">
+          <div className="w-11 h-11 rounded-lg bg-slate-100 flex items-center justify-center text-xl shrink-0">
             👥
           </div>
-          <div className="flex flex-col">
-            <span className="text-3xl font-bold tabular-nums leading-none text-slate-900">{totalUsers}</span>
-            <span className="text-sm text-slate-500 mt-1.5">ผู้ใช้ทั้งหมด</span>
+          <div className="flex flex-col min-w-0">
+            <span className="text-2xl font-bold tabular-nums leading-none text-slate-900">{totalUsers}</span>
+            <span className="text-xs text-slate-500 mt-1 truncate">ผู้ใช้ทั้งหมด</span>
           </div>
         </div>
-        <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-emerald-100 flex items-center justify-center text-2xl shrink-0">
-            ✅
+
+        {/* SUPER_ADMIN */}
+        <div className="bg-white rounded-xl border border-red-100 shadow-sm px-4 py-3.5 flex items-center gap-3">
+          <div className="w-11 h-11 rounded-lg bg-red-50 flex items-center justify-center text-xl shrink-0">
+            👑
           </div>
-          <div className="flex flex-col">
-            <span className="text-3xl font-bold tabular-nums leading-none text-emerald-600">{activeUsers}</span>
-            <span className="text-sm text-slate-500 mt-1.5">ใช้งานอยู่</span>
+          <div className="flex flex-col min-w-0">
+            <span className="text-2xl font-bold tabular-nums leading-none text-red-600">{superAdminCount}</span>
+            <span className="text-xs text-slate-500 mt-1 truncate">SUPER_ADMIN</span>
           </div>
         </div>
-        <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-red-100 flex items-center justify-center text-2xl shrink-0">
-            🔐
+
+        {/* ADMIN */}
+        <div className="bg-white rounded-xl border border-blue-100 shadow-sm px-4 py-3.5 flex items-center gap-3">
+          <div className="w-11 h-11 rounded-lg bg-blue-50 flex items-center justify-center text-xl shrink-0">
+            👨‍💼
           </div>
-          <div className="flex flex-col">
-            <span className="text-3xl font-bold tabular-nums leading-none text-red-600">{superAdminCount}</span>
-            <span className="text-sm text-slate-500 mt-1.5">Super Admin</span>
+          <div className="flex flex-col min-w-0">
+            <span className="text-2xl font-bold tabular-nums leading-none text-blue-600">{adminCount}</span>
+            <span className="text-xs text-slate-500 mt-1 truncate">ADMIN</span>
+          </div>
+        </div>
+
+        {/* VIEWER */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3.5 flex items-center gap-3">
+          <div className="w-11 h-11 rounded-lg bg-slate-100 flex items-center justify-center text-xl shrink-0">
+            👁️
+          </div>
+          <div className="flex flex-col min-w-0">
+            <span className="text-2xl font-bold tabular-nums leading-none text-slate-700">{viewerCount}</span>
+            <span className="text-xs text-slate-500 mt-1 truncate">VIEWER</span>
           </div>
         </div>
       </div>
@@ -359,7 +452,7 @@ export default function UsersPage() {
       <div className={cn(CARD_STYLE.container, "overflow-hidden")}>
         {/* Toolbar */}
         <div className={cn(CARD_STYLE.header, "flex flex-col gap-2")}>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
             <div className="flex-1 min-w-0">
               <SearchInput
                 value={search}
@@ -371,6 +464,25 @@ export default function UsersPage() {
                 hideResultCount
               />
             </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <FilterDropdown
+                groups={filterGroups}
+                totalActiveFilters={totalActiveFilters}
+                label="กรอง"
+                placeholder="เลือกตัวกรอง"
+                size="sm"
+                onClearAll={clearAllFilters}
+              />
+              {hasActiveFilters && (
+                <button
+                  type="button"
+                  onClick={clearAllFilters}
+                  className="text-[11px] text-slate-500 hover:text-slate-700 underline whitespace-nowrap"
+                >
+                  ล้างทั้งหมด
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -379,12 +491,12 @@ export default function UsersPage() {
           <Table className="w-full table-fixed">
             <TableHeader>
               <TableRow className="bg-slate-50/50 hover:bg-slate-50/50">
-                <TableHead className="h-10 text-[11px] font-medium text-slate-600 w-[30%]">อีเมล</TableHead>
-                <TableHead className="h-10 text-[11px] font-medium text-slate-600 w-[12%]">Role</TableHead>
-                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden sm:table-cell w-[12%]">สถานะ</TableHead>
-                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden md:table-cell w-[15%]">ความปลอดภัย</TableHead>
-                <TableHead className="h-10 text-[11px] font-medium text-slate-600 hidden lg:table-cell w-[15%]">เข้าสู่ระบบล่าสุด</TableHead>
-                <TableHead className="h-10 text-[11px] font-medium text-slate-600 text-right w-[16%]">จัดการ</TableHead>
+                <TableHead className="h-9 text-[11px] font-semibold text-slate-600 uppercase tracking-wide w-[35%] sm:w-[30%]">อีเมล</TableHead>
+                <TableHead className="h-9 text-[11px] font-semibold text-slate-600 uppercase tracking-wide w-[15%] sm:w-[14%]">Role</TableHead>
+                <TableHead className="h-9 text-[11px] font-semibold text-slate-600 uppercase tracking-wide hidden sm:table-cell w-[14%]">สถานะ</TableHead>
+                <TableHead className="h-9 text-[11px] font-semibold text-slate-600 uppercase tracking-wide hidden md:table-cell w-[18%]">ความปลอดภัย</TableHead>
+                <TableHead className="h-9 text-[11px] font-semibold text-slate-600 uppercase tracking-wide hidden lg:table-cell w-[16%]">เข้าสู่ระบบล่าสุด</TableHead>
+                <TableHead className="h-9 text-[11px] font-semibold text-slate-600 uppercase tracking-wide text-right w-[14%] sm:w-[14%]">จัดการ</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -403,10 +515,10 @@ export default function UsersPage() {
               ) : filteredUsers.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="py-0">
-                    {search ? (
+                    {hasActiveFilters ? (
                       <NoResultsEmptyState
-                        keyword={search}
-                        onClearFilters={() => setSearch('')}
+                        keyword={search || 'ตัวกรองที่เลือก'}
+                        onClearFilters={clearAllFilters}
                       />
                     ) : (
                       <NoDataEmptyState
@@ -428,7 +540,7 @@ export default function UsersPage() {
                   return (
                     <TableRow key={user.id} className="group">
                       {/* Email */}
-                      <TableCell className="py-3 align-top">
+                      <TableCell className="py-2.5 align-top">
                         <div className="flex flex-col gap-1 min-w-0">
                           <div className="font-medium text-sm text-slate-900 leading-snug truncate" title={user.email}>
                             {user.email}
@@ -441,13 +553,18 @@ export default function UsersPage() {
                         </div>
                       </TableCell>
 
-                      {/* Role */}
-                      <TableCell className="py-3 align-top">
-                        <span className={cn(
-                          "inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border whitespace-nowrap",
-                          ROLE_COLORS[user.role]
-                        )}>
-                          {ROLE_LABELS[user.role]}
+                      {/* Role - ปรับให้เด่น พร้อม Icon + สีใหม่ */}
+                      <TableCell className="py-2.5 align-top">
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold border whitespace-nowrap',
+                            user.role === 'SUPER_ADMIN' && 'bg-red-500 text-white border-red-600',
+                            user.role === 'ADMIN' && 'bg-blue-500 text-white border-blue-600',
+                            user.role === 'VIEWER' && 'bg-slate-500 text-white border-slate-600',
+                          )}
+                        >
+                          <span>{ROLE_BADGE[user.role].emoji}</span>
+                          <span>{ROLE_BADGE[user.role].label}</span>
                         </span>
                       </TableCell>
 
@@ -543,9 +660,20 @@ export default function UsersPage() {
         </div>
 
         {/* Pagination */}
-        <div className={cn(CARD_STYLE.header, "flex items-center justify-between")}>
+        <div className={cn(CARD_STYLE.header, "flex items-center justify-between flex-wrap gap-2")}>
           <span className="text-[11px] text-slate-500">
-            แสดง {paginatedUsers.length} จาก {totalItems}
+            {hasActiveFilters ? (
+              <>
+                แสดง <strong className="text-slate-700 tabular-nums">{paginatedUsers.length}</strong> จาก{' '}
+                <strong className="text-slate-700 tabular-nums">{totalItems}</strong> รายการที่ตรงกับตัวกรอง
+                (จากทั้งหมด {totalUsers})
+              </>
+            ) : (
+              <>
+                แสดง <strong className="text-slate-700 tabular-nums">{paginatedUsers.length}</strong> จาก{' '}
+                <strong className="text-slate-700 tabular-nums">{totalItems}</strong>
+              </>
+            )}
           </span>
           <Pagination
             currentPage={currentPage}
@@ -626,7 +754,7 @@ export default function UsersPage() {
                   value={createForm.role}
                   onChange={(e) => setCreateForm({ ...createForm, role: e.target.value as UserRole })}
                 >
-                  {ROLE_OPTIONS.filter((r) => r.value !== 'SUPER_ADMIN').map((opt) => (
+                  {ROLE_OPTIONS.map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label} - {ROLE_DESCRIPTIONS[opt.value]}
                     </option>
@@ -694,7 +822,7 @@ export default function UsersPage() {
                 onChange={(e) => setEditForm({ ...editForm, role: e.target.value as UserRole })}
                 disabled={editingUser?.role === 'SUPER_ADMIN'}
               >
-                {ROLE_OPTIONS
+                {EDIT_ROLE_OPTIONS
                   .filter((r) => !(r.value === 'SUPER_ADMIN' && currentUser?.role !== 'SUPER_ADMIN'))
                   .map((opt) => (
                     <option key={opt.value} value={opt.value}>

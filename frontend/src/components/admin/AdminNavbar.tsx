@@ -3,66 +3,118 @@
 import * as React from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAdminAuth } from '@/lib/useAdminAuth';
+import { useRole } from '@/lib/useRole';
+import { ROLE_BADGE } from '@/types/user';
 import { cn } from '@/lib/utils';
 
 // ============================================
-// NAVIGATION STRUCTURE
+// NAVIGATION STRUCTURE (RBAC v1)
 // ============================================
+// Final role model: SUPER_ADMIN, ADMIN, VIEWER.
+// - SUPER_ADMIN: เห็นทุกเมนู
+// - ADMIN: เห็น Dashboard, Recruitment, Applications, Form Builder,
+//          Organizations, Positions, Reports (ไม่เห็น System)
+// - VIEWER (read-only): เห็น Dashboard, Recruitment Rounds, Applications,
+//                       Reports (ไม่เห็น Form Builder / Organizations / Positions / System)
+type AdminRole = 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER';
+
 type NavItem = {
   label: string;
   href: string;
+  /** Roles ที่สามารถเห็นเมนูนี้ได้ (allow-list). ถ้าว่าง = ทุก role ที่ผ่าน minRole ของ group เห็น */
+  minRole: AdminRole;
+  /** Roles ที่ห้ามเข้าถึง (deny-list). มีลำดับสูงกว่า minRole */
+  excludeRoles?: AdminRole[];
 };
 
 type NavGroup = {
   id: string;
   label: string;
   icon: string;
+  /** Min role required to see this group (ตัวกรองหลัก). */
+  minRole: AdminRole;
   items: NavItem[];
 };
+
+const ROLE_RANK: Record<AdminRole, number> = {
+  VIEWER: 1,
+  ADMIN: 2,
+  SUPER_ADMIN: 3,
+};
+
+function canSeeNav(
+  minRole: AdminRole,
+  role: AdminRole | null,
+  excludeRoles: AdminRole[] = []
+): boolean {
+  if (!role) return false;
+  if (excludeRoles.includes(role)) return false;
+  return ROLE_RANK[role] >= ROLE_RANK[minRole];
+}
 
 const NAV_GROUPS: NavGroup[] = [
   {
     id: 'dashboard',
     label: 'Dashboard',
     icon: '📊',
-    items: [{ label: 'Dashboard', href: '/admin/dashboard' }],
+    minRole: 'VIEWER',
+    items: [{ label: 'Dashboard', href: '/admin/dashboard', minRole: 'VIEWER' }],
   },
   {
     id: 'recruitment',
     label: 'Recruitment',
     icon: '📋',
+    minRole: 'VIEWER',
     items: [
-      { label: 'รอบรับสมัคร', href: '/admin/rounds' },
-      { label: 'ใบสมัคร', href: '/admin/applications' },
-      { label: 'Audit Logs', href: '/admin/audit-logs' },
+      // Applications ทั้ง ADMIN และ VIEWER เห็น
+      { label: 'ใบสมัคร', href: '/admin/applications', minRole: 'VIEWER' },
+      // รอบรับสมัคร: VIEWER เห็น แต่ VIEWER เป็น read-only อยู่แล้ว
+      { label: 'รอบรับสมัคร', href: '/admin/rounds', minRole: 'VIEWER' },
     ],
   },
   {
     id: 'form-builder',
     label: 'Form Builder',
     icon: '🧩',
+    minRole: 'ADMIN',
+    // ADMIN + SUPER_ADMIN เท่านั้น (VIEWER ห้ามเข้า)
     items: [
-      { label: 'Templates', href: '/admin/templates' },
-      { label: 'Field Library', href: '/admin/fields' },
+      { label: 'Templates', href: '/admin/templates', minRole: 'ADMIN' },
+      { label: 'Field Library', href: '/admin/fields', minRole: 'ADMIN' },
     ],
   },
   {
     id: 'organization',
     label: 'Organization',
     icon: '🏢',
+    minRole: 'ADMIN',
+    // ADMIN + SUPER_ADMIN เท่านั้น (VIEWER ห้ามเข้า)
     items: [
-      { label: 'หน่วยงาน', href: '/admin/organizations' },
-      { label: 'Job Family', href: '/admin/job-families' },
-      { label: 'Position Level', href: '/admin/position-levels' },
-      { label: 'Positions', href: '/admin/positions' },
+      { label: 'หน่วยงาน', href: '/admin/organizations', minRole: 'ADMIN' },
+      { label: 'Job Family', href: '/admin/job-families', minRole: 'ADMIN' },
+      { label: 'Position Level', href: '/admin/position-levels', minRole: 'ADMIN' },
+      { label: 'Positions', href: '/admin/positions', minRole: 'ADMIN' },
+    ],
+  },
+  {
+    id: 'reports',
+    label: 'Reports',
+    icon: '📈',
+    minRole: 'VIEWER',
+    // ทั้ง ADMIN และ VIEWER เข้าถึงได้ (VIEWER เป็น read-only)
+    items: [
+      { label: 'รายงาน', href: '/admin/reports', minRole: 'VIEWER' },
     ],
   },
   {
     id: 'system',
     label: 'System',
     icon: '⚙️',
+    minRole: 'SUPER_ADMIN',
+    // SUPER_ADMIN เท่านั้น (ADMIN และ VIEWER ห้ามเข้าถึง)
     items: [
-      { label: 'จัดการผู้ใช้', href: '/admin/users' },
+      { label: 'จัดการผู้ใช้งาน', href: '/admin/users', minRole: 'SUPER_ADMIN' },
+      { label: 'Audit Logs', href: '/admin/audit-logs', minRole: 'SUPER_ADMIN' },
     ],
   },
 ];
@@ -70,12 +122,12 @@ const NAV_GROUPS: NavGroup[] = [
 // ============================================
 // NAV GROUP DROPDOWN (Desktop)
 // ============================================
-function NavGroupDropdown({ 
-  group, 
-  isActive, 
-  pathname 
-}: { 
-  group: NavGroup; 
+function NavGroupDropdown({
+  group,
+  isActive,
+  pathname
+}: {
+  group: NavGroup;
   isActive: boolean;
   pathname: string;
 }) {
@@ -93,9 +145,6 @@ function NavGroupDropdown({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Find active sub-item
-  const activeItem = group.items.find(item => pathname === item.href || pathname.startsWith(item.href + '/'));
-
   // Single-item group (Dashboard) → direct link
   if (group.items.length === 1) {
     return (
@@ -103,8 +152,8 @@ function NavGroupDropdown({
         href={group.items[0].href}
         className={cn(
           "px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5",
-          isActive 
-            ? "bg-slate-700 text-white" 
+          isActive
+            ? "bg-slate-700 text-white"
             : "text-slate-300 hover:bg-slate-700/50 hover:text-white"
         )}
       >
@@ -120,8 +169,8 @@ function NavGroupDropdown({
         onClick={() => setOpen(!open)}
         className={cn(
           "px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5",
-          isActive 
-            ? "bg-slate-700 text-white" 
+          isActive
+            ? "bg-slate-700 text-white"
             : "text-slate-300 hover:bg-slate-700/50 hover:text-white"
         )}
       >
@@ -149,8 +198,8 @@ function NavGroupDropdown({
                   onClick={() => setOpen(false)}
                   className={cn(
                     "block px-4 py-2 text-sm transition-colors",
-                    isItemActive 
-                      ? "bg-blue-50 text-blue-700 font-medium" 
+                    isItemActive
+                      ? "bg-blue-50 text-blue-700 font-medium"
                       : "text-slate-700 hover:bg-slate-50"
                   )}
                 >
@@ -166,35 +215,189 @@ function NavGroupDropdown({
 }
 
 // ============================================
+// USER MENU (Top-right dropdown)
+// ============================================
+function UserMenu({
+  email,
+  role,
+  onLogout,
+}: {
+  email: string;
+  role: AdminRole;
+  onLogout: () => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const ref = React.useRef<HTMLDivElement>(null);
+  const router = useRouter();
+
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleProfile = () => {
+    setOpen(false);
+    router.push('/admin/profile');
+  };
+
+  const handleChangePassword = () => {
+    setOpen(false);
+    router.push('/admin/change-password');
+  };
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className={cn(
+          'flex items-center gap-2 px-2 py-1 rounded-md transition-all duration-150 cursor-pointer',
+          'hover:bg-white/10 active:bg-white/15',
+          open && 'bg-white/10',
+        )}
+        aria-label="User menu"
+      >
+        {/* Text: Role + Email, 2 lines */}
+        <div className="flex flex-col items-end min-w-0">
+          <span
+            className={cn(
+              'text-[11px] font-semibold leading-tight whitespace-nowrap',
+              role === 'SUPER_ADMIN' && 'text-red-400',
+              role === 'ADMIN' && 'text-blue-400',
+              role === 'VIEWER' && 'text-slate-300',
+            )}
+          >
+            {ROLE_BADGE[role].label}
+          </span>
+          <span className="text-[10px] text-slate-400 truncate max-w-[150px] leading-tight" title={email}>
+            {email}
+          </span>
+        </div>
+
+        {/* Chevron arrow */}
+        <svg
+          className={cn('h-3.5 w-3.5 text-slate-400 shrink-0 transition-transform duration-200', open && 'rotate-180')}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute right-0 mt-1 w-60 rounded-lg border border-slate-200 bg-white shadow-lg overflow-hidden z-50">
+          {/* Dropdown Header - Avatar + Email */}
+          <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  'inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-bold shrink-0',
+                  role === 'SUPER_ADMIN' && 'bg-red-500 text-white',
+                  role === 'ADMIN' && 'bg-blue-500 text-white',
+                  role === 'VIEWER' && 'bg-slate-500 text-white',
+                )}
+              >
+                {role === 'SUPER_ADMIN' ? 'SA' : role === 'ADMIN' ? 'A' : 'V'}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-slate-800 truncate font-medium leading-tight" title={email}>
+                  {email}
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                  {ROLE_BADGE[role].label}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Menu Items */}
+          <div className="py-1">
+            <button
+              type="button"
+              onClick={handleProfile}
+              className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+            >
+              <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+              โปรไฟล์
+            </button>
+            <button
+              type="button"
+              onClick={handleChangePassword}
+              className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+            >
+              <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+              </svg>
+              เปลี่ยนรหัสผ่าน
+            </button>
+            <div className="border-t border-slate-100 my-1" />
+            <button
+              type="button"
+              onClick={onLogout}
+              className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+              ออกจากระบบ
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================
 // MOBILE DRAWER
 // ============================================
-function MobileDrawer({ 
-  isOpen, 
-  onClose, 
-  pathname 
-}: { 
-  isOpen: boolean; 
-  onClose: () => void; 
+function MobileDrawer({
+  isOpen,
+  onClose,
+  pathname,
+  visibleGroups
+}: {
+  isOpen: boolean;
+  onClose: () => void;
   pathname: string;
+  visibleGroups: NavGroup[];
 }) {
   const router = useRouter();
-  const { logout } = useAdminAuth();
+  const { user, logout } = useAdminAuth();
+  const email = user?.email || '';
 
   const handleLogout = () => {
     logout();
     router.push('/admin/login');
   };
 
+  const handleProfile = () => {
+    onClose();
+    router.push('/admin/profile');
+  };
+
+  const handleChangePassword = () => {
+    onClose();
+    router.push('/admin/change-password');
+  };
+
   return (
     <>
       {/* Backdrop */}
       {isOpen && (
-        <div 
-          className="fixed inset-0 bg-black/50 z-40 md:hidden" 
+        <div
+          className="fixed inset-0 bg-black/50 z-40 md:hidden"
           onClick={onClose}
         />
       )}
-      
+
       {/* Drawer */}
       <div
         className={cn(
@@ -216,9 +419,35 @@ function MobileDrawer({
             </svg>
           </button>
         </div>
-        
+
+        {/* User Identity (mobile) - Avatar + Role + Email */}
+        {user?.role && (
+          <div className="px-4 py-3 border-b border-slate-700 bg-slate-900/40">
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  'inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-bold shrink-0',
+                  user.role === 'SUPER_ADMIN' && 'bg-red-500 text-white',
+                  user.role === 'ADMIN' && 'bg-blue-500 text-white',
+                  user.role === 'VIEWER' && 'bg-slate-500 text-white',
+                )}
+              >
+                {email.slice(0, 2).toUpperCase()}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-slate-100 truncate font-semibold leading-tight" title={email}>
+                  {email}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-0.5 truncate">
+                  {ROLE_BADGE[user.role].label}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         <nav className="p-3 space-y-1">
-          {NAV_GROUPS.map((group) => {
+          {visibleGroups.map((group) => {
             const isGroupActive = group.items.some(item => pathname === item.href || pathname.startsWith(item.href + '/'));
             return (
               <div key={group.id} className="space-y-0.5">
@@ -238,8 +467,8 @@ function MobileDrawer({
                       onClick={onClose}
                       className={cn(
                         "block pl-8 pr-3 py-2 rounded-md text-sm transition-colors",
-                        isItemActive 
-                          ? "bg-slate-700 text-white font-medium" 
+                        isItemActive
+                          ? "bg-slate-700 text-white font-medium"
                           : "text-slate-300 hover:bg-slate-700/50 hover:text-white"
                       )}
                     >
@@ -252,12 +481,24 @@ function MobileDrawer({
           })}
         </nav>
 
-        <div className="p-3 border-t border-slate-700 mt-4">
+        <div className="p-3 border-t border-slate-700 mt-4 space-y-1">
+          <button
+            onClick={handleProfile}
+            className="w-full text-left px-3 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-700/50"
+          >
+            👤 โปรไฟล์
+          </button>
+          <button
+            onClick={handleChangePassword}
+            className="w-full text-left px-3 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-700/50"
+          >
+            🔑 เปลี่ยนรหัสผ่าน
+          </button>
           <button
             onClick={handleLogout}
             className="w-full px-3 py-2 bg-red-600 hover:bg-red-700 rounded-md text-sm font-medium"
           >
-            ออกจากระบบ
+            🚪 ออกจากระบบ
           </button>
         </div>
       </div>
@@ -271,7 +512,8 @@ function MobileDrawer({
 export function AdminNavbar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { logout } = useAdminAuth();
+  const { user, logout } = useAdminAuth();
+  const { role } = useRole();
   const [drawerOpen, setDrawerOpen] = React.useState(false);
 
   // Close drawer on route change
@@ -284,6 +526,16 @@ export function AdminNavbar() {
     router.push('/admin/login');
   };
 
+  // Filter groups by role (centralized — no hardcoded duplicates).
+  const visibleGroups = React.useMemo(
+    () => NAV_GROUPS.filter((g) =>
+      canSeeNav(g.minRole, role, /* excludeRoles */ undefined) &&
+      // Ensure at least one item in the group is visible for the role
+      g.items.some((item) => canSeeNav(item.minRole, role, item.excludeRoles))
+    ),
+    [role]
+  );
+
   return (
     <>
       <nav className="bg-slate-800 text-white shadow-md sticky top-0 z-30">
@@ -293,6 +545,7 @@ export function AdminNavbar() {
             <button
               onClick={() => setDrawerOpen(true)}
               className="p-2 rounded-md text-slate-300 hover:bg-slate-700 hover:text-white md:hidden"
+              aria-label="Open menu"
             >
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
@@ -307,7 +560,7 @@ export function AdminNavbar() {
 
             {/* Desktop Nav Groups */}
             <div className="hidden md:flex items-center gap-1 flex-1 justify-center">
-              {NAV_GROUPS.map((group) => {
+              {visibleGroups.map((group) => {
                 const isGroupActive = group.items.some(item => pathname === item.href || pathname.startsWith(item.href + '/'));
                 return (
                   <NavGroupDropdown
@@ -323,18 +576,33 @@ export function AdminNavbar() {
             {/* Spacer for mobile */}
             <div className="md:hidden w-9" />
 
-            {/* Logout Button */}
-            <button
-              onClick={handleLogout}
-              className="hidden md:block px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded-md text-sm font-medium"
-            >
-              ออกจากระบบ
-            </button>
+            {/* Right: User Identity (Desktop only) */}
+            {role && user?.email ? (
+              <div className="hidden md:block">
+                <UserMenu
+                  email={user.email}
+                  role={role}
+                  onLogout={handleLogout}
+                />
+              </div>
+            ) : (
+              <button
+                onClick={handleLogout}
+                className="hidden md:block px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded-md text-sm font-medium"
+              >
+                ออกจากระบบ
+              </button>
+            )}
           </div>
         </div>
       </nav>
 
-      <MobileDrawer isOpen={drawerOpen} onClose={() => setDrawerOpen(false)} pathname={pathname} />
+      <MobileDrawer
+        isOpen={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        pathname={pathname}
+        visibleGroups={visibleGroups}
+      />
     </>
   );
 }

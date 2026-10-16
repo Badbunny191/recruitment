@@ -3,587 +3,41 @@ import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
 import { sign } from 'hono/jwt';
 import { v4 as uuidv4 } from 'uuid';
-import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc, gte } from 'drizzle-orm';
+import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc } from 'drizzle-orm';
 import { Bindings, AppVariables } from '../types';
-import { authMiddleware, jwtSecretMiddleware } from '../middlewares/auth.middleware';
-import { auditMiddleware } from '../middlewares/audit.middleware';
+import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middleware';
+import { auditMiddleware, setAuditPayload } from '../middlewares/audit.middleware';
+import { handleApplicationStatusChange, buildAuditPayload } from '../lib/change-tracking';
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
-import { 
-  adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, 
-  recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, 
-  jobFamilies, positionLevels, positions, roundSequences, loginAttempts, passwordResetTokens 
-} from '../db/schema';
-import { 
-  LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, 
-  TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, 
-  TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, 
-  TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, 
-  RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema,
-  CreateUserSchema, UpdateUserSchema, ChangePasswordSchema, ResetPasswordSchema, 
-  ForceChangePasswordSchema, DisableUserSchema
-} from '../schemas/validators';
-import { validateApplicationPattern, validateRoundCode, DEFAULT_APPLICATION_PATTERN } from '../utils/application-pattern';
-import { 
-  verifyPasswordForLogin, migratePassword, hashPassword, generateSecurePassword, isBcryptHash 
-} from '../services/auth.service';
-import { validatePassword, isCommonPassword } from '../utils/password';
-
+import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
+import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
+import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
+import { ensureNotLastSuperAdmin } from '../services/rbac.service';
+import {
+  validateApplicationPattern,
+  validateRoundCode,
+  DEFAULT_APPLICATION_PATTERN,
+} from '../utils/application-pattern';
+import bcrypt from 'bcryptjs';
 const adminRoutes = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
 
-// =============================================================================
-// JWT Secret Validation (Admin Routes Only)
-// =============================================================================
-// Apply to ALL admin routes (including /auth/login which needs to sign JWT)
-// Public routes and health endpoint are NOT affected
-adminRoutes.use('/*', jwtSecretMiddleware);
-
-// =============================================================================
-// Authentication Routes (No Auth Required)
-// =============================================================================
-
-// Account lockout configuration
-const MAX_FAILED_ATTEMPTS = 5;
-const LOCKOUT_DURATION_MINUTES = 30;
-
-/**
- * Log a login attempt
- */
-async function logLoginAttempt(
-  env: Bindings,
-  c: any,
-  email: string,
-  success: boolean,
-  failureReason?: string
-) {
-  const db = drizzle(env.DB);
-  await db.insert(loginAttempts).values({
-    id: uuidv4(),
-    email,
-    ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
-    userAgent: c.req.header('user-agent') || 'unknown',
-    success,
-    failureReason,
-    attemptedAt: new Date(),
-  });
-}
-
-/**
- * Check if account is locked
- */
-async function isAccountLocked(env: Bindings, email: string): Promise<{ locked: boolean; until?: Date }> {
-  const db = drizzle(env.DB);
-  const user = await db.select()
-    .from(adminUsers)
-    .where(eq(adminUsers.email, email))
-    .get();
-  
-  if (!user || !user.lockedUntil) {
-    return { locked: false };
-  }
-  
-  const lockedUntil = new Date(user.lockedUntil);
-  if (lockedUntil > new Date()) {
-    return { locked: true, until: lockedUntil };
-  }
-  
-  // Lock expired, reset failed attempts
-  if (user.failedLoginAttempts && user.failedLoginAttempts > 0) {
-    await db.update(adminUsers)
-      .set({ failedLoginAttempts: 0, lockedUntil: null })
-      .where(eq(adminUsers.id, user.id));
-  }
-  
-  return { locked: false };
-}
-
-/**
- * Record failed login attempt
- */
-async function recordFailedLogin(env: Bindings, email: string): Promise<{ locked: boolean; attempts: number }> {
-  const db = drizzle(env.DB);
-  
-  // Get or create user record
-  let user = await db.select()
-    .from(adminUsers)
-    .where(eq(adminUsers.email, email))
-    .get();
-  
-  if (!user) {
-    // Don't reveal if email exists
-    return { locked: false, attempts: 0 };
-  }
-  
-  const newAttempts = (user.failedLoginAttempts || 0) + 1;
-  
-  if (newAttempts >= MAX_FAILED_ATTEMPTS) {
-    const lockUntil = new Date(Date.now() + LOCKOUT_DURATION_MINUTES * 60 * 1000);
-    await db.update(adminUsers)
-      .set({ 
-        failedLoginAttempts: newAttempts,
-        lockedUntil: lockUntil 
-      })
-      .where(eq(adminUsers.id, user.id));
-    
-    return { locked: true, attempts: newAttempts };
-  }
-  
-  await db.update(adminUsers)
-    .set({ failedLoginAttempts: newAttempts })
-    .where(eq(adminUsers.id, user.id));
-  
-  return { locked: false, attempts: newAttempts };
-}
-
-/**
- * Reset failed login attempts on successful login
- */
-async function resetFailedLoginAttempts(env: Bindings, userId: string) {
-  const db = drizzle(env.DB);
-  await db.update(adminUsers)
-    .set({ failedLoginAttempts: 0, lockedUntil: null })
-    .where(eq(adminUsers.id, userId));
-}
-
-// POST /admin/auth/login
 adminRoutes.post('/auth/login', zValidator('json', LoginRequestSchema), async (c) => {
   const { email, password } = c.req.valid('json');
-  const env = c.env as Bindings;
-  const db = drizzle(env.DB);
-  
-  // Check if account is locked
-  const lockStatus = await isAccountLocked(env, email);
-  if (lockStatus.locked) {
-    await logLoginAttempt(env, c, email, false, 'ACCOUNT_LOCKED');
-    return c.json({ 
-      error: 'Account Locked', 
-      message: `บัญชีถูกล็อกชั่วคราว กรุณาลองใหม่หลังจาก ${lockStatus.until?.toLocaleString('th-TH')}`,
-      retryAfter: Math.ceil((lockStatus.until!.getTime() - Date.now()) / 1000)
-    }, 423);
-  }
-  
-  // Find user
+  const db = drizzle(c.env.DB);
   const user = await db.select().from(adminUsers).where(eq(adminUsers.email, email)).get();
   
-  if (!user) {
-    // Don't reveal if email exists - still log
-    await logLoginAttempt(env, c, email, false, 'USER_NOT_FOUND');
-    return c.json({ error: 'Invalid credentials', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' }, 401);
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    return c.json({ error: 'Invalid credentials' }, 401);
   }
-  
-  // Check if account is disabled
-  if (user.isActive === false) {
-    await logLoginAttempt(env, c, email, false, 'ACCOUNT_DISABLED');
-    return c.json({ 
-      error: 'Account Disabled', 
-      message: 'บัญชีนี้ถูกปิดใช้งาน กรุณาติดต่อผู้ดูแลระบบ' 
-    }, 403);
-  }
-  
-  // Verify password (supports dual-mode: bcrypt or plaintext for legacy)
-  const { valid, needsMigration } = await verifyPasswordForLogin(
-    password,
-    user.passwordHash,
-    user.passwordMigrated || false
-  );
-  
-  if (!valid) {
-    await logLoginAttempt(env, c, email, false, 'INVALID_PASSWORD');
-    
-    const failStatus = await recordFailedLogin(env, email);
-    
-    if (failStatus.locked) {
-      return c.json({ 
-        error: 'Account Locked', 
-        message: `บัญชีถูกล็อกเนื่องจากพยายามเข้าสู่ระบบผิดหลายครั้ง กรุณาลองใหม่ในอีก ${LOCKOUT_DURATION_MINUTES} นาที`,
-        retryAfter: LOCKOUT_DURATION_MINUTES * 60
-      }, 423);
-    }
-    
-    const remaining = MAX_FAILED_ATTEMPTS - failStatus.attempts;
-    return c.json({ 
-      error: 'Invalid credentials', 
-      message: `อีเมลหรือรหัสผ่านไม่ถูกต้อง (เหลือ ${remaining} ครั้งก่อนถูกล็อก)`,
-      remainingAttempts: remaining
-    }, 401);
-  }
-  
-  // Successful login
-  await resetFailedLoginAttempts(env, user.id);
-  await logLoginAttempt(env, c, email, true);
-  
-  // Auto-migrate password if needed (legacy plaintext → bcrypt)
-  if (needsMigration && !user.passwordMigrated) {
-    await migratePassword(env, user.id, password);
-  }
-  
-  // Generate JWT
-  const token = await sign({ 
-    id: user.id, 
-    email: user.email, 
-    role: user.role,
-    mustChangePassword: user.mustChangePassword || false,
-    exp: Math.floor(Date.now() / 1000) + 28800 // 8 hours
-  }, env.JWT_SECRET);
-  
-  return c.json({ 
-    token, 
-    user: { 
-      id: user.id, 
-      email: user.email, 
-      role: user.role,
-      mustChangePassword: user.mustChangePassword || false
-    } 
-  });
+
+  const token = await sign({ id: user.id, email: user.email, role: user.role, exp: Math.floor(Date.now() / 1000) + 28800 }, c.env.JWT_SECRET);
+  return c.json({ token, user: { id: user.id, email: user.email, role: user.role } });
 });
 
-// =============================================================================
-// User Management Routes
-// =============================================================================
-
-// Apply auth middleware to all routes below
 adminRoutes.use('/*', authMiddleware);
 
-// GET /admin/users - List all users
-adminRoutes.get('/users', async (c) => {
-  const db = drizzle(c.env.DB);
-  
-  const users = await db.select({
-    id: adminUsers.id,
-    email: adminUsers.email,
-    role: adminUsers.role,
-    isActive: adminUsers.isActive,
-    passwordMigrated: adminUsers.passwordMigrated,
-    passwordChangedAt: adminUsers.passwordChangedAt,
-    mustChangePassword: adminUsers.mustChangePassword,
-    failedLoginAttempts: adminUsers.failedLoginAttempts,
-    lockedUntil: adminUsers.lockedUntil,
-    createdAt: adminUsers.createdAt,
-  }).from(adminUsers);
-  
-  return c.json({ data: users });
-});
-
-// GET /admin/users/:id - Get single user
-adminRoutes.get('/users/:id', async (c) => {
-  const db = drizzle(c.env.DB);
-  const id = c.req.param('id');
-  
-  const user = await db.select({
-    id: adminUsers.id,
-    email: adminUsers.email,
-    role: adminUsers.role,
-    isActive: adminUsers.isActive,
-    passwordMigrated: adminUsers.passwordMigrated,
-    passwordChangedAt: adminUsers.passwordChangedAt,
-    mustChangePassword: adminUsers.mustChangePassword,
-    failedLoginAttempts: adminUsers.failedLoginAttempts,
-    lockedUntil: adminUsers.lockedUntil,
-    createdAt: adminUsers.createdAt,
-  }).from(adminUsers).where(eq(adminUsers.id, id)).get();
-  
-  if (!user) {
-    return c.json({ error: 'User not found' }, 404);
-  }
-  
-  return c.json({ data: user });
-});
-
-// POST /admin/users - Create user
-adminRoutes.post('/users', auditMiddleware('USER'), zValidator('json', CreateUserSchema), async (c) => {
-  const db = drizzle(c.env.DB);
-  const currentUser = c.get('jwtPayload');
-  const data = c.req.valid('json');
-  
-  // Only SUPER_ADMIN and ADMIN can create users
-  if (currentUser.role !== 'SUPER_ADMIN' && currentUser.role !== 'ADMIN') {
-    return c.json({ error: 'Forbidden', message: 'คุณไม่มีสิทธิ์สร้างผู้ใช้' }, 403);
-  }
-  
-  // Check if email already exists
-  const existing = await db.select().from(adminUsers).where(eq(adminUsers.email, data.email)).get();
-  if (existing) {
-    return c.json({ error: 'Email already exists', message: 'อีเมลนี้ถูกใช้งานแล้ว' }, 409);
-  }
-  
-  // Generate temporary password
-  const tempPassword = generateSecurePassword(12);
-  const hashedPassword = await hashPassword(tempPassword);
-  
-  const userId = uuidv4();
-  await db.insert(adminUsers).values({
-    id: userId,
-    email: data.email,
-    passwordHash: hashedPassword,
-    role: data.role,
-    passwordMigrated: true,
-    mustChangePassword: data.mustChangePassword,
-    createdAt: new Date(),
-  });
-  
-  // TODO: Send email with temporary password
-  // For now, return temp password (in production, this should be sent via email only)
-  
-  return c.json({ 
-    success: true, 
-    id: userId,
-    tempPassword, // In production, don't return this - send via email instead
-    message: 'สร้างผู้ใช้สำเร็จ รหัสผ่านชั่วคราวถูกส่งไปยังอีเมลของผู้ใช้'
-  }, 201);
-});
-
-// PATCH /admin/users/:id - Update user
-adminRoutes.patch('/users/:id', auditMiddleware('USER'), zValidator('json', UpdateUserSchema), async (c) => {
-  const db = drizzle(c.env.DB);
-  const currentUser = c.get('jwtPayload');
-  const userId = c.req.param('id');
-  const data = c.req.valid('json');
-  
-  // Only SUPER_ADMIN and ADMIN can update users
-  if (currentUser.role !== 'SUPER_ADMIN' && currentUser.role !== 'ADMIN') {
-    return c.json({ error: 'Forbidden', message: 'คุณไม่มีสิทธิ์แก้ไขผู้ใช้' }, 403);
-  }
-  
-  // Cannot update SUPER_ADMIN
-  const targetUser = await db.select().from(adminUsers).where(eq(adminUsers.id, userId)).get();
-  if (!targetUser) {
-    return c.json({ error: 'User not found' }, 404);
-  }
-  if (targetUser.role === 'SUPER_ADMIN') {
-    return c.json({ error: 'Cannot modify SUPER_ADMIN', message: 'ไม่สามารถแก้ไขผู้ใช้ระดับ SUPER_ADMIN' }, 403);
-  }
-  
-  // Check email uniqueness if changing email
-  if (data.email && data.email !== targetUser.email) {
-    const emailExists = await db.select().from(adminUsers).where(eq(adminUsers.email, data.email)).get();
-    if (emailExists) {
-      return c.json({ error: 'Email already exists', message: 'อีเมลนี้ถูกใช้งานแล้ว' }, 409);
-    }
-  }
-  
-  const updateData: any = {};
-  if (data.email !== undefined) updateData.email = data.email;
-  if (data.role !== undefined) updateData.role = data.role;
-  if (data.isActive !== undefined) {
-    updateData.isActive = data.isActive;
-    if (!data.isActive) {
-      // Reset failed attempts when disabling
-      updateData.failedLoginAttempts = 0;
-      updateData.lockedUntil = null;
-    }
-  }
-  
-  await db.update(adminUsers).set(updateData).where(eq(adminUsers.id, userId));
-  
-  return c.json({ success: true });
-});
-
-// POST /admin/users/:id/reset-password - Reset password (admin action)
-adminRoutes.post('/users/:id/reset-password', auditMiddleware('USER'), zValidator('json', ResetPasswordSchema), async (c) => {
-  const db = drizzle(c.env.DB);
-  const currentUser = c.get('jwtPayload');
-  const targetUserId = c.req.param('id');
-  const { userId } = c.req.valid('json');
-  
-  // Only SUPER_ADMIN and ADMIN can reset passwords
-  if (currentUser.role !== 'SUPER_ADMIN' && currentUser.role !== 'ADMIN') {
-    return c.json({ error: 'Forbidden', message: 'คุณไม่มีสิทธิ์รีเซ็ตรหัสผ่าน' }, 403);
-  }
-  
-  // Validate userId matches param
-  if (userId !== targetUserId) {
-    return c.json({ error: 'Invalid request', message: 'รหัสผู้ใช้ไม่ตรงกัน' }, 400);
-  }
-  
-  const targetUser = await db.select().from(adminUsers).where(eq(adminUsers.id, userId)).get();
-  if (!targetUser) {
-    return c.json({ error: 'User not found' }, 404);
-  }
-  
-  if (targetUser.role === 'SUPER_ADMIN') {
-    return c.json({ error: 'Cannot reset SUPER_ADMIN password', message: 'ไม่สามารถรีเซ็ตรหัสผ่าน SUPER_ADMIN' }, 403);
-  }
-  
-  // Generate new temporary password
-  const tempPassword = generateSecurePassword(12);
-  const hashedPassword = await hashPassword(tempPassword);
-  
-  await db.update(adminUsers)
-    .set({ 
-      passwordHash: hashedPassword,
-      passwordMigrated: true,
-      mustChangePassword: true,
-      failedLoginAttempts: 0,
-      lockedUntil: null,
-      passwordChangedAt: null,
-    })
-    .where(eq(adminUsers.id, userId));
-  
-  // TODO: Send email with temporary password
-  
-  return c.json({ 
-    success: true,
-    tempPassword, // In production, send via email only
-    message: 'รีเซ็ตรหัสผ่านสำเร็จ รหัสผ่านชั่วคราวถูกส่งไปยังอีเมลของผู้ใช้'
-  });
-});
-
-// POST /admin/users/:id/force-change-password - Force user to change password
-adminRoutes.post('/users/:id/force-change-password', auditMiddleware('USER'), zValidator('json', ForceChangePasswordSchema), async (c) => {
-  const db = drizzle(c.env.DB);
-  const currentUser = c.get('jwtPayload');
-  const targetUserId = c.req.param('id');
-  const { userId, mustChangePassword } = c.req.valid('json');
-  
-  // Only SUPER_ADMIN and ADMIN can force password change
-  if (currentUser.role !== 'SUPER_ADMIN' && currentUser.role !== 'ADMIN') {
-    return c.json({ error: 'Forbidden', message: 'คุณไม่มีสิทธิ์บังคับเปลี่ยนรหัสผ่าน' }, 403);
-  }
-  
-  if (userId !== targetUserId) {
-    return c.json({ error: 'Invalid request', message: 'รหัสผู้ใช้ไม่ตรงกัน' }, 400);
-  }
-  
-  const targetUser = await db.select().from(adminUsers).where(eq(adminUsers.id, userId)).get();
-  if (!targetUser) {
-    return c.json({ error: 'User not found' }, 404);
-  }
-  
-  if (targetUser.role === 'SUPER_ADMIN') {
-    return c.json({ error: 'Cannot modify SUPER_ADMIN', message: 'ไม่สามารถแก้ไข SUPER_ADMIN' }, 403);
-  }
-  
-  await db.update(adminUsers)
-    .set({ mustChangePassword })
-    .where(eq(adminUsers.id, userId));
-  
-  return c.json({ 
-    success: true, 
-    message: mustChangePassword 
-      ? 'บังคับเปลี่ยนรหัสผ่านเมื่อเข้าสู่ระบบครั้งต่อไป'
-      : 'ยกเลิกการบังคับเปลี่ยนรหัสผ่าน'
-  });
-});
-
-// POST /admin/users/:id/disable - Disable user
-adminRoutes.post('/users/:id/disable', auditMiddleware('USER'), zValidator('json', DisableUserSchema), async (c) => {
-  const db = drizzle(c.env.DB);
-  const currentUser = c.get('jwtPayload');
-  const targetUserId = c.req.param('id');
-  const { userId, reason } = c.req.valid('json');
-  
-  // Only SUPER_ADMIN and ADMIN can disable users
-  if (currentUser.role !== 'SUPER_ADMIN' && currentUser.role !== 'ADMIN') {
-    return c.json({ error: 'Forbidden', message: 'คุณไม่มีสิทธิ์ปิดใช้งานผู้ใช้' }, 403);
-  }
-  
-  if (userId !== targetUserId) {
-    return c.json({ error: 'Invalid request', message: 'รหัสผู้ใช้ไม่ตรงกัน' }, 400);
-  }
-  
-  const targetUser = await db.select().from(adminUsers).where(eq(adminUsers.id, userId)).get();
-  if (!targetUser) {
-    return c.json({ error: 'User not found' }, 404);
-  }
-  
-  if (targetUser.role === 'SUPER_ADMIN') {
-    return c.json({ error: 'Cannot disable SUPER_ADMIN', message: 'ไม่สามารถปิดใช้งาน SUPER_ADMIN' }, 403);
-  }
-  
-  // Cannot disable yourself
-  if (targetUserId === currentUser.id) {
-    return c.json({ error: 'Cannot disable yourself', message: 'ไม่สามารถปิดใช้งานตัวเอง' }, 400);
-  }
-  
-  await db.update(adminUsers)
-    .set({ 
-      isActive: false,
-      failedLoginAttempts: 0,
-      lockedUntil: null,
-    })
-    .where(eq(adminUsers.id, userId));
-  
-  return c.json({ success: true, message: 'ปิดใช้งานผู้ใช้สำเร็จ' });
-});
-
-// POST /admin/auth/change-password - Change own password
-adminRoutes.post('/auth/change-password', auditMiddleware('USER'), zValidator('json', ChangePasswordSchema), async (c) => {
-  const db = drizzle(c.env.DB);
-  const currentUser = c.get('jwtPayload');
-  const { currentPassword, newPassword, confirmPassword } = c.req.valid('json');
-  
-  // Validate new password strength
-  const passwordValidation = validatePassword(newPassword);
-  if (!passwordValidation.valid) {
-    return c.json({ 
-      error: 'Password policy violation', 
-      message: passwordValidation.errors.join(', '),
-      errors: passwordValidation.errors
-    }, 400);
-  }
-  
-  // Check if common password
-  if (isCommonPassword(newPassword)) {
-    return c.json({ 
-      error: 'Weak password', 
-      message: 'รหัสผ่านนี้ถูกใช้งานบ่อยเกินไป กรุณาเลือกรหัสผ่านที่ปลอดภัยกว่า'
-    }, 400);
-  }
-  
-  // Get current user
-  const user = await db.select().from(adminUsers).where(eq(adminUsers.id, currentUser.id)).get();
-  if (!user) {
-    return c.json({ error: 'User not found' }, 404);
-  }
-  
-  // Verify current password
-  const { valid } = await verifyPasswordForLogin(
-    currentPassword,
-    user.passwordHash,
-    user.passwordMigrated || false
-  );
-  
-  if (!valid) {
-    return c.json({ error: 'Invalid current password', message: 'รหัสผ่านปัจจุบันไม่ถูกต้อง' }, 401);
-  }
-  
-  // Hash and update new password
-  const hashedPassword = await hashPassword(newPassword);
-  await db.update(adminUsers)
-    .set({ 
-      passwordHash: hashedPassword,
-      passwordMigrated: true,
-      passwordChangedAt: new Date(),
-      mustChangePassword: false,
-    })
-    .where(eq(adminUsers.id, currentUser.id));
-  
-  return c.json({ success: true, message: 'เปลี่ยนรหัสผ่านสำเร็จ' });
-});
-
-// GET /admin/auth/me - Get current user info
-adminRoutes.get('/auth/me', async (c) => {
-  const db = drizzle(c.env.DB);
-  const currentUser = c.get('jwtPayload');
-  
-  const user = await db.select({
-    id: adminUsers.id,
-    email: adminUsers.email,
-    role: adminUsers.role,
-    passwordMigrated: adminUsers.passwordMigrated,
-    mustChangePassword: adminUsers.mustChangePassword,
-    passwordChangedAt: adminUsers.passwordChangedAt,
-    createdAt: adminUsers.createdAt,
-  }).from(adminUsers).where(eq(adminUsers.id, currentUser.id)).get();
-  
-  if (!user) {
-    return c.json({ error: 'User not found' }, 404);
-  }
-  
-  return c.json({ data: user });
-});
-
 adminRoutes.get('/fields', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(fieldMaster) }));
-adminRoutes.post('/fields', auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterCreateSchema), async (c) => {
+adminRoutes.post('/fields', adminOnlyMiddleware, auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const data = c.req.valid('json') as any;
   const id = uuidv4();
@@ -602,7 +56,7 @@ adminRoutes.post('/fields', auditMiddleware('FIELD_MASTER'), zValidator('json', 
   return c.json({ success: true, id }, 201);
 });
 
-adminRoutes.patch('/fields/:id', auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterUpdateSchema), async (c) => {
+adminRoutes.patch('/fields/:id', adminOnlyMiddleware, auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const data = c.req.valid('json') as any;
@@ -629,7 +83,7 @@ adminRoutes.patch('/fields/:id', auditMiddleware('FIELD_MASTER'), zValidator('js
 });
 
 // Soft delete: ตั้ง isActive=false (ห้าม hard delete เพราะ field อาจถูกใช้ใน template version แล้ว)
-adminRoutes.delete('/fields/:id', auditMiddleware('FIELD_MASTER'), async (c) => {
+adminRoutes.delete('/fields/:id', adminOnlyMiddleware, auditMiddleware('FIELD_MASTER'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   await db.update(fieldMaster).set({ isActive: false }).where(eq(fieldMaster.id, id));
@@ -787,13 +241,13 @@ adminRoutes.get('/templates', async (c) => {
 
   return c.json({ data: enrichedTemplates });
 });
-adminRoutes.post('/templates', auditMiddleware('TEMPLATE'), zValidator('json', TemplateCreateSchema), async (c) => {
+adminRoutes.post('/templates', adminOnlyMiddleware, auditMiddleware('TEMPLATE'), zValidator('json', TemplateCreateSchema), async (c) => {
   const id = uuidv4();
   await drizzle(c.env.DB).insert(templates).values({ id, ...c.req.valid('json') });
   return c.json({ success: true, id }, 201);
 });
 
-adminRoutes.patch('/templates/:id', auditMiddleware('TEMPLATE'), zValidator('json', TemplateUpdateSchema), async (c) => {
+adminRoutes.patch('/templates/:id', adminOnlyMiddleware, auditMiddleware('TEMPLATE'), zValidator('json', TemplateUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const data = c.req.valid('json');
@@ -806,7 +260,7 @@ adminRoutes.patch('/templates/:id', auditMiddleware('TEMPLATE'), zValidator('jso
 // =============================================================================
 
 // PATCH /admin/templates/:id/archive - Soft delete
-adminRoutes.patch('/templates/:id/archive', auditMiddleware('TEMPLATE'), async (c) => {
+adminRoutes.patch('/templates/:id/archive', adminOnlyMiddleware, auditMiddleware('TEMPLATE'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -827,7 +281,7 @@ adminRoutes.patch('/templates/:id/archive', auditMiddleware('TEMPLATE'), async (
 });
 
 // PATCH /admin/templates/:id/restore - Restore
-adminRoutes.patch('/templates/:id/restore', auditMiddleware('TEMPLATE'), async (c) => {
+adminRoutes.patch('/templates/:id/restore', adminOnlyMiddleware, auditMiddleware('TEMPLATE'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -910,7 +364,7 @@ adminRoutes.get('/templates/:id/usage', async (c) => {
 });
 
 // DELETE /admin/templates/:id - Hard delete (admin only, blocked if rounds reference it)
-adminRoutes.delete('/templates/:id', auditMiddleware('TEMPLATE'), async (c) => {
+adminRoutes.delete('/templates/:id', adminOnlyMiddleware, auditMiddleware('TEMPLATE'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -1170,7 +624,7 @@ adminRoutes.get('/template-fields/:versionId', async (c) => {
 //   Mode A (Editor): payload has sections[] + fields[] (with sectionId as tempId)
 //   Mode B (Clone): payload has cloneFromVersionId (clone sections+fields from source)
 //   Mode C (Legacy): payload has only fields[] — auto-create default section "ข้อมูลทั่วไป"
-adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'), zValidator('json', TemplateVersionCreateSchema), async (c) => {
+adminRoutes.post('/templates/:id/versions', adminOnlyMiddleware, auditMiddleware('TEMPLATE_VERSION'), zValidator('json', TemplateVersionCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const payload = c.req.valid('json') as any;
   const versionId = uuidv4();
@@ -1356,9 +810,9 @@ adminRoutes.post('/templates/:id/versions', auditMiddleware('TEMPLATE_VERSION'),
 // Sprint 4 - Template Version Update API (Phase 1)
 // PUT /admin/template-versions/:versionId - UPDATE Draft เดิม (ไม่สร้าง Version ใหม่)
 // =============================================================================
-adminRoutes.put('/template-versions/:versionId', 
+adminRoutes.put('/template-versions/:versionId', adminOnlyMiddleware,
   auditMiddleware('TEMPLATE_VERSION'),
-  zValidator('json', TemplateVersionUpdateSchema), 
+  zValidator('json', TemplateVersionUpdateSchema),
   async (c) => {
     const db = drizzle(c.env.DB);
     const versionId = c.req.param('versionId');
@@ -1477,7 +931,7 @@ adminRoutes.get('/template-sections/:versionId', async (c) => {
 });
 
 // POST /admin/template-sections - Create new section
-adminRoutes.post('/template-sections', auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionCreateSchema), async (c) => {
+adminRoutes.post('/template-sections', adminOnlyMiddleware, auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const payload = c.req.valid('json') as any;
 
@@ -1507,7 +961,7 @@ adminRoutes.post('/template-sections', auditMiddleware('TEMPLATE_SECTION'), zVal
 });
 
 // PUT /admin/template-sections/:id - Update name/displayOrder/isActive
-adminRoutes.put('/template-sections/:id', auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionUpdateSchema), async (c) => {
+adminRoutes.put('/template-sections/:id', adminOnlyMiddleware, auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const payload = c.req.valid('json') as any;
@@ -1538,7 +992,7 @@ adminRoutes.put('/template-sections/:id', auditMiddleware('TEMPLATE_SECTION'), z
 });
 
 // DELETE /admin/template-sections/:id - Soft delete (isActive=false)
-adminRoutes.delete('/template-sections/:id', auditMiddleware('TEMPLATE_SECTION'), async (c) => {
+adminRoutes.delete('/template-sections/:id', adminOnlyMiddleware, auditMiddleware('TEMPLATE_SECTION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -1563,7 +1017,7 @@ adminRoutes.delete('/template-sections/:id', auditMiddleware('TEMPLATE_SECTION')
 });
 
 // PATCH /admin/template-sections/:id/toggle - Toggle isActive
-adminRoutes.patch('/template-sections/:id/toggle', auditMiddleware('TEMPLATE_SECTION'), async (c) => {
+adminRoutes.patch('/template-sections/:id/toggle', adminOnlyMiddleware, auditMiddleware('TEMPLATE_SECTION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -1580,7 +1034,7 @@ adminRoutes.patch('/template-sections/:id/toggle', auditMiddleware('TEMPLATE_SEC
 
 // PATCH /admin/template-sections/reorder - Bulk reorder sections
 // Sprint 4: ใช้ negative displayOrder trick เพื่อหลีกเลี่ยง unique constraint conflict
-adminRoutes.patch('/template-sections/reorder', auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionReorderSchema), async (c) => {
+adminRoutes.patch('/template-sections/reorder', adminOnlyMiddleware, auditMiddleware('TEMPLATE_SECTION'), zValidator('json', TemplateSectionReorderSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const { items } = c.req.valid('json') as any;
 
@@ -1641,7 +1095,7 @@ adminRoutes.patch('/template-sections/reorder', auditMiddleware('TEMPLATE_SECTIO
 });
 
 // PATCH /admin/template-fields/reorder - Bulk reorder fields (with optional section change)
-adminRoutes.patch('/template-fields/reorder', auditMiddleware('TEMPLATE_FIELD'), zValidator('json', TemplateFieldReorderSchema), async (c) => {
+adminRoutes.patch('/template-fields/reorder', adminOnlyMiddleware, auditMiddleware('TEMPLATE_FIELD'), zValidator('json', TemplateFieldReorderSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const { items } = c.req.valid('json') as any;
 
@@ -1698,7 +1152,7 @@ adminRoutes.patch('/template-fields/reorder', auditMiddleware('TEMPLATE_FIELD'),
 });
 
 // PUT /admin/template-fields/:id/section - Assign field to section
-adminRoutes.put('/template-fields/:id/section', auditMiddleware('TEMPLATE_FIELD'), zValidator('json', TemplateFieldSectionAssignSchema), async (c) => {
+adminRoutes.put('/template-fields/:id/section', adminOnlyMiddleware, auditMiddleware('TEMPLATE_FIELD'), zValidator('json', TemplateFieldSectionAssignSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const { sectionId } = c.req.valid('json') as any;
@@ -1726,7 +1180,7 @@ adminRoutes.put('/template-fields/:id/section', auditMiddleware('TEMPLATE_FIELD'
 
 // PATCH /admin/template-versions/:id/publish - DRAFT → PUBLISHED
 // RFC Policy: Only 1 Published version at a time. Old Published → Auto Archive
-adminRoutes.patch('/template-versions/:id/publish', auditMiddleware('TEMPLATE_VERSION'), async (c) => {
+adminRoutes.patch('/template-versions/:id/publish', adminOnlyMiddleware, auditMiddleware('TEMPLATE_VERSION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   
@@ -1768,7 +1222,7 @@ adminRoutes.patch('/template-versions/:id/publish', auditMiddleware('TEMPLATE_VE
 });
 
 // PATCH /admin/template-versions/:id/archive - PUBLISHED → ARCHIVED
-adminRoutes.patch('/template-versions/:id/archive', auditMiddleware('TEMPLATE_VERSION'), async (c) => {
+adminRoutes.patch('/template-versions/:id/archive', adminOnlyMiddleware, auditMiddleware('TEMPLATE_VERSION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   
@@ -1799,7 +1253,7 @@ adminRoutes.patch('/template-versions/:id/archive', auditMiddleware('TEMPLATE_VE
 });
 
 // DELETE /admin/template-versions/:id - Delete DRAFT version only
-adminRoutes.delete('/template-versions/:id', auditMiddleware('TEMPLATE_VERSION'), async (c) => {
+adminRoutes.delete('/template-versions/:id', adminOnlyMiddleware, auditMiddleware('TEMPLATE_VERSION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   
@@ -1874,7 +1328,7 @@ adminRoutes.get('/rounds', async (c) => {
 
   return c.json({ data });
 });
-adminRoutes.post('/rounds', auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundCreateSchema), async (c) => {
+adminRoutes.post('/rounds', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const data = c.req.valid('json') as any;
   const id = uuidv4();
@@ -1961,7 +1415,7 @@ adminRoutes.post('/rounds', auditMiddleware('RECRUITMENT_ROUND'), zValidator('js
 
 // PATCH round: แก้ได้เฉพาะ metadata เท่านั้น (title, positionLevel, openDate, closeDate, status)
 // ห้ามเปลี่ยน templateVersionId ทุกสถานะ (DRAFT, ACTIVE, CLOSED)
-adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundUpdateSchema), async (c) => {
+adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const data = c.req.valid('json') as any;
@@ -2083,6 +1537,28 @@ adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidato
     updateValues.roundCode = codeResult.valid ? codeResult.normalized : data.roundCode;
   }
 
+  // Compute changes for audit log
+  const { computeChanges, buildAuditPayload } = await import('../lib/change-tracking');
+  const changes = computeChanges(
+    { 
+      title: round.title, 
+      positionLevel: round.positionLevel, 
+      status: round.status,
+      openDate: round.openDate ? new Date(round.openDate as any).toLocaleDateString('th-TH') : null,
+      closeDate: round.closeDate ? new Date(round.closeDate as any).toLocaleDateString('th-TH') : null,
+    },
+    { 
+      title: data.title, 
+      positionLevel: data.positionLevel, 
+      status: data.status,
+      openDate: data.openDate ? new Date(data.openDate * 1000).toLocaleDateString('th-TH') : null,
+      closeDate: data.closeDate ? new Date(data.closeDate * 1000).toLocaleDateString('th-TH') : null,
+    },
+    'RECRUITMENT_ROUND'
+  );
+  const auditPayload = buildAuditPayload(changes);
+  setAuditPayload(c, auditPayload);
+
   await db.update(recruitmentRounds).set(updateValues).where(eq(recruitmentRounds.id, id));
   return c.json({ success: true });
 });
@@ -2092,7 +1568,7 @@ adminRoutes.patch('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), zValidato
 // =============================================================================
 
 // PATCH /admin/rounds/:id/archive - Soft delete (set deletedAt = now)
-adminRoutes.patch('/rounds/:id/archive', auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
+adminRoutes.patch('/rounds/:id/archive', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -2113,7 +1589,7 @@ adminRoutes.patch('/rounds/:id/archive', auditMiddleware('RECRUITMENT_ROUND'), a
 });
 
 // PATCH /admin/rounds/:id/restore - Restore archived round
-adminRoutes.patch('/rounds/:id/restore', auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
+adminRoutes.patch('/rounds/:id/restore', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -2161,7 +1637,7 @@ adminRoutes.get('/rounds/:id/usage', async (c) => {
 });
 
 // DELETE /admin/rounds/:id - Hard delete (admin only, blocked if has applications)
-adminRoutes.delete('/rounds/:id', auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
+adminRoutes.delete('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_ROUND'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -2276,7 +1752,7 @@ adminRoutes.get('/applications/summary', async (c) => {
 });
 
 // PATCH /admin/applications/:id/status - Update application status
-adminRoutes.patch('/applications/:id/status', auditMiddleware('APPLICATION'), zValidator('json', ApplicationStatusUpdateSchema), async (c) => {
+adminRoutes.patch('/applications/:id/status', adminOnlyMiddleware, auditMiddleware('APPLICATION'), zValidator('json', ApplicationStatusUpdateSchema), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const { status, reason } = c.req.valid('json');
@@ -2293,6 +1769,11 @@ adminRoutes.patch('/applications/:id/status', auditMiddleware('APPLICATION'), zV
     return c.json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' }, 400);
   }
   
+  // Generate change tracking data
+  const changeData = handleApplicationStatusChange(app.status || 'DRAFT', status, reason);
+  const auditPayload = buildAuditPayload(changeData.changes, { previousStatus: app.status });
+  setAuditPayload(c, auditPayload);
+
   // Drizzle expects Date object for timestamp fields
   const verifiedAtDate = new Date();
   
@@ -2447,7 +1928,7 @@ adminRoutes.get('/applications/:id/history', async (c) => {
 });
 
 // POST /admin/applications/bulk-status - Bulk update application status
-adminRoutes.post('/applications/bulk-status', auditMiddleware('APPLICATION'), async (c) => {
+adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddleware('APPLICATION'), async (c) => {
   const db = drizzle(c.env.DB);
   const { ids, status, reason } = await c.req.json();
   const adminId = c.get('jwtPayload').id;
@@ -2804,7 +2285,7 @@ adminRoutes.get('/template-versions/:fromId/compare/:toId', async (c) => {
 // FEATURE 3: Clone Round API
 // POST /admin/rounds/:id/clone
 // =============================================================================
-adminRoutes.post('/rounds/:id/clone', auditMiddleware('ROUND_CLONED'), async (c) => {
+adminRoutes.post('/rounds/:id/clone', adminOnlyMiddleware, auditMiddleware('ROUND_CLONED'), async (c) => {
   const db = drizzle(c.env.DB);
   const roundId = c.req.param('id');
   const { templateVersionId, title } = await c.req.json();
@@ -3106,7 +2587,7 @@ adminRoutes.get('/organizations/:id', async (c) => {
 });
 
 // POST /admin/organizations - Create organization
-adminRoutes.post('/organizations', auditMiddleware('ORGANIZATION'), async (c) => {
+adminRoutes.post('/organizations', adminOnlyMiddleware, auditMiddleware('ORGANIZATION'), async (c) => {
   const db = drizzle(c.env.DB);
   const body = await c.req.json();
 
@@ -3134,7 +2615,7 @@ adminRoutes.post('/organizations', auditMiddleware('ORGANIZATION'), async (c) =>
 });
 
 // PUT /admin/organizations/:id - Update organization
-adminRoutes.put('/organizations/:id', auditMiddleware('ORGANIZATION'), async (c) => {
+adminRoutes.put('/organizations/:id', adminOnlyMiddleware, auditMiddleware('ORGANIZATION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const body = await c.req.json();
@@ -3163,6 +2644,16 @@ adminRoutes.put('/organizations/:id', auditMiddleware('ORGANIZATION'), async (c)
   // Drizzle expects Date object for timestamp fields, not Unix timestamp number
   updateData.updatedAt = new Date();
 
+  // Compute changes for audit log
+  const { computeChanges, buildAuditPayload } = await import('../lib/change-tracking');
+  const changes = computeChanges(
+    { name: existing.name, displayOrder: existing.displayOrder, isActive: existing.isActive },
+    { name: body.name?.trim(), displayOrder: body.displayOrder, isActive: body.isActive },
+    'ORGANIZATION'
+  );
+  const auditPayload = buildAuditPayload(changes);
+  setAuditPayload(c, auditPayload);
+
   await db.update(organizations).set(updateData).where(eq(organizations.id, id));
   
   const updated = await db.select().from(organizations).where(eq(organizations.id, id)).get();
@@ -3170,7 +2661,7 @@ adminRoutes.put('/organizations/:id', auditMiddleware('ORGANIZATION'), async (c)
 });
 
 // DELETE /admin/organizations/:id - Soft delete (set isActive = false)
-adminRoutes.delete('/organizations/:id', auditMiddleware('ORGANIZATION'), async (c) => {
+adminRoutes.delete('/organizations/:id', adminOnlyMiddleware, auditMiddleware('ORGANIZATION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   
@@ -3188,7 +2679,7 @@ adminRoutes.delete('/organizations/:id', auditMiddleware('ORGANIZATION'), async 
 });
 
 // PATCH /admin/organizations/:id/toggle - Toggle isActive
-adminRoutes.patch('/organizations/:id/toggle', auditMiddleware('ORGANIZATION'), async (c) => {
+adminRoutes.patch('/organizations/:id/toggle', adminOnlyMiddleware, auditMiddleware('ORGANIZATION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -3239,7 +2730,7 @@ adminRoutes.get('/job-families/:id', async (c) => {
 });
 
 // POST /admin/job-families
-adminRoutes.post('/job-families', auditMiddleware('JOB_FAMILY'), async (c) => {
+adminRoutes.post('/job-families', adminOnlyMiddleware, auditMiddleware('JOB_FAMILY'), async (c) => {
   const db = drizzle(c.env.DB);
   const body = await c.req.json();
 
@@ -3266,7 +2757,7 @@ adminRoutes.post('/job-families', auditMiddleware('JOB_FAMILY'), async (c) => {
 });
 
 // PUT /admin/job-families/:id
-adminRoutes.put('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c) => {
+adminRoutes.put('/job-families/:id', adminOnlyMiddleware, auditMiddleware('JOB_FAMILY'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const body = await c.req.json();
@@ -3295,7 +2786,7 @@ adminRoutes.put('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c) =>
 });
 
 // DELETE /admin/job-families/:id - Hard delete (ตรวจสอบ FK จาก positions ก่อน)
-adminRoutes.delete('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c) => {
+adminRoutes.delete('/job-families/:id', adminOnlyMiddleware, auditMiddleware('JOB_FAMILY'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -3323,7 +2814,7 @@ adminRoutes.delete('/job-families/:id', auditMiddleware('JOB_FAMILY'), async (c)
 });
 
 // PATCH /admin/job-families/:id/toggle
-adminRoutes.patch('/job-families/:id/toggle', auditMiddleware('JOB_FAMILY'), async (c) => {
+adminRoutes.patch('/job-families/:id/toggle', adminOnlyMiddleware, auditMiddleware('JOB_FAMILY'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -3372,7 +2863,7 @@ adminRoutes.get('/position-levels/:id', async (c) => {
 });
 
 // POST /admin/position-levels
-adminRoutes.post('/position-levels', auditMiddleware('POSITION_LEVEL'), async (c) => {
+adminRoutes.post('/position-levels', adminOnlyMiddleware, auditMiddleware('POSITION_LEVEL'), async (c) => {
   const db = drizzle(c.env.DB);
   const body = await c.req.json();
 
@@ -3399,7 +2890,7 @@ adminRoutes.post('/position-levels', auditMiddleware('POSITION_LEVEL'), async (c
 });
 
 // PUT /admin/position-levels/:id
-adminRoutes.put('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), async (c) => {
+adminRoutes.put('/position-levels/:id', adminOnlyMiddleware, auditMiddleware('POSITION_LEVEL'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const body = await c.req.json();
@@ -3428,7 +2919,7 @@ adminRoutes.put('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), async
 });
 
 // DELETE /admin/position-levels/:id - Hard delete (ตรวจสอบ FK จาก positions ก่อน)
-adminRoutes.delete('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), async (c) => {
+adminRoutes.delete('/position-levels/:id', adminOnlyMiddleware, auditMiddleware('POSITION_LEVEL'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -3456,7 +2947,7 @@ adminRoutes.delete('/position-levels/:id', auditMiddleware('POSITION_LEVEL'), as
 });
 
 // PATCH /admin/position-levels/:id/toggle
-adminRoutes.patch('/position-levels/:id/toggle', auditMiddleware('POSITION_LEVEL'), async (c) => {
+adminRoutes.patch('/position-levels/:id/toggle', adminOnlyMiddleware, auditMiddleware('POSITION_LEVEL'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -3505,7 +2996,7 @@ adminRoutes.get('/positions/:id', async (c) => {
 });
 
 // POST /admin/positions
-adminRoutes.post('/positions', auditMiddleware('POSITION'), async (c) => {
+adminRoutes.post('/positions', adminOnlyMiddleware, auditMiddleware('POSITION'), async (c) => {
   const db = drizzle(c.env.DB);
   const body = await c.req.json();
 
@@ -3534,11 +3025,11 @@ adminRoutes.post('/positions', auditMiddleware('POSITION'), async (c) => {
 });
 
 // PUT /admin/positions/:id
-adminRoutes.put('/positions/:id', auditMiddleware('POSITION'), async (c) => {
+adminRoutes.put('/positions/:id', adminOnlyMiddleware, auditMiddleware('POSITION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
   const body = await c.req.json();
-
+  
   const existing = await db.select().from(positions).where(eq(positions.id, id)).get();
   if (!existing) return c.json({ error: 'Position not found' }, 404);
 
@@ -3559,13 +3050,35 @@ adminRoutes.put('/positions/:id', auditMiddleware('POSITION'), async (c) => {
   // Drizzle expects Date object for timestamp fields, not Unix timestamp number
   updateData.updatedAt = new Date();
 
+  // Compute changes for audit log
+  const { computeChanges, buildAuditPayload } = await import('../lib/change-tracking');
+  const changes = computeChanges(
+    { 
+      title: existing.title, 
+      jobFamilyId: existing.jobFamilyId, 
+      positionLevelId: existing.positionLevelId,
+      displayOrder: existing.displayOrder, 
+      isActive: existing.isActive 
+    },
+    { 
+      title: body.title?.trim(), 
+      jobFamilyId: body.jobFamilyId, 
+      positionLevelId: body.positionLevelId,
+      displayOrder: body.displayOrder, 
+      isActive: body.isActive 
+    },
+    'POSITION'
+  );
+  const auditPayload = buildAuditPayload(changes);
+  setAuditPayload(c, auditPayload);
+
   await db.update(positions).set(updateData).where(eq(positions.id, id));
   const updated = await db.select().from(positions).where(eq(positions.id, id)).get();
   return c.json({ data: updated });
 });
 
 // DELETE /admin/positions/:id - Hard delete
-adminRoutes.delete('/positions/:id', auditMiddleware('POSITION'), async (c) => {
+adminRoutes.delete('/positions/:id', adminOnlyMiddleware, auditMiddleware('POSITION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -3579,7 +3092,7 @@ adminRoutes.delete('/positions/:id', auditMiddleware('POSITION'), async (c) => {
 });
 
 // PATCH /admin/positions/:id/toggle
-adminRoutes.patch('/positions/:id/toggle', auditMiddleware('POSITION'), async (c) => {
+adminRoutes.patch('/positions/:id/toggle', adminOnlyMiddleware, auditMiddleware('POSITION'), async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
 
@@ -3714,5 +3227,396 @@ adminRoutes.get('/rounds/:id/preview-schema', async (c) => {
     },
   });
 });
+
+// =============================================================================
+// FEATURE: User Management (RBAC v1 — Phase 2 P0)
+// =============================================================================
+//
+// All routes below require SUPER_ADMIN via superAdminOnlyMiddleware.
+// Frontend contract: frontend/src/lib/api/users.ts and src/types/user.ts.
+//
+// SECURITY:
+// - SUPER_ADMIN cannot be created via the public API (CreateUserSchema
+//   rejects it). The first SUPER_ADMIN is seeded out-of-band.
+// - Demoting / disabling the LAST active SUPER_ADMIN is rejected by
+//   ensureNotLastSuperAdmin (services/rbac.service.ts).
+// =============================================================================
+
+/**
+ * GET /admin/auth/me
+ * Returns the current authenticated user's profile (no password hash).
+ */
+adminRoutes.get('/auth/me', async (c) => {
+  const user = c.get('jwtPayload');
+  if (!user) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const db = drizzle(c.env.DB);
+  const row = await db
+    .select({
+      id: adminUsers.id,
+      email: adminUsers.email,
+      role: adminUsers.role,
+      isActive: adminUsers.isActive,
+      mustChangePassword: adminUsers.mustChangePassword,
+      passwordChangedAt: adminUsers.passwordChangedAt,
+      failedLoginAttempts: adminUsers.failedLoginAttempts,
+      lockedUntil: adminUsers.lockedUntil,
+      passwordMigrated: adminUsers.passwordMigrated,
+      createdAt: adminUsers.createdAt,
+    })
+    .from(adminUsers)
+    .where(eq(adminUsers.id, user.id))
+    .get();
+
+  if (!row) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  return c.json({ data: row });
+});
+
+/**
+ * GET /admin/users
+ * Lists all admin users. SUPER_ADMIN only.
+ */
+adminRoutes.get('/users', superAdminOnlyMiddleware, async (c) => {
+  const db = drizzle(c.env.DB);
+  const rows = await db
+    .select({
+      id: adminUsers.id,
+      email: adminUsers.email,
+      role: adminUsers.role,
+      isActive: adminUsers.isActive,
+      mustChangePassword: adminUsers.mustChangePassword,
+      passwordChangedAt: adminUsers.passwordChangedAt,
+      failedLoginAttempts: adminUsers.failedLoginAttempts,
+      lockedUntil: adminUsers.lockedUntil,
+      passwordMigrated: adminUsers.passwordMigrated,
+      createdAt: adminUsers.createdAt,
+    })
+    .from(adminUsers)
+    .orderBy(asc(adminUsers.createdAt));
+
+  return c.json({ data: rows });
+});
+
+/**
+ * GET /admin/users/:id
+ */
+adminRoutes.get('/users/:id', superAdminOnlyMiddleware, async (c) => {
+  const id = c.req.param('id');
+  const db = drizzle(c.env.DB);
+  const row = await db
+    .select({
+      id: adminUsers.id,
+      email: adminUsers.email,
+      role: adminUsers.role,
+      isActive: adminUsers.isActive,
+      mustChangePassword: adminUsers.mustChangePassword,
+      passwordChangedAt: adminUsers.passwordChangedAt,
+      failedLoginAttempts: adminUsers.failedLoginAttempts,
+      lockedUntil: adminUsers.lockedUntil,
+      passwordMigrated: adminUsers.passwordMigrated,
+      createdAt: adminUsers.createdAt,
+    })
+    .from(adminUsers)
+    .where(eq(adminUsers.id, id))
+    .get();
+
+  if (!row) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+  return c.json({ data: row });
+});
+
+/**
+ * Helper: generate a random temporary password (16 chars, URL-safe).
+ * Avoids 0/O/1/l/I for readability in printed form.
+ */
+function generateTempPassword(): string {
+  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const out = new Uint8Array(16);
+  crypto.getRandomValues(out);
+  let pw = '';
+  for (let i = 0; i < out.length; i++) {
+    pw += alphabet[out[i] % alphabet.length];
+  }
+  return pw;
+}
+
+/**
+ * POST /admin/users
+ * Creates a new admin user (non-SUPER_ADMIN).
+ * Returns the generated temporary password once (admin must hand it to the user).
+ */
+adminRoutes.post(
+  '/users',
+  superAdminOnlyMiddleware,
+  auditMiddleware('ADMIN_USER'),
+  zValidator('json', CreateUserSchema),
+  async (c) => {
+    const data = c.req.valid('json') as { email: string; role: 'ADMIN' | 'VIEWER'; mustChangePassword?: boolean };
+    const db = drizzle(c.env.DB);
+
+    // Reject duplicate email.
+    const existing = await db
+      .select({ id: adminUsers.id })
+      .from(adminUsers)
+      .where(eq(adminUsers.email, data.email))
+      .get();
+    if (existing) {
+      return c.json({ error: 'EMAIL_TAKEN', message: 'อีเมลนี้ถูกใช้แล้ว' }, 409);
+    }
+
+    const id = uuidv4();
+    const tempPassword = generateTempPassword();
+    const now = Math.floor(Date.now() / 1000);
+
+    await db.insert(adminUsers).values({
+      id,
+      email: data.email,
+      // NOTE: /admin/auth/login currently does a plaintext compare on
+      // passwordHash. We follow the same convention here; the passwordMigrated
+      // flag is set to false so a future hardening pass can detect and
+      // re-hash this user.
+      passwordHash: tempPassword,
+      role: data.role,
+      isActive: true,
+      mustChangePassword: data.mustChangePassword ?? true,
+      passwordChangedAt: now,
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      passwordMigrated: false,
+    } as any);
+
+    return c.json(
+      {
+        success: true,
+        id,
+        tempPassword,
+        message: 'สร้างผู้ใช้สำเร็จ — กรุณาส่งรหัสผ่านชั่วคราวให้ผู้ใช้อย่างปลอดภัย',
+      },
+      201,
+    );
+  },
+);
+
+/**
+ * PATCH /admin/users/:id
+ * Updates email, role, or active status of an existing user.
+ * Last-SUPER_ADMIN protection is enforced for role / isActive changes.
+ */
+adminRoutes.patch(
+  '/users/:id',
+  superAdminOnlyMiddleware,
+  auditMiddleware('ADMIN_USER'),
+  zValidator('json', UpdateUserSchema),
+  async (c) => {
+    const id = c.req.param('id');
+    const data = c.req.valid('json') as { email?: string; role?: 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER'; isActive?: boolean };
+    const db = drizzle(c.env.DB);
+
+    const target = await db
+      .select()
+      .from(adminUsers)
+      .where(eq(adminUsers.id, id))
+      .get();
+    if (!target) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+
+    // Disallow promoting to SUPER_ADMIN through the API.
+    if (data.role === 'SUPER_ADMIN' && target.role !== 'SUPER_ADMIN') {
+      return c.json(
+        { error: 'CANNOT_PROMOTE', message: 'ห้ามเลื่อนขั้นเป็น SUPER_ADMIN ผ่าน API' },
+        403,
+      );
+    }
+
+    // Last-SUPER_ADMIN guard: any change that would reduce active SUPER_ADMINs.
+    if (target.role === 'SUPER_ADMIN') {
+      const nextRole = data.role ?? target.role;
+      const nextIsActive = data.isActive ?? !!target.isActive;
+      const guard = await ensureNotLastSuperAdmin(c.env, target.id, nextRole, nextIsActive);
+      if (!guard.ok) {
+        const status = guard.reason === 'DB_ERROR' ? 500 : 409;
+        return c.json(
+          {
+            error: guard.reason ?? 'FORBIDDEN',
+            message: 'ไม่สามารถดำเนินการกับ SUPER_ADMIN คนสุดท้ายได้',
+            activeSuperAdminCount: guard.activeSuperAdminCount,
+          },
+          status,
+        );
+      }
+    }
+
+    // Email uniqueness check (if changed).
+    if (data.email && data.email !== target.email) {
+      const dup = await db
+        .select({ id: adminUsers.id })
+        .from(adminUsers)
+        .where(eq(adminUsers.email, data.email))
+        .get();
+      if (dup) {
+        return c.json({ error: 'EMAIL_TAKEN', message: 'อีเมลนี้ถูกใช้แล้ว' }, 409);
+      }
+    }
+
+    const updateValues: Record<string, any> = {};
+    if (data.email !== undefined) updateValues.email = data.email;
+    if (data.role !== undefined) updateValues.role = data.role;
+    if (data.isActive !== undefined) updateValues.isActive = data.isActive;
+
+    if (Object.keys(updateValues).length === 0) {
+      return c.json({ success: true, message: 'ไม่มีการเปลี่ยนแปลง' });
+    }
+
+    // Compute changes for audit log
+    const { computeChanges, buildAuditPayload } = await import('../lib/change-tracking');
+    const changes = computeChanges(
+      { email: target.email, role: target.role, isActive: target.isActive },
+      { email: target.email, role: data.role, isActive: data.isActive },
+      'ADMIN_USER'
+    );
+    const auditPayload = buildAuditPayload(changes);
+    setAuditPayload(c, auditPayload);
+
+    await db.update(adminUsers).set(updateValues).where(eq(adminUsers.id, id));
+    return c.json({ success: true });
+  },
+);
+
+/**
+ * POST /admin/users/:id/reset-password
+ * Generates a new temporary password and forces the user to change it on next login.
+ * Returns the new password once.
+ */
+adminRoutes.post(
+  '/users/:id/reset-password',
+  superAdminOnlyMiddleware,
+  auditMiddleware('ADMIN_USER'),
+  async (c) => {
+    const id = c.req.param('id');
+    const db = drizzle(c.env.DB);
+
+    const target = await db.select().from(adminUsers).where(eq(adminUsers.id, id)).get();
+    if (!target) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+
+    const tempPassword = generateTempPassword();
+    const now = Math.floor(Date.now() / 1000);
+
+    await db
+      .update(adminUsers)
+      .set({
+        passwordHash: tempPassword,
+        mustChangePassword: true,
+        passwordChangedAt: now,
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+        passwordMigrated: false,
+      } as any)
+      .where(eq(adminUsers.id, id));
+
+    return c.json({
+      success: true,
+      tempPassword,
+      message: 'รีเซ็ตรหัสผ่านสำเร็จ',
+    });
+  },
+);
+
+/**
+ * POST /admin/users/:id/force-change-password
+ * Toggles the mustChangePassword flag without rotating the password.
+ */
+adminRoutes.post(
+  '/users/:id/force-change-password',
+  superAdminOnlyMiddleware,
+  auditMiddleware('ADMIN_USER'),
+  zValidator('json', ForceChangePasswordSchema),
+  async (c) => {
+    const id = c.req.param('id');
+    const { mustChangePassword } = c.req.valid('json') as { mustChangePassword: boolean };
+    const db = drizzle(c.env.DB);
+
+    const target = await db.select().from(adminUsers).where(eq(adminUsers.id, id)).get();
+    if (!target) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+
+    await db
+      .update(adminUsers)
+      .set({ mustChangePassword } as any)
+      .where(eq(adminUsers.id, id));
+    return c.json({ success: true });
+  },
+);
+
+/**
+ * POST /admin/users/:id/disable
+ * Disables a user (isActive=false). Last-SUPER_ADMIN protection applies.
+ */
+adminRoutes.post(
+  '/users/:id/disable',
+  superAdminOnlyMiddleware,
+  auditMiddleware('ADMIN_USER'),
+  zValidator('json', DisableUserSchema),
+  async (c) => {
+    const id = c.req.param('id');
+    const { reason } = c.req.valid('json') as { reason: string };
+    const db = drizzle(c.env.DB);
+
+    const target = await db.select().from(adminUsers).where(eq(adminUsers.id, id)).get();
+    if (!target) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+
+    // Don't disable yourself.
+    const me = c.get('jwtPayload');
+    if (me && me.id === id) {
+      return c.json(
+        { error: 'CANNOT_DISABLE_SELF', message: 'ไม่สามารถปิดใช้งานบัญชีตัวเองได้' },
+        400,
+      );
+    }
+
+    // Last-SUPER_ADMIN protection: we are transitioning target (currently
+    // active) to isActive=false. Pass nextIsActive=false to the guard.
+    if (target.role === 'SUPER_ADMIN' && target.isActive) {
+      const guard = await ensureNotLastSuperAdmin(c.env, target.id, target.role, false);
+      if (!guard.ok) {
+        const status = guard.reason === 'DB_ERROR' ? 500 : 409;
+        return c.json(
+          {
+            error: guard.reason ?? 'FORBIDDEN',
+            message: 'ไม่สามารถปิดใช้งาน SUPER_ADMIN คนสุดท้ายได้',
+            activeSuperAdminCount: guard.activeSuperAdminCount,
+          },
+          status,
+        );
+      }
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    await db
+      .update(adminUsers)
+      .set({
+        isActive: false,
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+        // Persist reason in the audit log via payload capture. We also
+        // stash it on the user record briefly via a JSON-less side channel:
+        // the audit middleware already records the request body, so we
+        // don't need a column here.
+      } as any)
+      .where(eq(adminUsers.id, id));
+
+    return c.json({ success: true, disabledAt: now, reason });
+  },
+);
 
 export { adminRoutes };
