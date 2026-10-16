@@ -310,23 +310,10 @@ function renderField(
   const rawValue = resolveAnswerValue(field, ctx);
   const displayValue = formatAnswerValue(field, rawValue);
 
-  // Focus dump: only for ประสบการณ์ทำงาน field
-  const isTarget =
-    (field.label === 'ประสบการณ์ทำงาน')
-    || (field.name === 'ประสบการณ์ทำงาน')
-    || ((field.label ?? field.name ?? '').toLowerCase().includes('experience'));
-  if (isTarget) {
-    console.log(`[PDF DUMP] fieldId=${field.id} name=${field.name} label=${field.label} type=${field.type} pdfMappingKey=${field.pdfMappingKey ?? 'N/A'}`);
-    console.log(`[PDF DUMP] rawValue=${JSON.stringify(rawValue)}`);
-    console.log(`[PDF DUMP] displayValue=${JSON.stringify(displayValue)}`);
-    const valueLines = wrapText(displayValue, FIELD_VALUE_INNER_WIDTH, state.fonts.regular, FONT_SIZE_BODY);
-    console.log(`[PDF DUMP] valueLines count=${valueLines.length}:`, valueLines);
-  }
-
   // Heights — derived from wrapped lines, never from fixed counts.
   const labelHeight = FONT_SIZE_LABEL * LINE_HEIGHT;
+  const valueLines = wrapText(displayValue, FIELD_VALUE_INNER_WIDTH, state.fonts.regular, FONT_SIZE_BODY);
   const valueHeight = heightForWrappedText(valueLines, FONT_SIZE_BODY);
-  debugLog('valueHeight', valueHeight);
 
   // Total reserved height = label + gap + value + post-block spacing.
   // MUST equal the sum of state.y decrements below, otherwise either
@@ -336,7 +323,6 @@ function renderField(
     + LABEL_TO_VALUE_GAP
     + valueHeight
     + POST_BLOCK_SPACING;
-  debugLog('blockHeight', blockHeight);
 
   // Ensure space — if not enough, add new page (uses reserved height).
   ensureSpace(state, blockHeight);
