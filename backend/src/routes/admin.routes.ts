@@ -15,6 +15,7 @@ import { adminUsers, fieldMaster, templates, templateVersions, templateFields, t
 import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
 import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
 import { ensureNotLastSuperAdmin } from '../services/rbac.service';
+import templateDescriptorRoutes from './template-descriptor.routes';
 import {
   validateApplicationPattern,
   validateRoundCode,
@@ -3686,5 +3687,11 @@ adminRoutes.post(
     return c.json({ success: true, disabledAt: now, reason });
   },
 );
+
+// =============================================================================
+// FEATURE: Document Composer V1 — Admin API Layer
+// Mount descriptor routes under /admin/template-versions
+// =============================================================================
+adminRoutes.route('/template-versions', templateDescriptorRoutes);
 
 export { adminRoutes };

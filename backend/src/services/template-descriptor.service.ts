@@ -37,6 +37,28 @@ import type { DocumentDescriptor } from '../lib/document-composer/types';
 
 type DB = ReturnType<typeof drizzleFn<any>>;
 
+// Test-only seam: lets unit tests inject a pre-built Drizzle instance
+// (e.g. better-sqlite3) so tests can exercise the SQL path end-to-end
+// without needing a real D1 / Cloudflare Worker environment.
+// Mirrors the pattern in rbac.service.ts. Production code never sets this.
+let __drizzleOverride: any = null;
+export function __setDrizzleForTests(instance: any) {
+  __drizzleOverride = instance;
+}
+
+/**
+ * Resolve the Drizzle instance to use for a given db parameter.
+ *
+ * If a test override is set, the override wins. Otherwise the caller-
+ * supplied `db` is used as-is. This lets production code call
+ * `loadTemplateDescriptor(drizzle(env.DB), id)` while tests call
+ * `loadTemplateDescriptor(betterSqliteDb, id)`.
+ */
+function resolveDb(db: DB): DB {
+  if (__drizzleOverride !== null) return __drizzleOverride as DB;
+  return db;
+}
+
 /**
  * Current descriptor schema version — ต้องตรงกับ types.ts:DocumentDescriptor.version
  * ถ้า types.ts version เปลี่ยน → bump constant นี้ + เขียน migration transform
@@ -118,7 +140,8 @@ export async function loadTemplateDescriptor(
   db: DB,
   templateVersionId: string
 ): Promise<LoadDescriptorResult> {
-  const row = await db
+  const resolved = resolveDb(db);
+  const row = await resolved
     .select({
       descriptorJson: templateVersions.descriptorJson,
       descriptorSchemaVersion: templateVersions.descriptorSchemaVersion,
@@ -250,6 +273,7 @@ export async function saveTemplateDescriptor(
     };
   }
 
+  const resolved = resolveDb(db);
   const savedAt = Math.floor(Date.now() / 1000);
 
   // Serialize เป็น JSON string เพราะ column เป็น raw text (no mode:'json')
@@ -260,7 +284,7 @@ export async function saveTemplateDescriptor(
     // ── 3. Optimistic version check + UPDATE ────────────────────────
     // build WHERE dynamic — ถ้ามี expectedVersion ให้ตรวจ +UPDATE ต้อง match
     if (options.expectedVersion !== undefined) {
-      const result = await db
+      const result = await resolved
         .update(templateVersions)
         .set({
           descriptorJson: descriptorJsonText,
@@ -277,7 +301,7 @@ export async function saveTemplateDescriptor(
       const changes = (result as any)?.changes ?? 0;
       if (changes === 0) {
         // ตรวจว่า row exists เลย หรือ version mismatch จริง
-        const exists = await db
+        const exists = await resolved
           .select({ id: templateVersions.id })
           .from(templateVersions)
           .where(eq(templateVersions.id, templateVersionId))
@@ -294,7 +318,7 @@ export async function saveTemplateDescriptor(
     } else {
       // ── 4a. UPDATE แบบ overwrite (ไม่มี version check) ─────────────
       // ตรวจ row exists ก่อนเพื่อให้ error message ชัด
-      const exists = await db
+      const exists = await resolved
         .select({ id: templateVersions.id })
         .from(templateVersions)
         .where(eq(templateVersions.id, templateVersionId))
@@ -303,7 +327,7 @@ export async function saveTemplateDescriptor(
         return { ok: false, reason: 'NOT_FOUND' };
       }
 
-      await db
+      await resolved
         .update(templateVersions)
         .set({
           descriptorJson: descriptorJsonText,
@@ -342,8 +366,9 @@ export async function clearTemplateDescriptor(
   templateVersionId: string,
   options: { adminUserId: string }
 ): Promise<ClearDescriptorResult> {
+  const resolved = resolveDb(db);
   try {
-    const exists = await db
+    const exists = await resolved
       .select({ id: templateVersions.id })
       .from(templateVersions)
       .where(eq(templateVersions.id, templateVersionId))
@@ -352,7 +377,7 @@ export async function clearTemplateDescriptor(
       return { ok: false, reason: 'NOT_FOUND' };
     }
 
-    await db
+    await resolved
       .update(templateVersions)
       .set({
         descriptorJson: null,
