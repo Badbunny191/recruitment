@@ -79,3 +79,17 @@ export {
   buildRenderPlan,
   renderPlanToPdf,
 } from "./descriptor-renderer";
+
+// =============================================================================
+// Preview (HTML Preview Renderer)
+// =============================================================================
+
+export {
+  renderDescriptorToPreview,
+} from "./preview-renderer";
+
+export type {
+  PreviewModel,
+  PreviewMeta,
+  RenderedBlockSummary,
+} from "./preview-model";
