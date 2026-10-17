@@ -1009,6 +1009,19 @@ function BuilderInner() {
           )}
         </div>
         <div className="text-right space-x-2">
+          {/* Document Composer button - Available for all versions (uses templateVersionId) */}
+          {currentVersion && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => router.push(`/admin/templates/composer?versionId=${currentVersion.id}`)}
+              title="แก้ไข Document Descriptor สำหรับ PDF Generation"
+              className="bg-purple-50 border-purple-300 text-purple-700 hover:bg-purple-100"
+            >
+              🧩 Document Composer
+            </Button>
+          )}
+
           {/* Preview Button - Available for all modes */}
           {currentVersion && (
             <Button
