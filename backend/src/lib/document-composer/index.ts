@@ -93,3 +93,17 @@ export type {
   PreviewMeta,
   RenderedBlockSummary,
 } from "./preview-model";
+
+// =============================================================================
+// Generator (auto-build DocumentDescriptor from template_sections + template_fields)
+// =============================================================================
+
+export {
+  generateDescriptorFromTemplate,
+  type GenerateResult,
+  type GeneratorMeta,
+  type GeneratorInput,
+  type GeneratorSectionInput,
+  type GeneratorFieldInput,
+  type GeneratorFieldType,
+} from "./descriptor-generator";
