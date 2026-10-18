@@ -64,24 +64,29 @@ function makeHeadingBlock(text = 'หัวข้อใหม่'): HeadingBlock
   };
 }
 
-function makeFieldBlock(field: TemplateFieldLibraryItem): FieldBlock {
-  return {
-    id: newBlockId('f'),
-    type: 'field',
-    fieldId: field.id,
-    label: undefined,
-    align: 'left',
-  };
-}
+// ⚠️ สำคัญ: descriptor.block.fieldId ต้องเป็น fieldMaster.id (FK string)
+  // ไม่ใช่ templateFields.id (UUID) — เพื่อให้:
+  //   1. fieldMap lookup เจอ (BlockPanel.fieldMap ใช้ fieldId เป็น key)
+  //   2. preview-renderer resolve เจอ (fieldIndex ใช้ FieldData.fieldId = fieldMaster.id)
+  //   3. save → load → preview คงความถูกต้อง (JSON shape ตรงกับ generator output)
+  function makeFieldBlock(field: TemplateFieldLibraryItem): FieldBlock {
+    return {
+      id: newBlockId('f'),
+      type: 'field',
+      fieldId: field.fieldId,
+      label: undefined,
+      align: 'left',
+    };
+  }
 
-function makeTableBlock(field: TemplateFieldLibraryItem): TableBlock {
-  return {
-    id: newBlockId('t'),
-    type: 'table',
-    fieldId: field.id,
-    align: 'left',
-  };
-}
+  function makeTableBlock(field: TemplateFieldLibraryItem): TableBlock {
+    return {
+      id: newBlockId('t'),
+      type: 'table',
+      fieldId: field.fieldId,
+      align: 'left',
+    };
+  }
 
 function makeLogoBlock(): LogoBlock {
   return {
@@ -102,10 +107,17 @@ export function BlockPanel({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<'field' | 'table'>('field');
 
-  // Map fieldId → library item (สำหรับ resolve label/type)
+  // Map fieldId (fieldMaster.id) → library item (สำหรับ resolve label/type)
+  //
+  // สำคัญ: descriptor.block.fieldId = fieldMaster.id (FK string) ไม่ใช่
+  // templateFields.id (UUID) — backend generator (descriptor-generator.ts) และ
+  // preview-renderer.ts ใช้ fieldMaster.id เป็น identifier ฝั่งเดียว
+  //
+  // Map จึงต้อง key ด้วย fieldId (FK) ด้วย ไม่ใช่ templateFields.id (UUID)
+  // — ไม่งั้น Visual Composer จะ resolve label ไม่เจอและแสดง "(deleted field)"
   const fieldMap = useMemo(() => {
     const m = new Map<string, TemplateFieldLibraryItem>();
-    fields.forEach((f) => m.set(f.id, f));
+    fields.forEach((f) => m.set(f.fieldId, f));
     return m;
   }, [fields]);
 
