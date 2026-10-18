@@ -23,7 +23,7 @@ import { adminFetch } from '@/lib/useAdminAuth';
 
 export type Align = 'left' | 'center' | 'right';
 export type Size = 'small' | 'medium' | 'large';
-export type BlockType = 'heading' | 'field' | 'table' | 'logo';
+export type BlockType = 'heading' | 'field' | 'table' | 'logo' | 'signature';
 
 export interface BaseBlock {
   id: string;
@@ -55,7 +55,35 @@ export interface LogoBlock extends BaseBlock {
   type: 'logo';
 }
 
-export type DocumentBlock = HeadingBlock | FieldBlock | TableBlock | LogoBlock;
+/**
+ * Signature Block — Document Block ที่ใช้ข้อมูลจาก Application
+ * (ไม่ใช่ Form/Application Field)
+ *
+ * - ไม่ต้องให้ผู้สมัครกรอก
+ * - resolve ค่าจาก ApplicationContext ตอน render (PDF + Preview)
+ *
+ * Visibility toggles (mirror backend):
+ *   - showName (default true)
+ *   - showDate (default true)
+ *   - showTime (default false) — เอกสารราชการ/สมัครงานส่วนใหญ่ไม่แสดงเวลา
+ */
+export interface SignatureBlock extends BaseBlock {
+  type: 'signature';
+  roleLabel?: string;
+  signerNameSource?: 'application';
+  dateSource?: 'application';
+  timeSource?: 'application';
+  showName?: boolean;
+  showDate?: boolean;
+  showTime?: boolean;
+}
+
+export type DocumentBlock =
+  | HeadingBlock
+  | FieldBlock
+  | TableBlock
+  | LogoBlock
+  | SignatureBlock;
 
 export interface DocumentDescriptor {
   version: 1;
@@ -423,8 +451,8 @@ export function parseDescriptor(text: string): ValidationResult {
     if (!b.id || typeof b.id !== 'string') {
       issues.push({ path: `${path}.id`, message: 'id is required (string)' });
     }
-    if (!b.type || !['heading', 'field', 'table', 'logo'].includes(b.type as string)) {
-      issues.push({ path: `${path}.type`, message: 'type must be heading|field|table|logo' });
+    if (!b.type || !['heading', 'field', 'table', 'logo', 'signature'].includes(b.type as string)) {
+      issues.push({ path: `${path}.type`, message: 'type must be heading|field|table|logo|signature' });
     }
     if (b.type === 'heading') {
       if (typeof b.text !== 'string') {

@@ -27,6 +27,7 @@ import type {
   FieldBlock,
   TableBlock,
   LogoBlock,
+  SignatureBlock,
 } from "./types";
 
 // =============================================================================
@@ -36,7 +37,7 @@ import type {
 /**
  * RenderPlan = ordered list ของ render command
  *
- * type discriminator: "heading" | "field" | "table" | "logo" | "padding"
+ * type discriminator: "heading" | "field" | "table" | "logo" | "signature" | "padding"
  *
  * padding = spacing ระหว่าง block (จาก marginTop/marginBottom)
  */
@@ -45,7 +46,8 @@ export type RenderCommand =
   | HeadingRenderCommand
   | FieldRenderCommand
   | TableRenderCommand
-  | LogoRenderCommand;
+  | LogoRenderCommand
+  | SignatureRenderCommand;
 
 export interface PaddingCommand {
   type: "padding";
@@ -87,6 +89,39 @@ export interface LogoRenderCommand {
   type: "logo";
   blockId: string;
   align: "left" | "center" | "right";
+  margins: { top: number; bottom: number };
+}
+
+/**
+ * Signature Render Command — Document Block ที่ใช้ข้อมูลจาก Application
+ *
+ * ค่าต่างๆ (name / date / time) resolve จาก ApplicationContext ตอน
+ * buildRenderPlan() — command เก็บเฉพาะ static config (roleLabel, align)
+ * + resolved values เพื่อให้ executor render ได้ตรง pattern เดียวกับ
+ * heading/logo (ไม่ต้อง query context ซ้ำ)
+ *
+ * Visibility flags (mirror SignatureBlock):
+ *   - showName (default true)   — บรรทัด "(ชื่อผู้สมัคร)"
+ *   - showDate (default true)   — บรรทัด "วันที่ ..."
+ *   - showTime (default false)  — บรรทัด "เวลา ..."
+ */
+export interface SignatureRenderCommand {
+  type: "signature";
+  blockId: string;
+  roleLabel: string;
+  align: "left" | "center" | "right";
+  /** resolved signer name (หรือ fallback "(ชื่อผู้สมัคร)") */
+  signerName: string;
+  /** resolved Thai date string (หรือ fallback "______________") */
+  dateText: string;
+  /** resolved HH:mm (หรือ fallback "______________") */
+  timeText: string;
+  /** true เมื่อใช้ fallback — ใช้กำหนด font color ให้จางลง */
+  isFallback: boolean;
+  /** visibility toggles (default: true, true, false) */
+  showName: boolean;
+  showDate: boolean;
+  showTime: boolean;
   margins: { top: number; bottom: number };
 }
 
@@ -137,6 +172,20 @@ const COLOR_BLACK = rgb(0, 0, 0);
 const COLOR_GRAY = rgb(0.4, 0.4, 0.4);
 const COLOR_LIGHT_GRAY = rgb(0.85, 0.85, 0.85);
 const COLOR_HEADER_BG = rgb(TABLE_HEADER_BG_THRESHOLD, TABLE_HEADER_BG_THRESHOLD, TABLE_HEADER_BG_THRESHOLD);
+
+// Signature block defaults
+const DEFAULT_SIGNATURE_ROLE = "ผู้สมัคร";
+// Visibility toggles — mirror preview-renderer.ts
+// - showName: true   (default: เปิด)
+// - showDate: true   (default: เปิด)
+// - showTime: false  (default: ปิด — เอกสารราชการส่วนใหญ่ไม่แสดงเวลา)
+const DEFAULT_SHOW_NAME = true;
+const DEFAULT_SHOW_DATE = true;
+const DEFAULT_SHOW_TIME = false;
+const FONT_SIZE_SIGNATURE_LABEL = 12;
+const FONT_SIZE_SIGNATURE_NAME = 12;
+const FONT_SIZE_SIGNATURE_META = 12;
+const SIGNATURE_LINE_MIN_WIDTH = 200; // pt
 
 // =============================================================================
 // Plan Builder
@@ -210,7 +259,7 @@ function buildBlockCommand(
   block: DocumentBlock,
   fieldIndex: Map<string, FieldData>,
   missingFieldIds: string[],
-  _ctx: ApplicationContext
+  ctx: ApplicationContext
 ): RenderCommand | null {
   const margins = {
     top: block.marginTop ?? 0,
@@ -269,6 +318,41 @@ function buildBlockCommand(
         align,
         margins,
       };
+
+    case "signature": {
+      const roleLabel = block.roleLabel ?? DEFAULT_SIGNATURE_ROLE;
+      const showName = block.showName ?? DEFAULT_SHOW_NAME;
+      const showDate = block.showDate ?? DEFAULT_SHOW_DATE;
+      const showTime = block.showTime ?? DEFAULT_SHOW_TIME;
+
+      // ── Resolve values from application context ────────────────
+      const submittedAt = ctx.application?.submittedAt;
+      const fullname = (ctx.application?.fullname ?? "").trim();
+
+      const hasName = fullname.length > 0;
+      const hasTime = typeof submittedAt === "number" && submittedAt > 0;
+
+      const signerName = hasName ? fullname : "(ชื่อผู้สมัคร)";
+      const dateText = hasTime ? formatThaiDate(submittedAt) : "______________";
+      const timeText = hasTime ? formatThaiTime(submittedAt) : "______________";
+      // isFallback = any of the *shown* lines is in fallback
+      const isFallback = (showName && !hasName) || (showDate && !hasTime) || (showTime && !hasTime);
+
+      return {
+        type: "signature",
+        blockId: block.id,
+        roleLabel,
+        align,
+        signerName,
+        dateText,
+        timeText,
+        isFallback,
+        showName,
+        showDate,
+        showTime,
+        margins,
+      };
+    }
   }
 }
 
@@ -361,6 +445,9 @@ function executeCommand(
       break;
     case "logo":
       drawLogo(state, cmd);
+      break;
+    case "signature":
+      drawSignature(state, cmd);
       break;
   }
 }
@@ -964,6 +1051,190 @@ function drawLogo(state: ExecState, cmd: LogoRenderCommand): void {
 }
 
 // =============================================================================
+// Signature Renderer
+// =============================================================================
+
+/**
+ * Draw signature block — render lines ตาม layout เดียวกับ Preview:
+ *   1) "ลงลายมือชื่อ ____________"
+ *   2) "(ชื่อผู้สมัคร)"               — ถ้า showName
+ *   3) roleLabel (default "ผู้สมัคร")
+ *   4) "วันที่ D MONTH พ.ศ."           — ถ้า showDate
+ *   5) "เวลา HH:mm น."               — ถ้า showTime (default: ปิด)
+ *
+ * Layout:
+ *   - ใช้ align ของ block เพื่อเลือก x position
+ *   - left  → ชิด MARGIN
+ *   - center → centered
+ *   - right → ชิด PAGE_WIDTH - MARGIN
+ *   - ทุกบรรทัดวาดเป็นบรรทัดใหม่ (state.y ลดลงทุกบรรทัด)
+ *
+ * Fallback (isFallback=true): ใช้สี GRAY แทน BLACK เพื่อให้ดูเป็น placeholder
+ */
+function drawSignature(state: ExecState, cmd: SignatureRenderCommand): void {
+  // ── Pre-compute label width for line 1 (for proper layout of label + line) ──
+  const line1Text = "ลงลายมือชื่อ";
+  const line1LabelWidth = state.fonts.regular.widthOfTextAtSize(
+    line1Text,
+    FONT_SIZE_SIGNATURE_LABEL
+  );
+
+  // Colors: ถ้ามี line ที่ show + fallback → ใช้ gray สำหรับ line นั้น
+  // (nameColor แยก เพราะ placeholder "(ชื่อผู้สมัคร)" ก็ fallback)
+  const nameColor = cmd.isFallback ? COLOR_GRAY : COLOR_BLACK;
+
+  // ── Helper: draw single text line using block-level alignment ──
+  const drawTextLine = (text: string, font: PDFFont, size: number, color: ReturnType<typeof rgb>) => {
+    const textWidth = font.widthOfTextAtSize(text, size);
+    let x: number;
+    switch (cmd.align) {
+      case "center":
+        x = (PAGE_WIDTH - textWidth) / 2;
+        break;
+      case "right":
+        x = PAGE_WIDTH - MARGIN - textWidth;
+        break;
+      case "left":
+      default:
+        x = MARGIN;
+    }
+    state.page.drawText(text, {
+      x,
+      y: state.y - size,
+      font,
+      size,
+      color,
+    });
+    state.y -= size * LINE_HEIGHT;
+  };
+
+  // ── Line 1: "ลงลายมือชื่อ ____________" — always rendered ──
+  drawSignatureLine1(
+    state,
+    line1Text,
+    line1LabelWidth,
+    SIGNATURE_LINE_MIN_WIDTH,
+    state.fonts.regular,
+    FONT_SIZE_SIGNATURE_LABEL,
+    COLOR_BLACK,
+    cmd.align
+  );
+
+  // ── Line 2: "(ชื่อผู้สมัคร)" — ถ้า showName ─────────────────
+  if (cmd.showName) {
+    drawTextLine(
+      `(${cmd.signerName})`,
+      state.fonts.regular,
+      FONT_SIZE_SIGNATURE_NAME,
+      nameColor
+    );
+  }
+
+  // ── Line 3: roleLabel (default "ผู้สมัคร") — always rendered ──
+  drawTextLine(cmd.roleLabel, state.fonts.regular, FONT_SIZE_SIGNATURE_META, COLOR_BLACK);
+
+  // ── Line 4: "วันที่ D MONTH พ.ศ." — ถ้า showDate ─────────────
+  if (cmd.showDate) {
+    const dateColor = cmd.isFallback ? COLOR_GRAY : COLOR_BLACK;
+    drawTextLine(
+      `วันที่ ${cmd.dateText}`,
+      state.fonts.regular,
+      FONT_SIZE_SIGNATURE_META,
+      dateColor
+    );
+  }
+
+  // ── Line 5: "เวลา HH:mm น." — ถ้า showTime (default ปิด) ────
+  if (cmd.showTime) {
+    const timeColor = cmd.isFallback ? COLOR_GRAY : COLOR_BLACK;
+    drawTextLine(
+      `เวลา ${cmd.timeText}`,
+      state.fonts.regular,
+      FONT_SIZE_SIGNATURE_META,
+      timeColor
+    );
+  }
+
+  // Post-block spacing
+  state.y -= POST_BLOCK_SPACING;
+}
+
+/**
+ * Draw signature line 1: "ลงลายมือชื่อ ____________"
+ *
+ * Layout:
+ *   - label "ลงลายมือชื่อ" ที่ x origin (block align)
+ *   - underscore line (underline) ต่อจาก label
+ *     ความยาว = max(SIGNATURE_LINE_MIN_WIDTH, labelWidth) - labelWidth
+ *     เพื่อให้ line ไม่สั้นเกินไปและไม่ยาวเกินพื้นที่
+ */
+function drawSignatureLine1(
+  state: ExecState,
+  label: string,
+  labelWidth: number,
+  lineMinWidth: number,
+  font: PDFFont,
+  fontSize: number,
+  color: ReturnType<typeof rgb>,
+  align: "left" | "center" | "right"
+): void {
+  // ความยาวรวม = label + space(4pt) + lineMinWidth
+  const space = 4;
+  const totalWidth = labelWidth + space + lineMinWidth;
+
+  let labelX: number;
+  let lineX: number;
+  let lineWidth: number;
+
+  switch (align) {
+    case "center": {
+      // centered ทั้งบล็อก (label + line อยู่กึ่งกลางร่วมกัน)
+      const blockX = (PAGE_WIDTH - totalWidth) / 2;
+      labelX = blockX;
+      lineX = blockX + labelWidth + space;
+      lineWidth = lineMinWidth;
+      break;
+    }
+    case "right": {
+      // ชิดขวา: ปลายเส้นชิดขวา
+      const blockRightX = PAGE_WIDTH - MARGIN;
+      labelX = blockRightX - totalWidth;
+      lineX = labelX + labelWidth + space;
+      lineWidth = lineMinWidth;
+      break;
+    }
+    case "left":
+    default: {
+      labelX = MARGIN;
+      lineX = MARGIN + labelWidth + space;
+      lineWidth = lineMinWidth;
+      break;
+    }
+  }
+
+  // Draw label
+  state.page.drawText(label, {
+    x: labelX,
+    y: state.y - fontSize,
+    font,
+    size: fontSize,
+    color,
+  });
+
+  // Draw underline (ใช้ drawLine ความหนา 0.5pt)
+  // underline อยู่ที่ baseline ของ text
+  const underlineY = state.y - fontSize + 2; // 2pt เหนือ baseline
+  state.page.drawLine({
+    start: { x: lineX, y: underlineY },
+    end: { x: lineX + lineWidth, y: underlineY },
+    thickness: 0.5,
+    color,
+  });
+
+  state.y -= fontSize * LINE_HEIGHT;
+}
+
+// =============================================================================
 // Inline value resolution (mirror pdf-renderer.service.ts semantics)
 // =============================================================================
 
@@ -1002,6 +1273,38 @@ function formatAnswerValueForDisplay(value: unknown): string {
 function splitLinesForV1(text: string): string[] {
   if (!text) return [];
   return text.split(/\r?\n/);
+}
+
+// =============================================================================
+// Thai date/time formatting (mirror pdf-renderer.service.ts semantics)
+// =============================================================================
+
+const THAI_MONTHS = [
+  "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+  "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
+];
+
+/**
+ * Format unix timestamp → Thai date string (พ.ศ.)
+ * Example: 16 ตุลาคม 2569
+ */
+function formatThaiDate(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  const day = d.getDate();
+  const month = THAI_MONTHS[d.getMonth()];
+  const thaiYear = d.getFullYear() + 543;
+  return `${day} ${month} ${thaiYear}`;
+}
+
+/**
+ * Format unix timestamp → HH:mm
+ * Example: 13:37
+ */
+function formatThaiTime(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
 // =============================================================================

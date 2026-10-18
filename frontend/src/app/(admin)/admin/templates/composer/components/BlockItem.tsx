@@ -30,6 +30,7 @@ import type {
   FieldBlock,
   TableBlock,
   LogoBlock,
+  SignatureBlock,
 } from '@/lib/api/template-descriptor';
 
 export interface BlockItemProps {
@@ -52,6 +53,7 @@ const TYPE_META: Record<
   field: { icon: '📌', label: 'Field', tone: 'bg-blue-50 border-blue-200' },
   table: { icon: '📊', label: 'Table', tone: 'bg-emerald-50 border-emerald-200' },
   logo: { icon: '🖼️', label: 'Logo', tone: 'bg-amber-50 border-amber-200' },
+  signature: { icon: '✍️', label: 'Signature', tone: 'bg-rose-50 border-rose-200' },
 };
 
 export function BlockItem({
@@ -193,6 +195,26 @@ function BlockSummary({
       </span>
     );
   }
+  if (block.type === 'signature') {
+    const sig = block as SignatureBlock;
+    const showName = sig.showName ?? true;
+    const showDate = sig.showDate ?? true;
+    const showTime = sig.showTime ?? false;
+    const visible: string[] = [];
+    if (showName) visible.push('ชื่อ');
+    if (showDate) visible.push('วันที่');
+    if (showTime) visible.push('เวลา');
+    return (
+      <span className="text-slate-700 text-xs">
+        <span className="font-medium">ลงลายมือชื่อ</span>
+        <span className="mx-1 text-slate-400">·</span>
+        <span>{sig.roleLabel || 'ผู้สมัคร'}</span>
+        <span className="ml-2 text-[10px] text-slate-500">
+          (แสดง: {visible.join(', ') || 'ไม่มี'})
+        </span>
+      </span>
+    );
+  }
   // logo
   return (
     <span className="text-slate-600 italic text-xs">
@@ -252,6 +274,66 @@ function BlockEditor({
       </div>
     );
   }
+  if (block.type === 'signature') {
+    const sig = block as SignatureBlock;
+    return (
+      <div className="space-y-2 p-3 bg-rose-50/40 rounded border border-rose-200">
+        <p className="text-[10px] text-slate-600 leading-relaxed">
+          Signature Block เป็น Document Block (เหมือน Logo / Heading)
+          ไม่ต้องให้ผู้สมัครกรอก — ใช้ข้อมูลจาก Application อัตโนมัติ:
+          ชื่อผู้สมัคร · วันที่/เวลาที่ส่งใบสมัคร
+        </p>
+        <div className="space-y-1">
+          <Label className="text-[10px] text-slate-600">roleLabel (ป้ายกำกับบทบาท)</Label>
+          <input
+            type="text"
+            value={sig.roleLabel ?? ''}
+            onChange={(e) =>
+              onChange({ roleLabel: e.target.value } as Partial<DocumentBlock>)
+            }
+            placeholder="ผู้สมัคร"
+            className="flex h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
+          />
+        </div>
+
+        {/* Visibility toggles — mirror backend defaults */}
+        <div className="space-y-1">
+          <Label className="text-[10px] text-slate-600">แสดงข้อมูล</Label>
+          <div className="flex flex-col gap-1.5 mt-1">
+            <ToggleRow
+              label="ชื่อผู้สมัคร (ชื่อในวงเล็บ)"
+              checked={sig.showName ?? true}
+              onChange={(v) =>
+                onChange({ showName: v } as Partial<DocumentBlock>)
+              }
+            />
+            <ToggleRow
+              label="วันที่ส่งใบสมัคร"
+              checked={sig.showDate ?? true}
+              onChange={(v) =>
+                onChange({ showDate: v } as Partial<DocumentBlock>)
+              }
+            />
+            <ToggleRow
+              label="เวลาที่ส่งใบสมัคร"
+              hint="(default: ปิด — เอกสารราชการส่วนใหญ่ไม่แสดงเวลา)"
+              checked={sig.showTime ?? false}
+              onChange={(v) =>
+                onChange({ showTime: v } as Partial<DocumentBlock>)
+              }
+            />
+          </div>
+        </div>
+
+        <AlignRow
+          align={sig.align ?? 'left'}
+          onChange={(align) =>
+            onChange({ align } as Partial<DocumentBlock>)
+          }
+        />
+      </div>
+    );
+  }
   // logo
   return (
     <div className="space-y-2 p-3 bg-slate-50 rounded border border-slate-200">
@@ -296,5 +378,36 @@ function AlignRow({
         </button>
       ))}
     </div>
+  );
+}
+
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex items-start gap-2 cursor-pointer select-none">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-rose-600 focus:ring-rose-500"
+      />
+      <span className="flex-1 min-w-0">
+        <span className="block text-[11px] text-slate-800 leading-tight">{label}</span>
+        {hint && (
+          <span className="block text-[10px] text-slate-500 leading-tight mt-0.5">
+            {hint}
+          </span>
+        )}
+      </span>
+    </label>
   );
 }

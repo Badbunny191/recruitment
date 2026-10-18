@@ -22,7 +22,8 @@ export type BlockType =
   | "heading"
   | "field"
   | "table"
-  | "logo";
+  | "logo"
+  | "signature";
 
 export type Align =
   | "left"
@@ -102,6 +103,47 @@ export interface LogoBlock extends BaseBlock {
   type: "logo";
 }
 
+/**
+ * Signature Block — render a signature section that uses application data
+ *
+ * Design:
+ *   - เป็น Document Block (เหมือน logo / heading) — ไม่ใช่ Field Block
+ *   - ไม่ต้องให้ผู้สมัครกรอก (ไม่ผูกกับ formData / field_master)
+ *   - resolve ค่าจาก ApplicationContext ตอน render (PDF + Preview)
+ *
+ * Data Sources (V1):
+ *   - signerName: application.fullname (ชื่อผู้สมัคร)
+ *   - date:       application.submittedAt → Thai date (พ.ศ.)
+ *   - time:       application.submittedAt → HH:mm (เวลา)
+ *
+ * Visibility toggles:
+ *   - showName: เปิด/ปิด บรรทัด "(ชื่อผู้สมัคร)"   (default: true)
+ *   - showDate: เปิด/ปิด บรรทัด "วันที่ ..."      (default: true)
+ *   - showTime: เปิด/ปิด บรรทัด "เวลา ..."      (default: false)
+ *     เหตุผล: เอกสารราชการ/สมัครงานส่วนใหญ่ไม่แสดงเวลา
+ *     เวลาเป็น Optional — ผู้ใช้เปิดเองเมื่อต้องการ
+ *
+ * Fallback (เมื่อไม่มี application data หรือค่าว่าง):
+ *   - แสดง placeholder text เพื่อให้ layout ของ PDF/Preview ไม่ collapse
+ */
+export interface SignatureBlock extends BaseBlock {
+  type: "signature";
+  /** ป้ายกำกับบทบาท เช่น "ผู้สมัคร", "ผู้รับรอง" (default: "ผู้สมัคร") */
+  roleLabel?: string;
+  /** แหล่งข้อมูลชื่อผู้ลงนาม (V1: รองรับเฉพาะ "application") */
+  signerNameSource?: "application";
+  /** แหล่งข้อมูลวันที่ (V1: รองรับเฉพาะ "application") */
+  dateSource?: "application";
+  /** แหล่งข้อมูลเวลา (V1: รองรับเฉพาะ "application") */
+  timeSource?: "application";
+  /** แสดง "(ชื่อผู้สมัคร)" หรือไม่ (default: true) */
+  showName?: boolean;
+  /** แสดง "วันที่ ..." หรือไม่ (default: true) */
+  showDate?: boolean;
+  /** แสดง "เวลา ..." หรือไม่ (default: false) */
+  showTime?: boolean;
+}
+
 // =============================================================================
 // Union
 // =============================================================================
@@ -110,7 +152,8 @@ export type DocumentBlock =
   | HeadingBlock
   | FieldBlock
   | TableBlock
-  | LogoBlock;
+  | LogoBlock
+  | SignatureBlock;
 
 // =============================================================================
 // Document Descriptor (top-level)

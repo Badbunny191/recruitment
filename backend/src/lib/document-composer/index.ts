@@ -37,6 +37,7 @@ export type {
   FieldBlock,
   TableBlock,
   LogoBlock,
+  SignatureBlock,
   DocumentBlock,
   DocumentDescriptor,
 } from "./types";
@@ -48,6 +49,7 @@ export type {
 
 export type {
   RenderCommand,
+  SignatureRenderCommand,
   RenderPlan,
   RenderedBytes,
 } from "./descriptor-renderer";

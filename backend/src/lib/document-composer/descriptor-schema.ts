@@ -86,12 +86,40 @@ const LogoBlockSchema = z.object({
   marginBottom: MarginSchema,
 });
 
+/**
+ * Signature Block schema — Document Block ที่ใช้ข้อมูลจาก Application
+ *
+ * V1:
+ *   - roleLabel: ป้ายกำกับ (default "ผู้สมัคร")
+ *   - signerNameSource / dateSource / timeSource: literal "application" เท่านั้น
+ *     (เปิดทางให้รองรับ source อื่นในอนาคต เช่น "fixed" หรือ "manual")
+ *   - showName / showDate / showTime: visibility toggles
+ *     - showName (default true)
+ *     - showDate (default true)
+ *     - showTime (default false) — เอกสารราชการ/สมัครงานส่วนใหญ่ไม่แสดงเวลา
+ */
+const SignatureBlockSchema = z.object({
+  id: BlockIdSchema,
+  type: z.literal("signature"),
+  align: AlignSchema.optional(),
+  marginTop: MarginSchema,
+  marginBottom: MarginSchema,
+  roleLabel: z.string().min(1).max(100).optional(),
+  signerNameSource: z.literal("application").optional(),
+  dateSource: z.literal("application").optional(),
+  timeSource: z.literal("application").optional(),
+  showName: z.boolean().optional(),
+  showDate: z.boolean().optional(),
+  showTime: z.boolean().optional(),
+});
+
 /** Union ของ block variants — ใช้ `type` เป็น discriminator */
 const DocumentBlockSchema = z.discriminatedUnion("type", [
   HeadingBlockSchema,
   FieldBlockSchema,
   TableBlockSchema,
   LogoBlockSchema,
+  SignatureBlockSchema,
 ]);
 
 // =============================================================================

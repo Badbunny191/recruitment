@@ -30,6 +30,7 @@ import type {
   FieldBlock,
   TableBlock,
   LogoBlock,
+  SignatureBlock,
 } from '@/lib/api/template-descriptor';
 import type { TemplateFieldLibraryItem } from '../hooks/useTemplateFields';
 
@@ -96,6 +97,19 @@ function makeLogoBlock(): LogoBlock {
   };
 }
 
+function makeSignatureBlock(): SignatureBlock {
+  return {
+    id: newBlockId('s'),
+    type: 'signature',
+    roleLabel: 'ผู้สมัคร',
+    // Visibility defaults — mirror backend (preview-renderer.ts)
+    showName: true,
+    showDate: true,
+    showTime: false,
+    align: 'center',
+  };
+}
+
 export function BlockPanel({
   descriptor,
   onChange,
@@ -135,6 +149,11 @@ export function BlockPanel({
       onChange({
         ...descriptor,
         blocks: [...descriptor.blocks, makeLogoBlock()],
+      });
+    } else if (kind === 'signature') {
+      onChange({
+        ...descriptor,
+        blocks: [...descriptor.blocks, makeSignatureBlock()],
       });
     } else {
       // field / table → เปิด picker
@@ -289,6 +308,9 @@ function describeBlock(
     const fld = fieldMap.get(b.fieldId);
     const label = fld?.labelTh ?? b.fieldId.slice(0, 12) + '…';
     return `${block.type === 'table' ? 'Table' : 'Field'}: ${label}`;
+  }
+  if (block.type === 'signature') {
+    return `Signature: ลงลายมือชื่อ${(block as SignatureBlock).roleLabel ? ` (${(block as SignatureBlock).roleLabel})` : ''}`;
   }
   // logo
   return `Logo (align: ${(block as LogoBlock).align ?? 'left'})`;

@@ -29,6 +29,7 @@ import type {
   DocumentDescriptor,
   DocumentBlock,
   HeadingBlock,
+  SignatureBlock,
   Size,
   Align,
 } from "./types";
@@ -187,6 +188,33 @@ const PREVIEW_STYLES = `
   display: block;
   width: 70px;
   height: auto;
+}
+
+/* ── Signature ────────────────────────────────────────────── */
+.dc-signature {
+  font-size: 12pt;
+  color: #000000;
+  line-height: 1.4;
+}
+.dc-signature__line {
+  display: inline-block;
+  border-bottom: 1px solid #000000;
+  min-width: 200px;
+  height: 1em;
+  vertical-align: baseline;
+}
+.dc-signature__name {
+  margin-top: 4px;
+}
+.dc-signature__role {
+  margin-top: 0;
+}
+.dc-signature__date,
+.dc-signature__time {
+  margin-top: 0;
+}
+.dc-signature__placeholder {
+  color: #999999;
 }
 
 /* ── Page break hint (สำหรับ print emulation) ───────────── */
@@ -358,6 +386,18 @@ function renderBlock(
         summary: {
           blockId: block.id,
           type: "logo",
+          align: rctx.align,
+          marginTop: rctx.marginTop,
+          marginBottom: rctx.marginBottom,
+        },
+      };
+
+    case "signature":
+      return {
+        html: renderSignatureBlock(block, rctx.ctx),
+        summary: {
+          blockId: block.id,
+          type: "signature",
           align: rctx.align,
           marginTop: rctx.marginTop,
           marginBottom: rctx.marginBottom,
@@ -557,6 +597,104 @@ function renderLogoBlock(block: Extract<DocumentBlock, { type: "logo" }>): strin
 }
 
 // =============================================================================
+// Signature
+// =============================================================================
+
+/**
+ * Default role label — mirror descriptor-renderer.ts
+ */
+const DEFAULT_SIGNATURE_ROLE = "ผู้สมัคร";
+
+/**
+ * Default visibility toggles — mirror descriptor-renderer.ts
+ * - showName: true  (เปิด บรรทัด "(ชื่อผู้สมัคร)")
+ * - showDate: true  (เปิด บรรทัด "วันที่ ...")
+ * - showTime: false (ปิด บรรทัด "เวลา ..." — เอกสารราชการส่วนใหญ่ไม่แสดงเวลา)
+ */
+const DEFAULT_SHOW_NAME = true;
+const DEFAULT_SHOW_DATE = true;
+const DEFAULT_SHOW_TIME = false;
+
+/**
+ * Render SignatureBlock → HTML
+ *
+ * mirror descriptor-renderer.ts:drawSignature
+ *   - "ลงลายมือชื่อ" + underscore line
+ *   - "(ชื่อผู้สมัคร)" parenthetical (escape: actual name in fallback mode) — ถ้า showName
+ *   - role label (default: "ผู้สมัคร")
+ *   - "วันที่ DD MONTH พ.ศ." (Thai Buddhist year) — ถ้า showDate
+ *   - "เวลา HH:mm น." — ถ้า showTime (default: ปิด)
+ *
+ * Fallback (เมื่อไม่มี application):
+ *   - ชื่อ: "(ชื่อผู้สมัคร)"
+ *   - วันที่/เวลา: "______________"
+ *
+ * ไม่ทำการ pagination ใน preview — ทั้ง block อยู่ใน DOM ปกติ
+ */
+function renderSignatureBlock(
+  block: SignatureBlock,
+  ctx: ApplicationContext
+): string {
+  const alignClass = ALIGN_TO_CLASS[(block.align ?? DEFAULT_ALIGN) as Align];
+  const marginTop = block.marginTop ?? 0;
+  const marginBottom = block.marginBottom ?? 0;
+
+  const styleParts: string[] = [];
+  if (marginTop > 0) styleParts.push(`margin-top: ${marginTop}pt`);
+  if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
+  const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
+
+  const roleLabel = block.roleLabel ?? DEFAULT_SIGNATURE_ROLE;
+  const showName = block.showName ?? DEFAULT_SHOW_NAME;
+  const showDate = block.showDate ?? DEFAULT_SHOW_DATE;
+  const showTime = block.showTime ?? DEFAULT_SHOW_TIME;
+
+  // ── Resolve values from application context ───────────────────
+  const signerName = (ctx.application.fullname ?? "").trim();
+  const submittedAt = ctx.application.submittedAt;
+
+  const hasName = signerName.length > 0;
+  const hasTime = typeof submittedAt === "number" && submittedAt > 0;
+
+  const displayName = hasName ? signerName : "(ชื่อผู้สมัคร)";
+  const displayDate = hasTime
+    ? formatThaiDate(submittedAt)
+    : "______________";
+  const displayTime = hasTime
+    ? formatThaiTime(submittedAt)
+    : "______________";
+
+  const nameClass = hasName ? "" : " dc-signature__placeholder";
+
+  // ── Build body lines based on visibility toggles ─────────────
+  const bodyParts: string[] = [
+    `<div>ลงลายมือชื่อ <span class="dc-signature__line">&nbsp;</span></div>`,
+  ];
+  if (showName) {
+    bodyParts.push(
+      `<div class="dc-signature__name${nameClass}">(${escapeHtml(displayName)})</div>`
+    );
+  }
+  bodyParts.push(
+    `<div class="dc-signature__role">${escapeHtml(roleLabel)}</div>`
+  );
+  if (showDate) {
+    bodyParts.push(
+      `<div class="dc-signature__date">วันที่ ${escapeHtml(displayDate)}</div>`
+    );
+  }
+  if (showTime) {
+    bodyParts.push(
+      `<div class="dc-signature__time">เวลา ${escapeHtml(displayTime)}</div>`
+    );
+  }
+
+  return `<section class="dc-signature dc-block ${alignClass}"${styleAttr}>
+    ${bodyParts.join("\n    ")}
+  </section>`;
+}
+
+// =============================================================================
 // Document wrapper
 // =============================================================================
 
@@ -711,6 +849,38 @@ function formatCellValue(value: unknown): string {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// =============================================================================
+// Thai date/time formatting (mirror descriptor-renderer.ts semantics)
+// =============================================================================
+
+const THAI_MONTHS = [
+  "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+  "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
+];
+
+/**
+ * Format unix timestamp → Thai date string (พ.ศ.)
+ * Example: 16 ตุลาคม 2569
+ */
+function formatThaiDate(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  const day = d.getDate();
+  const month = THAI_MONTHS[d.getMonth()];
+  const thaiYear = d.getFullYear() + 543;
+  return `${day} ${month} ${thaiYear}`;
+}
+
+/**
+ * Format unix timestamp → HH:mm เวลา
+ * Example: 13:37
+ */
+function formatThaiTime(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
 /**

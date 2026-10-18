@@ -16,7 +16,7 @@
 
 import { Button } from '@/components/ui/button';
 
-export type AddBlockKind = 'heading' | 'field' | 'table' | 'logo';
+export type AddBlockKind = 'heading' | 'field' | 'table' | 'logo' | 'signature';
 
 export interface BlockToolbarProps {
   onAdd: (kind: AddBlockKind) => void;
@@ -72,6 +72,17 @@ export function BlockToolbar({ onAdd, disabled }: BlockToolbarProps) {
       >
         <span className="mr-1">🖼️</span>
         Logo
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => onAdd('signature')}
+        disabled={disabled}
+        className="h-7 text-xs"
+        title="เพิ่ม Signature block (ใช้ข้อมูลจาก Application)"
+      >
+        <span className="mr-1">✍️</span>
+        Signature
       </Button>
     </div>
   );
