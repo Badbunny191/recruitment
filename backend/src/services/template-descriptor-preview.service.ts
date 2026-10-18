@@ -43,11 +43,35 @@ function resolveDb(db: DB): DB {
 }
 
 /**
+ * Build sample row สำหรับ MASTER_DATA (table block) ที่ตรงกับ schema ของ field นั้นๆ
+ *
+ * ── ก่อนหน้านี้ (BUG) ──────────────────────────────────────────────
+ * ทุก MASTER_DATA field ได้ row hard-coded:
+ *   { ปีการศึกษา: '2566', สถาบัน: 'ตัวอย่าง', วุฒิ: 'ตัวอย่าง' }
+ * → Preview ของ Table block แสดง header "ปีการศึกษา | สถาบัน | วุฒิ"
+ *   ไม่ว่า field จริงจะเป็น "สังกัดปัจจุบัน", "หน่วยงาน", หรือ field อื่นใดก็ตาม
+ * → หลอกผู้ใช้ + ไม่ตรงกับ field ที่เลือก
+ *
+ * ── หลัง (FIX) ─────────────────────────────────────────────────────
+ * ใช้ field.label เป็น column name → schema-driven sample
+ * - preview สะท้อน field ที่ผู้ใช้เลือกจริง
+ * - cell value ใช้ placeholder สั้นๆ เพื่อทดสอบ wrap/length
+ *
+ * NOTE: จำนวน column ถูก derive จาก `Object.keys(row[0])` ใน preview-renderer.ts:502
+ *       ดังนั้นตัวอย่าง row นี้จะกำหนด column structure ทั้งหมดของ preview
+ */
+function buildMasterDataSample(field: FieldData): Record<string, unknown> {
+  // ใช้ label เป็น column name (เป็นชื่อเดียวกับที่ผู้ใช้เห็นใน Composer)
+  const columnName = field.label || field.fieldId;
+  return { [columnName]: `ตัวอย่าง ${columnName}` };
+}
+
+/**
  * Stub formData สำหรับ preview
  *
  * ใช้ sample values เพื่อให้ preview renderer แสดงผล field/table ได้
  * - fieldId (field_master.id) เป็น key
- * - ถ้า field type = MASTER_DATA → ใช้ table sample
+ * - ถ้า field type = MASTER_DATA → ใช้ schema-aware sample (ตาม field.label)
  * - อื่นๆ → ใช้ text sample
  */
 function buildSampleFormData(fields: FieldData[]): Record<string, unknown> {
@@ -55,10 +79,11 @@ function buildSampleFormData(fields: FieldData[]): Record<string, unknown> {
 
   for (const field of fields) {
     if (field.type === 'MASTER_DATA') {
-      // Sample table data
+      // ── FIX: schema-aware sample (ตาม field.label) แทน hard-coded education data ──
+      const columnName = field.label || field.fieldId;
       formData[field.fieldId] = [
-        { ปีการศึกษา: '2566', สถาบัน: 'ตัวอย่าง', วุฒิ: 'ตัวอย่าง' },
-        { ปีการศึกษา: '2565', สถาบัน: 'ตัวอย่าง', วุฒิ: 'ตัวอย่าง' },
+        buildMasterDataSample(field),
+        { [columnName]: `ตัวอย่าง ${columnName} 2` },
       ];
     } else if (field.type === 'DATE') {
       formData[field.fieldId] = '2566-01-15';

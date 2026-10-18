@@ -452,6 +452,98 @@ async function runAllTests() {
     sqlite.close();
   });
 
+  // ── [2.1] Regression: BUG — hard-coded education data ──────────────
+  // Bug: composer preview ของ Table block ทุก field แสดง header
+  //   "ปีการศึกษา | สถาบัน | วุฒิ" แทนที่จะเป็น field label จริง
+  // Root cause: buildSampleFormData() inject hard-coded education rows
+  //   { ปีการศึกษา: '2566', สถาบัน: 'ตัวอย่าง', วุฒิ: 'ตัวอย่าง' }
+  // โดยไม่สนใจ field.label ของ field นั้นๆ
+  // Fix: schema-aware sample → ใช้ field.label เป็น column name
+  // See: backend/src/services/template-descriptor-preview.service.ts:buildSampleFormData
+  await test('MASTER_DATA sample column name = field.label (regression: no hard-coded edu data)', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db); // ← seed tv-1
+    // เพิ่ม field ที่ label ไม่ใช่ "ประวัติการศึกษา"
+    // (จำลองเคส field "สังกัดปัจจุบัน" ที่ user report)
+    db.run(sql`INSERT INTO field_master (id, field_type, label_th)
+      VALUES ('fm-aff', 'MASTER_DATA', 'สังกัดปัจจุบัน')`);
+    db.run(sql`INSERT INTO template_sections
+      (id, template_version_id, name, display_order, is_active)
+      VALUES ('sec-aff', 'tv-1', 'สังกัดปัจจุบัน', 1, 1)`);
+    db.run(sql`INSERT INTO template_fields
+      (id, template_version_id, field_id, section_id, display_order, is_required)
+      VALUES ('tf-aff', 'tv-1', 'fm-aff', 'sec-aff', 1, 1)`);
+
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const rows = (ctx.application.formData as any)['fm-aff'];
+    assertTrue(Array.isArray(rows), 'MASTER_DATA should produce array');
+    assertTrue(rows.length >= 1, 'should have at least 1 sample row');
+
+    // ── ตรวจ: column name (key แรกของ row แรก) ต้องตรงกับ field.label ──
+    const firstRowKeys = Object.keys(rows[0]);
+    assertEqual(
+      firstRowKeys.length,
+      1,
+      'sample should have exactly 1 column (schema-driven)'
+    );
+    assertEqual(
+      firstRowKeys[0],
+      'สังกัดปัจจุบัน',
+      `column name should be field.label "สังกัดปัจจุบัน", got "${firstRowKeys[0]}"`
+    );
+
+    // ── ตรวจ: cell value ไม่ใช่ hard-coded "ตัวอย่าง" ของ education data ──
+    const cellValue = rows[0][firstRowKeys[0]];
+    assertTrue(
+      typeof cellValue === 'string' && cellValue.length > 0,
+      'cell value should be non-empty placeholder'
+    );
+    // ต้องไม่มี column keys เก่าที่เคย hard-code อยู่
+    assertFalse(
+      'ปีการศึกษา' in rows[0],
+      'sample must NOT contain hard-coded "ปีการศึกษา" key'
+    );
+    assertFalse(
+      'สถาบัน' in rows[0],
+      'sample must NOT contain hard-coded "สถาบัน" key'
+    );
+    assertFalse(
+      'วุฒิ' in rows[0],
+      'sample must NOT contain hard-coded "วุฒิ" key'
+    );
+    sqlite.close();
+  });
+
+  await test('MASTER_DATA sample uses label per-field (not shared "ประวัติการศึกษา")', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db); // ← seed tv-1
+    // field — label = "หน่วยงาน"
+    db.run(sql`INSERT INTO field_master (id, field_type, label_th)
+      VALUES ('fm-org', 'MASTER_DATA', 'หน่วยงาน')`);
+    db.run(sql`INSERT INTO template_sections
+      (id, template_version_id, name, display_order, is_active)
+      VALUES ('sec-org', 'tv-1', 'หน่วยงาน', 1, 1)`);
+    db.run(sql`INSERT INTO template_fields
+      (id, template_version_id, field_id, section_id, display_order, is_required)
+      VALUES ('tf-org', 'tv-1', 'fm-org', 'sec-org', 1, 1)`);
+
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const rows = (ctx.application.formData as any)['fm-org'];
+    const keys = Object.keys(rows[0]);
+    assertEqual(keys[0], 'หน่วยงาน', 'each MASTER_DATA field gets its own label');
+    sqlite.close();
+  });
+
   // =====================================================================
   // [3] Generator + Preview Renderer Pipeline
   // =====================================================================
