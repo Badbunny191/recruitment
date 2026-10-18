@@ -92,7 +92,52 @@ function PreviewFrame({ body }: { body: string }) {
         .dc-table-block table { border-collapse: collapse; width: 100%; font-size: 12px; }
         .dc-table-block th, .dc-table-block td { border: 1px solid #cbd5e1; padding: 4px 8px; text-align: left; }
         .dc-table-block th { background: #f1f5f9; font-weight: 600; }
+
+        /* ── Logo block ─────────────────────────────────────────────
+           Renderer (preview-renderer.ts) emits:
+             <section class="dc-block dc-logo dc-align--ALIGN_VALUE">
+               <img src="" alt="SAO Logo" />
+             </section>
+           ALIGN_VALUE คือ left / center / right
+           Default img display is inline ตอบสนอง text-align ของ parent.
+           .dc-logo ต้องกว้างเต็มและใช้ text-align ตาม dc-align--ALIGN_VALUE.
+           ไม่แตะ .dc-field-block / .dc-heading-block ตามที่ UAT ระบุ */
+        .dc-logo {
+          width: 100%;
+          box-sizing: border-box;
+        }
+        .dc-logo.dc-align--left   { text-align: left; }
+        .dc-logo.dc-align--center { text-align: center; }
+        .dc-logo.dc-align--right  { text-align: right; }
+        .dc-logo img {
+          display: inline-block;
+          width: 70px;
+          height: auto;
+        }
+        /* back-compat class เดิม (.dc-logo-block) — กัน HTML เก่าพัง */
         .dc-logo-block { display: flex; }
+
+        /* ── Heading / Field / Table alignment (renderer emits dc-block dc-align--*) ──
+           pattern เดียวกับ Logo: parent ใช้ text-align, child ใช้ inline-block / กว้างเต็ม
+           - Heading: <h2> เป็น block — ใช้ text-align กับตัวมันเอง
+           - Field:   <section> มี label + value — text-align กับ section ทั้งก้อน
+           - Table:   <section> เป็น full-width — ใช้ margin auto สำหรับ center/right */
+        .dc-heading.dc-align--left   { text-align: left;   margin-right: auto; }
+        .dc-heading.dc-align--center { text-align: center; margin-left: auto; margin-right: auto; }
+        .dc-heading.dc-align--right  { text-align: right;  margin-left: auto; }
+
+        .dc-field.dc-align--left   { text-align: left; }
+        .dc-field.dc-align--center { text-align: center; }
+        .dc-field.dc-align--right  { text-align: right; }
+        /* กัน indent (margin-left: 12px) ดัน value ออกนอกกรอบเมื่อ align != left */
+        .dc-field.dc-align--center .dc-field__value,
+        .dc-field.dc-align--right  .dc-field__value { margin-left: 0; }
+
+        .dc-table-wrap.dc-align--left   { text-align: left; }
+        .dc-table-wrap.dc-align--center { text-align: center; }
+        .dc-table-wrap.dc-align--right  { text-align: right; }
+        .dc-table-wrap.dc-align--center > .dc-table,
+        .dc-table-wrap.dc-align--right  > .dc-table { display: inline-table; }
       </style>
     </head>
     <body>${body}</body>

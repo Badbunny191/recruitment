@@ -123,9 +123,6 @@ export function FieldPicker({
                         {f.labelTh}
                       </div>
                       <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-2">
-                        <code className="font-mono text-[10px] bg-slate-100 px-1 rounded">
-                          {f.fieldId.slice(0, 8)}…
-                        </code>
                         {f.fieldType && (
                           <span className="text-slate-600">{f.fieldType}</span>
                         )}

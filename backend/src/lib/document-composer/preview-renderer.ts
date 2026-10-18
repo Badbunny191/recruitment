@@ -310,15 +310,9 @@ function renderBlock(
   block: DocumentBlock,
   rctx: RenderBlockContext
 ): RenderedBlock | null {
-  const commonStyle = buildBlockStyleAttrs(
-    rctx.align,
-    rctx.marginTop,
-    rctx.marginBottom
-  );
-
   switch (block.type) {
     case "heading":
-      return renderHeadingBlock(block, commonStyle);
+      return renderHeadingBlock(block);
 
     case "field": {
       const field = rctx.fieldIndex.get(block.fieldId);
@@ -327,7 +321,7 @@ function renderBlock(
         return null;
       }
       return {
-        html: renderFieldBlock(field, block, commonStyle, rctx.ctx),
+        html: renderFieldBlock(field, block, rctx.ctx),
         summary: {
           blockId: block.id,
           type: "field",
@@ -346,7 +340,7 @@ function renderBlock(
         return null;
       }
       return {
-        html: renderTableBlock(field, commonStyle, rctx.ctx),
+        html: renderTableBlock(field, block, rctx.ctx),
         summary: {
           blockId: block.id,
           type: "table",
@@ -360,7 +354,7 @@ function renderBlock(
 
     case "logo":
       return {
-        html: renderLogoBlock(commonStyle),
+        html: renderLogoBlock(block),
         summary: {
           blockId: block.id,
           type: "logo",
@@ -385,18 +379,25 @@ function renderBlock(
  *   - COLOR_PRIMARY = rgb(0.05, 0.27, 0.51) → #0d4572
  */
 function renderHeadingBlock(
-  block: HeadingBlock,
-  styleAttrs: string
+  block: HeadingBlock
 ): RenderedBlock {
   const bold = block.bold ?? DEFAULT_HEADING_BOLD;
   const sizeClass = SIZE_TO_CLASS[block.size];
   const boldClass = bold ? " dc-heading--bold" : "";
   const pt = SIZE_TO_PT[block.size];
+  const alignClass = ALIGN_TO_CLASS[(block.align ?? DEFAULT_ALIGN) as Align];
+  const marginTop = block.marginTop ?? 0;
+  const marginBottom = block.marginBottom ?? 0;
 
   // Escape HTML — heading text อาจมีอักขระพิเศษ
   const safeText = escapeHtml(block.text);
 
-  const html = `<h2 class="dc-heading ${sizeClass}${boldClass}" style="font-size: ${pt}pt"${styleAttrs}>${safeText}</h2>`;
+  // ── FIX: inline align class + margin style เข้า attribute เดียวกัน ──
+  // (เดิม styleAttrs มี class+style แยก → browser ignore attribute ที่ 2)
+  const styleParts: string[] = [`font-size: ${pt}pt`];
+  if (marginTop > 0) styleParts.push(`margin-top: ${marginTop}pt`);
+  if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
+  const html = `<h2 class="dc-heading ${sizeClass}${boldClass} dc-block ${alignClass}" style="${styleParts.join("; ")}">${safeText}</h2>`;
 
   return {
     html,
@@ -426,7 +427,6 @@ function renderHeadingBlock(
 function renderFieldBlock(
   field: FieldData,
   block: Extract<DocumentBlock, { type: "field" }>,
-  styleAttrs: string,
   ctx: ApplicationContext
 ): string {
   const rawValue = resolveAnswerValue(field, ctx);
@@ -441,8 +441,17 @@ function renderFieldBlock(
   const safeValue = escapeHtml(displayValue);
 
   const alignClass = ALIGN_TO_CLASS[(block.align ?? DEFAULT_ALIGN) as Align];
+  const marginTop = block.marginTop ?? 0;
+  const marginBottom = block.marginBottom ?? 0;
 
-  return `<section class="dc-field${emptyClass} ${alignClass}"${styleAttrs}>
+  // ── FIX: inline margin เข้า style attribute เดียว (เดิม styleAttrs ทำให้เกิด double style) ──
+  // Field block ไม่มี background/font-size เป็น inline → style ว่างได้ถ้าไม่มี margin
+  const styleParts: string[] = [];
+  if (marginTop > 0) styleParts.push(`margin-top: ${marginTop}pt`);
+  if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
+  const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
+
+  return `<section class="dc-field${emptyClass} dc-block ${alignClass}"${styleAttr}>
     <div class="dc-field__label">${safeLabel}</div>
     <div class="dc-field__value">${safeValue}</div>
   </section>`;
@@ -466,15 +475,24 @@ function renderFieldBlock(
  */
 function renderTableBlock(
   field: FieldData,
-  styleAttrs: string,
+  block: Extract<DocumentBlock, { type: "table" }>,
   ctx: ApplicationContext
 ): string {
   const rawValue = resolveAnswerValue(field, ctx);
   const tableData = parseTableData(rawValue);
 
+  const alignClass = ALIGN_TO_CLASS[(block.align ?? DEFAULT_ALIGN) as Align];
+  const marginTop = block.marginTop ?? 0;
+  const marginBottom = block.marginBottom ?? 0;
+
+  // ── FIX: inline margin เข้า style attribute เดียว (เดิม styleAttrs ทำให้เกิด double class+style) ──
+  const styleParts: string[] = [];
+  if (marginTop > 0) styleParts.push(`margin-top: ${marginTop}pt`);
+  if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
+  const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
+
   if (tableData.length === 0) {
-    const alignClass = ALIGN_TO_CLASS["left" as Align];
-    return `<section class="dc-table-wrap dc-table--empty ${alignClass}"${styleAttrs}>
+    return `<section class="dc-table-wrap dc-table--empty dc-block ${alignClass}"${styleAttr}>
       <div class="dc-field__value">(ไม่มีข้อมูล)</div>
     </section>`;
   }
@@ -496,7 +514,7 @@ function renderTableBlock(
     .map((h) => `<th>${escapeHtml(h)}</th>`)
     .join("");
 
-  return `<section class="dc-table-wrap"${styleAttrs}>
+  return `<section class="dc-table-wrap dc-block ${alignClass}"${styleAttr}>
     <table class="dc-table">
       <thead>
         <tr>${headerHtml}</tr>
@@ -519,25 +537,23 @@ function renderTableBlock(
  * - preview ใช้ alt text เพราะไม่ load asset จริง (ไม่ผูกกับ file path)
  * - width = 70px (mirror descriptor-renderer.ts:drawLogo)
  */
-function renderLogoBlock(styleAttrs: string): string {
-  const align = (extractAlignFromAttrs(styleAttrs) ?? DEFAULT_ALIGN) as Align;
+function renderLogoBlock(block: Extract<DocumentBlock, { type: "logo" }>): string {
+  const align = (block.align ?? DEFAULT_ALIGN) as Align;
   const alignClass = ALIGN_TO_CLASS[align];
+  const marginTop = block.marginTop ?? 0;
+  const marginBottom = block.marginBottom ?? 0;
+
+  // ── FIX: inline margin เข้า style attribute เดียว (เดิม styleAttrs ทำให้เกิด double class+style) ──
+  const styleParts: string[] = [];
+  if (marginTop > 0) styleParts.push(`margin-top: ${marginTop}pt`);
+  if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
+  const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
 
   // ใช้ alt text อย่างเดียว — preview ไม่ฝัง asset
   // (production จะ inject <img src> จาก UI layer ในอนาคต)
-  return `<section class="dc-block dc-logo ${alignClass}"${styleAttrs}>
+  return `<section class="dc-block dc-logo ${alignClass}"${styleAttr}>
     <img src="" alt="SAO Logo" />
   </section>`;
-}
-
-/**
- * Extract align จาก styleAttrs string
- *
- * styleAttrs มี class="dc-block dc-align--{align}" → ดึง dc-align--{align} ออกมา
- */
-function extractAlignFromAttrs(styleAttrs: string): Align | null {
-  const match = styleAttrs.match(/dc-align--(left|center|right)/);
-  return match ? (match[1] as Align) : null;
 }
 
 // =============================================================================
@@ -580,38 +596,6 @@ ${body}
 // =============================================================================
 // Helpers (mirror descriptor-renderer.ts semantics)
 // =============================================================================
-
-/**
- * Build block style attrs:
- *   - class="dc-block dc-align--{align}"
- *   - inline style="margin-top: ...; margin-bottom: ..." (เฉพาะ margin > 0)
- *
- * class ใช้สำหรับ general styling
- * inline style ใช้สำหรับ spacing เพราะ margin เป็น per-block ไม่สามารถใช้ class ได้
- *   โดยไม่ต้องสร้าง class ใหม่ทุกครั้ง
- */
-function buildBlockStyleAttrs(
-  align: Align,
-  marginTop: number,
-  marginBottom: number
-): string {
-  const alignClass = ALIGN_TO_CLASS[align];
-  const classAttr = `class="dc-block ${alignClass}"`;
-
-  const styleParts: string[] = [];
-  if (marginTop > 0) {
-    styleParts.push(`margin-top: ${marginTop}pt`);
-  }
-  if (marginBottom > 0) {
-    styleParts.push(`margin-bottom: ${marginBottom}pt`);
-  }
-
-  if (styleParts.length === 0) {
-    return ` ${classAttr}`;
-  }
-
-  return ` ${classAttr} style="${styleParts.join("; ")}"`;
-}
 
 /**
  * Resolve field value จาก ApplicationContext

@@ -156,43 +156,93 @@ export default function ComposerClient() {
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'unsaved';
 
+/**
+ * useSaveStatus — transition-based state machine
+ *
+ * Root cause: schemaVersion (CURRENT_DESCRIPTOR_SCHEMA_VERSION) เป็น constant = 1
+ * ไม่ bump หลัง save → ใช้ schemaVersion เปรียบเทียบไม่ได้ → status ค้างที่ 'saving' ตลอด
+ *
+ * แก้: ใช้ **edge detection** ของ loading.save (true → false) เป็นสัญญาณ save เสร็จ
+ * แล้วตรวจ lastError เพื่อแยก success/fail
+ *
+ * Precedence (single deterministic state machine, ไม่มี timeout/setTimeout):
+ *   1) loading.save เพิ่ง false และ wasSavingRef เป็น true
+ *        → เพิ่งจบ save → 'saved' (ถ้าไม่มี error) หรือ 'unsaved' (ถ้ามี error)
+ *   2) loading.save === true
+ *        → 'saving'  + mark wasSavingRef = true
+ *   3) source เพิ่งเปลี่ยนเป็น 'default' (load() returned no descriptor)
+ *        → 'idle'
+ *   4) initial load เสร็จ (source='db' + sv!=null ครั้งแรก)
+ *        → 'saved' + เก็บ savedAt
+ *   5) otherwise → ไม่แตะ status
+ */
 function useSaveStatus(
   loading: { save: boolean },
   source: 'db' | 'default' | null,
-  schemaVersion: number | null
+  schemaVersion: number | null,
+  lastError: string | null
 ) {
   const [status, setStatus] = useState<SaveStatus>('idle');
   const [savedAt, setSavedAt] = useState<number | null>(null);
-  const lastSavedSource = useRef<'db' | 'default' | null>(null);
-  const lastSavedVersion = useRef<number | null>(null);
+  const wasSavingRef = useRef(false);
+  const prevLoadingSaveRef = useRef(false);
+  const prevSourceRef = useRef<'db' | 'default' | null>(null);
+  const prevSchemaVersionRef = useRef<number | null>(null);
 
-  // Detect: save เสร็จ → status = saved
   useEffect(() => {
+    const prevLoadingSave = prevLoadingSaveRef.current;
+    const prevSource = prevSourceRef.current;
+    const prevSv = prevSchemaVersionRef.current;
+
+    // Update refs (สำหรับ effect รอบหน้า)
+    prevLoadingSaveRef.current = loading.save;
+    prevSourceRef.current = source;
+    prevSchemaVersionRef.current = schemaVersion;
+
+    // 1) Edge: loading.save เพิ่ง false (true → false) → save เพิ่งจบ
+    if (prevLoadingSave === true && loading.save === false) {
+      wasSavingRef.current = false;
+      if (lastError) {
+        setStatus('unsaved');
+      } else {
+        setStatus('saved');
+        setSavedAt(Date.now());
+      }
+      return;
+    }
+
+    // 2) loading.save === true → save in flight
+    if (loading.save) {
+      wasSavingRef.current = true;
+      setStatus('saving');
+      return;
+    }
+
+    // 3) source เพิ่งเปลี่ยนเป็น 'default' (load returned no descriptor)
+    if (prevSource !== 'default' && source === 'default') {
+      wasSavingRef.current = false;
+      setStatus('idle');
+      return;
+    }
+
+    // 4) initial load เสร็จ: source=null→'db' (หรือ default→'db') ครั้งแรก + sv != null
+    //    → แสดง 'บันทึกแล้ว' ตามเวลาที่ load เสร็จ (ครั้งเดียว)
     if (
       source === 'db' &&
       schemaVersion !== null &&
-      (lastSavedSource.current !== 'db' ||
-        lastSavedVersion.current !== schemaVersion)
+      prevSource !== 'db' &&
+      !wasSavingRef.current
     ) {
-      lastSavedSource.current = 'db';
-      lastSavedVersion.current = schemaVersion;
       setStatus('saved');
       setSavedAt(Date.now());
-    } else if (source === 'default' && lastSavedSource.current === 'db') {
-      // load() แล้วไม่มี descriptor → idle
-      lastSavedSource.current = 'default';
-      setStatus('idle');
+      return;
     }
-  }, [source, schemaVersion]);
 
-  // saving state
-  useEffect(() => {
-    if (loading.save) {
-      setStatus('saving');
-    }
-  }, [loading.save]);
+    // 5) otherwise: ไม่แตะ status — preserve 'unsaved' ที่ user ยังไม่ได้ save
+  }, [loading.save, source, schemaVersion, lastError]);
 
   const markUnsaved = useCallback(() => {
+    // ใช้ functional updater กัน race กับ useEffect
     setStatus((s) => (s === 'saving' ? s : 'unsaved'));
   }, []);
 
@@ -282,7 +332,8 @@ function ComposerInner() {
   const { status: saveStatus, savedAt, markUnsaved } = useSaveStatus(
     loading,
     source,
-    schemaVersion
+    schemaVersion,
+    lastError
   );
 
   // Track: เมื่อ descriptor เปลี่ยนจากภายใน (Visual Composer) → mark unsaved
@@ -644,10 +695,12 @@ function ComposerInner() {
             ← กลับ
           </Button>
           <div className="min-w-0">
-            <h1 className="text-lg font-bold text-slate-900 leading-tight flex items-center gap-2">
-              <span>🧩</span>
-              <span className="truncate">Document Composer: {templateName}</span>
+            <h1 className="text-lg font-bold text-slate-900 leading-tight">
+              <span className="truncate">จัดหน้าเอกสาร: {templateName}</span>
             </h1>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              จัดลำดับ Heading, Field, Table และ Logo ของเอกสาร — ไม่ต้องเขียน JSON
+            </p>
             <p className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5 flex-wrap">
               <span>v{versionNumber}</span>
               <span>•</span>

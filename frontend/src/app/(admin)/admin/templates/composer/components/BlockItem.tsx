@@ -83,15 +83,14 @@ export function BlockItem({
                 align: {(block as LogoBlock).align ?? 'left'}
               </span>
             )}
-            {(block.type === 'field' || block.type === 'table') && (
-              <span className="text-[10px] text-slate-500 truncate">
-                {(block as FieldBlock).fieldId.slice(0, 8)}…
-                {fieldType && <span className="ml-1">({fieldType})</span>}
+            {(block.type === 'field' || block.type === 'table') && fieldType && (
+              <span className="text-[10px] text-slate-500">
+                ({fieldType})
               </span>
             )}
           </div>
         </div>
-        <div className="flex items-center gap-0.5 shrink-0">
+        <div className="flex items-center gap-1 shrink-0">
           <Button
             variant="ghost"
             size="sm"
@@ -99,9 +98,9 @@ export function BlockItem({
             disabled={index === 0}
             className="h-7 w-7 p-0"
             title="ย้ายขึ้น"
-            aria-label="Move up"
+            aria-label="ย้ายขึ้น"
           >
-            ▲
+            ↑
           </Button>
           <Button
             variant="ghost"
@@ -110,29 +109,29 @@ export function BlockItem({
             disabled={index === total - 1}
             className="h-7 w-7 p-0"
             title="ย้ายลง"
-            aria-label="Move down"
+            aria-label="ย้ายลง"
           >
-            ▼
+            ↓
           </Button>
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             onClick={() => setEditing((v) => !v)}
-            className="h-7 w-7 p-0"
-            title={editing ? 'ปิด Editor' : 'แก้ไข'}
-            aria-label="Edit"
+            className="h-7 px-2 text-[11px]"
+            title={editing ? 'ซ่อนรายละเอียด' : 'แก้ไข'}
+            aria-label={editing ? 'ซ่อนรายละเอียด' : 'แก้ไข'}
           >
-            {editing ? '▼' : '✏️'}
+            {editing ? 'ซ่อนรายละเอียด' : 'แก้ไข'}
           </Button>
           <Button
             variant="ghost"
             size="sm"
             onClick={onDelete}
-            className="h-7 w-7 p-0 text-red-600 hover:bg-red-50"
+            className="h-7 px-2 text-[11px] text-red-600 hover:bg-red-50"
             title="ลบ Block"
-            aria-label="Delete"
+            aria-label="ลบ Block"
           >
-            🗑
+            ลบ
           </Button>
         </div>
       </div>
