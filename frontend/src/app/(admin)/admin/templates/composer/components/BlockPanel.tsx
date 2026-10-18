@@ -204,6 +204,44 @@ export function BlockPanel({
               block.type === 'field' || block.type === 'table'
                 ? fieldMap.get((block as FieldBlock | TableBlock).fieldId)
                 : undefined;
+            // ──────────────────────────────────────────────────────────────
+            // DEBUG (Visual Composer label resolution) — เก็บหลักฐานจริง
+            // เพื่อพิสูจน์ว่า bug เกิดจาก:
+            //   A) lookup ไม่เจอ (key mismatch)
+            //   B) lookup เจอ แต่ labelTh = "" / undefined
+            //   C) property ที่ใช้ render ผิดตัว
+            // log เฉพาะ block ที่ขึ้น "(deleted field)" — คือ fld ว่าง หรือ
+            // fld.labelTh ว่าง/null/undefined
+            // ──────────────────────────────────────────────────────────────
+            if (
+              process.env.NODE_ENV !== 'production' &&
+              (block.type === 'field' || block.type === 'table')
+            ) {
+              const blockFieldId = (block as FieldBlock | TableBlock).fieldId;
+              const isMissingLabel =
+                !fld ||
+                fld.labelTh === undefined ||
+                fld.labelTh === null ||
+                (typeof fld.labelTh === 'string' && fld.labelTh.trim() === '');
+              if (isMissingLabel) {
+                // eslint-disable-next-line no-console
+                console.log('[BlockPanel][deleted-field-debug]', {
+                  blockIndex: idx,
+                  blockId: block.id,
+                  blockType: block.type,
+                  'block.fieldId': blockFieldId,
+                  'fieldMap.size': fieldMap.size,
+                  'fieldMap.keys()': Array.from(fieldMap.keys()),
+                  'fieldMap.has(block.fieldId)': fieldMap.has(blockFieldId),
+                  'fieldMap.get(block.fieldId)': fld ?? null,
+                  'fieldMap.get(block.fieldId)?.labelTh':
+                    fld?.labelTh ?? null,
+                  'fieldMap.get(block.fieldId)?.fieldId':
+                    fld?.fieldId ?? null,
+                  'fieldMap.get(block.fieldId)?.id': fld?.id ?? null,
+                });
+              }
+            }
             return (
               <li key={block.id}>
                 <BlockItem
