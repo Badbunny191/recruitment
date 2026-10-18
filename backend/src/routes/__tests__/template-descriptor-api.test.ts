@@ -345,6 +345,79 @@ async function runAllTests() {
   });
 
   // =====================================================================
+  // [1.1] D1 result shape — regression test
+  //
+  // Production ใช้ D1 (Cloudflare) ซึ่ง drizzle-orm/d1 return shape คือ
+  //   { success, meta: { changes, last_row_id, ... } }
+  // ไม่ใช่ top-level { changes } เหมือน better-sqlite3
+  //
+  // ถ้าอ่านผิด path → VERSION_MISMATCH 409 ตลอด (false positive)
+  // =====================================================================
+  await test('save with expectedVersion handles D1 result shape (meta.changes)', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+
+    // Intercept update().run() เพื่อ simulate D1 result shape
+    const originalUpdate = db.update;
+    let intercepted = false;
+    (db as any).update = function (...args: any[]) {
+      const q = originalUpdate.apply(this, args);
+      const originalRun = q.set.bind(q);
+      // Wrap the chain to inject D1 result shape
+      return new Proxy(q, {
+        get(target, prop) {
+          if (prop === 'set') {
+            return (...setArgs: any[]) => {
+              const next = originalRun(...setArgs);
+              const origWhereRun = next.where.bind(next);
+              return new Proxy(next, {
+                get(t2, p2) {
+                  if (p2 === 'where') {
+                    return (...wArgs: any[]) => {
+                      const final = origWhereRun(...wArgs);
+                      const origRun = final.run.bind(final);
+                      final.run = async () => {
+                        // Simulate D1: { success: true, meta: { changes: 1, last_row_id: 1 } }
+                        const realResult = await origRun();
+                        intercepted = true;
+                        return {
+                          success: true,
+                          meta: {
+                            changes: (realResult as any)?.changes ?? 1,
+                            last_row_id: (realResult as any)?.lastInsertRowid ?? 1,
+                          },
+                        };
+                      };
+                      return final;
+                    };
+                  }
+                  return (t2 as any)[p2];
+                },
+              });
+            };
+          }
+          return (target as any)[prop];
+        },
+      });
+    };
+
+    const first = await saveTemplateDescriptor(db as any, 'tv-1', SAMPLE_DESCRIPTOR, {
+      adminUserId: 'admin-1',
+    });
+    assertTrue(first.ok);
+    assertTrue(intercepted, 'D1 interceptor should have fired');
+
+    const second = await saveTemplateDescriptor(db as any, 'tv-1', SAMPLE_DESCRIPTOR, {
+      adminUserId: 'admin-1',
+      expectedVersion: 1,
+    });
+    assertTrue(second.ok, 'D1 result shape with meta.changes should yield ok=true');
+    sqlite.close();
+  });
+
+  // =====================================================================
   // [2] Template Descriptor Preview Service: buildPreviewContext
   // =====================================================================
   console.log('\n[2] Template Descriptor Preview Service');

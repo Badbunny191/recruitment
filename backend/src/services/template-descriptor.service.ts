@@ -297,8 +297,10 @@ export async function saveTemplateDescriptor(
         )
         .run();
 
-      // D1 / better-sqlite3 result shape: { changes, lastInsertRowid }
-      const changes = (result as any)?.changes ?? 0;
+      // D1 result shape:        { success, meta: { changes, last_row_id, ... } }
+      // better-sqlite3 shape:   { changes, lastInsertRowid }
+      // → support ทั้งสองเพื่อให้ tests (better-sqlite3) และ production (D1) ใช้ path เดียวกัน
+      const changes = (result as any)?.meta?.changes ?? (result as any)?.changes ?? 0;
       if (changes === 0) {
         // ตรวจว่า row exists เลย หรือ version mismatch จริง
         const exists = await resolved
