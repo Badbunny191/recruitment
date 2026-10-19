@@ -71,7 +71,7 @@ interface EditUserForm {
 
 interface CreateUserResult {
   email: string;
-  tempPassword: string;
+  temporaryPassword: string;
 }
 
 const EMPTY_CREATE_FORM: CreateUserForm = {
@@ -111,7 +111,7 @@ export default function UsersPage() {
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
   const [editForm, setEditForm] = useState<EditUserForm>({ email: '', role: 'VIEWER', isActive: true });
   const [createResult, setCreateResult] = useState<CreateUserResult | null>(null);
-  const [resetResult, setResetResult] = useState<{ email: string; tempPassword: string } | null>(null);
+  const [resetResult, setResetResult] = useState<{ email: string; temporaryPassword: string } | null>(null);
   const [disableReason, setDisableReason] = useState('');
 
   // Submitting states
@@ -294,9 +294,15 @@ export default function UsersPage() {
     setError(null);
     try {
       const result = await createUser(createForm);
+      if (
+        typeof result.temporaryPassword !== 'string' ||
+        result.temporaryPassword.length === 0
+      ) {
+        throw new Error('สร้างผู้ใช้สำเร็จ แต่ไม่ได้รับ Temporary Password จากเซิร์ฟเวอร์');
+      }
       setCreateResult({
         email: createForm.email,
-        tempPassword: result.tempPassword || '',
+        temporaryPassword: result.temporaryPassword,
       });
       await load();
     } catch (err: any) {
@@ -328,9 +334,15 @@ export default function UsersPage() {
     setError(null);
     try {
       const result = await resetUserPassword(editingUser.id);
+      if (
+        typeof result.temporaryPassword !== 'string' ||
+        result.temporaryPassword.length === 0
+      ) {
+        throw new Error('รีเซ็ตรหัสผ่านสำเร็จ แต่ไม่ได้รับ Temporary Password จากเซิร์ฟเวอร์');
+      }
       setResetResult({
         email: editingUser.email,
-        tempPassword: result.tempPassword || '',
+        temporaryPassword: result.temporaryPassword,
       });
       await load();
     } catch (err: any) {
@@ -712,11 +724,11 @@ export default function UsersPage() {
               <div className="space-y-2">
                 <Label>รหัสผ่านชั่วคราว (แสดงครั้งเดียว)</Label>
                 <div className="flex gap-2">
-                  <Input value={createResult.tempPassword} readOnly className="font-mono" />
+                  <Input value={createResult.temporaryPassword} readOnly className="font-mono" />
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => navigator.clipboard?.writeText(createResult.tempPassword)}
+                    onClick={() => navigator.clipboard?.writeText(createResult.temporaryPassword)}
                   >
                     📋 คัดลอก
                   </Button>
@@ -886,11 +898,11 @@ export default function UsersPage() {
               <div className="space-y-2">
                 <Label>รหัสผ่านชั่วคราวใหม่ (แสดงครั้งเดียว)</Label>
                 <div className="flex gap-2">
-                  <Input value={resetResult.tempPassword} readOnly className="font-mono" />
+                  <Input value={resetResult.temporaryPassword} readOnly className="font-mono" />
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => navigator.clipboard?.writeText(resetResult.tempPassword)}
+                    onClick={() => navigator.clipboard?.writeText(resetResult.temporaryPassword)}
                   >
                     📋 คัดลอก
                   </Button>
