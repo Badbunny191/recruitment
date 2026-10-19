@@ -53,10 +53,23 @@ export const templateVersions = sqliteTable('template_versions', {
   templateId: text('template_id').notNull().references(() => templates.id, { onDelete: 'restrict' }),
   versionNumber: integer('version_number').notNull(),
   status: text('status').default('DRAFT'),
-  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  // ── Document Composer V1 — Descriptor Storage (Migration 022) ──────
+  // descriptor_json = serialized DocumentDescriptor (version + blocks) as raw TEXT
+  //   - ใช้ raw text (no `mode: 'json'`) เพื่อให้ service layer control JSON.parse
+  //     เอง — version-safe (รองรับ corruption / schema mismatch)
+  //   - null = legacy (ยังไม่ define descriptor — fallback PDF renderer เดิม)
+  // descriptor_schema_version = เวอร์ชัน schema ที่ save (ปัจจุบัน = 1)
+  //   null = legacy / never saved
+  //   version-safe: ตอน load เทียบกับ descriptor package version → reject mismatch
+  descriptorJson: text('descriptor_json'),
+  descriptorSchemaVersion: integer('descriptor_schema_version'),
+  descriptorUpdatedAt: integer('descriptor_updated_at', { mode: 'timestamp' }),
+  descriptorUpdatedBy: text('descriptor_updated_by').references(() => adminUsers.id, { onDelete: 'set null' }),
 }, (table) => ({
   unqVersion: uniqueIndex('unq_template_version').on(table.templateId, table.versionNumber),
-  checkStatus: check('chk_version_status', sql`${table.status} IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')`)
+  checkStatus: check('chk_version_status', sql`${table.status} IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')`),
+  descriptorVersionIdx: index('idx_tpl_versions_descriptor_version').on(table.descriptorSchemaVersion),
 }));
 
 export const templateSections = sqliteTable('template_sections', {

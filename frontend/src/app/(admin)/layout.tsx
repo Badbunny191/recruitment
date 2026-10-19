@@ -3,6 +3,7 @@
 import { usePathname } from 'next/navigation';
 import { AdminGuard } from '@/components/AdminGuard';
 import { AdminNavbar } from '@/components/admin/AdminNavbar';
+import { ToastProvider, Toaster } from '@/components/ui/toast';
 
 export default function AdminLayout({
   children,
@@ -18,10 +19,13 @@ export default function AdminLayout({
 
   return (
     <AdminGuard>
-      <div className="min-h-screen bg-slate-100">
-        <AdminNavbar />
-        {children}
-      </div>
+      <ToastProvider>
+        <div className="min-h-screen bg-slate-100">
+          <AdminNavbar />
+          {children}
+          <Toaster />
+        </div>
+      </ToastProvider>
     </AdminGuard>
   );
 }
