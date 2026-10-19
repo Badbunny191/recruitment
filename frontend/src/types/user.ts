@@ -34,13 +34,13 @@ export interface UpdateUserRequest {
 export interface CreateUserResponse {
   success: boolean;
   id: string;
-  tempPassword?: string; // Only returned in demo/development
+  temporaryPassword: string; // Plaintext temp password (returned ONCE)
   message: string;
 }
 
 export interface ResetPasswordResponse {
   success: boolean;
-  tempPassword?: string;
+  temporaryPassword: string; // Plaintext temp password (returned ONCE)
   message: string;
 }
 
