@@ -3440,7 +3440,7 @@ adminRoutes.post(
 
     const id = uuidv4();
     const tempPassword = generateTempPassword();
-    const now = Math.floor(Date.now() / 1000);
+    const now = new Date();
 
     await db.insert(adminUsers).values({
       id,
