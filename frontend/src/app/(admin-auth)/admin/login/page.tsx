@@ -8,6 +8,17 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 
 const STORAGE_KEY = 'adminToken';
+const STORAGE_KEY_MUST_CHANGE_PASSWORD = 'mustChangePassword';
+
+interface LoginResponse {
+  token: string;
+  user: {
+    id: string;
+    email: string;
+    role: string;
+    mustChangePassword: boolean;
+  };
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -26,15 +37,22 @@ export default function LoginPage() {
           const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
           const decoded = JSON.parse(atob(payload));
           if (decoded.exp && decoded.exp * 1000 > Date.now()) {
-            // Token ยังไม่หมดอายุ → redirect ไป dashboard
-            router.replace('/admin/dashboard');
+            // Token ยังไม่หมดอายุ → redirect based on mustChangePassword
+            const mustChange = localStorage.getItem(STORAGE_KEY_MUST_CHANGE_PASSWORD);
+            if (mustChange === 'true') {
+              router.replace('/admin/change-password');
+            } else {
+              router.replace('/admin/dashboard');
+            }
             return;
           }
         }
         // Token หมดอายุหรือผิด format → ลบทิ้ง
         localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(STORAGE_KEY_MUST_CHANGE_PASSWORD);
       } catch {
         localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(STORAGE_KEY_MUST_CHANGE_PASSWORD);
       }
     }
     setChecked(true);
@@ -49,12 +67,25 @@ export default function LoginPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
+      
       if (res.ok) {
-        const { token } = await res.json();
-        localStorage.setItem(STORAGE_KEY, token);
-        router.push('/admin/dashboard');
+        const data: LoginResponse = await res.json();
+        
+        // เก็บ token
+        localStorage.setItem(STORAGE_KEY, data.token);
+        
+        // เก็บ mustChangePassword flag เพื่อใช้ในการ redirect
+        localStorage.setItem(STORAGE_KEY_MUST_CHANGE_PASSWORD, String(data.user.mustChangePassword));
+        
+        // Redirect based on mustChangePassword flag
+        if (data.user.mustChangePassword) {
+          router.push('/admin/change-password');
+        } else {
+          router.push('/admin/dashboard');
+        }
       } else {
-        alert('อีเมลหรือรหัสผ่านไม่ถูกต้อง');
+        const data = await res.json().catch(() => ({}));
+        alert(data.message || 'อีเมลหรือรหัสผ่านไม่ถูกต้อง');
       }
     } catch {
       alert('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้');

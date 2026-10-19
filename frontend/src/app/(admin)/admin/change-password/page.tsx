@@ -10,9 +10,11 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useAdminAuth } from '@/lib/useAdminAuth';
 import { adminFetch } from '@/lib/useAdminAuth';
 
+const STORAGE_KEY_MUST_CHANGE_PASSWORD = 'mustChangePassword';
+
 export default function ChangePasswordPage() {
   const router = useRouter();
-  const { user, logout } = useAdminAuth();
+  const { user } = useAdminAuth();
   const [mounted, setMounted] = useState(false);
 
   const [currentPassword, setCurrentPassword] = useState('');
@@ -47,6 +49,22 @@ export default function ChangePasswordPage() {
       setError('รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร');
       return;
     }
+    if (!/[A-Z]/.test(newPassword)) {
+      setError('รหัสผ่านใหม่ต้องมีตัวพิมพ์ใหญ่อย่างน้อย 1 ตัว');
+      return;
+    }
+    if (!/[a-z]/.test(newPassword)) {
+      setError('รหัสผ่านใหม่ต้องมีตัวพิมพ์เล็กอย่างน้อย 1 ตัว');
+      return;
+    }
+    if (!/[0-9]/.test(newPassword)) {
+      setError('รหัสผ่านใหม่ต้องมีตัวเลขอย่างน้อย 1 ตัว');
+      return;
+    }
+    if (!/[!@#$%^&*()_+\-=\[\]{}|;':",.\/<>?\\]/.test(newPassword)) {
+      setError('รหัสผ่านใหม่ต้องมีอักขระพิเศษอย่างน้อย 1 ตัว');
+      return;
+    }
     if (newPassword !== confirmPassword) {
       setError('รหัสผ่านใหม่และยืนยันรหัสผ่านไม่ตรงกัน');
       return;
@@ -61,6 +79,7 @@ export default function ChangePasswordPage() {
           body: JSON.stringify({
             currentPassword,
             newPassword,
+            confirmPassword,
           }),
         }
       );
@@ -70,9 +89,17 @@ export default function ChangePasswordPage() {
         setCurrentPassword('');
         setNewPassword('');
         setConfirmPassword('');
+        
+        // Clear mustChangePassword flag
+        localStorage.removeItem(STORAGE_KEY_MUST_CHANGE_PASSWORD);
+        
+        // Redirect to dashboard after 2 seconds
+        setTimeout(() => {
+          router.push('/admin/dashboard');
+        }, 2000);
       } else {
         const data = await res.json().catch(() => ({}));
-        setError(data.error || data.message || 'ไม่สามารถเปลี่ยนรหัสผ่านได้');
+        setError(data.message || 'ไม่สามารถเปลี่ยนรหัสผ่านได้');
       }
     } catch {
       setError('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้');
