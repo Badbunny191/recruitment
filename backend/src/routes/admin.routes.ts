@@ -22,22 +22,147 @@ import {
   DEFAULT_APPLICATION_PATTERN,
 } from '../utils/application-pattern';
 import bcrypt from 'bcryptjs';
+import { hashPassword } from '../services/auth.service';
+import { validatePassword, isCommonPassword } from '../utils/password';
+import { ChangePasswordSchema } from '../schemas/validators';
 const adminRoutes = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
 
 adminRoutes.post('/auth/login', zValidator('json', LoginRequestSchema), async (c) => {
   const { email, password } = c.req.valid('json');
   const db = drizzle(c.env.DB);
-  const user = await db.select().from(adminUsers).where(eq(adminUsers.email, email)).get();
   
-  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+  // Single query to get user with all account status fields
+  const user = await db
+    .select({
+      id: adminUsers.id,
+      email: adminUsers.email,
+      passwordHash: adminUsers.passwordHash,
+      role: adminUsers.role,
+      isActive: adminUsers.isActive,
+      mustChangePassword: adminUsers.mustChangePassword,
+      lockedUntil: adminUsers.lockedUntil,
+    })
+    .from(adminUsers)
+    .where(eq(adminUsers.email, email))
+    .get();
+  
+  if (!user) {
+    return c.json({ error: 'Invalid credentials', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' }, 401);
   }
-
-  const token = await sign({ id: user.id, email: user.email, role: user.role, exp: Math.floor(Date.now() / 1000) + 28800 }, c.env.JWT_SECRET);
-  return c.json({ token, user: { id: user.id, email: user.email, role: user.role } });
+  
+  // Check if account is locked
+  if (user.lockedUntil) {
+    const now = Date.now();
+    const lockedUntilMs = new Date(user.lockedUntil).getTime();
+    if (now < lockedUntilMs) {
+      return c.json({ error: 'Account Locked', message: 'บัญชีถูกล็อกชั่วคราว กรุณาลองใหม่ภายหลัง' }, 423);
+    }
+  }
+  
+  // Check if account is disabled
+  if (user.isActive === false) {
+    return c.json({ error: 'Account Disabled', message: 'บัญชีถูกปิดใช้งาน กรุณาติดต่อผู้ดูแลระบบ' }, 403);
+  }
+  
+  // Verify password with bcrypt (only bcrypt hashes stored)
+  const valid = await bcrypt.compare(password, user.passwordHash);
+  if (!valid) {
+    return c.json({ error: 'Invalid credentials', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' }, 401);
+  }
+  
+  // Generate JWT
+  const token = await sign({ 
+    id: user.id, 
+    email: user.email, 
+    role: user.role, 
+    exp: Math.floor(Date.now() / 1000) + 28800 
+  }, c.env.JWT_SECRET);
+  
+  return c.json({ 
+    token, 
+    user: { 
+      id: user.id, 
+      email: user.email, 
+      role: user.role,
+      mustChangePassword: user.mustChangePassword ?? false
+    } 
+  });
 });
 
 adminRoutes.use('/*', authMiddleware);
+
+/**
+ * POST /admin/auth/change-password
+ * Changes the authenticated user's password.
+ * Requires current password verification.
+ * 
+ * SECURITY:
+ * - Verifies current password before allowing change
+ * - Hashes new password with bcrypt BEFORE storing
+ * - Resets mustChangePassword flag
+ * - Never logs or stores plaintext passwords
+ */
+adminRoutes.post('/auth/change-password', zValidator('json', ChangePasswordSchema), async (c) => {
+  const currentUser = c.get('jwtPayload');
+  if (!currentUser) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  const { currentPassword, newPassword, confirmPassword } = c.req.valid('json');
+  const db = drizzle(c.env.DB);
+  
+  // Validate password strength
+  const passwordValidation = validatePassword(newPassword);
+  if (!passwordValidation.valid) {
+    return c.json({ 
+      error: 'Password policy violation', 
+      message: passwordValidation.errors.join(' '),
+      errors: passwordValidation.errors
+    }, 400);
+  }
+  
+  // Check for common passwords
+  if (isCommonPassword(newPassword)) {
+    return c.json({ 
+      error: 'Weak password', 
+      message: 'รหัสผ่านนี้ถูกใช้งานบ่อยเกินไป กรุณาเลือกรหัสผ่านที่ปลอดภัยกว่า'
+    }, 400);
+  }
+  
+  // Get current user from DB
+  const user = await db.select().from(adminUsers).where(eq(adminUsers.id, currentUser.id)).get();
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+  
+  // Verify current password with bcrypt
+  const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+  if (!valid) {
+    return c.json({ 
+      error: 'Invalid credentials', 
+      message: 'รหัสผ่านปัจจุบันไม่ถูกต้อง' 
+    }, 401);
+  }
+  
+  // Hash new password with bcrypt BEFORE storing
+  const hashedPassword = await hashPassword(newPassword);
+  
+  // Update user password
+  await db.update(adminUsers)
+    .set({ 
+      passwordHash: hashedPassword,
+      passwordMigrated: true,
+      passwordChangedAt: new Date(),
+      mustChangePassword: false,
+      failedLoginAttempts: 0,
+    })
+    .where(eq(adminUsers.id, currentUser.id));
+  
+  return c.json({ 
+    success: true, 
+    message: 'เปลี่ยนรหัสผ่านสำเร็จ' 
+  });
+});
 
 adminRoutes.get('/fields', async (c) => c.json({ data: await drizzle(c.env.DB).select().from(fieldMaster) }));
 adminRoutes.post('/fields', adminOnlyMiddleware, auditMiddleware('FIELD_MASTER'), zValidator('json', FieldMasterCreateSchema), async (c) => {
@@ -3418,6 +3543,9 @@ function generateTempPassword(): string {
  * POST /admin/users
  * Creates a new admin user (non-SUPER_ADMIN).
  * Returns the generated temporary password once (admin must hand it to the user).
+ * 
+ * SECURITY: Password is hashed with bcrypt BEFORE storing in DB.
+ * Temporary password is shown ONLY in response, never stored or logged.
  */
 adminRoutes.post(
   '/users',
@@ -3439,31 +3567,32 @@ adminRoutes.post(
     }
 
     const id = uuidv4();
-    const tempPassword = generateTempPassword();
+    // Generate temporary password ONCE
+    const temporaryPassword = generateTempPassword();
+    // Hash BEFORE storing - NEVER store plaintext
+    const passwordHash = await hashPassword(temporaryPassword);
     const now = new Date();
 
     await db.insert(adminUsers).values({
       id,
       email: data.email,
-      // NOTE: /admin/auth/login currently does a plaintext compare on
-      // passwordHash. We follow the same convention here; the passwordMigrated
-      // flag is set to false so a future hardening pass can detect and
-      // re-hash this user.
-      passwordHash: tempPassword,
+      // Store HASH only - bcrypt format $2a$10$...
+      passwordHash: passwordHash,
       role: data.role,
       isActive: true,
       mustChangePassword: data.mustChangePassword ?? true,
       passwordChangedAt: now,
       failedLoginAttempts: 0,
       lockedUntil: null,
-      passwordMigrated: false,
+      passwordMigrated: true, // Always true since we're storing bcrypt hash
     } as any);
 
     return c.json(
       {
         success: true,
         id,
-        tempPassword,
+        // Show password ONCE in response only - NEVER store or log
+        temporaryPassword,
         message: 'สร้างผู้ใช้สำเร็จ — กรุณาส่งรหัสผ่านชั่วคราวให้ผู้ใช้อย่างปลอดภัย',
       },
       201,
@@ -3561,6 +3690,9 @@ adminRoutes.patch(
  * POST /admin/users/:id/reset-password
  * Generates a new temporary password and forces the user to change it on next login.
  * Returns the new password once.
+ * 
+ * SECURITY: Password is hashed with bcrypt BEFORE storing in DB.
+ * Temporary password is shown ONLY in response, never stored or logged.
  */
 adminRoutes.post(
   '/users/:id/reset-password',
@@ -3575,24 +3707,28 @@ adminRoutes.post(
       return c.json({ error: 'User not found' }, 404);
     }
 
-    const tempPassword = generateTempPassword();
-    const now = Math.floor(Date.now() / 1000);
+    // Generate temporary password ONCE
+    const temporaryPassword = generateTempPassword();
+    // Hash BEFORE storing - NEVER store plaintext
+    const passwordHash = await hashPassword(temporaryPassword);
+    const now = new Date();
 
     await db
       .update(adminUsers)
       .set({
-        passwordHash: tempPassword,
+        // Store HASH only - bcrypt format $2a$10$...
+        passwordHash: passwordHash,
         mustChangePassword: true,
         passwordChangedAt: now,
         failedLoginAttempts: 0,
         lockedUntil: null,
-        passwordMigrated: false,
+        passwordMigrated: true, // Always true since we're storing bcrypt hash
       } as any)
       .where(eq(adminUsers.id, id));
 
     return c.json({
       success: true,
-      tempPassword,
+      temporaryPassword,
       message: 'รีเซ็ตรหัสผ่านสำเร็จ',
     });
   },
