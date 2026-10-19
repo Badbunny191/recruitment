@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,44 @@ import { useAdminAuth } from '@/lib/useAdminAuth';
 import { adminFetch } from '@/lib/useAdminAuth';
 
 const STORAGE_KEY_MUST_CHANGE_PASSWORD = 'mustChangePassword';
+
+// ============================================================================
+// Password policy — must mirror backend exactly:
+// backend/src/schemas/validators.ts (ChangePasswordSchema)
+// backend/src/utils/password.ts (validatePassword + isCommonPassword)
+// backend/src/routes/admin.routes.ts (POST /admin/auth/change-password)
+// ============================================================================
+const PASSWORD_MIN_LENGTH = 8;
+// Special-char class MUST match backend exactly (escape carefully):
+// /[!@#$%^&*()_+\-=\[\]{}|;':",.\/<>?\\]/
+const SPECIAL_CHAR_REGEX = /[!@#$%^&*()_+\-=\[\]{}|;':",./<>?\\]/;
+const UPPERCASE_REGEX = /[A-Z]/;
+const LOWERCASE_REGEX = /[a-z]/;
+const NUMBER_REGEX = /[0-9]/;
+
+type RuleKey =
+  | 'minLength'
+  | 'uppercase'
+  | 'lowercase'
+  | 'number'
+  | 'special'
+  | 'notSameAsCurrent'
+  | 'confirmMatch';
+
+interface PasswordRule {
+  key: RuleKey;
+  label: string;
+}
+
+const PASSWORD_RULES: PasswordRule[] = [
+  { key: 'minLength', label: 'มีความยาวอย่างน้อย 8 ตัวอักษร' },
+  { key: 'uppercase', label: 'มีตัวอักษรพิมพ์ใหญ่' },
+  { key: 'lowercase', label: 'มีตัวอักษรพิมพ์เล็ก' },
+  { key: 'number', label: 'มีตัวเลข' },
+  { key: 'special', label: 'มีอักขระพิเศษ' },
+  { key: 'notSameAsCurrent', label: 'ไม่เหมือนรหัสผ่านปัจจุบัน' },
+  { key: 'confirmMatch', label: 'ตรงกับช่องยืนยันรหัสผ่าน' },
+];
 
 export default function ChangePasswordPage() {
   const router = useRouter();
@@ -24,52 +62,62 @@ export default function ChangePasswordPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
+  // Independent visibility toggles per field
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  if (!mounted || !user) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-slate-50">
-        <div className="text-slate-500">กำลังโหลด...</div>
-      </div>
-    );
-  }
+  // Trim helper — match backend "min(1)" semantics: any non-empty string
+  const trimmedCurrent = currentPassword.trim();
+  const hasCurrent = trimmedCurrent.length > 0;
+  const hasNew = newPassword.length > 0;
+  const hasConfirm = confirmPassword.length > 0;
+
+  // Per-rule status: 'pending' | 'pass' | 'fail'
+  // For confirmMatch: only evaluate once user has typed something into confirm
+  // (so an empty confirm doesn't immediately show a red ✕).
+  const ruleStatus = useMemo<Record<RuleKey, 'pending' | 'pass' | 'fail'>>(() => {
+    const status: Record<RuleKey, 'pending' | 'pass' | 'fail'> = {
+      minLength: !hasNew ? 'pending' : (newPassword.length >= PASSWORD_MIN_LENGTH ? 'pass' : 'fail'),
+      uppercase: !hasNew ? 'pending' : (UPPERCASE_REGEX.test(newPassword) ? 'pass' : 'fail'),
+      lowercase: !hasNew ? 'pending' : (LOWERCASE_REGEX.test(newPassword) ? 'pass' : 'fail'),
+      number: !hasNew ? 'pending' : (NUMBER_REGEX.test(newPassword) ? 'pass' : 'fail'),
+      special: !hasNew ? 'pending' : (SPECIAL_CHAR_REGEX.test(newPassword) ? 'pass' : 'fail'),
+      notSameAsCurrent: !hasNew || !hasCurrent
+        ? 'pending'
+        : (newPassword !== currentPassword ? 'pass' : 'fail'),
+      // Only check confirm after user starts typing it; suppress the red ✕ on empty.
+      confirmMatch: !hasConfirm
+        ? 'pending'
+        : (confirmPassword === newPassword ? 'pass' : 'fail'),
+    };
+    return status;
+  }, [hasNew, hasCurrent, hasConfirm, newPassword, currentPassword, confirmPassword]);
+
+  const everyFrontendRulePasses = useMemo(
+    () => (Object.values(ruleStatus) as Array<'pending' | 'pass' | 'fail'>).every((s) => s === 'pass'),
+    [ruleStatus],
+  );
+
+  // Submit is blocked unless ALL frontend-checkable rules pass.
+  // Note: we never try to verify the current password's correctness here —
+  // the backend is the source of truth for that.
+  const canSubmit =
+    hasCurrent &&
+    hasNew &&
+    hasConfirm &&
+    everyFrontendRulePasses &&
+    !submitting;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSubmit) return; // belt-and-braces; button should already be disabled
     setError(null);
     setSuccess(false);
-
-    if (!currentPassword.trim()) {
-      setError('กรุณากรอกรหัสผ่านปัจจุบัน');
-      return;
-    }
-    if (newPassword.length < 8) {
-      setError('รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร');
-      return;
-    }
-    if (!/[A-Z]/.test(newPassword)) {
-      setError('รหัสผ่านใหม่ต้องมีตัวพิมพ์ใหญ่อย่างน้อย 1 ตัว');
-      return;
-    }
-    if (!/[a-z]/.test(newPassword)) {
-      setError('รหัสผ่านใหม่ต้องมีตัวพิมพ์เล็กอย่างน้อย 1 ตัว');
-      return;
-    }
-    if (!/[0-9]/.test(newPassword)) {
-      setError('รหัสผ่านใหม่ต้องมีตัวเลขอย่างน้อย 1 ตัว');
-      return;
-    }
-    if (!/[!@#$%^&*()_+\-=\[\]{}|;':",.\/<>?\\]/.test(newPassword)) {
-      setError('รหัสผ่านใหม่ต้องมีอักขระพิเศษอย่างน้อย 1 ตัว');
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setError('รหัสผ่านใหม่และยืนยันรหัสผ่านไม่ตรงกัน');
-      return;
-    }
-
     setSubmitting(true);
     try {
       const res = await adminFetch(
@@ -86,13 +134,18 @@ export default function ChangePasswordPage() {
 
       if (res.ok) {
         setSuccess(true);
+        // SECURITY: clear all three password fields after success.
+        // No localStorage / sessionStorage writes of passwords.
         setCurrentPassword('');
         setNewPassword('');
         setConfirmPassword('');
-        
-        // Clear mustChangePassword flag
+        setShowCurrent(false);
+        setShowNew(false);
+        setShowConfirm(false);
+
+        // Clear only the mustChangePassword flag (not a password).
         localStorage.removeItem(STORAGE_KEY_MUST_CHANGE_PASSWORD);
-        
+
         // Redirect to dashboard after 2 seconds
         setTimeout(() => {
           router.push('/admin/dashboard');
@@ -107,6 +160,14 @@ export default function ChangePasswordPage() {
       setSubmitting(false);
     }
   };
+
+  if (!mounted || !user) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-50">
+        <div className="text-slate-500">กำลังโหลด...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-4 md:p-8 space-y-6 max-w-2xl mx-auto">
@@ -144,50 +205,138 @@ export default function ChangePasswordPage() {
               </Alert>
             )}
 
+            {/* Current password — we only check "non-empty" on the frontend.
+                Backend verifies correctness. */}
             <div className="space-y-2">
               <Label htmlFor="current">รหัสผ่านปัจจุบัน *</Label>
-              <Input
-                id="current"
-                type="password"
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                required
-                autoComplete="current-password"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="current"
+                  type={showCurrent ? 'text' : 'password'}
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  required
+                  autoComplete="current-password"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setShowCurrent((v) => !v)}
+                  aria-label={showCurrent ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+                  aria-pressed={showCurrent}
+                  title={showCurrent ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+                  disabled={submitting}
+                >
+                  {showCurrent ? '🙈' : '👁️'}
+                </Button>
+              </div>
             </div>
 
+            {/* New password — drives all 7 password rules except confirmMatch */}
             <div className="space-y-2">
               <Label htmlFor="new">รหัสผ่านใหม่ *</Label>
-              <Input
-                id="new"
-                type="password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                required
-                minLength={8}
-                autoComplete="new-password"
-              />
-              <p className="text-xs text-slate-500">อย่างน้อย 8 ตัวอักษร</p>
+              <div className="flex gap-2">
+                <Input
+                  id="new"
+                  type={showNew ? 'text' : 'password'}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  required
+                  autoComplete="new-password"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setShowNew((v) => !v)}
+                  aria-label={showNew ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+                  aria-pressed={showNew}
+                  title={showNew ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+                  disabled={submitting}
+                >
+                  {showNew ? '🙈' : '👁️'}
+                </Button>
+              </div>
             </div>
 
+            {/* Confirm password */}
             <div className="space-y-2">
               <Label htmlFor="confirm">ยืนยันรหัสผ่านใหม่ *</Label>
-              <Input
-                id="confirm"
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                required
-                minLength={8}
-                autoComplete="new-password"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="confirm"
+                  type={showConfirm ? 'text' : 'password'}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  required
+                  autoComplete="new-password"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setShowConfirm((v) => !v)}
+                  aria-label={showConfirm ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+                  aria-pressed={showConfirm}
+                  title={showConfirm ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+                  disabled={submitting}
+                >
+                  {showConfirm ? '🙈' : '👁️'}
+                </Button>
+              </div>
+            </div>
+
+            {/* Real-time rule checklist.
+                Status: pending (gray) | pass (green ✓) | fail (red ✕).
+                Note: "ไม่ใช่รหัสผ่านที่พบบ่อย" is NOT shown in this checklist because
+                the frontend does not have the same common-password list as the
+                backend (per project rule: don't duplicate that list).
+                Backend's error message remains the source of truth for that rule. */}
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <p className="text-sm font-medium text-slate-700 mb-2">เงื่อนไขรหัสผ่าน</p>
+              <ul className="space-y-1 text-sm">
+                {PASSWORD_RULES.map((rule) => {
+                  const s = ruleStatus[rule.key];
+                  const color =
+                    s === 'pass'
+                      ? 'text-emerald-700'
+                      : s === 'fail'
+                        ? 'text-red-600'
+                        : 'text-slate-400';
+                  const icon = s === 'pass' ? '✓' : s === 'fail' ? '✕' : '○';
+                  return (
+                    <li key={rule.key} className={`flex items-center gap-2 ${color}`}>
+                      <span aria-hidden="true" className="w-3 text-center">{icon}</span>
+                      <span>{rule.label}</span>
+                    </li>
+                  );
+                })}
+                <li className="flex items-center gap-2 text-slate-500">
+                  <span aria-hidden="true" className="w-3 text-center">●</span>
+                  <span>
+                    หลีกเลี่ยงรหัสผ่านที่พบบ่อย
+                    <span className="ml-1 text-xs text-slate-400">
+                      (เซิร์ฟเวอร์เป็นผู้ตรวจ)
+                    </span>
+                  </span>
+                </li>
+              </ul>
             </div>
 
             <div className="flex gap-2 pt-2">
-              <Button type="submit" disabled={submitting}>
-                {submitting ? 'กำลังเปลี่ยน...' : 'เปลี่ยนรหัสผ่าน'}
+              <Button type="submit" disabled={!canSubmit}>
+                {submitting ? 'กำลังเปลี่ยนรหัสผ่าน...' : 'เปลี่ยนรหัสผ่าน'}
               </Button>
-              <Button type="button" variant="outline" onClick={() => router.back()} disabled={submitting}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => router.back()}
+                disabled={submitting}
+              >
                 ยกเลิก
               </Button>
             </div>
