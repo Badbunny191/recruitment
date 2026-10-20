@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "echo \"(no lint configured)\" && exit 0",
-    "test": "echo \"(no frontend tests yet)\" && exit 0",
+    "test": "node --import tsx src/lib/__tests__/date.test.ts",
+    "test:date": "node --import tsx src/lib/__tests__/date.test.ts",
     "typecheck": "tsc --noEmit",
     "deploy": "npm run build && wrangler pages deploy out --project-name=sao-recruitment-frontend --commit-dirty=true"
   },
@@ -29,6 +30,7 @@
     "autoprefixer": "^10.4.19",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.4.0",
     "wrangler": "^3.114.17"
   }

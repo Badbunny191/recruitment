@@ -17,6 +17,7 @@ export interface AdminUser {
   lockedUntil: number | null;
   isActive?: boolean;
   createdAt: number;
+  lastLoginAt: string | number | Date | null;  // Migration 023
 }
 
 export interface CreateUserRequest {
