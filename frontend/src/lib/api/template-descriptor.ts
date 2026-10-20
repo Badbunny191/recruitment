@@ -116,10 +116,43 @@ export interface PreviewMeta {
   }>;
 }
 
+/**
+ * โหมดของ Live Preview
+ * - `form`     → body field เป็น form control จริง (input/textarea/select/…)
+ * - `document` → body field เป็น label + value เหมือน PDF
+ */
+export type PreviewMode = 'form' | 'document';
+
+/**
+ * Token value (สำหรับแผง diagnostics)
+ */
+export interface PreviewTokenInfo {
+  token: string;
+  label: string;
+  text: string;
+  /** true = ไม่มีข้อมูลจริง → ใช้ placeholder */
+  empty: boolean;
+}
+
+/**
+ * Render options (ส่งไป backend)
+ */
+export interface PreviewOptions {
+  mode?: PreviewMode;
+  includeHeader?: boolean;
+  title?: string;
+}
+
 export interface PreviewResponse {
   html: string;
   body: string;
+  /** Document header block (logo placeholder + title + token strip) */
+  header: string;
   meta: PreviewMeta;
+  /** โหมดที่ใช้ render (UI ใช้ toggle Form ↔ Document) */
+  mode: PreviewMode;
+  /** resolved tokens (สำหรับแผง diagnostics) */
+  tokens: PreviewTokenInfo[];
 }
 
 export interface GeneratorMeta {
@@ -287,6 +320,7 @@ export async function saveTemplateDescriptor(
 
 export interface PreviewPayload {
   descriptor: DocumentDescriptor;
+  options?: PreviewOptions;
 }
 
 export async function previewTemplateDescriptor(

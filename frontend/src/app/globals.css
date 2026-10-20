@@ -29,3 +29,40 @@ body {
     )
     rgb(var(--background-start-rgb));
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Document Composer — Live Preview Modal
+
+   .dc-a4-sheet wraps a PreviewFrame iframe that renders the full HTML body
+   from the backend renderer (renderDescriptorToPreview).
+
+   - A4 aspect 210mm × 297mm
+   - คง mm เป็น physical units ไม่ยืดหยุ่นตาม viewport
+   - ที่ขอบ stage (`flex-1 overflow-y-auto`) ทำหน้าที่ scroll ภายใน
+     → จอเล็กจะเลื่อนเอกสารได้ทั้งแผ่น ไม่ถูกบีบจนอ่านไม่ออก (Req 12)
+   ───────────────────────────────────────────────────────────────────────── */
+.dc-a4-sheet {
+  width: 210mm;
+  min-height: 297mm;
+  background: #ffffff;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 8px 24px rgba(0, 0, 0, 0.12);
+  border-radius: 2px;
+  overflow: hidden;
+  display: block;
+  /* ระยะเผื่อ bottom สำหรับ stage ให้เอกสารไม่ติดขอบ modal */
+  margin: 0 auto 16px auto;
+}
+.dc-a4-sheet iframe {
+  width: 100%;
+  border: 0;
+  display: block;
+}
+/* บังคับให้ iframe สูงเท่าเนื้อหา A4 (auto) — เอกสารยาวก็ยาว
+   ในกรณี scroll ภายใน modal คือ parent `dc-a4-sheet` ก็จะ scroll เอง
+   แต่สำหรับแผ่นเอกสารขนาด A4 เราตั้งความสูงเป็น mm-based เพื่อให้
+   preview ตรงกับเค้า A4 (1 หน้า = 297mm) */
+.dc-a4-sheet iframe {
+  height: 297mm;
+}

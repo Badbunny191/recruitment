@@ -63,11 +63,13 @@ import { adminFetch } from '@/lib/useAdminAuth';
 import type {
   DocumentDescriptor,
   ValidationIssue,
+  PreviewMode,
 } from '@/lib/api/template-descriptor';
 
 import { BlockPanel } from './components/BlockPanel';
 import { JsonEditor } from './components/JsonEditor';
 import { PreviewPanel } from './components/PreviewPanel';
+import { PreviewModal } from './components/PreviewModal';
 import { useTemplateFields } from './hooks/useTemplateFields';
 
 // =============================================================================
@@ -387,6 +389,11 @@ function ComposerInner() {
     summary: string;
   } | null>(null);
 
+  // -------------------------------------------------------------------------
+  // Fullscreen Preview Modal (Live Preview UX — Req 2)
+  // -------------------------------------------------------------------------
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+
   const handleDeleteRequest = useCallback(
     (index: number, summary: string) => {
       setConfirmDelete({ index, summary });
@@ -540,17 +547,21 @@ function ComposerInner() {
       });
       return;
     }
-    const ok = await runPreview();
-    if (ok) {
-      showToast({ title: 'Preview พร้อมแล้ว', variant: 'success' });
-    } else {
-      showToast({
-        title: 'Preview ไม่สำเร็จ',
-        description: lastError ?? 'Unknown error',
-        variant: 'error',
-      });
-    }
+    // [Live Preview UX — Req 2] เปิด Fullscreen A4 Modal
+    // Modal จะเรียก runPreview({ mode, includeHeader: true }) ภายในเอง
+    setPreviewModalOpen(true);
   };
+
+  // Wrapper สำหรับ PreviewModal — เรียก hook.runPreview พร้อม options
+  // (type-cast เพราะ useTemplateDescriptor ประกาศ runPreview(options?: PreviewOptions))
+  const fetchPreviewForModal = useCallback(
+    async (options: { mode: PreviewMode; includeHeader: true }) => {
+      return await (runPreview as (opts?: typeof options) => Promise<boolean>)(
+        options
+      );
+    },
+    [runPreview]
+  );
 
   const handleRegenerate = async () => {
     // ใช้สำหรับ VERSION_MISMATCH — explicit regenerate
@@ -833,13 +844,14 @@ function ComposerInner() {
               onClick={handleManualPreview}
               disabled={loading.preview || !isTextValid || isVersionMismatch}
               className="w-full justify-start"
+              title="เปิด Fullscreen A4 Preview"
             >
               {loading.preview ? (
                 <Spinner />
               ) : (
                 <span className="shrink-0">👁</span>
               )}
-              <span>Preview</span>
+              <span>Preview (Fullscreen)</span>
             </Button>
 
             <div className="pt-3 mt-3 border-t border-slate-200">
@@ -850,7 +862,7 @@ function ComposerInner() {
                 <br />
                 <strong>Save:</strong> บันทึก descriptor เข้า template version
                 <br />
-                <strong>Preview:</strong> preview ทำงานอัตโนมัติ (auto 1.5s)
+                <strong>Preview:</strong> เปิด Fullscreen A4 · รองรับ Form/Document toggle
               </p>
             </div>
           </CardContent>
@@ -962,6 +974,15 @@ function ComposerInner() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Fullscreen A4 Preview Modal (Live Preview UX — Req 2+) */}
+      <PreviewModal
+        open={previewModalOpen}
+        onClose={() => setPreviewModalOpen(false)}
+        currentPreview={previewResult}
+        fetchPreview={fetchPreviewForModal}
+        loading={loading.preview}
+      />
     </div>
   );
 }

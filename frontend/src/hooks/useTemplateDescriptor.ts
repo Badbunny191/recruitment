@@ -44,6 +44,7 @@ import {
   type DocumentDescriptor,
   type ValidationIssue,
   type PreviewResponse,
+  type PreviewOptions,
 } from '@/lib/api/template-descriptor';
 
 export type ActionKind = 'load' | 'save' | 'preview' | 'generate';
@@ -83,7 +84,14 @@ export interface UseTemplateDescriptorReturn {
   /** Actions */
   load: () => Promise<boolean>;
   save: () => Promise<boolean>;
-  runPreview: () => Promise<boolean>;
+  /**
+   * Render preview ที่ระบุ mode + header options
+   * - default: 'form' mode + includeHeader=false (preview thumbnail ขวา)
+   * - สำหรับ modal: เรียกด้วย { mode: 'document' | 'form', includeHeader: true }
+   *
+   * @returns PreviewResponse ล่าสุด (ยังเขียนลง previewResult state ปกติ)
+   */
+  runPreview: (options?: PreviewOptions) => Promise<boolean>;
   generate: () => Promise<boolean>;
   /** รีเซ็ต error state */
   clearError: () => void;
@@ -279,29 +287,35 @@ export function useTemplateDescriptor(
   // ---------------------------------------------------------------------------
   // action: preview
   // ---------------------------------------------------------------------------
-  const runPreview = useCallback(async (): Promise<boolean> => {
-    if (!descriptor) {
-      setLastError('Descriptor is empty or invalid — fix errors first');
-      return false;
-    }
+  const runPreview = useCallback(
+    async (options?: PreviewOptions): Promise<boolean> => {
+      if (!descriptor) {
+        setLastError('Descriptor is empty or invalid — fix errors first');
+        return false;
+      }
 
-    setLoading((p) => ({ ...p, preview: true }));
-    setLastError(null);
-    setLastIssues([]);
+      setLoading((p) => ({ ...p, preview: true }));
+      setLastError(null);
+      setLastIssues([]);
 
-    const res = await apiPreview(templateVersionId, { descriptor });
-    setLoading((p) => ({ ...p, preview: false }));
+      const res = await apiPreview(templateVersionId, {
+        descriptor,
+        options: options ?? {},
+      });
+      setLoading((p) => ({ ...p, preview: false }));
 
-    if (!res.ok) {
-      setLastError(
-        normalizeError(res.error.error, `Preview failed (${res.error.status})`)
-      );
-      return false;
-    }
+      if (!res.ok) {
+        setLastError(
+          normalizeError(res.error.error, `Preview failed (${res.error.status})`)
+        );
+        return false;
+      }
 
-    setPreviewResult(res.data);
-    return true;
-  }, [descriptor, templateVersionId]);
+      setPreviewResult(res.data);
+      return true;
+    },
+    [descriptor, templateVersionId]
+  );
 
   // ---------------------------------------------------------------------------
   // action: generate

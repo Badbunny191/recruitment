@@ -94,7 +94,21 @@ export type {
   PreviewModel,
   PreviewMeta,
   RenderedBlockSummary,
+  PreviewMode,
+  PreviewTokenInfo,
 } from "./preview-model";
+
+// =============================================================================
+// Document Tokens (Live Preview — เลขที่ใบสมัคร / ข้อมูลตำแหน่ง)
+// =============================================================================
+
+export {
+  resolveDocumentTokens,
+  applyDocumentTokens,
+  DOCUMENT_TOKENS,
+  type DocumentToken,
+  type TokenValue,
+} from "./document-tokens";
 
 // =============================================================================
 // Generator (auto-build DocumentDescriptor from template_sections + template_fields)

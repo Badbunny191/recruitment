@@ -24,8 +24,10 @@ import {
   templateFields,
   fieldMaster,
   templateVersions,
+  recruitmentRounds,
 } from '../db/schema';
 import type { ApplicationContext, FieldData } from '../lib/pdf-types';
+import { buildPreview } from '../utils/application-pattern';
 
 type DB = ReturnType<typeof drizzleFn<any>>;
 
@@ -67,18 +69,28 @@ function buildMasterDataSample(field: FieldData): Record<string, unknown> {
 }
 
 /**
- * Stub formData สำหรับ preview
+ * Build sample formData สำหรับ preview
  *
  * ใช้ sample values เพื่อให้ preview renderer แสดงผล field/table ได้
  * - fieldId (field_master.id) เป็น key
  * - ถ้า field type = MASTER_DATA → ใช้ schema-aware sample (ตาม field.label)
  * - อื่นๆ → ใช้ text sample
+ *
+ * ── [Live Preview] Field-first ────────────────────────────────────────────
+ * field ที่ทำหน้าที่เป็น "document header" (เช่นชื่อตำแหน่ง/เลขตำแหน่ง)
+ * ต้องได้ค่าที่อ่านได้เป็นชื่อ/เลขจริง ไม่ใช่ "ตัวอย่าง{label}"
+ * ไม่งั้น token resolver จะ resolve ค่าที่ไม่สมจริงลงหัวเอกสาร
  */
 function buildSampleFormData(fields: FieldData[]): Record<string, unknown> {
   const formData: Record<string, unknown> = {};
 
   for (const field of fields) {
-    if (field.type === 'MASTER_DATA') {
+    const options = effectiveOptionsOf(field);
+
+    if (isDocumentTokenField(field)) {
+      // ── [Live Preview] field ที่เป็น document token → ค่าตัวอย่างที่อ่านได้จริง
+      formData[field.fieldId] = buildDocumentTokenSample(field);
+    } else if (field.type === 'MASTER_DATA') {
       // ── FIX: schema-aware sample (ตาม field.label) แทน hard-coded education data ──
       const columnName = field.label || field.fieldId;
       formData[field.fieldId] = [
@@ -91,12 +103,96 @@ function buildSampleFormData(fields: FieldData[]): Record<string, unknown> {
       formData[field.fieldId] = true;
     } else if (field.type === 'FILE') {
       formData[field.fieldId] = '(ตัวอย่างไฟล์แนบ)';
+    } else if (
+      (field.type === 'DROPDOWN' || field.type === 'RADIO') &&
+      options.length > 0
+    ) {
+      // ── [Live Preview] choice field → ใช้ option จริงของ field
+      //    ไม่ใช้ "ตัวอย่าง{label}" เพราะค่านั้นไม่มีอยู่จริงในรายการ
+      //    → preview จะโชว์ select ที่ selected ไม่ตรงกับตัวเลือกใดเลย
+      formData[field.fieldId] = options[0];
     } else {
       formData[field.fieldId] = `ตัวอย่าง${field.label}`;
     }
   }
 
   return formData;
+}
+
+/**
+ * ตัวเลือกที่ใช้ได้จริงของ field — override มีค่าใช้ override เสมอ
+ * (mirror TemplateBuilder / preview-renderer)
+ */
+function effectiveOptionsOf(field: FieldData): string[] {
+  if (field.overrideOptions && field.overrideOptions.length > 0) {
+    return field.overrideOptions;
+  }
+  return field.options ?? [];
+}
+
+/**
+ * [Live Preview] alias ที่ถือว่า field นั้นเป็น "document header"
+ *
+ * ต้องตรงกับรายการใน document-tokens.ts (TOKEN_FIELD_ALIASES)
+ * เก็บเป็น lowercase เพื่อเทียบ case-insensitive
+ *
+ * NOTE: ไม่มี {APPLICATION_NO} ใน list นี้ เพราะเลขที่ใบสมัครมาจาก
+ *       round.pattern โดยตรง (ไม่ใช่ form field ของผู้สมัคร)
+ */
+const DOCUMENT_TOKEN_ALIASES = new Set<string>([
+  // POSITION_NUMBER
+  'position_number',
+  'position_no',
+  'positionnumber',
+  'position_no_position',
+  'เลขที่ตำแหน่ง',
+  'เลขตำแหน่ง',
+  'ตำแหน่งที่ประกาศรับสมัคร',
+  // POSITION_NAME
+  'position_name',
+  'positionname',
+  'position_title',
+  'position',
+  'ชื่อตำแหน่ง',
+  'ตำแหน่ง',
+  // POSITION_LEVEL
+  'position_level',
+  'positionlevel',
+  'ระดับตำแหน่ง',
+  // ROUND_CODE
+  'round_code',
+  'roundcode',
+  'รหัสรอบ',
+]);
+
+/**
+ * field ที่ทำหน้าที่เป็น document header (ไม่ใช่คำตอบของผู้สมัคร)
+ *
+ * ตรวจจาก pdfMappingKey / fieldId ว่าตรงกับ alias ของ token ใด token หนึ่ง
+ */
+function isDocumentTokenField(field: FieldData): boolean {
+  const keys = [field.pdfMappingKey, field.fieldId].filter(
+    (k): k is string => typeof k === 'string' && k.length > 0
+  );
+  return keys.some((k) => DOCUMENT_TOKEN_ALIASES.has(k.toLowerCase()));
+}
+
+/**
+ * สร้างค่าตัวอย่างสำหรับ document token field
+ *
+ * ค่าต้อง "อ่านได้เป็นชื่อ/เลข" ตามธรรมชาติ เพื่อให้ preview หัวเอกสาร
+ * ดูเหมือนเอกสารจริง (ไม่ใช่ "ตัวอย่างตำแหน่ง")
+ */
+function buildDocumentTokenSample(field: FieldData): string {
+  const keys = [field.pdfMappingKey, field.fieldId].filter(
+    (k): k is string => typeof k === 'string' && k.length > 0
+  );
+  const key = (keys[0] ?? '').toLowerCase();
+
+  if (key.includes('number') || key.includes('_no') || key.includes('เลข')) {
+    return '๑๒/๒๕๖๙';
+  }
+  return 'นายสมชาย ใจดี';
 }
 
 /**
@@ -215,11 +311,22 @@ export async function buildPreviewContext(
   // 4) Build sample formData
   const formData = buildSampleFormData(fields);
 
-  // 5) Return ApplicationContext (preview-only)
+  // 5) ── [Live Preview] Load round จริงที่ผูกกับ template version นี้ ──────
+  //    ใช้เป็น fallback สำหรับ token ที่ไม่มี field รองรับ (เช่น ระดับตำแหน่ง)
+  //    ถ้าไม่มี round → ใช้ค่า preview placeholder (ไม่ทำให้ preview พัง)
+  const round = await loadPrimaryRound(resolved, templateVersionId);
+
+  // 6) ── [Live Preview] Application number จริง (จาก round pattern) ──────
+  //    ใช้ buildPreview() ของ application-pattern engine → ได้เลขจำลองจริง
+  //    เช่น round pattern "{YEAR}-{ROUND_CODE}-{RUNNING:4}" → "2026-CHM01-0001"
+  //    ถ้าไม่มี pattern/round → fallback เป็น "PREVIEW-0001" (คงเดิมเพื่อไม่ break test)
+  const applicationNo = buildPreviewApplicationNo(round);
+
+  // 7) Return ApplicationContext (preview-only)
   return {
     application: {
       id: `preview-${templateVersionId}`,
-      applicationNo: 'PREVIEW',
+      applicationNo,
       email: 'preview@example.com',
       fullname: 'ตัวอย่าง ผู้สมัคร',
       nationalId: null,
@@ -229,13 +336,13 @@ export async function buildPreviewContext(
       formData,
     },
     round: {
-      id: `preview-round-${templateVersionId}`,
-      title: 'Preview Mode',
-      positionLevel: 'N/A',
-      announcementTitle: null,
-      announcementDescription: null,
-      applicationPattern: null,
-      roundCode: null,
+      id: round?.id ?? `preview-round-${templateVersionId}`,
+      title: round?.title ?? 'Preview Mode',
+      positionLevel: round?.positionLevel ?? 'N/A',
+      announcementTitle: round?.announcementTitle ?? null,
+      announcementDescription: round?.announcementDescription ?? null,
+      applicationPattern: round?.applicationPattern ?? null,
+      roundCode: round?.roundCode ?? null,
     },
     templateVersion: {
       id: tv.id,
@@ -245,4 +352,73 @@ export async function buildPreviewContext(
     fields,
     attachments: [],
   };
+}
+
+/**
+ * [Live Preview] โหลด round ที่ผูกกับ template version นี้ (round ล่าสุดที่ยังไม่ถูกลบ)
+ *
+ * หนึ่ง template version อาจมีหลาย round → เอาล่าสุดเป็นตัวแทน
+ * เพราะ preview แสดง "รูปแบบเอกสาร" ไม่ใช่ "เอกสารของ round ใด round หนึ่ง"
+ *
+ * @returns round row หรือ null (ไม่มี round → caller ใช้ placeholder)
+ */
+async function loadPrimaryRound(
+  db: DB,
+  templateVersionId: string
+): Promise<typeof recruitmentRounds.$inferSelect | null> {
+  try {
+    return (
+      (await db
+        .select()
+        .from(recruitmentRounds)
+        .where(eq(recruitmentRounds.templateVersionId, templateVersionId))
+        .orderBy(asc(recruitmentRounds.createdAt))
+        .get()) ?? null
+    );
+  } catch (err) {
+    // Round เป็นข้อมูลเสริม (fallback ของ token) — ไม่พร้อม = ยัง preview ได้
+    // Log แบบ single line (ไม่ dump stack) เพราะเกิดได้ทุก request
+    // เช่น test harness ที่ไม่ได้สร้างตาราง recruitment_rounds
+    console.warn(
+      `[preview] round lookup skipped (${templateVersionId}):`,
+      err instanceof Error ? err.message : String(err)
+    );
+    return null;
+  }
+}
+
+/**
+ * [Live Preview] สร้างเลขที่ใบสมัครจำลองจาก round pattern
+ *
+ * ใช้ engine เดียวกับตอนสร้างเลขจริง (utils/application-pattern.ts)
+ * → preview แสดงรูปแบบเลขที่ตรงกับที่ผู้สมัครจะได้รับจริง
+ *
+ * @returns เลขที่ใบสมัคร หรือ "PREVIEW-0001" เมื่อไม่มี round/pattern
+ */
+function buildPreviewApplicationNo(
+  round: typeof recruitmentRounds.$inferSelect | null
+): string {
+  const pattern = round?.applicationPattern;
+
+  // ไม่มี round หรือไม่มี pattern → ใช้ค่า preview ที่ระบุชัดว่าเป็นจำลอง
+  if (!round || !pattern || pattern.trim().length === 0) {
+    return 'PREVIEW-0001';
+  }
+
+  // Year อ้างอิงจาก openDate ของ round (null-safe)
+  const year = round.openDate ? new Date(round.openDate).getFullYear() : undefined;
+
+  const preview = buildPreview(pattern, {
+    ...(year !== undefined ? { year } : {}),
+    ...(round.roundCode ? { roundCode: round.roundCode } : {}),
+    running: 1,
+  });
+
+  // buildPreview คืน pattern เดิมเมื่อ pattern ไม่ผ่าน validation
+  // (เช่น round ที่ admin ยังไม่ได้ตั้งค่าให้ครบ) → อย่าเอา pattern ดิบมาแสดง
+  if (preview === pattern) {
+    return 'PREVIEW-0001';
+  }
+
+  return preview;
 }

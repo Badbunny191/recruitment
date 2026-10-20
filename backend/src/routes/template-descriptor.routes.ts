@@ -84,6 +84,16 @@ const PreviewDescriptorRequestSchema = z.object({
     version: z.literal(1),
     blocks: z.array(z.any()).min(1),
   }),
+  // ── [Live Preview UX] options (optional)
+  // - mode: 'form' | 'document' — body field rendering
+  // - includeHeader: boolean — render logo + title + tokens header
+  options: z
+    .object({
+      mode: z.enum(["form", "document"]).optional(),
+      includeHeader: z.boolean().optional(),
+      title: z.string().optional(),
+    })
+    .optional(),
 });
 
 /**
@@ -325,13 +335,20 @@ descriptorRouter.post(
     const descriptor = payload.descriptor as DocumentDescriptor;
 
     // 4. Render preview (reuse core)
-    const preview = renderDescriptorToPreview(descriptor, ctx);
+    const preview = renderDescriptorToPreview(
+      descriptor,
+      ctx,
+      payload.options ?? {}
+    );
 
     return c.json({
       data: {
         html: preview.html,
         body: preview.body,
+        header: preview.header,
         meta: preview.meta,
+        mode: preview.mode,
+        tokens: preview.tokens,
       },
     });
   }

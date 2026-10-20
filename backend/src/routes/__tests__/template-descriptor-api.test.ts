@@ -146,6 +146,25 @@ function makeInMemorySchema() {
       validation_type TEXT,
       validation_message TEXT
     );
+    -- [Live Preview] จำเป็นสำหรับ loadPrimaryRound() — ถ้าไม่มีตารางนี้
+    -- preview จะ catch error และ fallback เป็น placeholder (ไม่ crash)
+    CREATE TABLE recruitment_rounds (
+      id TEXT PRIMARY KEY,
+      template_version_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      position_level TEXT NOT NULL,
+      open_date INTEGER NOT NULL,
+      close_date INTEGER NOT NULL,
+      status TEXT DEFAULT 'DRAFT',
+      created_at INTEGER,
+      deleted_at INTEGER,
+      announcement_title TEXT,
+      announcement_description TEXT,
+      contact_information TEXT,
+      remark TEXT,
+      application_pattern TEXT,
+      round_code TEXT
+    );
     CREATE TABLE template_fields (
       id TEXT PRIMARY KEY,
       template_version_id TEXT NOT NULL,
@@ -519,6 +538,125 @@ async function runAllTests() {
     sqlite.close();
   });
 
+  // ── [2.2] Live Preview: real document data (application no / round) ──
+  //
+  // Requirement: preview ต้องอ่านข้อมูลจาก Template/Round ที่กำลังแก้ไข
+  //   แทน descriptor placeholder
+  //
+  // ก่อนแก้: applicationNo = 'PREVIEW' (hardcoded), positionLevel = 'N/A'
+  // หลังแก้: อ่าน round จริง + สร้างเลขที่ใบสมัครจาก applicationPattern engine
+  await test('buildPreviewContext reads real round data (positionLevel/title)', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date,
+       application_pattern, round_code)
+      VALUES ('round-1', 'tv-1', 'รับสมัครนักตรวจสอบ', 'ระดับปฏิบัติการ',
+              1794000000, 1800000000, '{YEAR}-{ROUND_CODE}-{RUNNING:4}', 'CHM01')`);
+
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+    assertEqual(ctx.round.positionLevel, 'ระดับปฏิบัติการ', 'must read real positionLevel');
+    assertEqual(ctx.round.title, 'รับสมัครนักตรวจสอบ', 'must read real round title');
+    assertEqual(ctx.round.roundCode, 'CHM01', 'must read real roundCode');
+    sqlite.close();
+  });
+
+  await test('buildPreviewContext generates real application number from pattern', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date,
+       application_pattern, round_code)
+      VALUES ('round-1', 'tv-1', 'ทดสอบ', 'ปฏิบัติการ', 1794000000, 1800000000,
+              '{YEAR}-{ROUND_CODE}-{RUNNING:4}', 'CHM01')`);
+
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+    // ต้องเป็นเลขที่ format จริง ไม่ใช่ 'PREVIEW'
+    assertTrue(
+      ctx.application.applicationNo !== 'PREVIEW',
+      'applicationNo must not be the PREVIEW placeholder'
+    );
+    assertTrue(
+      ctx.application.applicationNo.includes('CHM01'),
+      `applicationNo should contain roundCode, got "${ctx.application.applicationNo}"`
+    );
+    assertTrue(
+      /-\d{4}$/.test(ctx.application.applicationNo),
+      `running number should be 4 digits, got "${ctx.application.applicationNo}"`
+    );
+    sqlite.close();
+  });
+
+  await test('buildPreviewContext falls back gracefully when round has no pattern', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    // round ที่ admin ยังไม่ได้ตั้ง application_pattern
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date)
+      VALUES ('round-1', 'tv-1', 'ยังไม่ตั้งค่า', 'ปฏิบัติการ', 1794000000, 1800000000)`);
+
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+    // ต้องไม่แสดง pattern ดิบกลับมา (เช่น "{YEAR}-{ROUND_CODE}...")
+    assertTrue(
+      !ctx.application.applicationNo.includes('{'),
+      `must not leak raw pattern, got "${ctx.application.applicationNo}"`
+    );
+    assertEqual(ctx.application.applicationNo, 'PREVIEW-0001');
+    sqlite.close();
+  });
+
+  await test('buildPreviewContext keeps working when NO round exists', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db); // ไม่ seed round เลย
+
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+    assertEqual(ctx.application.applicationNo, 'PREVIEW-0001');
+    assertEqual(ctx.round.positionLevel, 'N/A', 'fallback when no round');
+    assertEqual(ctx.round.title, 'Preview Mode');
+    sqlite.close();
+  });
+
+  // ── [2.3] Live Preview: document token field-first ────────────────
+  // field ที่ผูกกับ document token ต้องได้ค่าตัวอย่างที่อ่านได้จริง
+  // ไม่ใช่ "ตัวอย่าง{label}" (ซึ่งจะไปโผล่ในหัวเอกสารแบบไม่สมจริง)
+  await test('document token field gets readable sample (not "ตัวอย่าง...")', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO field_master (id, field_type, label_th, pdf_mapping_key)
+      VALUES ('fm-pos', 'TEXT', 'ตำแหน่ง', 'position')`);
+    db.run(sql`INSERT INTO template_fields
+      (id, template_version_id, field_id, section_id, display_order, is_required)
+      VALUES ('tf-pos', 'tv-1', 'fm-pos', 'sec-1', 3, 0)`);
+
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+    const value = (ctx.application.formData as any)['fm-pos'];
+    assertTrue(
+      typeof value === 'string' && !value.startsWith('ตัวอย่าง'),
+      `token field sample should not be prefixed with "ตัวอย่าง", got "${value}"`
+    );
+    sqlite.close();
+  });
+
   await test('MASTER_DATA sample uses label per-field (not shared "ประวัติการศึกษา")', async () => {
     const { sqlite, db } = makeInMemorySchema();
     setTemplateDb(db);
@@ -621,6 +759,477 @@ async function runAllTests() {
     assertTrue(preview.body.length > 0);
     assertEqual(preview.meta.blockCount, result.descriptor.blocks.length);
     assertEqual(preview.meta.missingFieldIds.length, 0);
+    sqlite.close();
+  });
+
+  // ── [3.1] Live Preview: field → real form control ─────────────────
+  // Requirement 6: render field เป็น form control จริง (ไม่ใช่ div ข้อความ)
+  await test('TEXT field renders as <input> control, not plain text div', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db); // fm-name = TEXT
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [{ id: 'f-1', type: 'field', fieldId: 'fm-name' }] },
+      ctx
+    );
+    assertTrue(
+      preview.body.includes('class="dc-control"'),
+      'field block must emit a .dc-control element'
+    );
+    assertTrue(
+      preview.body.includes('type="text"'),
+      'TEXT field must render as text input'
+    );
+    // label ยังต้องอยู่ (ใช้ <label> เพื่อ semantically ผูกกับ control)
+    assertTrue(
+      preview.body.includes('ชื่อ-นามสกุล'),
+      'field label must still be present'
+    );
+    sqlite.close();
+  });
+
+  await test('MASTER_DATA / TABLE field still renders real <table>', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db); // fm-edu = MASTER_DATA
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [{ id: 't-1', type: 'table', fieldId: 'fm-edu' }] },
+      ctx
+    );
+    assertTrue(preview.body.includes('<table'), 'table block must emit <table>');
+    assertTrue(preview.body.includes('</table>'));
+    assertTrue(preview.body.includes('<thead>'), 'table must have header row');
+    sqlite.close();
+  });
+
+  // ── [3.2] Live Preview: document token in heading ────────────────
+  // Requirement 5: รองรับ application number token
+  await test('heading resolves {APPLICATION_NO} from real context', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date,
+       application_pattern, round_code)
+      VALUES ('round-1', 'tv-1', 'ทดสอบ', 'ปฏิบัติการ', 1794000000, 1800000000,
+              '{YEAR}-{ROUND_CODE}-{RUNNING:4}', 'CHM01')`);
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const preview = renderDescriptorToPreview(
+      {
+        version: 1,
+        blocks: [
+          {
+            id: 'h-1',
+            type: 'heading',
+            text: 'ใบสมัครเลขที่ {APPLICATION_NO}',
+            size: 'medium',
+          },
+        ],
+      },
+      ctx
+    );
+
+    assertFalse(
+      preview.body.includes('{APPLICATION_NO}'),
+      'token must be resolved, not left as literal placeholder'
+    );
+    assertTrue(
+      preview.body.includes('CHM01'),
+      'resolved heading must contain real application number'
+    );
+    sqlite.close();
+  });
+
+  await test('unresolved token stays visible as placeholder (no silent blank)', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db); // ไม่มี round → ไม่มี position data
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const preview = renderDescriptorToPreview(
+      {
+        version: 1,
+        blocks: [
+          {
+            id: 'h-1',
+            type: 'heading',
+            text: 'ตำแหน่ง {POSITION_NUMBER}',
+            size: 'medium',
+          },
+        ],
+      },
+      ctx
+    );
+
+    // ระบบไม่มีเลขตำแหน่ง → ต้องเห็น placeholder ชัดเจน
+    // (ไม่ใช่ช่องว่างเงียบ ๆ ที่ทำให้เข้าใจว่าเอกสารพัก)
+    assertTrue(
+      preview.body.includes('{POSITION_NUMBER}'),
+      'unresolved token should stay visible as placeholder'
+    );
+    sqlite.close();
+  });
+
+  await test('document info strip shows resolved + unresolved tokens', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date,
+       application_pattern, round_code)
+      VALUES ('round-1', 'tv-1', 'ทดสอบ', 'ระดับปฏิบัติการ', 1794000000, 1800000000,
+              '{YEAR}-{ROUND_CODE}-{RUNNING:4}', 'CHM01')`);
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [{ id: 'h-1', type: 'heading', text: 'X', size: 'small' }] },
+      ctx
+    );
+
+    assertTrue(
+      preview.html.includes('dc-docinfo'),
+      'document info strip must be present in full html'
+    );
+    assertTrue(
+      preview.html.includes('CHM01'),
+      'info strip should show resolved application number'
+    );
+    assertTrue(
+      preview.html.includes('ระดับปฏิบัติการ'),
+      'info strip should show resolved position level'
+    );
+    sqlite.close();
+  });
+
+  await test('preview escapes HTML in token values (XSS safety)', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date)
+      VALUES ('round-1', 'tv-1', '<script>alert(1)</script>', 'ปฏิบัติการ',
+              1794000000, 1800000000)`);
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [{ id: 'h-1', type: 'heading', text: 'X', size: 'small' }] },
+      ctx
+    );
+    assertFalse(
+      preview.html.includes('<script>alert'),
+      'raw <script> from round title must not appear unescaped'
+    );
+    sqlite.close();
+  });
+
+  // =====================================================================
+  // [3.6] Live Preview UX — Mode switcher, Document Header, Diagnostics
+  // Requirements:
+  //   4  → mode toggle form/document
+  //   5  → document header has logo+title+application no+position
+  //   6  → unresolved token shows gray placeholder, no false data
+  //   9  → same renderer/data source for fullscreen and compact preview
+  // =====================================================================
+  console.log('\n[3.6] Live Preview UX');
+
+  await test('[UX] mode="document" renders field as label+value, not control', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db); // fm-name = TEXT
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const descriptor = {
+      version: 1 as const,
+      blocks: [{ id: 'f-1', type: 'field', fieldId: 'fm-name' } as const],
+    };
+
+    const preview = renderDescriptorToPreview(descriptor as any, ctx, {
+      mode: 'document',
+    });
+
+    assertEqual(preview.mode, 'document');
+    assertFalse(
+      preview.body.includes('class="dc-control"'),
+      'document mode must NOT emit .dc-control (no form control)'
+    );
+    assertTrue(
+      preview.body.includes('dc-field__value'),
+      'document mode must render value as label+value'
+    );
+    sqlite.close();
+  });
+
+  await test('[UX] mode="form" renders field as control (regression)', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const descriptor = {
+      version: 1 as const,
+      blocks: [{ id: 'f-1', type: 'field', fieldId: 'fm-name' } as const],
+    };
+
+    const preview = renderDescriptorToPreview(descriptor as any, ctx, {
+      mode: 'form',
+    });
+    assertEqual(preview.mode, 'form');
+    assertTrue(
+      preview.body.includes('class="dc-control"'),
+      'form mode must emit .dc-control'
+    );
+    sqlite.close();
+  });
+
+  await test('[UX] document header includes logo placeholder + title + tokens', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date,
+       application_pattern, round_code)
+      VALUES ('round-1', 'tv-1', 'ทดสอบ', 'ระดับปฏิบัติการ',
+              1794000000, 1800000000,
+              '{YEAR}-{ROUND_CODE}-{RUNNING:4}', 'CHM01')`);
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const descriptor = {
+      version: 1 as const,
+      blocks: [{ id: 'h-1', type: 'heading', text: 'ใบสมัคร', size: 'large' } as const],
+    };
+
+    const preview = renderDescriptorToPreview(descriptor as any, ctx, {
+      includeHeader: true,
+    });
+
+    // Header must exist as separate field
+    assertTrue(preview.header.length > 0, 'header html must be present');
+
+    // Logo placeholder
+    assertTrue(
+      preview.header.includes('ยังไม่มีโลโก้'),
+      'header must show "ยังไม่มีโลโก้" placeholder when no logo'
+    );
+
+    // Title (ไม่มี token → ใช้ title text ดิบ)
+    assertTrue(
+      preview.header.includes('ใบสมัคร'),
+      'header must show document title'
+    );
+
+    // Application No resolved
+    assertTrue(
+      preview.header.includes('CHM01'),
+      'header must show resolved application no'
+    );
+
+    // Position name fallback is null → empty placeholder
+    // (Req 6: ห้าม substitute ข้อมูลคนละควาหามาย)
+    assertTrue(
+      preview.header.includes('{POSITION_NAME}'),
+      'POSITION_NAME unresolved must show placeholder, not position_level'
+    );
+
+    // Position number also unresolved
+    assertTrue(
+      preview.header.includes('{POSITION_NUMBER}'),
+      'POSITION_NUMBER unresolved must show placeholder'
+    );
+
+    // Empty values มี class .dc-header-meta__value--empty
+    assertTrue(
+      preview.header.includes('dc-header-meta__value--empty'),
+      'unresolved tokens must be marked with empty class for gray styling'
+    );
+
+    sqlite.close();
+  });
+
+  await test('[UX] POSITION_NAME must NOT fallback to positionLevel (Req 6)', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date,
+       application_pattern, round_code)
+      VALUES ('round-1', 'tv-1', 'ทดสอบ', 'ระดับปฏิบัติการ',
+              1794000000, 1800000000,
+              '{YEAR}-{ROUND_CODE}-{RUNNING:4}', 'CHM01')`);
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const descriptor = {
+      version: 1 as const,
+      blocks: [{ id: 'h-1', type: 'heading', text: 'X', size: 'large' } as const],
+    };
+
+    const preview = renderDescriptorToPreview(descriptor as any, ctx);
+
+    // body content: title token text ห้ามเป็น "ระดับปฏิบัติการ" (positionLevel)
+    const positionNameRow = preview.tokens.find(
+      (t) => t.token === 'POSITION_NAME'
+    );
+    assertTrue(positionNameRow !== undefined, 'POSITION_NAME token must exist');
+    if (positionNameRow) {
+      assertEqual(
+        positionNameRow.empty,
+        true,
+        'POSITION_NAME must be empty (no source data)'
+      );
+      assertTrue(
+        positionNameRow.text === '{POSITION_NAME}',
+        'POSITION_NAME text must show placeholder, not actual position data'
+      );
+    }
+
+    // Sanity: ห้ามมี "ระดับปฏิบัติการ" ปะปนกับ POSITION_NAME slot
+    // (มีอยู่ใน POSITION_LEVEL ได้ ซึ่งถูกต้อง)
+    const positionLevelRow = preview.tokens.find(
+      (t) => t.token === 'POSITION_LEVEL'
+    );
+    assertTrue(positionLevelRow !== undefined);
+    if (positionLevelRow) {
+      assertEqual(positionLevelRow.empty, false);
+    }
+
+    sqlite.close();
+  });
+
+  await test('[UX] diagnostics=tokens exposed for FE panels (Req 10)', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date,
+       application_pattern, round_code)
+      VALUES ('round-1', 'tv-1', 'ทดสอบ', 'ระดับปฏิบัติการ',
+              1794000000, 1800000000,
+              '{YEAR}-{ROUND_CODE}-{RUNNING:4}', 'CHM01')`);
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const descriptor = {
+      version: 1 as const,
+      blocks: [{ id: 'h-1', type: 'heading', text: 'X', size: 'small' } as const],
+    };
+
+    const preview = renderDescriptorToPreview(descriptor as any, ctx);
+    assertTrue(Array.isArray(preview.tokens));
+    assertEqual(preview.tokens.length, 5, 'all 5 tokens must be present');
+    for (const t of preview.tokens) {
+      assertTrue(typeof t.token === 'string');
+      assertTrue(typeof t.label === 'string');
+      assertTrue(typeof t.text === 'string');
+      assertTrue(typeof t.empty === 'boolean');
+    }
+    sqlite.close();
+  });
+
+  await test('[UX] includeHeader=false → header html is empty (thumbnail mode)', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date,
+       application_pattern, round_code)
+      VALUES ('round-1', 'tv-1', 'ทดสอบ', 'ระดับปฏิบัติการ',
+              1794000000, 1800000000,
+              '{YEAR}-{ROUND_CODE}-{RUNNING:4}', 'CHM01')`);
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const descriptor = {
+      version: 1 as const,
+      blocks: [{ id: 'h-1', type: 'heading', text: 'X', size: 'large' } as const],
+    };
+
+    const preview = renderDescriptorToPreview(descriptor as any, ctx, {
+      includeHeader: false,
+    });
+    assertEqual(preview.header, '', 'header must be empty when disabled');
+    sqlite.close();
+  });
+
+  await test('[UX] same data source for fullscreen and compact (Req 9)', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date,
+       application_pattern, round_code)
+      VALUES ('round-1', 'tv-1', 'ทดสอบ', 'ระดับปฏิบัติการ',
+              1794000000, 1800000000,
+              '{YEAR}-{ROUND_CODE}-{RUNNING:4}', 'CHM01')`);
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    const descriptor = {
+      version: 1 as const,
+      blocks: [{ id: 'h-1', type: 'heading', text: 'X', size: 'large' } as const],
+    };
+
+    // Fullscreen: includeHeader=true, mode='document'
+    const fullscreen = renderDescriptorToPreview(descriptor as any, ctx, {
+      includeHeader: true,
+      mode: 'document',
+    });
+    // Thumbnail: includeHeader=false, mode='form'
+    const thumbnail = renderDescriptorToPreview(descriptor as any, ctx, {
+      includeHeader: false,
+      mode: 'form',
+    });
+
+    // Same token resolution result (single source of truth)
+    assertEqual(fullscreen.tokens.length, thumbnail.tokens.length);
+    for (let i = 0; i < fullscreen.tokens.length; i++) {
+      const a = fullscreen.tokens[i];
+      const b = thumbnail.tokens[i];
+      assertEqual(a.token, b.token, 'token id match');
+      assertEqual(a.text, b.text, 'token text match');
+      assertEqual(a.empty, b.empty, 'token empty match');
+    }
+    // Same body for fields (token logic shared)
+    assertEqual(fullscreen.body.length > 0, true);
     sqlite.close();
   });
 

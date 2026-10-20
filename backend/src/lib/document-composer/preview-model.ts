@@ -20,7 +20,10 @@
  * field:
  *   - html: HTML string ของทั้งเอกสาร (semantic + structural)
  *   - body: HTML สำหรับ body content เท่านั้น (ไม่รวม <html>/<head>/<body> wrapper)
+ *   - header: HTML สำหรับ document header block (logo + title + tokens)
  *   - meta: ข้อมูล debug + inspect
+ *   - mode: โหมดที่ใช้ render (form / document)
+ *   - tokens: ค่า resolved tokens สำหรับ diagnostics
  *
  * body แยกจาก html เพื่อให้ consumer ที่ต้องการ inline content เข้าไปใน layout
  * อื่น (เช่น embed ใน admin page) สามารถใช้ body ได้โดยตรง
@@ -30,8 +33,14 @@ export interface PreviewModel {
   html: string;
   /** body content เท่านั้น (ไม่มี <html>/<head>/<body> wrapper) */
   body: string;
+  /** document header block (logo placeholder + title + token strip) */
+  header: string;
   /** debug + inspect info */
   meta: PreviewMeta;
+  /** โหมดที่ใช้ render (UI ใช้ toggle Form ↔ Document โดยไม่ต้อง parse HTML) */
+  mode: PreviewMode;
+  /** resolved token values (ใช้กับแผง diagnostics) */
+  tokens: PreviewTokenInfo[];
 }
 
 /**
@@ -71,4 +80,28 @@ export interface RenderedBlockSummary {
   marginBottom: number;
   /** field reference status (เฉพาะ field/table block) */
   fieldStatus?: "resolved" | "missing";
+}
+
+/**
+ * โหมดของ Live Preview
+ *
+ * - `form`     → body field เรนเดอร์เป็น form control จริง (input/textarea/select/…)
+ *                ตาม field type — ใช้ดู "form UX" ที่ผู้สมัครจะเจอ
+ * - `document` → body field เรนเดอร์เป็นข้อความ read-only (label + value)
+ *                ใกล้กับ PDF มากที่สุด — ใช้ดู "document layout" จริง
+ */
+export type PreviewMode = "form" | "document";
+
+/**
+ * Token value สำหรับแผง diagnostics
+ *
+ * - `text`  = ค่าที่ resolve ได้ (อาจเป็น placeholder text เช่น "{APPLICATION_NO}")
+ * - `empty` = true เมื่อไม่มีข้อมูลจริง
+ * - `label` = ชื่อ human-readable สำหรับแสดงใน UI
+ */
+export interface PreviewTokenInfo {
+  token: string;
+  label: string;
+  text: string;
+  empty: boolean;
 }
