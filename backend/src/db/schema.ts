@@ -14,6 +14,8 @@ export const adminUsers = sqliteTable('admin_users', {
   failedLoginAttempts: integer('failed_login_attempts').notNull().default(0),
   lockedUntil: integer('locked_until', { mode: 'timestamp' }),
   passwordMigrated: integer('password_migrated', { mode: 'boolean' }).notNull().default(false),
+  // Migration 023: Track last successful login
+  lastLoginAt: integer('last_login_at', { mode: 'timestamp' }),
 }, (table) => ({
   roleActiveIdx: index('idx_admin_users_role_active').on(table.role, table.isActive),
 }));

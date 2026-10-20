@@ -14,6 +14,7 @@ import { ActionMenu } from '@/components/ui/action-menu';
 import { FilterDropdown, type FilterGroup } from '@/components/ui/filter-dropdown';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
 import { cn } from '@/lib/utils';
+import { formatLastLogin } from '@/lib/date';
 import {
   listUsers,
   createUser,
@@ -624,11 +625,9 @@ export default function UsersPage() {
                         </div>
                       </TableCell>
 
-                      {/* Created At */}
+                      {/* เข้าสู่ระบบล่าสุด (Migration 023) */}
                       <TableCell className="py-3 hidden lg:table-cell text-xs text-slate-500 align-top">
-                        {user.passwordChangedAt
-                          ? new Date(user.passwordChangedAt * 1000).toLocaleDateString('th-TH')
-                          : 'ยังไม่เคยเปลี่ยน'}
+                        {formatLastLogin(user.lastLoginAt)}
                       </TableCell>
 
                       {/* Actions */}

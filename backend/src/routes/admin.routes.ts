@@ -69,7 +69,18 @@ adminRoutes.post('/auth/login', zValidator('json', LoginRequestSchema), async (c
   if (!valid) {
     return c.json({ error: 'Invalid credentials', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' }, 401);
   }
-  
+
+  // Update lastLoginAt on successful login (Migration 023) - best-effort
+  // lastLoginAt is informational, not a credential - login should succeed even if update fails
+  try {
+    await db.update(adminUsers)
+      .set({ lastLoginAt: new Date() })
+      .where(eq(adminUsers.id, user.id));
+  } catch (error) {
+    // Log error without exposing details to client
+    console.error('[LAST_LOGIN_UPDATE_FAILED]', { userId: user.id });
+  }
+
   // Generate JWT
   const token = await sign({ 
     id: user.id, 
@@ -3458,6 +3469,7 @@ adminRoutes.get('/auth/me', async (c) => {
       lockedUntil: adminUsers.lockedUntil,
       passwordMigrated: adminUsers.passwordMigrated,
       createdAt: adminUsers.createdAt,
+      lastLoginAt: adminUsers.lastLoginAt,  // Migration 023
     })
     .from(adminUsers)
     .where(eq(adminUsers.id, user.id))
@@ -3488,6 +3500,7 @@ adminRoutes.get('/users', superAdminOnlyMiddleware, async (c) => {
       lockedUntil: adminUsers.lockedUntil,
       passwordMigrated: adminUsers.passwordMigrated,
       createdAt: adminUsers.createdAt,
+      lastLoginAt: adminUsers.lastLoginAt,  // Migration 023
     })
     .from(adminUsers)
     .orderBy(asc(adminUsers.createdAt));
@@ -3513,6 +3526,7 @@ adminRoutes.get('/users/:id', superAdminOnlyMiddleware, async (c) => {
       lockedUntil: adminUsers.lockedUntil,
       passwordMigrated: adminUsers.passwordMigrated,
       createdAt: adminUsers.createdAt,
+      lastLoginAt: adminUsers.lastLoginAt,  // Migration 023
     })
     .from(adminUsers)
     .where(eq(adminUsers.id, id))

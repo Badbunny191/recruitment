@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration: 021_role_migration.sql
+-- Migration: 024_role_migration.sql
 -- =============================================================================
 --
 -- วัตถุประสงค์:
@@ -40,18 +40,6 @@ WHERE role = 'HR_ADMIN';
 
 SELECT '=== Role Migration: After ===' as status;
 SELECT role, COUNT(*) as count FROM admin_users GROUP BY role;
-
---> statement-breakpoint
-
--- =============================================================================
--- 4. Report affected users (if any)
--- =============================================================================
-
-SELECT '=== Users migrated from HR_ADMIN -> ADMIN ===' as status;
-SELECT id, email, role, is_active, created_at 
-FROM admin_users 
-WHERE role = 'ADMIN' 
-ORDER BY created_at DESC;
 
 -- =============================================================================
 -- =============================================================================
