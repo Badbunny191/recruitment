@@ -134,6 +134,16 @@ test('formatLastLogin: invalid Date returns dash', () => {
   assertEqual(formatLastLogin(new Date('invalid')), '-');
 });
 
+test('formatLastLogin: includes time in output', () => {
+  // Use a specific timestamp: 2024-01-15 10:30:45 UTC
+  // 1705318245 seconds = 1705318245000 milliseconds
+  const result = formatLastLogin(1705318245);
+  // Result should contain time (colon pattern like "10:30" or "17:30")
+  if (!/:\d{2}/.test(result)) {
+    throw new Error(`Expected time in output, got: ${result}`);
+  }
+});
+
 // formatPasswordChanged tests
 test('formatPasswordChanged: null returns "ยังไม่เคยเปลี่ยน"', () => {
   assertEqual(formatPasswordChanged(null), 'ยังไม่เคยเปลี่ยน');

@@ -2,7 +2,7 @@
  * Date Formatting Utilities
  * -------------------------
  * Utilities สำหรับจัดการ date formatting ที่รองรับหลายรูปแบบ
- * 
+ *
  * Supports:
  * - Date object
  * - ISO string
@@ -15,7 +15,7 @@
 
 /**
  * Normalize various date inputs to a valid Date object or null
- * 
+ *
  * @param value - Input value of any type
  * @returns Valid Date object or null if invalid
  */
@@ -43,7 +43,7 @@ export function normalizeDate(value: unknown): Date | null {
   // Handle string (could be ISO string or numeric string)
   if (typeof value === 'string') {
     const trimmed = value.trim();
-    
+
     // Empty after trim
     if (trimmed === '') {
       return null;
@@ -69,7 +69,7 @@ export function normalizeDate(value: unknown): Date | null {
 
 /**
  * Format a date for display in Thai locale
- * 
+ *
  * @param value - Input value of any type (Date, string, number, null)
  * @param options - Intl.DateTimeFormat options (default: date only, Thai locale)
  * @returns Formatted date string or fallback text
@@ -79,7 +79,7 @@ export function formatDateThai(
   options: Intl.DateTimeFormatOptions = { dateStyle: 'medium' }
 ): string {
   const date = normalizeDate(value);
-  
+
   if (date === null) {
     return '-';
   }
@@ -93,9 +93,10 @@ export function formatDateThai(
 
 /**
  * Format last login timestamp for User Management display
- * 
+ * Shows date and time in Thai locale
+ *
  * @param lastLoginAt - Last login timestamp (any supported format)
- * @returns Thai formatted date string
+ * @returns Thai formatted date string with time
  */
 export function formatLastLogin(lastLoginAt: unknown): string {
   // null/undefined/empty → "ยังไม่เคยเข้าสู่ระบบ"
@@ -105,13 +106,16 @@ export function formatLastLogin(lastLoginAt: unknown): string {
 
   // Try to normalize the value
   const date = normalizeDate(lastLoginAt);
-  
+
   if (date !== null) {
     try {
-      return date.toLocaleDateString('th-TH', {
+      return date.toLocaleString('th-TH', {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
       });
     } catch {
       // Fall through to return dash
@@ -124,13 +128,13 @@ export function formatLastLogin(lastLoginAt: unknown): string {
 
 /**
  * Format password change timestamp for User Management display
- * 
+ *
  * @param passwordChangedAt - Password change timestamp (any supported format)
  * @returns Thai formatted date string or fallback text
  */
 export function formatPasswordChanged(passwordChangedAt: unknown): string {
   const date = normalizeDate(passwordChangedAt);
-  
+
   if (date === null) {
     return 'ยังไม่เคยเปลี่ยน';
   }
