@@ -30,8 +30,24 @@ import type {
   DocumentBlock,
   HeadingBlock,
   SignatureBlock,
+  SystemDataBlock,
+  LogoBlock,
+  DateFormat,
   Size,
   Align,
+} from "./types";
+import {
+  SYSTEM_DATA_LABELS,
+  NO_LOGO_TEXT,
+  DEFAULT_SIGNATURE_LINE_LABEL,
+  DEFAULT_SIGNATURE_ROLE_LABEL,
+  DEFAULT_SIGNATURE_DATE_LABEL,
+  DEFAULT_SIGNATURE_LINE_STYLE,
+  DEFAULT_SHOW_NAME,
+  DEFAULT_SHOW_PARENTHESES,
+  DEFAULT_SHOW_DATE,
+  DEFAULT_SHOW_TIME,
+  DEFAULT_DATE_FORMAT,
 } from "./types";
 import type {
   PreviewModel,
@@ -43,9 +59,15 @@ import type {
 import {
   resolveDocumentTokens,
   applyDocumentTokens,
+  applyDocumentTokensWithFields,
+  resolveFieldValue,
   DOCUMENT_TOKENS,
+  DOCUMENT_TOKEN_LABELS,
+  INSERTABLE_DOCUMENT_TOKENS,
   type DocumentToken,
+  type TokenValue,
 } from "./document-tokens";
+import { getObjectDisplayLabel } from "./field-capabilities";
 
 // =============================================================================
 // Style mapping — mirror descriptor-renderer.ts (visual consistency)
@@ -132,10 +154,71 @@ const PREVIEW_STYLES = `
 .dc-heading--medium { font-size: 13pt; line-height: 1.4; }
 .dc-heading--small  { font-size: 11pt; line-height: 1.4; }
 .dc-heading--bold   { font-weight: 700; }
+/* italic (Requirement A — ตัวเอียง) */
+.dc-heading--italic { font-style: italic; }
+
+/* ── Multiline heading (Requirement A.2 — ข้อความหลายบรรทัด) ─────────
+   Admin พิมพ์ \n ใน textarea → แต่ละบรรทัดกลายเป็น <div> หนึ่งบรรทัด
+   เพื่อให้ line-height ตรงกับ PDF renderer (ซึ่งวาดทีละบรรทัด)
+   ────────────────────────────────────────────────────────────────────── */
+.dc-heading__line {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* ── Token placeholder ในเนื้อหา (Requirement I.9) ───────────────────
+   token ที่ resolve ไม่ได้ → สีเทา + หรือ + ยังไม่มีข้อมูล
+   ────────────────────────────────────────────────────────────────────── */
+.dc-token--empty {
+  color: #9aa5b1;
+  font-style: italic;
+}
+
+/* ── System Data Block (Requirement B) ──────────────────────────── */
+.dc-systemdata__label {
+  color: #666666;
+  font-weight: 700;
+}
+.dc-systemdata__value {
+  color: #000000;
+  font-weight: 600;
+}
+.dc-systemdata--stacked .dc-systemdata__value {
+  margin-top: 2px;
+  padding-left: 12px;
+}
+.dc-systemdata--inline .dc-systemdata__label {
+  margin-right: 8px;
+}
+/* inline: label กับ value อยู่บรรทัดเดียวกัน */
+.dc-systemdata--inline .dc-systemdata__body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 4px;
+}
+.dc-systemdata--empty .dc-systemdata__value {
+  color: #9aa5b1;
+  font-weight: 400;
+  font-style: italic;
+}
 
 /* ── Field (Label + Value) ────────────────────────────────── */
 .dc-field {
   margin: 0;
+}
+/* layout = inline → label + value บรรทัดเดียวกัน (Requirement E) */
+.dc-field--inline .dc-field__body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 4px;
+}
+.dc-field--inline .dc-field__value,
+.dc-field--inline .dc-control {
+  margin-top: 0;
+  padding-left: 0;
 }
 .dc-field__label {
   font-size: 11pt;
@@ -272,10 +355,19 @@ select.dc-control {
 }
 
 /* ── Logo ─────────────────────────────────────────────────── */
+/* width/height มาจาก block (Requirement D) — inline style ถูกเขียนทับ */
 .dc-logo img {
   display: block;
   width: 70px;
   height: auto;
+}
+/* ไม่มีโลโก้ → ข้อความสีเทา (ห้ามแสดงกรอบรูปว่าง — Requirement D) */
+.dc-logo__placeholder {
+  display: inline-block;
+  color: #9aa5b1;
+  font-size: 10pt;
+  font-style: italic;
+  line-height: 1.4;
 }
 
 /* ── Signature ────────────────────────────────────────────── */
@@ -284,6 +376,13 @@ select.dc-control {
   color: #000000;
   line-height: 1.4;
 }
+/* เส้นลายเซ็นแบบข้อความ (lineStyle) — default = จุด 40 ตัว */
+.dc-signature__line-text {
+  display: inline-block;
+  white-space: pre;
+  letter-spacing: 0;
+}
+/* เส้นลายเซ็นแบบเส้น (fallback เมื่อไม่ได้ใส่ lineStyle) */
 .dc-signature__line {
   display: inline-block;
   border-bottom: 1px solid #000000;
@@ -569,7 +668,8 @@ function resolveDescriptorTitle(descriptor: DocumentDescriptor): string {
     if (block.type === "heading" && block.size === "large") {
       // ไม่อ่าน ApplicationContext ตรงนี้ — ใช้ placeholder tokens
       // (ดู preview-modal.css หรือ renderDocumentHeader สำหรับ full resolve)
-      return block.text.trim() || "Document";
+      // เอาเฉพาะบรรทัดแรก (title ของ document header ไม่ควรหลายบรรทัด)
+      return block.text.split(/\r?\n/)[0]?.trim() || "Document";
     }
   }
   return "Document";
@@ -585,7 +685,7 @@ interface RenderBlockContext {
   marginTop: number;
   marginBottom: number;
   ctx: ApplicationContext;
-  tokens: Record<DocumentToken, import("./document-tokens").TokenValue>;
+  tokens: Record<DocumentToken, TokenValue>;
   mode: PreviewMode;
   missingFieldIds: string[];
 }
@@ -606,7 +706,7 @@ function renderBlock(
 ): RenderedBlock | null {
   switch (block.type) {
     case "heading":
-      return renderHeadingBlock(block, rctx.tokens);
+      return renderHeadingBlock(block, rctx.ctx, rctx.tokens);
 
     case "field": {
       const field = rctx.fieldIndex.get(block.fieldId);
@@ -658,9 +758,21 @@ function renderBlock(
         },
       };
 
+    case "systemData":
+      return {
+        html: renderSystemDataBlock(block, rctx.tokens),
+        summary: {
+          blockId: block.id,
+          type: "systemData",
+          align: rctx.align,
+          marginTop: rctx.marginTop,
+          marginBottom: rctx.marginBottom,
+        },
+      };
+
     case "signature":
       return {
-        html: renderSignatureBlock(block, rctx.ctx),
+        html: renderSignatureBlock(block, rctx.ctx, rctx.tokens),
         summary: {
           blockId: block.id,
           type: "signature",
@@ -673,44 +785,55 @@ function renderBlock(
 }
 
 // =============================================================================
-// Heading
+// Heading / Text Block
 // =============================================================================
 
 /**
  * Render HeadingBlock → HTML
  *
  * mirror descriptor-renderer.ts:drawHeading
- *   - heading size (large/medium/small) + bold
+ *   - heading size (large/medium/small) + bold + italic
  *   - align (left/center/right)
  *   - COLOR_PRIMARY = rgb(0.05, 0.27, 0.51) → #0d4572
  *
- * [Live Preview] รองรับ document token ในข้อความ heading
- *   เช่น "ใบสมัครเลขที่ {APPLICATION_NO}" → "ใบสมัครเลขที่ 2026-CHM01-0001"
+ * [Live Preview] รองรับทั้ง System Token และ Application Field token:
+ *   "ใบสมัครรอบ {ROUND_NAME}\nเลขที่ใบสมัคร {APPLICATION_NO}\nชื่อ {FIELD:abc123}"
  *
  * Order สำคัญ: resolve token → escape HTML
  * (ถ้า escape ก่อน resolve ค่าจาก DB จะกลายเป็น entity แล้ว render เพี้ยน)
  */
 function renderHeadingBlock(
   block: HeadingBlock,
-  tokens: Record<DocumentToken, import("./document-tokens").TokenValue>
+  ctx: ApplicationContext,
+  tokens: Record<DocumentToken, TokenValue>
 ): RenderedBlock {
   const bold = block.bold ?? DEFAULT_HEADING_BOLD;
   const sizeClass = SIZE_TO_CLASS[block.size];
   const boldClass = bold ? " dc-heading--bold" : "";
+  const italicClass = block.italic ? " dc-heading--italic" : "";
   const pt = SIZE_TO_PT[block.size];
   const alignClass = ALIGN_TO_CLASS[(block.align ?? DEFAULT_ALIGN) as Align];
   const marginTop = block.marginTop ?? 0;
   const marginBottom = block.marginBottom ?? 0;
 
-  // ── [Live Preview] resolve document token ก่อน → แล้วค่อย escape ──
-  const safeText = escapeHtml(applyDocumentTokens(block.text, tokens));
+  // ── [Live Preview] resolve token (system + field) ก่อน → แล้วค่อย escape ──
+  // ใช้ entry point เดียวกับ PDF renderer (applyDocumentTokensWithFields)
+  // → ไม่มี token resolver ซ้ำ (Requirement I.6)
+  const resolved = applyDocumentTokensWithFields(block.text, ctx, tokens);
+
+  // ── Multiline: แต่ละบรรทัดแยกเป็น <div class="dc-heading__line">
+  // (Requirement A.2) — ทำให้ line-height ตรงกับ PDF ที่วาดทีละบรรทัด
+  const linesHtml = resolved.text
+    .split(/\r?\n/)
+    .map((line) => `<div class="dc-heading__line">${renderTokensWithPlaceholders(line, tokens)}</div>`)
+    .join("");
 
   // ── FIX: inline align class + margin style เข้า attribute เดียวกัน ──
   // (เดิม styleAttrs มี class+style แยก → browser ignore attribute ที่ 2)
   const styleParts: string[] = [`font-size: ${pt}pt`];
   if (marginTop > 0) styleParts.push(`margin-top: ${marginTop}pt`);
   if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
-  const html = `<h2 class="dc-heading ${sizeClass}${boldClass} dc-block ${alignClass}" style="${styleParts.join("; ")}">${safeText}</h2>`;
+  const html = `<h2 class="dc-heading ${sizeClass}${boldClass}${italicClass} dc-block ${alignClass}" style="${styleParts.join("; ")}">${linesHtml}</h2>`;
 
   return {
     html,
@@ -722,6 +845,57 @@ function renderHeadingBlock(
       marginBottom: block.marginBottom ?? 0,
     },
   };
+}
+
+/**
+ * Escape ข้อความ แล้วครอบ token ที่ยังไม่มีข้อมูลด้วย span สีเทา
+ *
+ * Requirement I.9 — Placeholder ต้องมี style สีเทาและเห็นชัด
+ * Requirement K.6 — token ที่ไม่รู้จักต้องแสดงเป็นข้อความอย่างปลอดภัย
+ *
+ * @param text - ข้อความที่ resolve token แล้ว (ยังไม่ escape)
+ * @param tokens - token map (ใช้ตรวจว่าตัวไหนยังเป็น placeholder)
+ *
+ * หมายเหตุ: ข้อความถูก escape ก่อนเสมอ → ไม่มีทางเกิด script injection
+ * แม้ Admin จะพิมพ์ HTML ลงไปใน block นี้ (Requirement K.2/K.3)
+ */
+function renderTokensWithPlaceholders(
+  text: string,
+  tokens: Record<DocumentToken, TokenValue>
+): string {
+  // เครื่องหมาย token ที่ระบบรู้จัก → เช็คว่าตัวไหนยังไม่มีข้อมูล
+  // pattern รวมทั้ง system token และ {FIELD:<id>} (Requirement K.6)
+  const TOKEN_BRACE = /(\{[A-Z_]+(?::[A-Za-z0-9_-]+)?\})/g;
+
+  let out = "";
+  let lastIndex = 0;
+  for (const match of text.matchAll(TOKEN_BRACE)) {
+    const index = match.index ?? 0;
+    const brace = match[1];
+
+    // ข้อความก่อน token → escape ตามปกติ
+    out += escapeHtml(text.slice(lastIndex, index));
+
+    // หา token name จาก {NAME} หรือ {FIELD:id}
+    const name = brace.slice(1, -1);
+    const isFieldToken = name.startsWith("FIELD:");
+    const isKnownSystem = !isFieldToken && (name as DocumentToken) in tokens;
+    const tokenValue = isKnownSystem ? tokens[name as DocumentToken] : null;
+    const isEmpty = isFieldToken ? true : tokenValue ? tokenValue.empty : false;
+
+    // token ที่ resolve ได้ → ข้อความธรรมดา (escape แล้ว)
+    // token ที่ยังไม่มีข้อมูล → span สีเทา + italic
+    const inner = isEmpty
+      ? `<span class="dc-token--empty">${escapeHtml(brace)}</span>`
+      : escapeHtml(brace);
+
+    out += inner;
+    lastIndex = index + brace.length;
+  }
+
+  // ส่วนที่เหลือหลัง token สุดท้าย
+  out += escapeHtml(text.slice(lastIndex));
+  return out;
 }
 
 // =============================================================================
@@ -750,7 +924,13 @@ function renderFieldBlock(
 ): string {
   const rawValue = resolveAnswerValue(field, ctx);
   const label = block.label ?? field.label;
-  const requiredMarker = field.isRequired ? " *" : "";
+  // ── Requirement E: required marker เป็น optional toggle ────────────
+  const showRequired = block.showRequired ?? true;
+  const requiredMarker = field.isRequired && showRequired ? " *" : "";
+
+  // ── Requirement E: layout stacked (default) | inline ────────────────
+  const layout = block.layout ?? "stacked";
+  const layoutClass = layout === "inline" ? " dc-field--inline" : "";
 
   const alignClass = ALIGN_TO_CLASS[(block.align ?? DEFAULT_ALIGN) as Align];
   const marginTop = block.marginTop ?? 0;
@@ -760,8 +940,6 @@ function renderFieldBlock(
   if (marginTop > 0) styleParts.push(`margin-top: ${marginTop}pt`);
   if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
   const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
-
-  const safeLabel = escapeHtml(`${label}${requiredMarker}`);
 
   // ── mode = "form"     → render เป็น form control จริง (input/textarea/…)
   //    mode = "document" → render เป็น label + value (เหมือน PDF)
@@ -773,9 +951,20 @@ function renderFieldBlock(
 
   const emptyClass = !isNonEmptyValue(rawValue) ? " dc-field--empty" : "";
 
-  return `<section class="dc-field dc-block ${alignClass}${emptyClass}"${styleAttr}>
-    <label class="dc-field__label">${safeLabel}</label>
-    ${controlHtml}
+  // ── Requirement E: showLabel (default: true) ─────────────────────
+  //  - ซ่อน label แล้ว → ไม่ emit <label> เลย (read-only mode ไม่ต้องมี label tag)
+  const showLabel = block.showLabel ?? true;
+  const labelHtml = showLabel
+    ? `<label class="dc-field__label">${escapeHtml(label)}<span class="dc-field__required">${requiredMarker}</span></label>`
+    : "";
+
+  // layout inline → ห่อ label + control ไว้ใน wrapper เดียวกัน
+  const bodyInner = `${labelHtml}\n    ${controlHtml}`;
+  const bodyHtml =
+    layout === "inline" ? `<div class="dc-field__body">${bodyInner}</div>` : bodyInner;
+
+  return `<section class="dc-field dc-block ${alignClass}${layoutClass}${emptyClass}"${styleAttr}>
+    ${bodyHtml}
   </section>`;
 }
 
@@ -1004,9 +1193,17 @@ function renderTableBlock(
   // renderFieldBlock และให้ future ใช้ต่อได้
   void mode;
 
+  const showLabel = block.showLabel ?? true;
+  const tableLabel = block.label;
+  const emptyText = block.emptyText ?? "(ไม่มีข้อมูล)";
+
   if (tableData.length === 0) {
+    const labelHtml = showLabel && tableLabel
+      ? `<div class="dc-table-label" style="font-weight:700;margin-bottom:4px">${escapeHtml(tableLabel)}</div>`
+      : "";
     return `<section class="dc-table-wrap dc-table--empty dc-block ${alignClass}"${styleAttr}>
-      <div class="dc-field__value">(ไม่มีข้อมูล)</div>
+      ${labelHtml}
+      <div class="dc-field__value">${escapeHtml(emptyText)}</div>
     </section>`;
   }
 
@@ -1027,7 +1224,12 @@ function renderTableBlock(
     .map((h) => `<th>${escapeHtml(h)}</th>`)
     .join("");
 
+  const labelHtml = showLabel && tableLabel
+    ? `<div class="dc-table-label" style="font-weight:700;margin-bottom:4px">${escapeHtml(tableLabel)}</div>`
+    : "";
+
   return `<section class="dc-table-wrap dc-block ${alignClass}"${styleAttr}>
+    ${labelHtml}
     <table class="dc-table">
       <thead>
         <tr>${headerHtml}</tr>
@@ -1040,73 +1242,276 @@ function renderTableBlock(
 }
 
 // =============================================================================
-// Logo
+// Logo (Requirement D)
 // =============================================================================
+
+/** ความกว้าง default ของโลโก้ (px ใน preview) — คงเดิมไว้เพื่อ BC */
+const DEFAULT_LOGO_WIDTH = 70;
 
 /**
  * Render LogoBlock → HTML
  *
- * V1: SAO logo placeholder (ใช้ data URI หรือ alt text)
- * - preview ใช้ alt text เพราะไม่ load asset จริง (ไม่ผูกกับ file path)
- * - width = 70px (mirror descriptor-renderer.ts:drawLogo)
+ * ── Requirement D ────────────────────────────────────────────────────────
+ *   source:
+ *     - "none"         → ไม่แสดงอะไรเลย (ว่าง)
+ *     - "organization" → โลโก้หน่วยงาน
+ *     - "upload"       → รูปที่อัปโหลดเอง (ยังไม่มี asset storage)
+ *
+ *   ถ้าไม่มีโลโก้หรือโหลดไม่ได้ → แสดง "ยังไม่มีโลโก้"
+ *   ห้ามแสดงกรอบรูปว่าง / <img src=""> (เคยเป็นบั๊ก — src="" โหลด page เดิม)
+ *
+ *   ── ข้อจำกัดที่ตรวจพบจริง (รายงานตาม Requirement D) ──────────────────
+ *   ตาราง `organizations` ไม่มี column logo
+ *   และไม่มี admin asset storage (R2 route ที่มีรับเฉพาะ PDF เอกสารสมัคร)
+ *   → renderer นี้รับ imageUrl จาก ctx.logoUrl (ถ้ามีในอนาคต)
+ *   → ถ้าไม่มี URL → แสดงข้อความ "ยังไม่มีโลโก้" เสมอ ไม่ทำให้ Preview ล้ม
+ *
+ *   ── Safety (Requirement K.5) ────────────────────────────────────────────
+ *   URL ถูก validate ก่อนใส่ใน src="" (http/https/data:image เท่านั้น)
+ *   และ escape attribute เสมอ → ไม่มีทางเกิด script injection
  */
-function renderLogoBlock(block: Extract<DocumentBlock, { type: "logo" }>): string {
+function renderLogoBlock(block: LogoBlock): string {
   const align = (block.align ?? DEFAULT_ALIGN) as Align;
   const alignClass = ALIGN_TO_CLASS[align];
   const marginTop = block.marginTop ?? 0;
   const marginBottom = block.marginBottom ?? 0;
 
-  // ── FIX: inline margin เข้า style attribute เดียว (เดิม styleAttrs ทำให้เกิด double class+style) ──
   const styleParts: string[] = [];
   if (marginTop > 0) styleParts.push(`margin-top: ${marginTop}pt`);
   if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
   const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
 
-  // ใช้ alt text อย่างเดียว — preview ไม่ฝัง asset
-  // (production จะ inject <img src> จาก UI layer ในอนาคต)
+  // ── source = "none" → ไม่แสดงอะไรเลย ────────────────────────────────
+  if (block.source === "none") {
+    return "";
+  }
+
+  // ── ขนาด (รักษา aspect ratio: ถ้าไม่ระบุ height ให้ auto) ──────────
+  const width = clampSize(block.width, DEFAULT_LOGO_WIDTH);
+  // ใช้ height เฉพาะเมื่อ Admin ระบุ — CSS `height:auto` จะรักษา ratio ให้
+  const height = block.height ? `height: ${clampSize(block.height, DEFAULT_LOGO_WIDTH)}px;` : "height: auto;";
+  const sizeStyle = `width: ${width}px; ${height}`;
+
+  // ── เลือก URL ตาม source ───────────────────────────────────────────
+  //  organization → ctx.logoUrl (ยังไม่มีในระบบ → null)
+  //  upload       → block.imageUrl (forward-compatible)
+  //  ไม่มี source  (descriptor เก่า) → organization (คงพฤติกรรมเดิม)
+  const source = block.source ?? "organization";
+  const rawUrl =
+    source === "upload"
+      ? block.imageUrl
+      : LOGO_SOURCE_URLS.get("organization") ?? null;
+
+  const safeUrl = sanitizeImageUrl(rawUrl);
+
+  if (safeUrl === null) {
+    // ── ไม่มีโลโก้ → ข้อความสีเทา (ห้ามกรอบรูปว่าง — Requirement D) ──
+    return `<section class="dc-block dc-logo ${alignClass}"${styleAttr}>
+      <span class="dc-logo__placeholder">${NO_LOGO_TEXT}</span>
+    </section>`;
+  }
+
+  const alt = escapeHtml(block.alt ?? "โลโก้หน่วยงาน");
   return `<section class="dc-block dc-logo ${alignClass}"${styleAttr}>
-    <img src="" alt="SAO Logo" />
+    <img src="${escapeHtml(safeUrl)}" alt="${alt}" style="${sizeStyle}" />
   </section>`;
 }
 
+/**
+ * URL ของโลโก้หน่วยงานที่ resolve ได้จริง
+ *
+ * ปัจจุบันระบบไม่มีแหล่งโลโก้จริง (ไม่มี column ใน organizations,
+ * ไม่มี admin asset storage) → Map ว่าง = ยังไม่มี source
+ *
+ * เมื่อมี source จริงในอนาคต ให้เติม key "organization" ที่นี่ที่เดียว
+ * (renderer อื่นไม่ต้องแก้ — เป็น single source of truth)
+ */
+const LOGO_SOURCE_URLS = new Map<string, string>();
+
+/**
+ * Validate URL รูปภาพก่อนใส่ใน src="" (Requirement K.5)
+ *
+ * อนุญาตเฉพาะ:
+ *   - http:// / https://
+ *   - data:image/* ขนาดเล็ก (≤ 4096 ตัวอักษร — กัน base64 ใหญ่)
+ *
+ * @returns URL ที่ปลอดภัย หรือ null ถ้าไม่ผ่านการตรวจ
+ */
+function sanitizeImageUrl(url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  const trimmed = url.trim();
+  if (trimmed.length === 0 || trimmed.length > 2048) return null;
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("http://") || lower.startsWith("https://")) return trimmed;
+  if (lower.startsWith("data:image/") && trimmed.length <= 4096) return trimmed;
+  // protocol นอกเหนือจากนี้ (เช่น javascript:, vbscript:, data:text/html) → ปฏิเสธ
+  return null;
+}
+
+/**
+ * Clamp ขนาดรูปให้อยู่ในช่วงที่ปลอดภัย (8..1000) — กันค่าผิดปกติทำให้ layout พัง
+ */
+function clampSize(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  const n = Math.round(value);
+  if (n < 8) return 8;
+  if (n > 1000) return 1000;
+  return n;
+}
+
 // =============================================================================
-// Signature
+// System Data Block (Requirement B)
 // =============================================================================
 
 /**
- * Default role label — mirror descriptor-renderer.ts
+ * Render SystemDataBlock → HTML
+ *
+ * แสดง "ข้อมูลระบบ" 1 รายการ (เลขที่ใบสมัคร / ชื่อรอบ / วันที่)
+ *
+ * ── ตั้งค่าได้ (Requirement B) ────────────────────────────────────────────
+ *   - label ที่แสดง (custom ได้ / default = SYSTEM_DATA_LABELS[key])
+ *   - showLabel (default: true)
+ *   - layout: "stacked" (default) = label บน / value ล่าง
+ *             "inline"           = label และ value บรรทัดเดียวกัน
+ *   - align (ของ block)
+ *   - labelStyle / valueStyle (small/medium/large)
+ *   - dateFormat (ใช้กับ APPLICATION_DATE / PRINT_DATE)
+ *
+ * ── Placeholder (Requirement I.9) ─────────────────────────────────────────
+ *   token ที่ resolve ไม่ได้ → แสดง {TOKEN} สีเทา + italic
+ *   (เหมือน heading — ไม่ใช้ค่าอื่นมาแทน: Requirement K.10)
  */
-const DEFAULT_SIGNATURE_ROLE = "ผู้สมัคร";
+function renderSystemDataBlock(
+  block: SystemDataBlock,
+  tokens: Record<DocumentToken, TokenValue>
+): string {
+  const align = (block.align ?? DEFAULT_ALIGN) as Align;
+  const alignClass = ALIGN_TO_CLASS[align];
+  const marginTop = block.marginTop ?? 0;
+  const marginBottom = block.marginBottom ?? 0;
+
+  const styleParts: string[] = [];
+  if (marginTop > 0) styleParts.push(`margin-top: ${marginTop}pt`);
+  if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
+  const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
+
+  // ── ค่า (resolve จาก token map — single source of truth เดียวกับ heading) ──
+  const value = tokens[block.key];
+  const isEmpty = !value || value.empty;
+  const valueText = isEmpty ? `{${block.key}}` : formatSystemDateValue(value.text, block);
+
+  const label = block.label ?? SYSTEM_DATA_LABELS[block.key];
+  const showLabel = block.showLabel ?? true;
+  const layout = block.layout ?? "stacked";
+
+  const labelPt = SIZE_TO_PT[block.labelStyle ?? "small"];
+  const valuePt = SIZE_TO_PT[block.valueStyle ?? "medium"];
+
+  const labelHtml = showLabel
+    ? `<div class="dc-systemdata__label" style="font-size: ${labelPt}pt">${escapeHtml(label)}</div>`
+    : "";
+  const valueHtml = `<div class="dc-systemdata__value" style="font-size: ${valuePt}pt">${escapeHtml(valueText)}</div>`;
+
+  const layoutClass = layout === "inline" ? " dc-systemdata--inline" : " dc-systemdata--stacked";
+  const emptyClass = isEmpty ? " dc-systemdata--empty" : "";
+  const bodyClass = layout === "inline" ? " dc-systemdata__body" : "";
+
+  return `<section class="dc-systemdata dc-block ${alignClass}${layoutClass}${emptyClass}"${styleAttr}>
+    ${labelHtml}
+    <div class="${bodyClass.trim()}">${valueHtml}</div>
+  </section>`;
+}
 
 /**
- * Default visibility toggles — mirror descriptor-renderer.ts
- * - showName: true  (เปิด บรรทัด "(ชื่อผู้สมัคร)")
- * - showDate: true  (เปิด บรรทัด "วันที่ ...")
- * - showTime: false (ปิด บรรทัด "เวลา ..." — เอกสารราชการส่วนใหญ่ไม่แสดงเวลา)
+ * Format ค่าวันที่ตาม dateFormat ที่เลือก (Requirement B)
+ *
+ * tokens resolver ส่งมาเป็น "20 ตุลาคม 2569" (thai_long) เสมอ
+ * → ถ้าเลือกรูปแบบอื่น ต้องแปลงกลับเป็นตัวเลขจากข้อความไทย
+ *
+ * @param text - ค่าที่ resolve ได้ (รูปแบบไทยยาว)
+ * @param block - block config (ใช้ key + dateFormat)
+ * @returns ข้อความตามรูปแบบที่เลือก
  */
-const DEFAULT_SHOW_NAME = true;
-const DEFAULT_SHOW_DATE = true;
-const DEFAULT_SHOW_TIME = false;
+function formatSystemDateValue(text: string, block: SystemDataBlock): string {
+  const isDateKey = block.key === "APPLICATION_DATE" || block.key === "PRINT_DATE";
+  const fmt = block.dateFormat ?? DEFAULT_DATE_FORMAT;
+  if (!isDateKey || fmt === "thai_long") return text;
 
+  // parse "20 ตุลาคม 2569" → { day, monthIndex, year }
+  const parsed = parseThaiLongDate(text);
+  if (parsed === null) return text;
+
+  switch (fmt) {
+    case "thai_short":
+      return `${parsed.day}/${parsed.monthIndex + 1}/${parsed.year}`;
+    case "iso":
+      return `${parsed.year}-${String(parsed.monthIndex + 1).padStart(2, "0")}-${String(parsed.day).padStart(2, "0")}`;
+    case "numeric":
+      return `${String(parsed.day).padStart(2, "0")}-${String(parsed.monthIndex + 1).padStart(2, "0")}-${parsed.year}`;
+    default:
+      // ไม่ควรถูกเรียก (เพราะผ่าน check fmt !== "thai_long" แล้ว)
+      // แต่ถ้ามีค่าใหม่ในอนาคต ป้องกันไม่ให้พัง
+      return text;
+  }
+}
+
+/**
+ * Parse "20 ตุลาคม 2569" → { day, monthIndex (0-based), year (พ.ศ.) }
+ *
+ * @returns null ถ้า parse ไม่ได้ (คืนค่าเดิม — ไม่ throw, ไม่ทำ Preview ล้ม)
+ */
+function parseThaiLongDate(text: string): { day: number; monthIndex: number; year: number } | null {
+  const match = /^\s*(\d{1,2})\s+([^\d\s]+)\s+(\d{4})\s*$/.exec(text);
+  if (!match) return null;
+  const day = Number(match[1]);
+  const monthIndex = THAI_MONTHS.indexOf(match[2]);
+  const year = Number(match[3]);
+  if (!Number.isFinite(day) || monthIndex < 0 || !Number.isFinite(year)) return null;
+  return { day, monthIndex, year };
+}
+
+// =============================================================================
+// Signature (Requirement C)
+// =============================================================================
+
+/**
+ * ค่า default ของ Signature (ย้ายไปใช้จาก types.ts แล้ว)
+ *
+ * เดิมมี duplicate constant ที่นี่ (DEFAULT_SIGNATURE_ROLE / DEFAULT_SHOW_*)
+ * ทำให้ renderer สองฝั่ง (preview / PDF) drift กันได้
+ * → ตอนนี้ทั้งสองฝั่ง import จาก types.ts ที่เป็น single source of truth
+ *   (DEFAULT_SHOW_NAME / DEFAULT_SHOW_PARENTHESES / DEFAULT_SHOW_DATE /
+ *    DEFAULT_SHOW_TIME / DEFAULT_SIGNATURE_*_LABEL)
+ *
+ * ────────────────────────────────────────────────────────────────────────
 /**
  * Render SignatureBlock → HTML
  *
- * mirror descriptor-renderer.ts:drawSignature
- *   - "ลงลายมือชื่อ" + underscore line
- *   - "(ชื่อผู้สมัคร)" parenthetical (escape: actual name in fallback mode) — ถ้า showName
- *   - role label (default: "ผู้สมัคร")
- *   - "วันที่ DD MONTH พ.ศ." (Thai Buddhist year) — ถ้า showDate
- *   - "เวลา HH:mm น." — ถ้า showTime (default: ปิด)
+ * ── Requirement C: ค่าเริ่มต้น ────────────────────────────────────────────
+ *   ลงลายมือชื่อ ........................................ ผู้สมัคร
+ *   ({ชื่อ-นามสกุล})
+ *   วันที่ {APPLICATION_DATE}
  *
- * Fallback (เมื่อไม่มี application):
+ * ── สิ่งที่ตั้งค่าได้ ─────────────────────────────────────────────────────
+ *   1. lineLabel    (default "ลงลายมือชื่อ") — label ก่อนเส้น
+ *   2. roleLabel    (default "ผู้สมัคร")     — label หลังเส้น
+ *   3. lineStyle    (default "......")     — รูปแบบเส้นลายเซ็น
+ *   4. nameFieldId  — Application Field สำหรับชื่อ (field_master.id)
+ *   5. dateSource   — APPLICATION_DATE / PRINT_DATE / none
+ *   6. showName / showDate / showParentheses
+ *   7. dateLabel    (default "วันที่")
+ *   8. align        — left / center / right
+ *
+ * ── Fallback (เมื่อไม่มี application) ────────────────────────────────────
  *   - ชื่อ: "(ชื่อผู้สมัคร)"
- *   - วันที่/เวลา: "______________"
+ *   - วันที่: "______________"
  *
  * ไม่ทำการ pagination ใน preview — ทั้ง block อยู่ใน DOM ปกติ
  */
 function renderSignatureBlock(
   block: SignatureBlock,
-  ctx: ApplicationContext
+  ctx: ApplicationContext,
+  tokens: Record<DocumentToken, TokenValue>
 ): string {
   const alignClass = ALIGN_TO_CLASS[(block.align ?? DEFAULT_ALIGN) as Align];
   const marginTop = block.marginTop ?? 0;
@@ -1117,54 +1522,175 @@ function renderSignatureBlock(
   if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
   const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
 
-  const roleLabel = block.roleLabel ?? DEFAULT_SIGNATURE_ROLE;
+  // ── ข้อความที่ตั้งค่าได้ (Requirement C.1/C.2/C.3/C.10) ─────────────
+  const lineLabel = block.lineLabel ?? DEFAULT_SIGNATURE_LINE_LABEL;
+  const roleLabel = block.roleLabel ?? DEFAULT_SIGNATURE_ROLE_LABEL;
+  const lineStyle = block.lineStyle ?? DEFAULT_SIGNATURE_LINE_STYLE;
+  const dateLabel = block.dateLabel ?? DEFAULT_SIGNATURE_DATE_LABEL;
+  const showParentheses = block.showParentheses ?? DEFAULT_SHOW_PARENTHESES;
+
+  // ── Visibility toggles (Requirement C.6/C.7/C.8) ───────────────────
   const showName = block.showName ?? DEFAULT_SHOW_NAME;
   const showDate = block.showDate ?? DEFAULT_SHOW_DATE;
   const showTime = block.showTime ?? DEFAULT_SHOW_TIME;
 
-  // ── Resolve values from application context ───────────────────
-  const signerName = (ctx.application.fullname ?? "").trim();
+  // ── Resolve ชื่อ: nameFieldId (Requirement C.4) → fallback fullname ──
+  const { signerName, hasName } = resolveSignerName(block, ctx);
   const submittedAt = ctx.application.submittedAt;
+  const hasSubmittedAt = typeof submittedAt === "number" && submittedAt > 0;
 
-  const hasName = signerName.length > 0;
-  const hasTime = typeof submittedAt === "number" && submittedAt > 0;
+  // ── Resolve วันที่ตาม dateSource (Requirement C.5) ──────────────────
+  //  - "none"              → ไม่แสดงวันที่เลย
+  //  - "PRINT_DATE"        → วันที่พิมพ์ (จาก token resolver = เวลาสร้างเอกสาร)
+  //  - "APPLICATION_DATE"  → วันที่สมัคร (default)
+  //  - "application" (legacy descriptor) → พฤติกรรมเดิม = submitted_at
+  const rawDateSource = block.dateSource ?? "APPLICATION_DATE";
+  const dateSource: SignatureDateSourceKind =
+    rawDateSource === "none" || rawDateSource === "PRINT_DATE"
+      ? rawDateSource
+      : "APPLICATION_DATE";
 
-  const displayName = hasName ? signerName : "(ชื่อผู้สมัคร)";
-  const displayDate = hasTime
-    ? formatThaiDate(submittedAt)
-    : "______________";
-  const displayTime = hasTime
+  const dateText = resolveSignatureDateText(dateSource, ctx, tokens, hasSubmittedAt);
+  const timeText = hasSubmittedAt
     ? formatThaiTime(submittedAt)
     : "______________";
 
   const nameClass = hasName ? "" : " dc-signature__placeholder";
 
-  // ── Build body lines based on visibility toggles ─────────────
+  // ── เส้นลายเซ็น (Requirement C.3) ───────────────────────────────────
+  //  ถ้า Admin กำหนด lineStyle (จุด/ขีด) → ใช้ข้อความตามนั้น
+  //  ถ้าไม่กำหนด → ใช้เส้นคั่นแบบ CSS (พฤติกรรมเดิม)
+  const lineInner =
+    lineStyle.trim().length > 0
+      ? `<span class="dc-signature__line-text">${escapeHtml(lineStyle)}</span>`
+      : `<span class="dc-signature__line">&nbsp;</span>`;
+
+  // ── Build body lines ตาม layout เดิม + label ที่ปรับได้ ───────────
+  //  บรรทัด 1: "<lineLabel> <line> <roleLabel>"
+  const roleInline = roleLabel.trim().length > 0
+    ? ` <span class="dc-signature__role">${escapeHtml(roleLabel)}</span>`
+    : "";
+  const line1Label = lineLabel.trim().length > 0
+    ? `<span>${escapeHtml(lineLabel)}</span> `
+    : "";
+
   const bodyParts: string[] = [
-    `<div>ลงลายมือชื่อ <span class="dc-signature__line">&nbsp;</span></div>`,
+    `<div>${line1Label}${lineInner}${roleInline}</div>`,
   ];
+
   if (showName) {
+    // showParentheses = false → แสดงชื่อเปล่า ไม่มีวงเล็บ (Requirement C.8)
+    const displayName = hasName
+      ? signerName
+      : showParentheses
+        ? SIGNATURE_NAME_PLACEHOLDER
+        : SIGNATURE_NAME_HINT;
+    const nameText = showParentheses
+      ? `(${escapeHtml(displayName)})`
+      : escapeHtml(displayName);
     bodyParts.push(
-      `<div class="dc-signature__name${nameClass}">(${escapeHtml(displayName)})</div>`
+      `<div class="dc-signature__name${nameClass}">${nameText}</div>`
     );
   }
-  bodyParts.push(
-    `<div class="dc-signature__role">${escapeHtml(roleLabel)}</div>`
-  );
-  if (showDate) {
+
+  if (showDate && dateSource !== "none") {
+    const dateColor = dateText === "______________" ? " dc-signature__placeholder" : "";
     bodyParts.push(
-      `<div class="dc-signature__date">วันที่ ${escapeHtml(displayDate)}</div>`
+      `<div class="dc-signature__date${dateColor}">${escapeHtml(dateLabel)} ${escapeHtml(dateText)}</div>`
     );
   }
-  if (showTime) {
+
+  if (showTime && hasSubmittedAt) {
     bodyParts.push(
-      `<div class="dc-signature__time">เวลา ${escapeHtml(displayTime)}</div>`
+      `<div class="dc-signature__time dc-signature__placeholder">เวลา ${escapeHtml(timeText)}</div>`
     );
   }
 
   return `<section class="dc-signature dc-block ${alignClass}"${styleAttr}>
     ${bodyParts.join("\n    ")}
   </section>`;
+}
+
+/** ชนิดของ dateSource ที่ renderer รองรับ (หลัง normalize ค่า legacy แล้ว) */
+type SignatureDateSourceKind = "APPLICATION_DATE" | "PRINT_DATE" | "none";
+
+/**
+ * ข้อความ placeholder ของชื่อ (เมื่อไม่มีข้อมูลจริง)
+ *
+ * เป็นข้อความ hint ของเอกสาร ไม่ใช่ Application Field
+ * (Requirement C: ห้ามสร้าง Application Field ชื่อ "ลายมือชื่อ" โดยอัตโนมัติ)
+ */
+const SIGNATURE_NAME_PLACEHOLDER = "ชื่อผู้สมัคร";
+
+/** ข้อความ hint เมื่อปิดวงเล็บรอบชื่อ */
+const SIGNATURE_NAME_HINT = "ชื่อ-นามสกุล";
+
+/**
+ * Resolve ชื่อผู้ลงนาม (Requirement C.4)
+ *
+ * ลำดับ (ตามที่ผู้ใช้เลือก):
+ *   1. nameFieldId → Application Field ที่ Admin เลือก (เก็บเป็น field_master.id)
+ *   2. ถ้า field นั้นไม่มีใน template version นี้ → ยังเป็น placeholder
+ *      (ไม่ fallback เงียบ ๆ ไปใช้ชื่อคนอื่น)
+ *   3. ไม่ได้เลือก field เลย → application.fullname (พฤติกรรมเดิม)
+ *
+ * @returns { signerName, hasName }
+ */
+function resolveSignerName(
+  block: SignatureBlock,
+  ctx: ApplicationContext
+): { signerName: string; hasName: boolean } {
+  if (block.nameFieldId) {
+    const resolved = resolveFieldValue(block.nameFieldId, ctx);
+    if (resolved !== null) {
+      if (resolved.empty) {
+        // field มีอยู่แต่ยังไม่มีค่า → placeholder
+        return { signerName: SIGNATURE_NAME_PLACEHOLDER, hasName: false };
+      }
+      return { signerName: resolved.text, hasName: true };
+    }
+    // field ไม่อยู่ใน version นี้ → ยังเป็น placeholder (ไม่หลอกว่ามีชื่อ)
+    return { signerName: SIGNATURE_NAME_PLACEHOLDER, hasName: false };
+  }
+
+  const fullname = (ctx.application.fullname ?? "").trim();
+  if (fullname.length > 0) {
+    return { signerName: fullname, hasName: true };
+  }
+  return { signerName: SIGNATURE_NAME_PLACEHOLDER, hasName: false };
+}
+
+/**
+ * Resolve ข้อความวันที่ของ Signature Block ตาม dateSource (Requirement C.5)
+ *
+ * - APPLICATION_DATE → วันที่สมัครจริง (applications.submitted_at)
+ * - PRINT_DATE       → วันที่พิมพ์ (จาก token resolver — เวลาสร้างเอกสาร)
+ * - none             → ไม่คืนค่า (renderer ข้ามบรรทัดนี้)
+ *
+ * @returns ข้อความวันที่ หรือ "______________" เมื่อไม่มีข้อมูลจริง
+ */
+function resolveSignatureDateText(
+  dateSource: SignatureDateSourceKind,
+  ctx: ApplicationContext,
+  tokens: Record<DocumentToken, TokenValue>,
+  hasSubmittedAt: boolean
+): string {
+  if (dateSource === "none") return "______________";
+
+  if (dateSource === "PRINT_DATE") {
+    const print = tokens.PRINT_DATE;
+    if (!print || print.empty) return "______________";
+    return print.text;
+  }
+
+  // APPLICATION_DATE — ใช้ค่าจาก token resolver เป็นหลัก (single source of truth)
+  // fallback เป็น formatThaiDate(submittedAt) ถ้า token ยังไม่ถูก resolve
+  const appDate = tokens.APPLICATION_DATE;
+  if (appDate && !appDate.empty) return appDate.text;
+  if (hasSubmittedAt && typeof ctx.application.submittedAt === "number") {
+    return formatThaiDate(ctx.application.submittedAt);
+  }
+  return "______________";
 }
 
 // =============================================================================
@@ -1191,7 +1717,7 @@ function renderSignatureBlock(
  * consumer ที่ต้องการ inline content ใช้ได้โดยไม่มี document shell
  * → shell นี้เป็นส่วนเสริม ไม่เปลี่ยนพฤติกรรมเดิม
  */
-function wrapDocument(body: string, header: string, tokens: Record<DocumentToken, import("./document-tokens").TokenValue>): string {
+function wrapDocument(body: string, header: string, tokens: Record<DocumentToken, TokenValue>): string {
   return `<!DOCTYPE html>
 <html lang="th">
 <head>
@@ -1213,14 +1739,10 @@ ${renderDocumentHeaderInfo(tokens)}
 /**
  * Render document header block — Logo placeholder + Title + Application No + Position info
  *
- * [Live Preview UX — Req 5, 6]
- * - Logo: ถ้ามี URL จริงใช้ <img>, ไม่มี → placeholder สีเทาพร้อมข้อความ
- *   "ยังไม่มีโลโก้" (req ระบุชัดเจน — ไม่เงียบ ไม่ทำเป็นรูปว่าง)
+ * [Live Preview UX — Requirement I.5]
+ * - Logo: ใช้ <img> ถ้ามี URL จริง ไม่มี → placeholder สีเทา "ยังไม่มีโลโก้"
  * - Title: ชื่อเอกสารจาก descriptor (heading large ตัวแรก)
- * - Application No: token ที่ resolve ได้ → ถ้าไม่ได้ → placeholder สีเทา
- * - Position Name / Number: เหมือนกัน
- * - Token ที่ resolve ไม่ได้ใช้ EMPTY_PLACEHOLDER + class .dc-token--empty
- *   (สีเทาอ่อน + italic) เพื่อให้ผู้ใช้รู้ทันทีว่ายังผูกไม่สมบูรณ์
+ * - Token rows: ใช้เฉพาะ token ที่ INSERTABLE (ดู renderDocumentHeaderInfo)
  *
  * โครงสร้าง:
  *   <header class="dc-doc-header">
@@ -1228,41 +1750,28 @@ ${renderDocumentHeaderInfo(tokens)}
  *     <h1 class="dc-doc-header__title">ชื่อเอกสาร</h1>
  *     <dl class="dc-doc-header__meta">
  *       <dt>เลขที่ใบสมัคร</dt><dd>{APPLICATION_NO}</dd>
- *       <dt>ตำแหน่ง</dt><dd>{POSITION_NAME}</dd>
- *       <dt>เลขตำแหน่ง</dt><dd>{POSITION_NUMBER}</dd>
+ *       <dt>ชื่อรอบการสมัคร</dt><dd>{ROUND_NAME}</dd>
  *     </dl>
  *   </header>
  */
 function renderDocumentHeader(
   title: string,
-  tokens: Record<DocumentToken, import("./document-tokens").TokenValue>
+  tokens: Record<DocumentToken, TokenValue>
 ): string {
   const resolvedTitle = escapeHtml(applyDocumentTokens(title, tokens));
 
-  const metaRows = [
-    {
-      label: "เลขที่ใบสมัคร",
-      value: tokens.APPLICATION_NO,
-    },
-    {
-      label: "ชื่อตำแหน่ง",
-      value: tokens.POSITION_NAME,
-    },
-    {
-      label: "เลขที่ตำแหน่ง",
-      value: tokens.POSITION_NUMBER,
-    },
-  ]
-    .map(({ label, value }) => {
-      const emptyClass = value.empty ? " dc-header-meta__value--empty" : "";
-      return `<dt>${escapeHtml(label)}</dt>
+  // ── ใช้เฉพาะ token ที่ UI อนุญาต (INSERTABLE_DOCUMENT_TOKENS) ─────
+  const metaRows = INSERTABLE_DOCUMENT_TOKENS.map((token) => {
+    const value = tokens[token];
+    const label = DOCUMENT_TOKEN_LABELS[token];
+    const emptyClass = value.empty ? " dc-header-meta__value--empty" : "";
+    return `<dt>${escapeHtml(label)}</dt>
       <dd class="dc-header-meta__value${emptyClass}">${escapeHtml(value.text)}</dd>`;
-    })
-    .join("\n      ");
+  }).join("\n      ");
 
   return `<header class="dc-doc-header">
   <div class="dc-doc-header__logo">
-    <span class="dc-doc-header__logo-placeholder">ยังไม่มีโลโก้</span>
+    <span class="dc-doc-header__logo-placeholder">${NO_LOGO_TEXT}</span>
   </div>
   <h1 class="dc-doc-header__title">${resolvedTitle}</h1>
   <dl class="dc-header-meta">
@@ -1272,23 +1781,22 @@ function renderDocumentHeader(
 }
 
 /**
- * Build token diagnostics (สำหรับ FE consumer — UI ใช้แสดงแผง Diagnostics)
+ * Build token diagnostics (สำหรับ FE consumer — UI ใช้แสดงแผง
+ * "ตรวจสอบข้อมูลเอกสาร" — Requirement I)
+ *
+ * คืน token ทุกตัวใน DOCUMENT_TOKENS (รวม legacy ที่ยัง resolve ได้)
+ * เพื่อให้ diagnostics ยังครอบคลุม descriptor เก่า
+ *
+ * label มาจาก DOCUMENT_TOKEN_LABELS (single source — เดียวกับ insert menu)
  */
 function buildTokenDiagnostics(
-  tokens: Record<DocumentToken, import("./document-tokens").TokenValue>
+  tokens: Record<DocumentToken, TokenValue>
 ): PreviewTokenInfo[] {
-  const LABELS: Record<DocumentToken, string> = {
-    APPLICATION_NO: "เลขที่ใบสมัคร",
-    POSITION_NUMBER: "เลขที่ตำแหน่ง",
-    POSITION_NAME: "ชื่อตำแหน่ง",
-    POSITION_LEVEL: "ระดับตำแหน่ง",
-    ROUND_CODE: "รหัสรอบ",
-  };
   const out: PreviewTokenInfo[] = [];
   for (const token of DOCUMENT_TOKENS) {
     out.push({
       token,
-      label: LABELS[token],
+      label: DOCUMENT_TOKEN_LABELS[token],
       text: tokens[token].text,
       empty: tokens[token].empty,
     });
@@ -1297,31 +1805,23 @@ function buildTokenDiagnostics(
 }
 
 /**
- * [Live Preview] แถบข้อมูลหัวเอกสาร (position + application number)
+ * [Live Preview] แถบข้อมูลเอกสาร (diagnostics strip — ไม่อยู่ใน PDF)
  *
- * วัตถุประสงค์: ให้ผู้ใช้เห็นว่าเอกสารนี้จะแสดง "เลขที่ใบสมัคร" และ
- * "ข้อมูลตำแหน่ง" ด้วยค่าอะไร — ไม่ใช่ placeholder
+ * วัตถุประสงค์: ให้ผู้ใช้เห็นว่าเอกสารนี้จะแสดงค่าอะไร — ไม่ใช่ placeholder
  *
- * - แสดงเฉพาะ token ที่ resolve ได้จริง (empty = false)
+ * - แสดงเฉพาะ token ที่ UI อนุญาตให้แทรก (INSERTABLE_DOCUMENT_TOKENS)
+ *   → ไม่แสดง POSITION_LEVEL / ROUND_CODE / POSITION_NUMBER
+ *     (ระบบไม่มีข้อมูลจริงและไม่ได้บังคับให้ใช้ — Requirement A)
  * - token ที่ยังไม่มีข้อมูลจะแสดง placeholder เพื่อให้รู้ว่า"ยังไม่ได้ผูก"
  * - เป็น debug strip ไม่ใช่ส่วนหนึ่งของเอกสาร → จัดวางท้ายสุด
+ *   และถูกซ่อนเป็นค่าเริ่มต้นด้วย CSS (Requirement I.12)
  */
 function renderDocumentHeaderInfo(
-  tokens: Record<DocumentToken, import("./document-tokens").TokenValue>
+  tokens: Record<DocumentToken, TokenValue>
 ): string {
-  const LABELS: Array<{
-    token: DocumentToken;
-    label: string;
-  }> = [
-    { token: "APPLICATION_NO", label: "เลขที่ใบสมัคร" },
-    { token: "POSITION_NUMBER", label: "เลขที่ตำแหน่ง" },
-    { token: "POSITION_NAME", label: "ชื่อตำแหน่ง" },
-    { token: "POSITION_LEVEL", label: "ระดับตำแหน่ง" },
-    { token: "ROUND_CODE", label: "รหัสรอบ" },
-  ];
-
-  const rows = LABELS.map(({ token, label }) => {
+  const rows = INSERTABLE_DOCUMENT_TOKENS.map((token) => {
     const value = tokens[token];
+    const label = DOCUMENT_TOKEN_LABELS[token];
     const valueText = escapeHtml(value.text);
     const valueClass = value.empty ? "dc-docinfo__value dc-docinfo__value--empty" : "dc-docinfo__value";
     return `      <div class="dc-docinfo__row">
@@ -1332,8 +1832,8 @@ function renderDocumentHeaderInfo(
 
   return `
 <!-- ── Document info strip (Live Preview debug, ไม่อยู่ใน PDF) ── -->
-<aside class="dc-docinfo" aria-label="ข้อมูลเอกสารสำหรับ Preview">
-  <div class="dc-docinfo__title">ข้อมูลเอกสาร (ตัวอย่างจาก Template/Round)</div>
+<aside class="dc-docinfo" aria-label="ตรวจสอบข้อมูลเอกสาร">
+  <div class="dc-docinfo__title">ตรวจสอบข้อมูลเอกสาร (ตัวอย่างจาก Template/Round)</div>
 ${rows}
 </aside>`;
 }
@@ -1366,6 +1866,15 @@ function resolveAnswerValue(
  * Format value สำหรับ preview
  *
  * mirror descriptor-renderer.ts:formatAnswerValueForDisplay
+ *
+ * ── Requirement F (MASTER_DATA แบบค่าเดียว) ────────────────────────────────
+ *   "สังกัดปัจจุบัน" เก็บค่าเป็น object เดี่ยว { id, name } (ไม่ใช่ array)
+ *   → ต้องแสดงเป็น "กองวิชาการ" (เอา .name) ไม่ใช่ JSON ดิบ
+ *   → ห้ามสร้าง sample data สองแถวสำหรับ field แบบนี้
+ *
+ *   array → คงพฤติกรรมเดิม (join ด้วย ", ") เพราะเป็น multi-select/repeater
+ *   object อื่นที่ไม่มี display field → safe readable fallback "—"
+ *   (ห้าม JSON.stringify ใน Document/PDF — Requirement F.6)
  */
 function formatAnswerValueForDisplay(value: unknown): string {
   if (value === null || value === undefined || value === "") return "-";
@@ -1374,18 +1883,23 @@ function formatAnswerValueForDisplay(value: unknown): string {
   if (typeof value === "boolean") return value ? "ใช่" : "ไม่ใช่";
   if (Array.isArray(value)) {
     if (value.length === 0) return "-";
+    // array ของ object (MASTER_DATA multi-select / table) → ดึง display label
+    if (value.every((v) => v !== null && typeof v === "object" && !Array.isArray(v))) {
+      const labels = value
+        .map((v) => getObjectDisplayLabel(v as Record<string, unknown>))
+        .filter((s) => s && s !== "—");
+      return labels.length > 0 ? labels.join(", ") : "-";
+    }
     return value
       .map((v) => formatAnswerValueForDisplay(v))
       .filter((s) => s && s !== "-")
       .join(", ");
   }
   if (typeof value === "object") {
-    try {
-      const json = JSON.stringify(value);
-      return json.length > 200 ? json.slice(0, 200) + "..." : json;
-    } catch {
-      return "[object]";
-    }
+    // MASTER_DATA แบบค่าเดียว { id, name } → เอา .name (Requirement F.3/F.5)
+    // ถ้าไม่มี display field → safe readable fallback (Requirement F.7)
+    const label = getObjectDisplayLabel(value as Record<string, unknown>);
+    return label === "—" ? "-" : label;
   }
   return String(value);
 }

@@ -28,6 +28,36 @@ export type FieldType =
   | 'FILE'
   | 'MASTER_DATA';
 
+/**
+ * MASTER_DATA value shape
+ *
+ * MASTER_DATA เก็บ object เดียวเสมอ (single-select) — schema `{ id, name }`
+ * - `id` อาจเป็น master row id หรือ null ถ้ายังไม่ได้เลือก
+ * - `name` คือ display label ที่ผู้สมัครเลือก ใช้แสดงในเอกสาร
+ *
+ * (canonical definition lives in field-capabilities.ts; this is a structural
+ *  duplication to avoid a circular import because pdf-types.ts is imported
+ *  by field-capabilities.ts. Keep these two in sync.)
+ */
+export interface FieldObjectValue {
+  id?: string | number | null;
+  name?: string | null;
+  label?: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * Shape ของ field value ใน ApplicationContext.formData
+ *
+ * - scalar (TEXT, NUMBER, …): string | number | boolean | null
+ * - object (MASTER_DATA): FieldObjectValue — single-select
+ * - array (REPEATER/TABLE): Array<object> หรือ Array<string>
+ *
+ * (canonical definition lives in field-capabilities.ts; mirrors here
+ *  to avoid a circular import.)
+ */
+export type FieldValueShape = "scalar" | "array" | "object";
+
 // =============================================================================
 // Application Status
 // =============================================================================

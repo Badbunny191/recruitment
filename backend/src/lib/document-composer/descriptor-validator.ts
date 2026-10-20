@@ -91,6 +91,33 @@ export function validateDescriptor(
     }
   }
 
+  // 2d) systemData block ต้องมี key ที่ระบบรู้จัก
+  //     (zod ตรวจ enum แล้ว แต่ semantic check กัน descriptor ที่ผ่าน
+  //      จาก path อื่น เช่น JSON editor ที่ bypass)
+  for (let i = 0; i < descriptor.blocks.length; i++) {
+    const block = descriptor.blocks[i];
+    if (block.type === "systemData" && !block.key) {
+      semanticIssues.push({
+        path: `blocks.${i}.key`,
+        message: "systemData block requires a key",
+      });
+    }
+  }
+
+  // 2e) signature block: nameFieldId ต้องเป็น non-empty string ถ้ามี
+  //     (ห้ามผูกด้วย label ไทยอย่างเดียว — ต้องเป็น fieldId — Requirement C.4)
+  for (let i = 0; i < descriptor.blocks.length; i++) {
+    const block = descriptor.blocks[i];
+    if (block.type === "signature" && block.nameFieldId !== undefined) {
+      if (!block.nameFieldId.trim()) {
+        semanticIssues.push({
+          path: `blocks.${i}.nameFieldId`,
+          message: "nameFieldId cannot be empty when provided",
+        });
+      }
+    }
+  }
+
   if (semanticIssues.length > 0) {
     return { ok: false, issues: semanticIssues };
   }

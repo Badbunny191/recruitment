@@ -38,21 +38,33 @@ export type {
   TableBlock,
   LogoBlock,
   SignatureBlock,
+  SystemDataBlock,
+  SystemDataKey,
+  SignatureDateSource,
+  LogoSource,
+  DateFormat,
   DocumentBlock,
   DocumentDescriptor,
+} from "./types";
+
+export {
+  DEFAULT_SIGNATURE_LINE_LABEL,
+  DEFAULT_SIGNATURE_ROLE_LABEL,
+  DEFAULT_SIGNATURE_DATE_LABEL,
+  DEFAULT_SIGNATURE_LINE_STYLE,
+  DEFAULT_SHOW_NAME,
+  DEFAULT_SHOW_PARENTHESES,
+  DEFAULT_SHOW_DATE,
+  DEFAULT_SHOW_TIME,
+  DEFAULT_DATE_FORMAT,
+  SYSTEM_DATA_LABELS,
+  NO_LOGO_TEXT,
 } from "./types";
 
 export type {
   DocumentDescriptorInput,
   DocumentBlockInput,
 } from "./descriptor-schema";
-
-export type {
-  RenderCommand,
-  SignatureRenderCommand,
-  RenderPlan,
-  RenderedBytes,
-} from "./descriptor-renderer";
 
 // =============================================================================
 // Validator
@@ -80,6 +92,15 @@ export { DocumentDescriptorSchema } from "./descriptor-schema";
 export {
   buildRenderPlan,
   renderPlanToPdf,
+  type RenderPlan,
+  type RenderCommand,
+  type PaddingCommand,
+  type HeadingRenderCommand,
+  type FieldRenderCommand,
+  type TableRenderCommand,
+  type LogoRenderCommand,
+  type SignatureRenderCommand,
+  type SystemDataRenderCommand,
 } from "./descriptor-renderer";
 
 // =============================================================================
@@ -99,16 +120,44 @@ export type {
 } from "./preview-model";
 
 // =============================================================================
-// Document Tokens (Live Preview — เลขที่ใบสมัคร / ข้อมูลตำแหน่ง)
+// Document Tokens (System Data + Application Field tokens)
 // =============================================================================
 
 export {
   resolveDocumentTokens,
   applyDocumentTokens,
+  applyDocumentTokensWithFields,
+  applyFieldTokens,
+  resolveFieldValue,
+  buildFieldToken,
+  listFieldTokensInText,
+  formatThaiDate,
   DOCUMENT_TOKENS,
+  DOCUMENT_TOKEN_LABELS,
+  INSERTABLE_DOCUMENT_TOKENS,
   type DocumentToken,
+  type InsertableDocumentToken,
   type TokenValue,
+  type ResolvedFieldValue,
 } from "./document-tokens";
+
+// =============================================================================
+// Field capabilities (Table Picker filter — Requirement G)
+// =============================================================================
+
+export {
+  isRepeatableField,
+  isScalarFieldType,
+  getFieldValueShape,
+  getObjectDisplayLabel,
+  isSingleValueObject,
+  isArrayOfObjects,
+  getFieldCapability,
+  type FieldValueShape,
+  type FieldObjectValue,
+  type RepeatableCapability,
+  type ApplicationFieldType,
+} from "./field-capabilities";
 
 // =============================================================================
 // Generator (auto-build DocumentDescriptor from template_sections + template_fields)

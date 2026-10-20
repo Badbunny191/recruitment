@@ -1,14 +1,16 @@
 /**
  * Document Composer V1 — Document Token Resolver
  * --------------------------------------------
- * Feature: Live Preview — real document data (application number / position)
- *
  * ขอบเขตของ token ในเอกสารที่ประกอบด้วย block เช่น PDF:
- *   - {APPLICATION_NO} → เลขที่ใบสมัครจริง (เช่น 2026-CHM01-0001)
- *   - {POSITION_NUMBER} → เลขตำแหน่ง (ถ้า template มี field นี้)
- *   - {POSITION_NAME}   → ชื่อตำแหน่ง
- *   - {POSITION_LEVEL}  → ระดับตำแหน่ง (จาก recruitment round)
- *   - {ROUND_CODE}      → รหัสรอบ
+ *   - {APPLICATION_NO}      → เลขที่ใบสมัครจริง
+ *   - {APPLICATION_DATE}    → วันที่สมัคร (พ.ศ.)
+ *   - {PRINT_DATE}          → วันที่พิมพ์เอกสาร (พ.ศ.)
+ *   - {ROUND_NAME}          → ชื่อรอบการสมัคร
+ *   - {ROUND_CODE}          → รหัสรอบ (ยังรองรับเพื่อ BC — ไม่บังคับให้ใช้)
+ *   - {POSITION_NAME}       → ชื่อตำแหน่ง (เฉพาะเมื่อมี source จริง)
+ *   - {POSITION_NUMBER}     → เลขตำแหน่ง (ระบบยังไม่มีข้อมูล)
+ *   - {POSITION_LEVEL}      → ระดับตำแหน่ง (เก็บไว้เพื่อ BC — ไม่แสดงใน UI)
+ *   - {FIELD:<fieldId>}     → ค่า Application Field ที่ผู้สมัครกรอก
  *
  * ── Resolution order (field-first, ตามที่ผู้ใช้เลือก) ────────────────────
  *   1. field ของ template version (fieldId หรือ pdfMappingKey ที่ match)
@@ -17,8 +19,9 @@
  *
  * ── หลักการ ──────────────────────────────────────────────────────────────
  *   - Pure function — ไม่อ่าน DB, ไม่มี side effect
- *   - ไม่แตะ migrations / schema (Requirement 8)
+ *   - ไม่แตะ migrations / schema (Requirement J)
  *   - Token ที่ไม่รู้จักจะคงไว้เดิม ไม่ถูกลบทิ้ง (กันเอกสารพังเงียบ ๆ)
+ *   - ห้ามนำข้อมูลคนละความหมายมา substitute token ที่ resolve ไม่ได้
  *
  * NOTE: {YEAR} / {RUNNING:n} ไม่ใช่ token ของเอกสาร — เป็นของ
  *       application number pattern (utils/application-pattern.ts) ซึ่ง
@@ -35,6 +38,12 @@ import type { ApplicationContext, FieldData } from "../pdf-types";
  * Token ที่ระบบรู้จัก — ใช้เป็น allowlist ตอน resolve
  *
  * เพิ่ม token ใหม่ได้ที่นี่ที่เดียว (single source of truth)
+ *
+ * BACKWARD COMPATIBILITY (Requirement J):
+ *   ลำดับเดิม APPLICATION_NO, POSITION_NUMBER, POSITION_NAME, POSITION_LEVEL,
+ *   ROUND_CODE ถูกเก็บไว้ทั้ง 5 ตัว (ไม่ลบ) — descriptor/preview ที่บันทึกไว้แล้ว
+ *   และ UI ที่ยังอ้างถึง token เหล่านี้ต้องยังทำงานได้
+ *   token ใหม่ (APPLICATION_DATE / PRINT_DATE / ROUND_NAME) ต่อท้าย
  */
 export const DOCUMENT_TOKENS = [
   "APPLICATION_NO",
@@ -42,9 +51,48 @@ export const DOCUMENT_TOKENS = [
   "POSITION_NAME",
   "POSITION_LEVEL",
   "ROUND_CODE",
+  "APPLICATION_DATE",
+  "PRINT_DATE",
+  "ROUND_NAME",
 ] as const;
 
 export type DocumentToken = (typeof DOCUMENT_TOKENS)[number];
+
+/**
+ * Token ที่ UI เสนอให้ Admin แทรกได้ (ปุ่ม "แทรกข้อมูล")
+ *
+ * ตั้งใจ EXCLUDE:
+ *   - POSITION_LEVEL → ระบบไม่ได้เก็บระดับตำแหน่งเป็นข้อมูลแยก
+ *     (Requirement A: "ไม่ต้องมี POSITION_LEVEL")
+ *   - ROUND_CODE    → ไม่บังคับใช้ (Requirement A: "ให้ใช้ ROUND_NAME")
+ *   - POSITION_NUMBER → ระบบไม่มีข้อมูลเลขตำแหน่งเลย
+ *
+ * ทั้ง 3 ตัวยัง resolve ได้เหมือนเดิม (back-compat) แต่ไม่แสดงใน UI
+ */
+export const INSERTABLE_DOCUMENT_TOKENS = [
+  "APPLICATION_NO",
+  "ROUND_NAME",
+  "APPLICATION_DATE",
+  "PRINT_DATE",
+  "POSITION_NAME",
+] as const;
+
+export type InsertableDocumentToken = (typeof INSERTABLE_DOCUMENT_TOKENS)[number];
+
+/**
+ * Label ภาษาไทยของ token ที่ UI แสดง (single source — ใช้ทั้งใน insert menu
+ * และ diagnostics panel เพื่อไม่ให้ถ้อยคำไม่ตรงกัน)
+ */
+export const DOCUMENT_TOKEN_LABELS: Record<DocumentToken, string> = {
+  APPLICATION_NO: "เลขที่ใบสมัคร",
+  POSITION_NUMBER: "เลขที่ตำแหน่ง",
+  POSITION_NAME: "ชื่อตำแหน่ง",
+  POSITION_LEVEL: "ระดับตำแหน่ง",
+  ROUND_CODE: "รหัสรอบ",
+  APPLICATION_DATE: "วันที่สมัคร",
+  PRINT_DATE: "วันที่พิมพ์",
+  ROUND_NAME: "ชื่อรอบการสมัคร",
+};
 
 // =============================================================================
 // Token values — ผลลัพธ์ที่ resolve ได้จริง
@@ -55,11 +103,15 @@ export type DocumentToken = (typeof DOCUMENT_TOKENS)[number];
  *
  * - `text`  = ค่าที่จะแสดง (ใช้กับ heading)
  * - `empty` = true เมื่อไม่มีข้อมูลจริง → renderer เลือก fallback เอง
+ * - `isPlaceholder` = true เมื่อ `text` คือรูป {TOKEN} ที่ยังไม่ได้ผูก
+ *   (renderer ใช้ class สีเทา + italic ตาม Requirement I.9)
  */
 export interface TokenValue {
   text: string;
   /** true = ไม่มีข้อมูลจริงในระบบ (ใช้ placeholder) */
   empty: boolean;
+  /** true = text เป็น placeholder literal (ไม่ใช่ค่าจริง) */
+  isPlaceholder?: boolean;
 }
 
 /**
@@ -99,6 +151,14 @@ const TOKEN_FIELD_ALIASES: Record<DocumentToken, readonly string[]> = {
     "ระดับตำแหน่ง",
   ],
   ROUND_CODE: ["round_code", "roundCode", "รหัสรอบ"],
+  // ── token ใหม่ ──────────────────────────────────────────────────────
+  // ไม่ผูก alias กับ form field ใด ๆ โดยเจตนา:
+  //   Requirement A.5 + D — ห้ามสร้าง Application Field ปลอมสำหรับ
+  //   วันที่สมัคร / วันที่พิมพ์ / ชื่อรอบ
+  //   ค่ามาจากระบบโดยตรง (applications.submitted_at, เวลาสร้าง PDF, rounds.title)
+  APPLICATION_DATE: [],
+  PRINT_DATE: [],
+  ROUND_NAME: [],
 };
 
 /**
@@ -113,7 +173,124 @@ const EMPTY_PLACEHOLDER: Record<DocumentToken, string> = {
   POSITION_NAME: "{POSITION_NAME}",
   POSITION_LEVEL: "{POSITION_LEVEL}",
   ROUND_CODE: "{ROUND_CODE}",
+  APPLICATION_DATE: "{APPLICATION_DATE}",
+  PRINT_DATE: "{PRINT_DATE}",
+  ROUND_NAME: "{ROUND_NAME}",
 };
+
+// =============================================================================
+// Application Field token — {FIELD:<fieldId>}
+// =============================================================================
+
+/**
+ * Regex สำหรับ Application Field token
+ *
+ * รูปแบบ: {FIELD:<field_master.id>}
+ *
+ * เลือกใช้ fieldId เป็น stable key (ไม่ใช้ label ไทย) ตาม Requirement A.6 / C.4
+ * — label ไทยเปลี่ยนได้ แต่ fieldId ไม่เปลี่ยน
+ *
+ * หลักการ token syntax (Requirement A):
+ *   - ตรวจของเดิมก่อนเปลี่ยน → ระบบเดิมมีแค่ `{TOKEN_NAME}` ไม่มีรูปแบบ
+ *     สำหรับอ้าง Application Field → เพิ่มใหม่โดยไม่ซ้ำซ้อน
+ *   - ใช้รูปแบบเดียวกัน (curly braces) เพื่อให้ parser เดียวกันใช้ได้
+ */
+const FIELD_TOKEN_PATTERN = /\{FIELD:([A-Za-z0-9_-]{1,128})\}/g;
+
+/**
+ * ข้อมูลของ Application Field ที่ resolve แล้ว 1 ตัว
+ */
+export interface ResolvedFieldValue {
+  /** fieldId ที่ถูกอ้างถึง */
+  fieldId: string;
+  /** ค่าในรูปแบบข้อความ (อาจเป็น placeholder) */
+  text: string;
+  /** true เมื่อไม่มีข้อมูล (ใช้แสดงเป็น placeholder สีเทา) */
+  empty: boolean;
+}
+
+/**
+ * Resolve ค่าของ Application Field เดี่ยวจาก ApplicationContext
+ *
+ * Pure — ไม่อ่าน DB, ไม่มี side effect
+ *
+ * @param fieldId - field_master.id
+ * @param ctx - ApplicationContext
+ * @returns ResolvedFieldValue | null (null = ไม่พบ field นี้ใน template version)
+ */
+export function resolveFieldValue(
+  fieldId: string,
+  ctx: ApplicationContext
+): ResolvedFieldValue | null {
+  const field = ctx.fields.find((f) => f.fieldId === fieldId);
+  if (!field) return null;
+
+  const formData = (ctx.application.formData ?? {}) as Record<string, unknown>;
+  const raw =
+    formData[field.fieldId] ?? formData[field.pdfMappingKey ?? ""] ?? null;
+
+  const text = normalizeTokenValue(raw, []);
+  if (text === null) {
+    return { fieldId, text: `{FIELD:${fieldId}}`, empty: true };
+  }
+  return { fieldId, text, empty: false };
+}
+
+/**
+ * สร้าง token ของ Application Field (ใช้ฝั่ง UI เพื่อความสอดคล้องกัน)
+ */
+export function buildFieldToken(fieldId: string): string {
+  return `{FIELD:${fieldId}}`;
+}
+
+/**
+ * ตรวจว่า text ใดมี Application Field token อยู่บ้าง
+ *
+ * ใช้ใน diagnostics เพื่อรายงานว่า field token ตัวไหน resolve ไม่ได้
+ */
+export function listFieldTokensInText(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(FIELD_TOKEN_PATTERN)) {
+    const id = match[1];
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+/**
+ * แทนที่ {FIELD:<fieldId>} ทั้งหมดในข้อความด้วยค่าจริง
+ *
+ * - field ที่ไม่รู้จัก → คง token ไว้ (ไม่ลบ) เพื่อให้ผู้ใช้เห็นว่ายังไม่ได้ผูก
+ * - field ที่มีแต่ไม่มีค่า → แสดงเป็น placeholder class (สีเทา)
+ *
+ * @param text - ข้อความดิบที่อาจมี token
+ * @param ctx - ApplicationContext
+ * @returns { text, unresolved: string[] }
+ */
+export function applyFieldTokens(
+  text: string,
+  ctx: ApplicationContext
+): { text: string; unresolved: string[] } {
+  const unresolved: string[] = [];
+  const out = text.replace(
+    FIELD_TOKEN_PATTERN,
+    (whole: string, fieldId: string) => {
+      const resolved = resolveFieldValue(fieldId, ctx);
+      if (resolved === null) {
+        // ไม่รู้จัก field → คง token ไว้ (Requirement K.6)
+        unresolved.push(fieldId);
+        return whole;
+      }
+      if (resolved.empty) unresolved.push(fieldId);
+      return resolved.text;
+    }
+  );
+  return { text: out, unresolved };
+}
 
 // =============================================================================
 // Public API
@@ -126,19 +303,23 @@ const EMPTY_PLACEHOLDER: Record<DocumentToken, string> = {
  *
  * @param ctx - ApplicationContext (preview หรือ PDF ก็ใช้ตัวเดียวกัน)
  * @param formData - formData ที่จะ override (ปกติคือ ctx.application.formData)
+ * @param now - unix timestamp ที่ใช้ resolve PRINT_DATE (default: เวลาปัจจุบัน)
  * @returns Record<DocumentToken, TokenValue>
  */
 export function resolveDocumentTokens(
   ctx: ApplicationContext,
-  formData?: Record<string, unknown>
+  formData?: Record<string, unknown>,
+  now?: number
 ): Record<DocumentToken, TokenValue> {
   const fd = formData ?? ((ctx.application.formData ?? {}) as Record<string, unknown>);
 
   const byFieldId = indexFieldsById(ctx.fields);
+  const printDateUnix =
+    typeof now === "number" && now > 0 ? now : Math.floor(Date.now() / 1000);
 
   const result = {} as Record<DocumentToken, TokenValue>;
   for (const token of DOCUMENT_TOKENS) {
-    result[token] = resolveOne(token, ctx, fd, byFieldId);
+    result[token] = resolveOne(token, ctx, fd, byFieldId, printDateUnix);
   }
   return result;
 }
@@ -148,6 +329,8 @@ export function resolveDocumentTokens(
  *
  * - Token ที่รู้จัก → แทนด้วยค่า (หรือ placeholder เดิมถ้าไม่มีข้อมูล)
  * - Token ที่ไม่รู้จัก → คงไว้เดิม (ไม่ลบ)
+ * - {FIELD:<id>} → ดำเนินการแยกใน applyDocumentTokensWithFields()
+ *   (ต้องมี ApplicationContext จึงแยกไปอีกชั้น)
  * - escape ทำที่ renderer layer (renderer ต้อง escape หลัง resolve)
  *
  * @param text - ข้อความดิบที่อาจมี token
@@ -166,6 +349,39 @@ export function applyDocumentTokens(
     out = out.replace(pattern, value);
   }
   return out;
+}
+
+/**
+ * Resolve ทั้ง System Token และ Application Field token ในข้อความเดียว
+ *
+ * เป็น entry point เดียวที่ renderer ทั้ง Preview และ PDF ใช้
+ * → ไม่มี token resolver ซ้ำซ้อน (Requirement I.6)
+ *
+ * @param text - ข้อความดิบจาก Admin
+ * @param ctx - ApplicationContext
+ * @param tokens - ผลจาก resolveDocumentTokens() (คำนวณครั้งเดียวต่อ render)
+ * @returns {
+ *   text: ข้อความที่ resolve แล้วทั้งหมด
+ *   hasPlaceholder: true ถ้ามีส่วนใดยังเป็น placeholder (ให้ renderer ลง style สีเทา)
+ *   unresolvedFields: fieldId ที่ resolve ไม่ได้
+ * }
+ */
+export function applyDocumentTokensWithFields(
+  text: string,
+  ctx: ApplicationContext,
+  tokens: Record<DocumentToken, TokenValue>
+): {
+  text: string;
+  hasPlaceholder: boolean;
+  unresolvedFields: string[];
+} {
+  const withSystem = applyDocumentTokens(text, tokens);
+  const withFields = applyFieldTokens(withSystem, ctx);
+  return {
+    text: withFields.text,
+    hasPlaceholder: withFields.unresolved.length > 0,
+    unresolvedFields: withFields.unresolved,
+  };
 }
 
 // =============================================================================
@@ -187,6 +403,7 @@ function indexFieldsById(
 
   for (const token of DOCUMENT_TOKENS) {
     const aliases = TOKEN_FIELD_ALIASES[token];
+    if (aliases.length === 0) continue;
     for (const field of fields) {
       const keys = [field.fieldId, field.pdfMappingKey].filter(
         (k): k is string => typeof k === "string" && k.length > 0
@@ -207,51 +424,56 @@ function indexFieldsById(
 /**
  * Resolve token เดียว
  *
- * ลำดับ: field (template) → system fallback → placeholder
+ * ลำดับ: field (template) → system data → placeholder
  */
 function resolveOne(
   token: DocumentToken,
   ctx: ApplicationContext,
   formData: Record<string, unknown>,
-  fieldTokenIndex: Map<string, DocumentToken>
+  fieldTokenIndex: Map<string, DocumentToken>,
+  printDateUnix: number
 ): TokenValue {
   // ── 1) field-first: อ่านจาก template field ──────────────────────────
-  const fieldValue = resolveFromFields(token, formData, fieldTokenIndex);
+  const fieldValue = resolveFromFields(
+    token,
+    formData,
+    fieldTokenIndex,
+    TOKEN_FIELD_ALIASES[token]
+  );
   if (fieldValue !== null) {
-    return { text: fieldValue, empty: false };
+    return { text: fieldValue, empty: false, isPlaceholder: false };
   }
 
   // ── 2) fallback: system data (round / application) ──────────────────
-  const systemValue = resolveFromSystem(token, ctx);
+  const systemValue = resolveFromSystem(token, ctx, printDateUnix);
   if (systemValue !== null) {
-    return { text: systemValue, empty: false };
+    return { text: systemValue, empty: false, isPlaceholder: false };
   }
 
   // ── 3) ไม่มีข้อมูล → placeholder ────────────────────────────────────
-  return { text: EMPTY_PLACEHOLDER[token], empty: true };
+  return { text: EMPTY_PLACEHOLDER[token], empty: true, isPlaceholder: true };
 }
 
 /**
  * Resolve จาก template field
  *
- * - เทียน alias ทั้งแบบ exact และ case-insensitive
+ * - เทียบ alias ทั้งแบบ exact และ case-insensitive
  * - ค่าใน formData อาจมาจาก fieldId หรือ pdfMappingKey
  * - MASTER_DATA / array → ตัดชื่อ field ออกมาแสดง (ป้องกัน JSON ยาวในหัวเอกสาร)
  */
 function resolveFromFields(
   token: DocumentToken,
   formData: Record<string, unknown>,
-  fieldTokenIndex: Map<string, DocumentToken>
+  fieldTokenIndex: Map<string, DocumentToken>,
+  aliases: readonly string[]
 ): string | null {
-  const aliases = TOKEN_FIELD_ALIASES[token];
+  if (aliases.length === 0) return null;
   const aliasesLower = aliases.map((a) => a.toLowerCase());
 
   for (const [fieldId, mapped] of fieldTokenIndex) {
     if (mapped !== token) continue;
 
-    const raw =
-      formData[fieldId] ??
-      null;
+    const raw = formData[fieldId] ?? null;
 
     const text = normalizeTokenValue(raw, aliases);
     if (text !== null) return text;
@@ -273,26 +495,26 @@ function resolveFromFields(
 /**
  * Resolve จาก system data (ไม่ต้องเพิ่ม migration)
  *
- * - APPLICATION_NO  → ctx.application.applicationNo
- * - POSITION_LEVEL  → ctx.round.positionLevel
- * - POSITION_NAME   → null (ไม่มีแหล่งข้อมูลที่ตรงความหมาย)
- * - ROUND_CODE      → ctx.round.roundCode
- * - POSITION_NUMBER → null (ไม่มีข้อมูลในระบบ)
+ * ── แหล่งข้อมูลจริง (ยืนยันจาก db/schema.ts แล้ว ไม่ได้เดาชื่อ column) ──
+ *   - APPLICATION_NO   → applications.application_no → ctx.application.applicationNo
+ *   - APPLICATION_DATE → applications.submitted_at   → ctx.application.submittedAt
+ *   - PRINT_DATE      → เวลาที่สร้างเอกสาร (ctx ไม่มี field → ใช้ now)
+ *   - ROUND_NAME      → recruitment_rounds.title   → ctx.round.title
+ *   - ROUND_CODE      → recruitment_rounds.round_code → ctx.round.roundCode
+ *   - POSITION_LEVEL  → recruitment_rounds.position_level → ctx.round.positionLevel
+ *   - POSITION_NAME   → null (ไม่มีแหล่งข้อมูลที่ตรงความหมาย)
+ *   - POSITION_NUMBER → null (ระบบไม่มีข้อมูลเลขตำแหน่ง)
  *
- * หมายเหตุ:
- *   Req 6 (Preview UX) ห้าม substitute ข้อมูลคนละความหมายมาทดแทน token
- *   ที่ resolve ไม่ได้ — render POSITION_NAME fallback เป็น
- *   round.positionLevel ("ระดับปฏิบัติการ") จะทำให้ผู้ใช้เข้าใจผิดว่า
- *   ระบบมีชื่อตำแหน่งแล้ว ทั้งที่จริงเป็นคนละข้อมูล
- *
+ * หมายเหตุ (Requirement A.5 / K.10):
  *   ตาราง `positions` มี `title` จริง แต่ไม่มี FK จาก round/template มา
  *   (เป็นตารางแยกอิสระที่หน้า admin ใช้ CRUD อย่างเดียว) จึงไม่มีทางรู้
  *   ว่า round นี้ใช้ position ไหนโดยไม่เพิ่ม column → คืน null ให้ renderer
- *   แสดง placeholder สีเทาว่า "ยังไม่มีข้อมูล"
+ *   แสดง placeholder {POSITION_NAME} และห้ามนำข้อมูลอื่นมาแทน
  */
 function resolveFromSystem(
   token: DocumentToken,
-  ctx: ApplicationContext
+  ctx: ApplicationContext,
+  printDateUnix: number
 ): string | null {
   const readString = (v: unknown): string | null => {
     if (typeof v !== "string") return null;
@@ -318,6 +540,19 @@ function resolveFromSystem(
       // ไม่มีข้อมูลเลขตำแหน่งในระบบ (ไม่มี column, ไม่มี field)
       // → คืน null ให้ไปใช้ placeholder
       return null;
+
+    case "ROUND_NAME":
+      return readString(ctx.round?.title);
+
+    case "APPLICATION_DATE": {
+      const submittedAt = ctx.application?.submittedAt;
+      if (typeof submittedAt !== "number" || submittedAt <= 0) return null;
+      return formatThaiDate(submittedAt);
+    }
+
+    case "PRINT_DATE":
+      // วันที่พิมพ์ = เวลาที่ระบบสร้างเอกสาร (ไม่ใช่วันที่ผู้สมัครกรอก)
+      return formatThaiDate(printDateUnix);
   }
 }
 
@@ -327,7 +562,7 @@ function resolveFromSystem(
  * - string → ตัดช่องว่าง
  * - number/boolean → String()
  * - array → join ด้วย ", " (เอาไม่เกิน 3 รายการ กันหัวเอกสารยาวเกิน)
- * - object (เช่น MASTER_DATA {label, value}) → ดึง label/name/value
+ * - object (เช่น MASTER_DATA {id, name}) → ดึง name/label/title/value
  * - null/empty → null (ให้ไป fallback ต่อ)
  */
 function normalizeTokenValue(
@@ -340,7 +575,9 @@ function normalizeTokenValue(
     const t = raw.trim();
     if (t.length === 0) return null;
     // กันค่าที่เป็น alias ตัวเอง (เช่น field ที่ยังไม่ได้กรอก)
-    if (aliases.some((a) => a.toLowerCase() === t.toLowerCase())) return null;
+    if (aliases.length > 0 && aliases.some((a) => a.toLowerCase() === t.toLowerCase())) {
+      return null;
+    }
     return t;
   }
 
@@ -362,7 +599,9 @@ function normalizeTokenValue(
 
   if (typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
-    for (const key of ["label", "name", "value", "title"]) {
+    // MASTER_DATA จริงเก็บเป็น { id, name } → ต้องดึง name ก่อน
+    // (Requirement F.5 / F.6: ห้าม JSON.stringify ในเอกสาร)
+    for (const key of ["name", "label", "title", "value"]) {
       const v = obj[key];
       if (typeof v === "string" && v.trim().length > 0) return v.trim();
     }
@@ -370,4 +609,35 @@ function normalizeTokenValue(
   }
 
   return null;
+}
+
+// =============================================================================
+// Thai date formatting (mirror descriptor-renderer / preview-renderer)
+// =============================================================================
+
+const THAI_MONTHS = [
+  "มกราคม",
+  "กุมภาพันธ์",
+  "มีนาคม",
+  "เมษายน",
+  "พฤษภาคม",
+  "มิถุนายน",
+  "กรกฎาคม",
+  "สิงหาคม",
+  "กันยายน",
+  "ตุลาคม",
+  "พฤศจิกายน",
+  "ธันวาคม",
+];
+
+/**
+ * Format unix timestamp → Thai date string (พ.ศ.)
+ * Example: 7 มกราคม 2569
+ */
+export function formatThaiDate(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  const day = d.getDate();
+  const month = THAI_MONTHS[d.getMonth()];
+  const thaiYear = d.getFullYear() + 543;
+  return `${day} ${month} ${thaiYear}`;
 }

@@ -92,7 +92,7 @@ const SAMPLE_SIGNATURE_BLOCK: SignatureBlock = {
   align: "center",
   roleLabel: "ผู้สมัคร",
   signerNameSource: "application",
-  dateSource: "application",
+  dateSource: "APPLICATION_DATE",
   timeSource: "application",
   marginTop: 12,
   marginBottom: 12,

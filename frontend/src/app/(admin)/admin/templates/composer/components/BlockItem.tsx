@@ -3,69 +3,103 @@
 /**
  * BlockItem
  * --------------------------------
- * Document Composer V1 — Single Block Card
+ * Document Composer — Single Block Card
  *
  * Render block 1 ตัวใน Block Panel พร้อม:
  *   - ▲ Move Up
  *   - ▼ Move Down
  *   - 🗑 Delete
- *   - ✏️ Edit (toggle inline editor)
+ *   - ✏️ แก้ไข (toggle inline editor)
  *
- * แต่ละประเภท block:
- *   - logo:     แสดง placeholder + ปุ่ม toggle align
- *   - heading:  HeadingEditor inline
- *   - field:    แสดง label (readonly)
- *   - table:    แสดง label + "(table)" (readonly)
+ * แต่ละประเภท block มี editor เฉพาะ:
+ *   - heading / text → HeadingEditor   (หลายบรรทัด + แทรก token)
+ *   - systemData     → SystemDataEditor
+ *   - field          → FieldEditor
+ *   - table          → TableEditor
+ *   - logo           → LogoEditor
+ *   - signature      → SignatureEditor
  *
  * ใช้ callback ทั้งหมด — parent ถือ source of truth
  */
 
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
-import { HeadingEditor } from './HeadingEditor';
-import type {
-  DocumentBlock,
-  HeadingBlock,
-  FieldBlock,
-  TableBlock,
-  LogoBlock,
-  SignatureBlock,
+import {
+  NO_LOGO_TEXT,
+  SYSTEM_DATA_LABELS,
+  type DocumentBlock,
+  type HeadingBlock,
+  type FieldBlock,
+  type TableBlock,
+  type LogoBlock,
+  type SignatureBlock,
+  type SystemDataBlock,
 } from '@/lib/api/template-descriptor';
+import { normalizeDateSource } from './SignatureEditor';
+import { HeadingEditor, AlignRow } from './HeadingEditor';
+import { SystemDataEditor } from './SystemDataEditor';
+import { FieldEditor } from './FieldEditor';
+import { TableEditor } from './TableEditor';
+import { LogoEditor } from './LogoEditor';
+import { SignatureEditor } from './SignatureEditor';
+import type { TemplateFieldLibraryItem } from '../hooks/useTemplateFields';
 
 export interface BlockItemProps {
   block: DocumentBlock;
   index: number;
   total: number;
-  fieldLabel?: string; // resolved label สำหรับ field/table block
-  fieldType?: string;  // resolved type field
+  /** resolved field สำหรับ field/table block */
+  field?: TemplateFieldLibraryItem;
+  /** รายการ field ทั้งหมด — ใช้ใน HeadingEditor (InsertDataMenu) + SignatureEditor */
+  fields?: TemplateFieldLibraryItem[];
+  fieldsLoading?: boolean;
   onChange: (patch: Partial<DocumentBlock>) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onDelete: () => void;
+  disabled?: boolean;
 }
 
 const TYPE_META: Record<
   DocumentBlock['type'],
   { icon: string; label: string; tone: string }
 > = {
-  heading: { icon: '📝', label: 'Heading', tone: 'bg-purple-50 border-purple-200' },
+  heading: {
+    icon: '📝',
+    label: 'Heading / Text',
+    tone: 'bg-purple-50 border-purple-200',
+  },
+  systemData: {
+    icon: '🗂️',
+    label: 'System Data',
+    tone: 'bg-sky-50 border-sky-200',
+  },
   field: { icon: '📌', label: 'Field', tone: 'bg-blue-50 border-blue-200' },
-  table: { icon: '📊', label: 'Table', tone: 'bg-emerald-50 border-emerald-200' },
+  table: {
+    icon: '📊',
+    label: 'Table',
+    tone: 'bg-emerald-50 border-emerald-200',
+  },
   logo: { icon: '🖼️', label: 'Logo', tone: 'bg-amber-50 border-amber-200' },
-  signature: { icon: '✍️', label: 'Signature', tone: 'bg-rose-50 border-rose-200' },
+  signature: {
+    icon: '✍️',
+    label: 'Signature',
+    tone: 'bg-rose-50 border-rose-200',
+  },
 };
 
 export function BlockItem({
   block,
   index,
   total,
-  fieldLabel,
-  fieldType,
+  field,
+  fields,
+  fieldsLoading,
   onChange,
   onMoveUp,
   onMoveDown,
   onDelete,
+  disabled,
 }: BlockItemProps) {
   const [editing, setEditing] = useState(false);
   const meta = TYPE_META[block.type];
@@ -76,18 +110,28 @@ export function BlockItem({
       <div className="flex items-center gap-2 px-3 py-2 bg-white/70">
         <span className="text-base shrink-0">{meta.icon}</span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px] font-semibold uppercase text-slate-500">
               {meta.label} #{index + 1}
             </span>
             {block.type === 'logo' && (
               <span className="text-[10px] text-slate-500">
-                align: {(block as LogoBlock).align ?? 'left'}
+                source: {(block as LogoBlock).source ?? 'organization'}
               </span>
             )}
-            {(block.type === 'field' || block.type === 'table') && fieldType && (
+            {block.type === 'systemData' && (
               <span className="text-[10px] text-slate-500">
-                ({fieldType})
+                key: {(block as SystemDataBlock).key}
+              </span>
+            )}
+            {block.type === 'field' && field?.fieldType && (
+              <span className="text-[10px] text-slate-500">
+                ({field.fieldType})
+              </span>
+            )}
+            {block.type === 'table' && field?.fieldType && (
+              <span className="text-[10px] text-slate-500">
+                ({field.fieldType})
               </span>
             )}
           </div>
@@ -97,7 +141,7 @@ export function BlockItem({
             variant="ghost"
             size="sm"
             onClick={onMoveUp}
-            disabled={index === 0}
+            disabled={index === 0 || disabled}
             className="h-7 w-7 p-0"
             title="ย้ายขึ้น"
             aria-label="ย้ายขึ้น"
@@ -108,7 +152,7 @@ export function BlockItem({
             variant="ghost"
             size="sm"
             onClick={onMoveDown}
-            disabled={index === total - 1}
+            disabled={index === total - 1 || disabled}
             className="h-7 w-7 p-0"
             title="ย้ายลง"
             aria-label="ย้ายลง"
@@ -119,6 +163,7 @@ export function BlockItem({
             variant="outline"
             size="sm"
             onClick={() => setEditing((v) => !v)}
+            disabled={disabled}
             className="h-7 px-2 text-[11px]"
             title={editing ? 'ซ่อนรายละเอียด' : 'แก้ไข'}
             aria-label={editing ? 'ซ่อนรายละเอียด' : 'แก้ไข'}
@@ -129,6 +174,7 @@ export function BlockItem({
             variant="ghost"
             size="sm"
             onClick={onDelete}
+            disabled={disabled}
             className="h-7 px-2 text-[11px] text-red-600 hover:bg-red-50"
             title="ลบ Block"
             aria-label="ลบ Block"
@@ -140,10 +186,7 @@ export function BlockItem({
 
       {/* Summary */}
       <div className="px-3 py-2 text-sm">
-        <BlockSummary
-          block={block}
-          fieldLabel={fieldLabel}
-        />
+        <BlockSummary block={block} fieldLabel={field?.labelTh} />
       </div>
 
       {/* Inline editor */}
@@ -151,6 +194,10 @@ export function BlockItem({
         <div className="px-3 py-2 border-t border-slate-200 bg-white/50">
           <BlockEditor
             block={block}
+            field={field}
+            fields={fields}
+            fieldsLoading={fieldsLoading}
+            disabled={disabled}
             onChange={onChange}
           />
         </div>
@@ -171,243 +218,188 @@ function BlockSummary({
   fieldLabel?: string;
 }) {
   if (block.type === 'heading') {
+    const text = (block as HeadingBlock).text;
+    if (!text) {
+      return <em className="text-slate-400">ยังไม่ได้ตั้งข้อความ</em>;
+    }
+    const lines = text.split(/\r?\n/);
     return (
       <span className="text-slate-800">
-        {(block as HeadingBlock).text || (
-          <em className="text-slate-400">ยังไม่ได้ตั้งข้อความ</em>
-        )}
+        {lines.map((line, i) => (
+          <span key={i} className="block">
+            {line || <em className="text-slate-300">(บรรทัดว่าง)</em>}
+          </span>
+        ))}
       </span>
     );
   }
-  if (block.type === 'field' || block.type === 'table') {
+
+  if (block.type === 'systemData') {
+    const sd = block as SystemDataBlock;
+    return (
+      <span className="text-slate-700 text-xs">
+        <span className="font-medium">{sd.label || SYSTEM_DATA_LABELS[sd.key]}</span>
+        <span className="mx-1 text-slate-400">·</span>
+        <code className="font-mono text-sky-700">{`{${sd.key}}`}</code>
+        <span className="ml-2 text-[10px] text-slate-500">
+          ({sd.layout ?? 'stacked'})
+        </span>
+      </span>
+    );
+  }
+
+  if (block.type === 'field') {
+    const b = block as FieldBlock;
     return (
       <span className="text-slate-800">
-        {fieldLabel || (
+        {b.label || fieldLabel || (
           <em className="text-slate-400">
             (deleted field — กรุณาเลือก field ใหม่)
           </em>
         )}
-        {block.type === 'table' && (
-          <span className="ml-1 text-[11px] text-emerald-700 font-medium">
-            [table]
+        <span className="ml-2 text-[10px] text-slate-500">
+          {b.layout ?? 'stacked'}
+          {b.showLabel === false ? ' · ไม่แสดงป้ายกำกับ' : ''}
+        </span>
+      </span>
+    );
+  }
+
+  if (block.type === 'table') {
+    const b = block as TableBlock;
+    return (
+      <span className="text-slate-800">
+        {b.label || fieldLabel || (
+          <em className="text-slate-400">
+            (deleted field — กรุณาเลือก field ใหม่)
+          </em>
+        )}
+        <span className="ml-1 text-[11px] text-emerald-700 font-medium">
+          [table]
+        </span>
+      </span>
+    );
+  }
+
+  if (block.type === 'signature') {
+    const sig = block as SignatureBlock;
+    const showName = sig.showName ?? true;
+    const showDate = sig.showDate ?? true;
+    const dateSource = normalizeDateSource(sig.dateSource);
+    const visible: string[] = [];
+    if (showName) visible.push('ชื่อ');
+    if (showDate && dateSource !== 'none') visible.push('วันที่');
+    return (
+      <span className="text-slate-700 text-xs">
+        <span className="font-medium">{sig.lineLabel ?? 'ลงลายมือชื่อ'}</span>
+        <span className="mx-1 text-slate-400">·</span>
+        <span>{sig.roleLabel ?? 'ผู้สมัคร'}</span>
+        <span className="ml-2 text-[10px] text-slate-500">
+          (แสดง: {visible.join(', ') || 'ไม่มี'})
+        </span>
+        {sig.nameFieldId && (
+          <span className="ml-2 text-[10px] text-slate-400">
+            ชื่อจาก field: {sig.nameFieldId}
           </span>
         )}
       </span>
     );
   }
-  if (block.type === 'signature') {
-    const sig = block as SignatureBlock;
-    const showName = sig.showName ?? true;
-    const showDate = sig.showDate ?? true;
-    const showTime = sig.showTime ?? false;
-    const visible: string[] = [];
-    if (showName) visible.push('ชื่อ');
-    if (showDate) visible.push('วันที่');
-    if (showTime) visible.push('เวลา');
-    return (
-      <span className="text-slate-700 text-xs">
-        <span className="font-medium">ลงลายมือชื่อ</span>
-        <span className="mx-1 text-slate-400">·</span>
-        <span>{sig.roleLabel || 'ผู้สมัคร'}</span>
-        <span className="ml-2 text-[10px] text-slate-500">
-          (แสดง: {visible.join(', ') || 'ไม่มี'})
-        </span>
-      </span>
-    );
-  }
+
   // logo
+  const logo = block as LogoBlock;
+  const source = logo.source ?? 'organization';
   return (
     <span className="text-slate-600 italic text-xs">
-      SAO Logo
+      {source === 'none'
+        ? 'ไม่แสดงโลโก้'
+        : `โลโก้ (${source === 'upload' ? 'upload — ยังไม่รองรับ' : 'หน่วยงาน'}) — ถ้าไม่มีภาพจะแสดง "${NO_LOGO_TEXT}"`}
     </span>
   );
 }
 
 function BlockEditor({
   block,
+  field,
+  fields,
+  fieldsLoading,
+  disabled,
   onChange,
 }: {
   block: DocumentBlock;
+  field?: TemplateFieldLibraryItem;
+  fields?: TemplateFieldLibraryItem[];
+  fieldsLoading?: boolean;
+  disabled?: boolean;
   onChange: (patch: Partial<DocumentBlock>) => void;
 }) {
+  const patch = (p: Partial<DocumentBlock>) => onChange(p);
+
   if (block.type === 'heading') {
     return (
       <HeadingEditor
         block={block as HeadingBlock}
-        onChange={(patch) => onChange(patch as Partial<DocumentBlock>)}
+        fields={fields}
+        fieldsLoading={fieldsLoading}
+        disabled={disabled}
+        onChange={(p) => patch(p as Partial<DocumentBlock>)}
       />
     );
   }
-  if (block.type === 'field' || block.type === 'table') {
-    const b = block as FieldBlock | TableBlock;
+
+  if (block.type === 'systemData') {
     return (
-      <div className="space-y-2 p-3 bg-slate-50 rounded border border-slate-200">
-        <div className="space-y-1">
-          <Label className="text-[10px] text-slate-600">fieldId</Label>
-          <code className="block text-[11px] bg-white border border-slate-200 rounded px-2 py-1.5 break-all">
-            {b.fieldId}
-          </code>
-          <p className="text-[10px] text-slate-500 mt-1">
-            การเปลี่ยน fieldId ต้องลบ block นี้แล้วเพิ่มใหม่ผ่าน +Field/+Table
-          </p>
-        </div>
-        {(block.type === 'field') && (
-          <div className="space-y-1">
-            <Label className="text-[10px] text-slate-600">label override (ไม่บังคับ)</Label>
-            <input
-              type="text"
-              value={(b as FieldBlock).label || ''}
-              onChange={(e) =>
-                onChange({ label: e.target.value } as Partial<DocumentBlock>)
-              }
-              placeholder="ปล่อยว่างเพื่อใช้ชื่อจาก Field Master"
-              className="flex h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-        )}
-        <AlignRow
-          align={b.align ?? 'left'}
-          onChange={(align) =>
-            onChange({ align } as Partial<DocumentBlock>)
-          }
-        />
-      </div>
+      <SystemDataEditor
+        block={block as SystemDataBlock}
+        disabled={disabled}
+        onChange={(p) => patch(p as Partial<DocumentBlock>)}
+      />
     );
   }
+
+  if (block.type === 'field') {
+    return (
+      <FieldEditor
+        block={block as FieldBlock}
+        field={field}
+        disabled={disabled}
+        onChange={(p) => patch(p as Partial<DocumentBlock>)}
+      />
+    );
+  }
+
+  if (block.type === 'table') {
+    return (
+      <TableEditor
+        block={block as TableBlock}
+        field={field}
+        disabled={disabled}
+        onChange={(p) => patch(p as Partial<DocumentBlock>)}
+      />
+    );
+  }
+
   if (block.type === 'signature') {
-    const sig = block as SignatureBlock;
     return (
-      <div className="space-y-2 p-3 bg-rose-50/40 rounded border border-rose-200">
-        <p className="text-[10px] text-slate-600 leading-relaxed">
-          Signature Block เป็น Document Block (เหมือน Logo / Heading)
-          ไม่ต้องให้ผู้สมัครกรอก — ใช้ข้อมูลจาก Application อัตโนมัติ:
-          ชื่อผู้สมัคร · วันที่/เวลาที่ส่งใบสมัคร
-        </p>
-        <div className="space-y-1">
-          <Label className="text-[10px] text-slate-600">roleLabel (ป้ายกำกับบทบาท)</Label>
-          <input
-            type="text"
-            value={sig.roleLabel ?? ''}
-            onChange={(e) =>
-              onChange({ roleLabel: e.target.value } as Partial<DocumentBlock>)
-            }
-            placeholder="ผู้สมัคร"
-            className="flex h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
-          />
-        </div>
-
-        {/* Visibility toggles — mirror backend defaults */}
-        <div className="space-y-1">
-          <Label className="text-[10px] text-slate-600">แสดงข้อมูล</Label>
-          <div className="flex flex-col gap-1.5 mt-1">
-            <ToggleRow
-              label="ชื่อผู้สมัคร (ชื่อในวงเล็บ)"
-              checked={sig.showName ?? true}
-              onChange={(v) =>
-                onChange({ showName: v } as Partial<DocumentBlock>)
-              }
-            />
-            <ToggleRow
-              label="วันที่ส่งใบสมัคร"
-              checked={sig.showDate ?? true}
-              onChange={(v) =>
-                onChange({ showDate: v } as Partial<DocumentBlock>)
-              }
-            />
-            <ToggleRow
-              label="เวลาที่ส่งใบสมัคร"
-              hint="(default: ปิด — เอกสารราชการส่วนใหญ่ไม่แสดงเวลา)"
-              checked={sig.showTime ?? false}
-              onChange={(v) =>
-                onChange({ showTime: v } as Partial<DocumentBlock>)
-              }
-            />
-          </div>
-        </div>
-
-        <AlignRow
-          align={sig.align ?? 'left'}
-          onChange={(align) =>
-            onChange({ align } as Partial<DocumentBlock>)
-          }
-        />
-      </div>
+      <SignatureEditor
+        block={block as SignatureBlock}
+        fields={fields}
+        fieldsLoading={fieldsLoading}
+        disabled={disabled}
+        onChange={(p) => patch(p as Partial<DocumentBlock>)}
+      />
     );
   }
+
   // logo
   return (
-    <div className="space-y-2 p-3 bg-slate-50 rounded border border-slate-200">
-      <Label className="text-[10px] text-slate-600">Alignment</Label>
-      <AlignRow
-        align={(block as LogoBlock).align ?? 'left'}
-        onChange={(align) =>
-          onChange({ align } as Partial<DocumentBlock>)
-        }
-      />
-    </div>
+    <LogoEditor
+      block={block as LogoBlock}
+      disabled={disabled}
+      onChange={(p) => patch(p as Partial<DocumentBlock>)}
+    />
   );
 }
 
-function AlignRow({
-  align,
-  onChange,
-}: {
-  align: 'left' | 'center' | 'right';
-  onChange: (align: 'left' | 'center' | 'right') => void;
-}) {
-  const opts: Array<{ value: typeof align; label: string; icon: string }> = [
-    { value: 'left', label: 'ซ้าย', icon: '⬅' },
-    { value: 'center', label: 'กลาง', icon: '⏺' },
-    { value: 'right', label: 'ขวา', icon: '➡' },
-  ];
-  return (
-    <div className="flex gap-1">
-      {opts.map((opt) => (
-        <button
-          key={opt.value}
-          type="button"
-          onClick={() => onChange(opt.value)}
-          className={`flex-1 h-8 text-xs rounded border transition-colors ${
-            align === opt.value
-              ? 'bg-blue-600 text-white border-blue-600'
-              : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-          }`}
-          title={opt.label}
-        >
-          {opt.icon}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ToggleRow({
-  label,
-  hint,
-  checked,
-  onChange,
-}: {
-  label: string;
-  hint?: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label className="flex items-start gap-2 cursor-pointer select-none">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-rose-600 focus:ring-rose-500"
-      />
-      <span className="flex-1 min-w-0">
-        <span className="block text-[11px] text-slate-800 leading-tight">{label}</span>
-        {hint && (
-          <span className="block text-[10px] text-slate-500 leading-tight mt-0.5">
-            {hint}
-          </span>
-        )}
-      </span>
-    </label>
-  );
-}
+/** Legacy wrapper — ใช้โดยจุดอื่นที่ยังต้องการแถว alignment แบบง่าย */
+export { AlignRow };

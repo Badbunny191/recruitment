@@ -3,34 +3,38 @@
 /**
  * BlockPanel
  * --------------------------------
- * Document Composer V1 — Block List Panel
+ * Document Composer — Block List Panel
  *
  * แสดง Block ทั้งหมดใน descriptor.blocks
  * ประกอบด้วย:
  *   - BlockToolbar (ด้านบน)
- *   - รายการ BlockItem
+ *   - รายการ BlockItem (แต่ละประเภทมี editor เฉพาะ)
  *   - Empty state เมื่อไม่มี block
  *
  * Operations:
- *   - add(kind, fieldId?)
+ *   - add(kind)
  *   - update(index, patch)
  *   - move(index, direction)
  *   - remove(index)
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { BlockToolbar, type AddBlockKind } from './BlockToolbar';
 import { BlockItem } from './BlockItem';
 import { FieldPicker } from './FieldPicker';
-import { useState } from 'react';
-import type {
-  DocumentDescriptor,
-  DocumentBlock,
-  HeadingBlock,
-  FieldBlock,
-  TableBlock,
-  LogoBlock,
-  SignatureBlock,
+import {
+  createFieldBlock,
+  createHeadingBlock,
+  createLogoBlock,
+  createSignatureBlock,
+  createSystemDataBlock,
+  createTableBlock,
+  type DocumentBlock,
+  type DocumentDescriptor,
+  type HeadingBlock,
+  type LogoBlock,
+  type SignatureBlock,
+  type SystemDataBlock,
 } from '@/lib/api/template-descriptor';
 import type { TemplateFieldLibraryItem } from '../hooks/useTemplateFields';
 
@@ -48,68 +52,6 @@ export interface BlockPanelProps {
   onDeleteRequest?: (index: number, summary: string) => void;
 }
 
-function newBlockId(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random()
-    .toString(36)
-    .slice(2, 7)}`;
-}
-
-function makeHeadingBlock(text = 'หัวข้อใหม่'): HeadingBlock {
-  return {
-    id: newBlockId('h'),
-    type: 'heading',
-    text,
-    size: 'medium',
-    bold: false,
-    align: 'left',
-  };
-}
-
-// ⚠️ สำคัญ: descriptor.block.fieldId ต้องเป็น fieldMaster.id (FK string)
-  // ไม่ใช่ templateFields.id (UUID) — เพื่อให้:
-  //   1. fieldMap lookup เจอ (BlockPanel.fieldMap ใช้ fieldId เป็น key)
-  //   2. preview-renderer resolve เจอ (fieldIndex ใช้ FieldData.fieldId = fieldMaster.id)
-  //   3. save → load → preview คงความถูกต้อง (JSON shape ตรงกับ generator output)
-  function makeFieldBlock(field: TemplateFieldLibraryItem): FieldBlock {
-    return {
-      id: newBlockId('f'),
-      type: 'field',
-      fieldId: field.fieldId,
-      label: undefined,
-      align: 'left',
-    };
-  }
-
-  function makeTableBlock(field: TemplateFieldLibraryItem): TableBlock {
-    return {
-      id: newBlockId('t'),
-      type: 'table',
-      fieldId: field.fieldId,
-      align: 'left',
-    };
-  }
-
-function makeLogoBlock(): LogoBlock {
-  return {
-    id: newBlockId('l'),
-    type: 'logo',
-    align: 'left',
-  };
-}
-
-function makeSignatureBlock(): SignatureBlock {
-  return {
-    id: newBlockId('s'),
-    type: 'signature',
-    roleLabel: 'ผู้สมัคร',
-    // Visibility defaults — mirror backend (preview-renderer.ts)
-    showName: true,
-    showDate: true,
-    showTime: false,
-    align: 'center',
-  };
-}
-
 export function BlockPanel({
   descriptor,
   onChange,
@@ -121,14 +63,14 @@ export function BlockPanel({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<'field' | 'table'>('field');
 
-  // Map fieldId (fieldMaster.id) → library item (สำหรับ resolve label/type)
-  //
-  // สำคัญ: descriptor.block.fieldId = fieldMaster.id (FK string) ไม่ใช่
-  // templateFields.id (UUID) — backend generator (descriptor-generator.ts) และ
-  // preview-renderer.ts ใช้ fieldMaster.id เป็น identifier ฝั่งเดียว
-  //
-  // Map จึงต้อง key ด้วย fieldId (FK) ด้วย ไม่ใช่ templateFields.id (UUID)
-  // — ไม่งั้น Visual Composer จะ resolve label ไม่เจอและแสดง "(deleted field)"
+  /**
+   * Map fieldId (field_master.id) → library item (สำหรับ resolve label/type)
+   *
+   * สำคัญ: `descriptor.block.fieldId` = `field_master.id` (FK string)
+   * **ไม่ใช่** `template_fields.id` (UUID)
+   * — backend generator + preview/PDF renderer ใช้ fieldMaster.id เป็น
+   *   identifier ฝั่งเดียว
+   */
   const fieldMap = useMemo(() => {
     const m = new Map<string, TemplateFieldLibraryItem>();
     fields.forEach((f) => m.set(f.fieldId, f));
@@ -139,35 +81,39 @@ export function BlockPanel({
   // Handlers — ทั้งหมดเปลี่ยน immutable (สร้าง array ใหม่)
   // ---------------------------------------------------------------------------
 
+  const append = (block: DocumentBlock) => {
+    onChange({ ...descriptor, blocks: [...descriptor.blocks, block] });
+  };
+
   const handleAdd = (kind: AddBlockKind) => {
     if (kind === 'heading') {
-      onChange({
-        ...descriptor,
-        blocks: [...descriptor.blocks, makeHeadingBlock()],
-      });
-    } else if (kind === 'logo') {
-      onChange({
-        ...descriptor,
-        blocks: [...descriptor.blocks, makeLogoBlock()],
-      });
-    } else if (kind === 'signature') {
-      onChange({
-        ...descriptor,
-        blocks: [...descriptor.blocks, makeSignatureBlock()],
-      });
-    } else {
-      // field / table → เปิด picker
-      setPickerMode(kind);
-      setPickerOpen(true);
+      append(createHeadingBlock());
+      return;
     }
+    if (kind === 'systemData') {
+      append(createSystemDataBlock('APPLICATION_NO'));
+      return;
+    }
+    if (kind === 'logo') {
+      append(createLogoBlock());
+      return;
+    }
+    if (kind === 'signature') {
+      append(createSignatureBlock());
+      return;
+    }
+    // field / table → เปิด picker
+    setPickerMode(kind);
+    setPickerOpen(true);
   };
 
   const handlePickerSelect = (field: TemplateFieldLibraryItem) => {
-    const block =
+    // fieldId ต้องเป็น fieldMaster.id (FK) — ไม่ใช่ templateFields.id (UUID)
+    append(
       pickerMode === 'table'
-        ? makeTableBlock(field)
-        : makeFieldBlock(field);
-    onChange({ ...descriptor, blocks: [...descriptor.blocks, block] });
+        ? createTableBlock(field.fieldId)
+        : createFieldBlock(field.fieldId)
+    );
   };
 
   const handleBlockChange = (index: number, patch: Partial<DocumentBlock>) => {
@@ -213,7 +159,8 @@ export function BlockPanel({
           <div className="text-3xl mb-2">🧩</div>
           <p className="text-sm font-medium">ยังไม่มี Block</p>
           <p className="text-xs mt-1">
-            กด <strong>Generate</strong> เพื่อสร้างอัตโนมัติ หรือเพิ่ม Block จากแถบเครื่องมือด้านบน
+            กด <strong>Generate</strong> เพื่อสร้างอัตโนมัติ หรือเพิ่ม Block
+            จากแถบเครื่องมือด้านบน
           </p>
         </div>
       ) : (
@@ -221,54 +168,19 @@ export function BlockPanel({
           {descriptor.blocks.map((block, idx) => {
             const fld =
               block.type === 'field' || block.type === 'table'
-                ? fieldMap.get((block as FieldBlock | TableBlock).fieldId)
+                ? fieldMap.get(block.fieldId)
                 : undefined;
-            // ──────────────────────────────────────────────────────────────
-            // DEBUG (Visual Composer label resolution) — เก็บหลักฐานจริง
-            // เพื่อพิสูจน์ว่า bug เกิดจาก:
-            //   A) lookup ไม่เจอ (key mismatch)
-            //   B) lookup เจอ แต่ labelTh = "" / undefined
-            //   C) property ที่ใช้ render ผิดตัว
-            // log เฉพาะ block ที่ขึ้น "(deleted field)" — คือ fld ว่าง หรือ
-            // fld.labelTh ว่าง/null/undefined
-            // ──────────────────────────────────────────────────────────────
-            if (
-              process.env.NODE_ENV !== 'production' &&
-              (block.type === 'field' || block.type === 'table')
-            ) {
-              const blockFieldId = (block as FieldBlock | TableBlock).fieldId;
-              const isMissingLabel =
-                !fld ||
-                fld.labelTh === undefined ||
-                fld.labelTh === null ||
-                (typeof fld.labelTh === 'string' && fld.labelTh.trim() === '');
-              if (isMissingLabel) {
-                // eslint-disable-next-line no-console
-                console.log('[BlockPanel][deleted-field-debug]', {
-                  blockIndex: idx,
-                  blockId: block.id,
-                  blockType: block.type,
-                  'block.fieldId': blockFieldId,
-                  'fieldMap.size': fieldMap.size,
-                  'fieldMap.keys()': Array.from(fieldMap.keys()),
-                  'fieldMap.has(block.fieldId)': fieldMap.has(blockFieldId),
-                  'fieldMap.get(block.fieldId)': fld ?? null,
-                  'fieldMap.get(block.fieldId)?.labelTh':
-                    fld?.labelTh ?? null,
-                  'fieldMap.get(block.fieldId)?.fieldId':
-                    fld?.fieldId ?? null,
-                  'fieldMap.get(block.fieldId)?.id': fld?.id ?? null,
-                });
-              }
-            }
+
             return (
               <li key={block.id}>
                 <BlockItem
                   block={block}
                   index={idx}
                   total={descriptor.blocks.length}
-                  fieldLabel={fld?.labelTh}
-                  fieldType={fld?.fieldType}
+                  field={fld}
+                  fields={fields}
+                  fieldsLoading={fieldsLoading}
+                  disabled={disabled}
                   onChange={(patch) => handleBlockChange(idx, patch)}
                   onMoveUp={() => handleMove(idx, -1)}
                   onMoveDown={() => handleMove(idx, 1)}
@@ -301,17 +213,35 @@ function describeBlock(
 ): string {
   if (block.type === 'heading') {
     const text = (block as HeadingBlock).text || '(ไม่มีข้อความ)';
-    return `Heading: "${text}"`;
+    const firstLine = text.split(/\r?\n/)[0];
+    const more = text.includes('\n') ? ` (+${text.split(/\r?\n/).length - 1} บรรทัด)` : '';
+    return `Heading / Text: "${firstLine}${more}"`;
   }
-  if (block.type === 'field' || block.type === 'table') {
-    const b = block as FieldBlock | TableBlock;
-    const fld = fieldMap.get(b.fieldId);
-    const label = fld?.labelTh ?? b.fieldId.slice(0, 12) + '…';
-    return `${block.type === 'table' ? 'Table' : 'Field'}: ${label}`;
+
+  if (block.type === 'systemData') {
+    const sd = block as SystemDataBlock;
+    return `System Data: ${sd.label ?? sd.key} ({${sd.key}})`;
   }
+
+  if (block.type === 'field') {
+    const fld = fieldMap.get(block.fieldId);
+    const label = fld?.labelTh ?? block.fieldId.slice(0, 12) + '…';
+    return `Field: ${label}`;
+  }
+
+  if (block.type === 'table') {
+    const fld = fieldMap.get(block.fieldId);
+    const label = fld?.labelTh ?? block.fieldId.slice(0, 12) + '…';
+    return `Table: ${label}`;
+  }
+
   if (block.type === 'signature') {
-    return `Signature: ลงลายมือชื่อ${(block as SignatureBlock).roleLabel ? ` (${(block as SignatureBlock).roleLabel})` : ''}`;
+    const sig = block as SignatureBlock;
+    const role = sig.roleLabel ? ` (${sig.roleLabel})` : '';
+    return `Signature: ${sig.lineLabel ?? 'ลงลายมือชื่อ'}${role}`;
   }
+
   // logo
-  return `Logo (align: ${(block as LogoBlock).align ?? 'left'})`;
+  const logo = block as LogoBlock;
+  return `Logo (source: ${logo.source ?? 'organization'}, align: ${logo.align ?? 'left'})`;
 }

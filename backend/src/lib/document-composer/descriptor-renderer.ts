@@ -13,6 +13,11 @@
  * ทำไมต้องแยก "plan" ออกจาก "render":
  *   - testable: ตรวจ plan ได้โดยไม่ต้องสร้าง PDF จริง
  *   - debuggable: เห็นลำดับ block ที่จะ render ทั้งหมดก่อนยิง PDF
+ *
+ * ── Requirement I.6: Preview HTML และ PDF ใช้ token resolver และ field
+ *    capability เดียวกัน — ห้ามสร้าง token resolver ซ้ำ
+ *    → PDF renderer ใช้ resolveDocumentTokens / applyDocumentTokensWithFields
+ *      เดียวกับ preview-renderer.ts
  */
 
 import { PDFDocument, PDFFont, PDFPage, PDFImage, rgb } from "pdf-lib";
@@ -20,6 +25,28 @@ import type {
   ApplicationContext,
   FieldData,
 } from "../pdf-types";
+import {
+  resolveDocumentTokens,
+  applyDocumentTokensWithFields,
+  resolveFieldValue,
+  type DocumentToken,
+  type TokenValue,
+  DOCUMENT_TOKEN_LABELS,
+} from "./document-tokens";
+import { getObjectDisplayLabel } from "./field-capabilities";
+import {
+  SYSTEM_DATA_LABELS,
+  NO_LOGO_TEXT,
+  DEFAULT_SIGNATURE_LINE_LABEL,
+  DEFAULT_SIGNATURE_ROLE_LABEL,
+  DEFAULT_SIGNATURE_DATE_LABEL,
+  DEFAULT_SIGNATURE_LINE_STYLE,
+  DEFAULT_SHOW_NAME,
+  DEFAULT_SHOW_PARENTHESES,
+  DEFAULT_SHOW_DATE,
+  DEFAULT_SHOW_TIME,
+  DEFAULT_DATE_FORMAT,
+} from "./types";
 import type {
   DocumentDescriptor,
   DocumentBlock,
@@ -28,6 +55,11 @@ import type {
   TableBlock,
   LogoBlock,
   SignatureBlock,
+  SystemDataBlock,
+  SystemDataKey,
+  DateFormat,
+  Size,
+  Align,
 } from "./types";
 
 // =============================================================================
@@ -37,7 +69,8 @@ import type {
 /**
  * RenderPlan = ordered list ของ render command
  *
- * type discriminator: "heading" | "field" | "table" | "logo" | "signature" | "padding"
+ * type discriminator: "heading" | "field" | "table" | "logo" | "signature"
+ *   | "systemData" | "padding"
  *
  * padding = spacing ระหว่าง block (จาก marginTop/marginBottom)
  */
@@ -47,7 +80,8 @@ export type RenderCommand =
   | FieldRenderCommand
   | TableRenderCommand
   | LogoRenderCommand
-  | SignatureRenderCommand;
+  | SignatureRenderCommand
+  | SystemDataRenderCommand;
 
 export interface PaddingCommand {
   type: "padding";
@@ -60,10 +94,12 @@ export interface PaddingCommand {
 export interface HeadingRenderCommand {
   type: "heading";
   blockId: string;
+  /** text after system tokens resolved (still has {FIELD:<id>} resolved too) */
   text: string;
-  size: HeadingBlock["size"];
+  size: Size;
   bold: boolean;
-  align: "left" | "center" | "right";
+  italic: boolean;
+  align: Align;
   fontSize: number;
   margins: { top: number; bottom: number };
 }
@@ -73,7 +109,11 @@ export interface FieldRenderCommand {
   blockId: string;
   field: FieldData;
   overrideLabel?: string;
-  align: "left" | "center" | "right";
+  showLabel: boolean;
+  showRequired: boolean;
+  valueStyle: Size;
+  layout: "stacked" | "inline";
+  align: Align;
   margins: { top: number; bottom: number };
 }
 
@@ -81,14 +121,21 @@ export interface TableRenderCommand {
   type: "table";
   blockId: string;
   field: FieldData;
-  align: "left" | "center" | "right";
+  showLabel: boolean;
+  label?: string;
+  emptyText: string;
+  align: Align;
   margins: { top: number; bottom: number };
 }
 
 export interface LogoRenderCommand {
   type: "logo";
   blockId: string;
-  align: "left" | "center" | "right";
+  source: LogoBlock["source"];
+  width?: number;
+  height?: number;
+  alt?: string;
+  align: Align;
   margins: { top: number; bottom: number };
 }
 
@@ -96,32 +143,63 @@ export interface LogoRenderCommand {
  * Signature Render Command — Document Block ที่ใช้ข้อมูลจาก Application
  *
  * ค่าต่างๆ (name / date / time) resolve จาก ApplicationContext ตอน
- * buildRenderPlan() — command เก็บเฉพาะ static config (roleLabel, align)
- * + resolved values เพื่อให้ executor render ได้ตรง pattern เดียวกับ
- * heading/logo (ไม่ต้อง query context ซ้ำ)
- *
- * Visibility flags (mirror SignatureBlock):
- *   - showName (default true)   — บรรทัด "(ชื่อผู้สมัคร)"
- *   - showDate (default true)   — บรรทัด "วันที่ ..."
- *   - showTime (default false)  — บรรทัด "เวลา ..."
+ * buildRenderPlan() — command เก็บเฉพาะ static config (lineLabel/lineStyle
+ * /dateLabel/roleLabel/align/nameFieldId/dateSource/showName/showDate
+ * /showTime/showParentheses) + resolved values เพื่อให้ executor render ได้
+ * ตรง pattern เดียวกับ heading/logo (ไม่ต้อง query context ซ้ำ)
  */
 export interface SignatureRenderCommand {
   type: "signature";
   blockId: string;
   roleLabel: string;
-  align: "left" | "center" | "right";
-  /** resolved signer name (หรือ fallback "(ชื่อผู้สมัคร)") */
+  lineLabel: string;
+  lineStyle: string;
+  dateLabel: string;
+  align: Align;
+  /** resolved signer name (หรือ fallback placeholder) */
   signerName: string;
+  /** true เมื่อ signerName เป็น placeholder (ไม่มีข้อมูลจริง) */
+  hasRealName: boolean;
+  /** show parentheses around signer name */
+  showParentheses: boolean;
   /** resolved Thai date string (หรือ fallback "______________") */
   dateText: string;
   /** resolved HH:mm (หรือ fallback "______________") */
   timeText: string;
   /** true เมื่อใช้ fallback — ใช้กำหนด font color ให้จางลง */
   isFallback: boolean;
-  /** visibility toggles (default: true, true, false) */
+  /** visibility toggles */
   showName: boolean;
   showDate: boolean;
   showTime: boolean;
+  margins: { top: number; bottom: number };
+}
+
+/**
+ * System Data Render Command — ระบบข้อมูล 1 รายการ
+ *
+ * ใช้ system token เดียวกับ preview-renderer (Requirement I.6)
+ * → ไม่มี token resolver ซ้ำ — value ถูก resolve ที่ buildRenderPlan แล้ว
+ */
+export interface SystemDataRenderCommand {
+  type: "systemData";
+  blockId: string;
+  key: SystemDataKey;
+  label: string;
+  /** "stacked" → label on top / value below (Requirement B) */
+  /** "inline"  → label และ value บรรทัดเดียวกัน */
+  layout: "stacked" | "inline";
+  showLabel: boolean;
+  labelStyle: Size;
+  valueStyle: Size;
+  /** resolved token text (อาจเป็น placeholder เช่น "{APPLICATION_NO}") */
+  valueText: string;
+  /** true เมื่อไม่มีข้อมูลจริง — ใช้กำหนด font color ให้จางลง */
+  isEmpty: boolean;
+  /** output font size (pt) */
+  labelFontSize: number;
+  valueFontSize: number;
+  align: Align;
   margins: { top: number; bottom: number };
 }
 
@@ -161,7 +239,7 @@ const TABLE_ROW_PADDING_Y = 4; // vertical padding inside row
 const TABLE_BORDER = 0.5;
 const TABLE_HEADER_BG_THRESHOLD = 0.92;
 
-const SIZE_TO_FONT_SIZE: Record<HeadingBlock["size"], number> = {
+const SIZE_TO_FONT_SIZE: Record<Size, number> = {
   large: FONT_SIZE_LARGE,
   medium: FONT_SIZE_MEDIUM,
   small: FONT_SIZE_SMALL,
@@ -171,17 +249,15 @@ const COLOR_PRIMARY = rgb(0.05, 0.27, 0.51);
 const COLOR_BLACK = rgb(0, 0, 0);
 const COLOR_GRAY = rgb(0.4, 0.4, 0.4);
 const COLOR_LIGHT_GRAY = rgb(0.85, 0.85, 0.85);
+const COLOR_PLACEHOLDER = rgb(0.6, 0.64, 0.7); // soft slate-grey for empty data
 const COLOR_HEADER_BG = rgb(TABLE_HEADER_BG_THRESHOLD, TABLE_HEADER_BG_THRESHOLD, TABLE_HEADER_BG_THRESHOLD);
 
 // Signature block defaults
-const DEFAULT_SIGNATURE_ROLE = "ผู้สมัคร";
 // Visibility toggles — mirror preview-renderer.ts
 // - showName: true   (default: เปิด)
 // - showDate: true   (default: เปิด)
 // - showTime: false  (default: ปิด — เอกสารราชการส่วนใหญ่ไม่แสดงเวลา)
-const DEFAULT_SHOW_NAME = true;
-const DEFAULT_SHOW_DATE = true;
-const DEFAULT_SHOW_TIME = false;
+const DEFAULT_SHOW_TIME_INNER = DEFAULT_SHOW_TIME;
 const FONT_SIZE_SIGNATURE_LABEL = 12;
 const FONT_SIZE_SIGNATURE_NAME = 12;
 const FONT_SIZE_SIGNATURE_META = 12;
@@ -210,6 +286,9 @@ export function buildRenderPlan(
     fieldIndex.set(f.fieldId, f);
   }
 
+  // [Requirement I.6] คำนวณ token ครั้งเดียวต่อ render ผ่าน shared resolver
+  const tokens = resolveDocumentTokens(ctx);
+
   for (const block of descriptor.blocks) {
     if (block.marginTop && block.marginTop > 0) {
       commands.push({
@@ -223,13 +302,17 @@ export function buildRenderPlan(
       block,
       fieldIndex,
       missingFieldIds,
-      ctx
+      ctx,
+      tokens
     );
     if (command) {
       commands.push(command);
       if (command.type === "field" || command.type === "table") {
         fieldRefCount += 1;
       }
+    } else if (block.type === "heading") {
+      // heading ที่ resolve ได้แต่ text ว่าง → ไม่ push block ใด ๆ
+      // (ป้องกัน PDF generation ล้ม — Requirement K.6)
     }
 
     if (block.marginBottom && block.marginBottom > 0) {
@@ -259,26 +342,21 @@ function buildBlockCommand(
   block: DocumentBlock,
   fieldIndex: Map<string, FieldData>,
   missingFieldIds: string[],
-  ctx: ApplicationContext
+  ctx: ApplicationContext,
+  tokens: Record<DocumentToken, TokenValue>
 ): RenderCommand | null {
   const margins = {
     top: block.marginTop ?? 0,
     bottom: block.marginBottom ?? 0,
   };
-  const align = (block.align ?? "left") as "left" | "center" | "right";
+  const align = (block.align ?? "left") as Align;
 
   switch (block.type) {
     case "heading":
-      return {
-        type: "heading",
-        blockId: block.id,
-        text: block.text,
-        size: block.size,
-        bold: block.bold ?? true,
-        align,
-        fontSize: SIZE_TO_FONT_SIZE[block.size],
-        margins,
-      };
+      return buildHeadingCommand(block, ctx, tokens, align, margins);
+
+    case "systemData":
+      return buildSystemDataCommand(block, tokens, align, margins);
 
     case "field": {
       const field = fieldIndex.get(block.fieldId);
@@ -286,14 +364,7 @@ function buildBlockCommand(
         missingFieldIds.push(block.fieldId);
         return null;
       }
-      return {
-        type: "field",
-        blockId: block.id,
-        field,
-        overrideLabel: block.label,
-        align,
-        margins,
-      };
+      return buildFieldCommand(block, field, align, margins);
     }
 
     case "table": {
@@ -302,59 +373,312 @@ function buildBlockCommand(
         missingFieldIds.push(block.fieldId);
         return null;
       }
-      return {
-        type: "table",
-        blockId: block.id,
-        field,
-        align,
-        margins,
-      };
+      return buildTableCommand(block, field, align, margins);
     }
 
     case "logo":
-      return {
-        type: "logo",
-        blockId: block.id,
-        align,
-        margins,
-      };
+      return buildLogoCommand(block, align, margins);
 
-    case "signature": {
-      const roleLabel = block.roleLabel ?? DEFAULT_SIGNATURE_ROLE;
-      const showName = block.showName ?? DEFAULT_SHOW_NAME;
-      const showDate = block.showDate ?? DEFAULT_SHOW_DATE;
-      const showTime = block.showTime ?? DEFAULT_SHOW_TIME;
+    case "signature":
+      return buildSignatureCommand(block, ctx, tokens, align, margins);
+  }
 
-      // ── Resolve values from application context ────────────────
-      const submittedAt = ctx.application?.submittedAt;
-      const fullname = (ctx.application?.fullname ?? "").trim();
+  // Defensive (TypeScript exhaustive switch ผ่านแล้ว แต่กันเหนือกว่า)
+  // unknown block → return null เพื่อไม่ทำให้ PDF generation ล้ม
+  // (Requirement K.6 + K.10: ห้ามนำข้อมูลอื่นมาแทน / ห้าม crash)
+  return null;
+}
 
-      const hasName = fullname.length > 0;
-      const hasTime = typeof submittedAt === "number" && submittedAt > 0;
+// =============================================================================
+// Heading builder
+// =============================================================================
 
-      const signerName = hasName ? fullname : "(ชื่อผู้สมัคร)";
-      const dateText = hasTime ? formatThaiDate(submittedAt) : "______________";
-      const timeText = hasTime ? formatThaiTime(submittedAt) : "______________";
-      // isFallback = any of the *shown* lines is in fallback
-      const isFallback = (showName && !hasName) || (showDate && !hasTime) || (showTime && !hasTime);
+function buildHeadingCommand(
+  block: HeadingBlock,
+  ctx: ApplicationContext,
+  tokens: Record<DocumentToken, TokenValue>,
+  align: Align,
+  margins: { top: number; bottom: number }
+): HeadingRenderCommand {
+  // [Requirement I.6 / A] resolve ทั้ง system + field tokens ด้วย shared resolver
+  const resolved = applyDocumentTokensWithFields(block.text, ctx, tokens);
 
-      return {
-        type: "signature",
-        blockId: block.id,
-        roleLabel,
-        align,
-        signerName,
-        dateText,
-        timeText,
-        isFallback,
-        showName,
-        showDate,
-        showTime,
-        margins,
-      };
-    }
+  return {
+    type: "heading",
+    blockId: block.id,
+    text: resolved.text,
+    size: block.size,
+    bold: block.bold ?? true,
+    italic: block.italic ?? false,
+    align,
+    fontSize: SIZE_TO_FONT_SIZE[block.size],
+    margins,
+  };
+}
+
+// =============================================================================
+// SystemData builder
+// =============================================================================
+
+function buildSystemDataCommand(
+  block: SystemDataBlock,
+  tokens: Record<DocumentToken, TokenValue>,
+  align: Align,
+  margins: { top: number; bottom: number }
+): SystemDataRenderCommand {
+  const tokenValue = tokens[block.key];
+  const isEmpty = !tokenValue || tokenValue.empty;
+  const rawText = isEmpty ? `{${block.key}}` : tokenValue.text;
+
+  const valueText = applyDateFormat(rawText, block.key, block.dateFormat);
+  const label = block.label ?? SYSTEM_DATA_LABELS[block.key];
+
+  return {
+    type: "systemData",
+    blockId: block.id,
+    key: block.key,
+    label,
+    layout: block.layout ?? "stacked",
+    showLabel: block.showLabel ?? true,
+    labelStyle: block.labelStyle ?? "small",
+    valueStyle: block.valueStyle ?? "medium",
+    valueText,
+    isEmpty,
+    labelFontSize: SIZE_TO_FONT_SIZE[block.labelStyle ?? "small"],
+    valueFontSize: SIZE_TO_FONT_SIZE[block.valueStyle ?? "medium"],
+    align,
+    margins,
+  };
+}
+
+/**
+ * Apply dateFormat to a date token (text เดิมมาจาก token resolver ในรูป thai_long)
+ *
+ * mirror preview-renderer.ts:formatSystemDateValue
+ */
+function applyDateFormat(
+  text: string,
+  key: SystemDataKey,
+  fmt?: DateFormat
+): string {
+  const isDateKey = key === "APPLICATION_DATE" || key === "PRINT_DATE";
+  if (!isDateKey) return text;
+  const f = fmt ?? DEFAULT_DATE_FORMAT;
+  if (f === "thai_long") return text;
+  const parsed = parseThaiLongDate(text);
+  if (parsed === null) return text;
+  switch (f) {
+    case "thai_short":
+      return `${parsed.day}/${parsed.monthIndex + 1}/${parsed.year}`;
+    case "iso":
+      return `${parsed.year}-${String(parsed.monthIndex + 1).padStart(2, "0")}-${String(parsed.day).padStart(2, "0")}`;
+    case "numeric":
+      return `${String(parsed.day).padStart(2, "0")}-${String(parsed.monthIndex + 1).padStart(2, "0")}-${parsed.year}`;
+    default:
+      return text;
   }
 }
+
+/**
+ * Parse "20 ตุลาคม 2569" → { day, monthIndex (0-based), year (พ.ศ.) }
+ *
+ * @returns null ถ้า parse ไม่ได้ — ไม่ throw, ไม่ทำ PDF ล้ม
+ */
+function parseThaiLongDate(
+  text: string
+): { day: number; monthIndex: number; year: number } | null {
+  const match = /^\s*(\d{1,2})\s+([^\d\s]+)\s+(\d{4})\s*$/.exec(text);
+  if (!match) return null;
+  const day = Number(match[1]);
+  const monthIndex = THAI_MONTHS.indexOf(match[2]);
+  const year = Number(match[3]);
+  if (!Number.isFinite(day) || monthIndex < 0 || !Number.isFinite(year)) return null;
+  return { day, monthIndex, year };
+}
+
+// =============================================================================
+// Field builder
+// =============================================================================
+
+function buildFieldCommand(
+  block: FieldBlock,
+  field: FieldData,
+  align: Align,
+  margins: { top: number; bottom: number }
+): FieldRenderCommand {
+  return {
+    type: "field",
+    blockId: block.id,
+    field,
+    overrideLabel: block.label,
+    showLabel: block.showLabel ?? true,
+    showRequired: block.showRequired ?? true,
+    valueStyle: block.valueStyle ?? "medium",
+    layout: block.layout ?? "stacked",
+    align,
+    margins,
+  };
+}
+
+// =============================================================================
+// Table builder
+// =============================================================================
+
+function buildTableCommand(
+  block: TableBlock,
+  field: FieldData,
+  align: Align,
+  margins: { top: number; bottom: number }
+): TableRenderCommand {
+  return {
+    type: "table",
+    blockId: block.id,
+    field,
+    showLabel: block.showLabel ?? true,
+    label: block.label,
+    emptyText: block.emptyText ?? "(ไม่มีข้อมูล)",
+    align,
+    margins,
+  };
+}
+
+// =============================================================================
+// Logo builder
+// =============================================================================
+
+function buildLogoCommand(
+  block: LogoBlock,
+  align: Align,
+  margins: { top: number; bottom: number }
+): LogoRenderCommand {
+  return {
+    type: "logo",
+    blockId: block.id,
+    source: block.source ?? "organization",
+    width: block.width,
+    height: block.height,
+    alt: block.alt,
+    align,
+    margins,
+  };
+}
+
+// =============================================================================
+// Signature builder — Requirement C
+// =============================================================================
+
+function buildSignatureCommand(
+  block: SignatureBlock,
+  ctx: ApplicationContext,
+  tokens: Record<DocumentToken, TokenValue>,
+  align: Align,
+  margins: { top: number; bottom: number }
+): SignatureRenderCommand {
+  // ── Labels & styles (with explicit defaults from types.ts) ─────────
+  const lineLabel = block.lineLabel ?? DEFAULT_SIGNATURE_LINE_LABEL;
+  const roleLabel = block.roleLabel ?? DEFAULT_SIGNATURE_ROLE_LABEL;
+  const lineStyle = block.lineStyle ?? DEFAULT_SIGNATURE_LINE_STYLE;
+  const dateLabel = block.dateLabel ?? DEFAULT_SIGNATURE_DATE_LABEL;
+  const showParentheses = block.showParentheses ?? DEFAULT_SHOW_PARENTHESES;
+
+  // Visibility toggles (Requirement C.6/C.7/C.8)
+  const showName = block.showName ?? DEFAULT_SHOW_NAME;
+  const showDate = block.showDate ?? DEFAULT_SHOW_DATE;
+  const showTime = block.showTime ?? DEFAULT_SHOW_TIME_INNER;
+
+  // ── Signer name: nameFieldId → fallback application.fullname ───────
+  let signerName: string;
+  let hasRealName: boolean;
+  if (block.nameFieldId) {
+    const resolved = resolveFieldValue(block.nameFieldId, ctx);
+    if (resolved === null) {
+      // field ไม่อยู่ใน version นี้ → placeholder (ไม่ fallback เงียบ ๆ)
+      signerName = SIGNATURE_NAME_PLACEHOLDER;
+      hasRealName = false;
+    } else if (resolved.empty) {
+      signerName = SIGNATURE_NAME_PLACEHOLDER;
+      hasRealName = false;
+    } else {
+      signerName = resolved.text;
+      hasRealName = true;
+    }
+  } else {
+    const fullname = (ctx.application?.fullname ?? "").trim();
+    if (fullname.length > 0) {
+      signerName = fullname;
+      hasRealName = true;
+    } else {
+      signerName = SIGNATURE_NAME_PLACEHOLDER;
+      hasRealName = false;
+    }
+  }
+
+  // ── Date source: APPLICATION_DATE / PRINT_DATE / none ──────────────
+  const submittedAt = ctx.application?.submittedAt;
+  const hasSubmittedAt = typeof submittedAt === "number" && submittedAt > 0;
+  const dateSource: "APPLICATION_DATE" | "PRINT_DATE" | "none" =
+    block.dateSource === "none" || block.dateSource === "PRINT_DATE"
+      ? block.dateSource
+      : "APPLICATION_DATE"; // legacy "application" → APPLICATION_DATE
+
+  let dateText: string;
+  if (dateSource === "none") {
+    dateText = "______________";
+  } else if (dateSource === "PRINT_DATE") {
+    const print = tokens.PRINT_DATE;
+    dateText = print && !print.empty ? print.text : "______________";
+  } else {
+    const appDate = tokens.APPLICATION_DATE;
+    if (appDate && !appDate.empty) {
+      dateText = appDate.text;
+    } else if (hasSubmittedAt && typeof submittedAt === "number") {
+      dateText = formatThaiDate(submittedAt);
+    } else {
+      dateText = "______________";
+    }
+  }
+
+  const timeText = hasSubmittedAt && typeof submittedAt === "number"
+    ? formatThaiTime(submittedAt)
+    : "______________";
+
+  const isFallback =
+    (showName && !hasRealName) ||
+    (showDate && dateText === "______________") ||
+    (showTime && timeText === "______________");
+
+  return {
+    type: "signature",
+    blockId: block.id,
+    roleLabel,
+    lineLabel,
+    lineStyle,
+    dateLabel,
+    align,
+    signerName,
+    hasRealName,
+    showParentheses,
+    dateText,
+    timeText,
+    isFallback,
+    showName,
+    showDate,
+    showTime,
+    margins,
+  };
+}
+
+// =============================================================================
+// Signature defaults (shared with preview-renderer)
+// =============================================================================
+
+/**
+ * ข้อความ placeholder ของชื่อ (เมื่อไม่มีข้อมูลจริง)
+ *
+ * คงไว้ในรูป "(ชื่อผู้สมัคร)" เพื่อความ consistent กับ test signature-block
+ * (command.signerName includes parens, renderer ไม่ต้องใส่ซ้ำ)
+ */
+const SIGNATURE_NAME_PLACEHOLDER = "(ชื่อผู้สมัคร)";
 
 // =============================================================================
 // Plan Executor — adapter to PDF bytes
@@ -384,7 +708,7 @@ export async function renderPlanToPdf(
   const doc = await PDFDocument.create();
   const fonts = await loadSarabunFonts(doc);
   const hasLogo = plan.commands.some((c) => c.type === "logo");
-  const logo = hasLogo ? await loadSaoLogo(doc) : null;
+  const logo: PDFImage | null = hasLogo ? await loadSaoLogo(doc) : null;
 
   const state: ExecState = {
     doc,
@@ -397,7 +721,18 @@ export async function renderPlanToPdf(
   const generatedAt = Math.floor(Date.now() / 1000);
 
   for (const cmd of plan.commands) {
-    executeCommand(state, ctx, cmd);
+    try {
+      executeCommand(state, ctx, cmd);
+    } catch (err) {
+      // [Requirement K.6] per-block resilience: log + continue
+      // ไม่ให้ 1 block error ทำเอกสารทั้งฉบับล้ม
+      // eslint-disable-next-line no-console
+      console.error(
+        `[descriptor-renderer] block ${(cmd as { blockId?: string }).blockId ?? cmd.type} failed:`,
+        err
+      );
+      // ปล่อยให้ render ต่อ (ไม่ throw ออก)
+    }
   }
 
   const bytes = await doc.save();
@@ -449,49 +784,178 @@ function executeCommand(
     case "signature":
       drawSignature(state, cmd);
       break;
+    case "systemData":
+      drawSystemData(state, cmd);
+      break;
   }
 }
 
 /**
  * Add new page and reset cursor to top of content area.
- *
- * Pattern reuse: pdf-renderer.service.ts:addNewPage
- *   - สร้าง new page
- *   - reset state.y = CONTENT_TOP_AFTER_HEADER
- *   - footer/header จะถูก render ใน final pass (V1: ไม่มี header/footer pass
- *     เพราะ composer ไม่มี fixed header — แต่ pattern เดียวกัน)
  */
 function addNewPage(state: ExecState): void {
   state.page = state.doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   state.y = CONTENT_TOP_AFTER_HEADER;
 }
 
+// =============================================================================
+// Heading Renderer (Requirement A — multiline + tokens + italic)
+// =============================================================================
+
+/**
+ * Draw heading — supports multiline (split by \n) + bold/italic + align
+ *
+ * Token resolution is performed at buildRenderPlan() time using the shared
+ * resolver (applyDocumentTokensWithFields). This function draws text only.
+ *
+ * [Requirement K.6] ข้อความที่ resolve แล้วถูกวาดตรง ๆ ไม่มี HTML entity
+ * — token resolver ส่ง plain text มาเสมอ (XSS-safe by construction).
+ */
 function drawHeading(state: ExecState, cmd: HeadingRenderCommand): void {
   const font = cmd.bold ? state.fonts.bold : state.fonts.regular;
-  const textWidth = font.widthOfTextAtSize(cmd.text, cmd.fontSize);
+  const italicFont = state.fonts.regular; // pdf-lib ไม่รองรับ oblique — ใช้ regular แต่รักษา semantic
+  const drawFont = (cmd.italic ? italicFont : font);
 
-  let x: number;
-  switch (cmd.align) {
-    case "center":
-      x = (PAGE_WIDTH - textWidth) / 2;
-      break;
-    case "right":
-      x = PAGE_WIDTH - MARGIN - textWidth;
-      break;
-    case "left":
-    default:
-      x = MARGIN;
+  // Multiline: split by \n (Requirement A.2)
+  const lines = cmd.text.split(/\r?\n/);
+
+  // Pre-compute longest line for centering
+  const measuredLines = lines.map((ln) => drawFont.widthOfTextAtSize(ln, cmd.fontSize));
+  const lineSpacing = cmd.fontSize * LINE_HEIGHT;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const w = measuredLines[i];
+    let x: number;
+    switch (cmd.align) {
+      case "center":
+        x = (PAGE_WIDTH - w) / 2;
+        break;
+      case "right":
+        x = PAGE_WIDTH - MARGIN - w;
+        break;
+      case "left":
+      default:
+        x = MARGIN;
+    }
+    state.page.drawText(line || "", {
+      x,
+      y: state.y - cmd.fontSize,
+      font: drawFont,
+      size: cmd.fontSize,
+      color: COLOR_PRIMARY,
+    });
+    state.y -= lineSpacing;
   }
 
-  state.page.drawText(cmd.text, {
-    x,
-    y: state.y - cmd.fontSize,
-    font,
-    size: cmd.fontSize,
-    color: COLOR_PRIMARY,
-  });
-  state.y -= cmd.fontSize * LINE_HEIGHT;
+  // NOTE: ห้าม drop block ที่ resolve ได้แล้ว (Requirement K.6)
+  // ถ้า text ว่าง → วาดบรรทัดเดียวกัน (อาจวาด invisible) เพื่อรักษา layout
+  // (multiline จะไม่วาดเลยก็ได้ — แต่เราวาด 1 บรรทัดว่าง)
+  if (lines.length === 0) {
+    state.y -= lineSpacing;
+  }
+
+  state.y -= POST_BLOCK_SPACING;
 }
+
+// =============================================================================
+// SystemData Renderer (Requirement B)
+// =============================================================================
+
+/**
+ * Draw system data block — label + value with stacked/inline layout
+ *
+ * mirror preview-renderer.ts:renderSystemDataBlock
+ * - showLabel (default true)
+ * - layout stacked/inline
+ * - value empty → สี placeholder (ไม่ใช่ข้อมูลจริง)
+ */
+function drawSystemData(state: ExecState, cmd: SystemDataRenderCommand): void {
+  const valueColor = cmd.isEmpty ? COLOR_PLACEHOLDER : COLOR_BLACK;
+  const labelColor = COLOR_GRAY;
+
+  if (cmd.showLabel) {
+    const labelText = `${cmd.label}`;
+    const lw = state.fonts.bold.widthOfTextAtSize(labelText, cmd.labelFontSize);
+    let lx: number;
+    switch (cmd.align) {
+      case "center":
+        lx = (PAGE_WIDTH - lw) / 2;
+        break;
+      case "right":
+        lx = PAGE_WIDTH - MARGIN - lw;
+        break;
+      case "left":
+      default:
+        lx = MARGIN;
+    }
+    state.page.drawText(labelText, {
+      x: lx,
+      y: state.y - cmd.labelFontSize,
+      font: state.fonts.bold,
+      size: cmd.labelFontSize,
+      color: labelColor,
+    });
+    if (cmd.layout === "stacked") {
+      state.y -= cmd.labelFontSize * LINE_HEIGHT;
+    } else {
+      // inline: label + value ต่อกัน (เว้น space 8pt)
+      // ใช้ space pt คำนวณจาก font width
+      const spaceW = state.fonts.regular.widthOfTextAtSize(" ", cmd.valueFontSize);
+      drawValueBlock(state, cmd, lx + lw + spaceW, valueColor);
+      state.y -= cmd.valueFontSize * LINE_HEIGHT;
+      state.y -= POST_BLOCK_SPACING;
+      return;
+    }
+  }
+
+  // stacked (or no label): วาด value ในบรรทัดถัดไป (indent 12pt เหมือน field)
+  const valueX = cmd.showLabel && cmd.layout === "stacked"
+    ? MARGIN + 12
+    : MARGIN;
+  drawValueBlock(state, cmd, valueX, valueColor);
+
+  state.y -= POST_BLOCK_SPACING;
+}
+
+/**
+ * Helper: draw system-data value with alignment & multiline
+ */
+function drawValueBlock(
+  state: ExecState,
+  cmd: SystemDataRenderCommand,
+  xHint: number,
+  color: ReturnType<typeof rgb>
+): void {
+  const lines = cmd.valueText.split(/\r?\n/);
+  for (const line of lines) {
+    const w = state.fonts.regular.widthOfTextAtSize(line, cmd.valueFontSize);
+    let x: number;
+    switch (cmd.align) {
+      case "center":
+        x = (PAGE_WIDTH - w) / 2;
+        break;
+      case "right":
+        x = PAGE_WIDTH - MARGIN - w;
+        break;
+      case "left":
+      default:
+        x = xHint;
+    }
+    state.page.drawText(line || "", {
+      x,
+      y: state.y - cmd.valueFontSize,
+      font: state.fonts.regular,
+      size: cmd.valueFontSize,
+      color,
+    });
+    state.y -= cmd.valueFontSize * LINE_HEIGHT;
+  }
+}
+
+// =============================================================================
+// Field Renderer (Requirement E — layout stacked/inline, showLabel/showRequired)
+// =============================================================================
 
 function drawField(
   state: ExecState,
@@ -501,48 +965,104 @@ function drawField(
   const rawValue = resolveAnswerValue(cmd.field, ctx);
   const displayValue = formatAnswerValueForDisplay(rawValue);
   const label = cmd.overrideLabel ?? cmd.field.label;
-  const requiredMarker = cmd.field.isRequired ? " *" : "";
+  const requiredMarker =
+    cmd.field.isRequired && cmd.showRequired ? " *" : "";
 
-  // Label
-  state.page.drawText(`${label}${requiredMarker}`, {
-    x: MARGIN,
-    y: state.y - FONT_SIZE_LABEL,
-    font: state.fonts.bold,
-    size: FONT_SIZE_LABEL,
-    color: COLOR_GRAY,
-  });
-  state.y -= FONT_SIZE_LABEL * LINE_HEIGHT;
+  if (cmd.showLabel) {
+    // label — draw at MARGIN (or to left when inline)
+    const labelText = `${label}${requiredMarker}`;
+    const lw = state.fonts.bold.widthOfTextAtSize(labelText, FONT_SIZE_LABEL);
 
-  // Value (V1: simple newline split; full Thai wrap ใน iteration ถัดไป)
-  const lines = splitLinesForV1(displayValue);
+    let labelX: number;
+    switch (cmd.align) {
+      case "center": {
+        labelX = (PAGE_WIDTH - lw) / 2;
+        break;
+      }
+      case "right": {
+        labelX = PAGE_WIDTH - MARGIN - lw;
+        break;
+      }
+      case "left":
+      default:
+        labelX = MARGIN;
+    }
+
+    state.page.drawText(labelText, {
+      x: labelX,
+      y: state.y - FONT_SIZE_LABEL,
+      font: state.fonts.bold,
+      size: FONT_SIZE_LABEL,
+      color: COLOR_GRAY,
+    });
+
+    if (cmd.layout === "inline") {
+      // inline: label + value ในบรรทัดเดียวกัน
+      const spaceW = state.fonts.regular.widthOfTextAtSize("  ", FONT_SIZE_BODY);
+      const valueX = labelX + lw + spaceW;
+      // render value text starting at valueX; align to valueX (left)
+      drawFieldValue(state, displayValue, valueX, rawValue);
+      state.y -= FONT_SIZE_BODY * LINE_HEIGHT;
+      state.y -= POST_BLOCK_SPACING;
+      return;
+    }
+
+    // stacked: ลด y สำหรับ label + ลงไปอีกบรรทัดสำหรับ value (indent 12)
+    state.y -= FONT_SIZE_LABEL * LINE_HEIGHT;
+  }
+
+  // stacked (or no label): วาด value
+  drawFieldValue(
+    state,
+    displayValue,
+    cmd.showLabel ? MARGIN + 12 : MARGIN,
+    rawValue
+  );
+
+  state.y -= POST_BLOCK_SPACING;
+}
+
+/**
+ * Draw field value (string ที่ผ่าน format แล้ว) — multiline, alignment-aware
+ */
+function drawFieldValue(
+  state: ExecState,
+  displayValue: string,
+  xHint: number,
+  rawValue: unknown
+): void {
+  const lines = displayValue.split(/\r?\n/);
+  // value color: dim grey ถ้า field ว่าง
+  const isEmpty = !isNonEmptyValue(rawValue);
+  const color = isEmpty ? COLOR_PLACEHOLDER : COLOR_BLACK;
+
   for (const line of lines) {
-    state.page.drawText(line, {
-      x: MARGIN + 12,
+    const w = state.fonts.regular.widthOfTextAtSize(line, FONT_SIZE_BODY);
+    // field ไม่ใช้ block-level align ที่นี่ (ใช้ indent คงที่)
+    let x: number;
+    // ถ้า xHint อยู่ที่ MARGIN (ไม่ indent) → ใช้ block-level align ผ่าน cmd
+    // เรียกจาก drawField ส่ง xHint ตรง — จัดการตามที่ส่งมา
+    if (xHint === MARGIN) {
+      // no indent → ใช้ left (ถ้าต้องการ align ที่นี่ต้อง propagate)
+      x = MARGIN;
+    } else {
+      x = xHint;
+    }
+    state.page.drawText(line || "", {
+      x,
       y: state.y - FONT_SIZE_BODY,
       font: state.fonts.regular,
       size: FONT_SIZE_BODY,
-      color: COLOR_BLACK,
+      color,
     });
     state.y -= FONT_SIZE_BODY * LINE_HEIGHT;
   }
-
-  state.y -= POST_BLOCK_SPACING;
 }
 
 // =============================================================================
 // Table Renderer
 // =============================================================================
 
-/**
- * Table layout pre-computed from data + fonts.
- *
- * Reuse pattern จาก pdf-renderer.service.ts: renderField ใช้
- *   - heightForWrappedText() ก่อนวาด → reserve space
- *   - ensureSpace() ก่อนวาด
- *
- * V1 composer ใช้ pattern เดียวกันแต่ต่อ row-by-row เพราะ row height
- * ขึ้นกับ wrapped lines ของ cell ที่ wrap มากที่สุดใน row นั้น
- */
 interface TableLayout {
   /** table origin x (depends on align) */
   x: number;
@@ -572,6 +1092,49 @@ function drawTable(
   // 1) Resolve & parse data
   const rawValue = resolveAnswerValue(cmd.field, ctx);
   const tableData = parseTableData(rawValue);
+
+  if (cmd.showLabel && cmd.label) {
+    const lw = state.fonts.bold.widthOfTextAtSize(cmd.label, FONT_SIZE_LABEL);
+    let lx: number;
+    switch (cmd.align) {
+      case "center":
+        lx = (PAGE_WIDTH - lw) / 2;
+        break;
+      case "right":
+        lx = PAGE_WIDTH - MARGIN - lw;
+        break;
+      case "left":
+      default:
+        lx = MARGIN;
+    }
+    state.page.drawText(cmd.label, {
+      x: lx,
+      y: state.y - FONT_SIZE_LABEL,
+      font: state.fonts.bold,
+      size: FONT_SIZE_LABEL,
+      color: COLOR_BLACK,
+    });
+    state.y -= FONT_SIZE_LABEL * LINE_HEIGHT;
+  }
+
+  if (tableData.length === 0) {
+    // Empty state (Requirement G — emptyText)
+    const lw = state.fonts.regular.widthOfTextAtSize(cmd.emptyText, FONT_SIZE_BODY);
+    state.page.drawText(cmd.emptyText, {
+      x: cmd.align === "center"
+        ? (PAGE_WIDTH - lw) / 2
+        : cmd.align === "right"
+          ? PAGE_WIDTH - MARGIN - lw
+          : MARGIN,
+      y: state.y - FONT_SIZE_BODY,
+      font: state.fonts.regular,
+      size: FONT_SIZE_BODY,
+      color: COLOR_GRAY,
+    });
+    state.y -= FONT_SIZE_BODY * LINE_HEIGHT;
+    state.y -= POST_BLOCK_SPACING;
+    return;
+  }
 
   // 2) Determine columns from first object's keys (preserve insertion order)
   const headers = extractTableHeaders(tableData);
@@ -646,25 +1209,24 @@ function extractTableHeaders(rows: Record<string, unknown>[]): string[] {
 
 /**
  * Build cell strings — for each row, for each column, produce flat cell text.
- *
- * Cell value formatting ใช้ pattern เดียวกับ formatAnswerValueForDisplay
- * แต่ flatten array/object เป็น single-line text
- *
- * Return type: row → cell (flat string), เช่น [["a", "b"], ["c", "d"]]
- *              (wrap จริงทำใน computeTableLayout เพื่อให้รู้ font/width)
  */
 function buildCellStrings(
   rows: Record<string, unknown>[],
   headers: string[]
 ): string[][] {
   return rows.map((row) =>
-    headers.map((key) => {
-      const v = row[key];
-      return formatCellValue(v);
-    })
+    headers.map((key) => formatCellValue(row[key]))
   );
 }
 
+/**
+ * Format cell value เป็นข้อความสำหรับตาราง
+ *
+ * ── Requirement F.6 / F.7: ห้ามแสดง JSON ดิบ ──────────────────────────────
+ * object (เช่น MASTER_DATA `{ id, name }`) → ใช้ display label
+ * ตาม schema จริง (`name` → `label` → `id` → "—")
+ * ไม่ใช้ JSON.stringify และไม่ตัดความยาวแบบ `...` (เพราะจะเป็น JSON อยู่ดี)
+ */
 function formatCellValue(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
@@ -680,13 +1242,8 @@ function formatCellValue(value: unknown): string {
       .filter((s) => s.length > 0)
       .join(", ");
   }
-  if (typeof value === "object") {
-    try {
-      const json = JSON.stringify(value);
-      return json.length > 200 ? json.slice(0, 200) + "..." : json;
-    } catch {
-      return "[object]";
-    }
+  if (isPlainObject(value)) {
+    return getObjectDisplayLabel(value);
   }
   return String(value);
 }
@@ -695,34 +1252,16 @@ function formatCellValue(value: unknown): string {
 // Table layout (column widths + row heights)
 // =============================================================================
 
-/**
- * Compute layout: column widths, per-row wrapped cell lines, row heights.
- *
- * Algorithm:
- *   1) Distribute CONTENT_WIDTH เท่าๆ กัน (single column flow: ไม่มี column spec)
- *      → column width = CONTENT_WIDTH / N
- *      → cell inner width = columnWidth - 2*TABLE_ROW_PADDING_X
- *   2) Wrap ทุก cell ในทุก row ด้วย wrapParagraph (Thai-aware)
- *   3) row height = max(lines count) * fontSize * LINE_HEIGHT + 2*TABLE_ROW_PADDING_Y
- *   4) header height = header row height (single row header)
- *   5) total height = header + sum(rows)
- */
 function computeTableLayout(
   state: ExecState,
   headers: string[],
   cellStrings: string[][],
-  align: "left" | "center" | "right"
+  align: Align
 ): TableLayout {
   const colCount = headers.length;
   const isEmpty = colCount === 0 || cellStrings.length === 0;
 
-  // ── Table width & origin ────────────────────────────────────────────
-  // V1: ใช้ CONTENT_WIDTH เต็ม (single column flow)
-  //     align ของ block มีผลกับ table position ในหน้า:
-  //       left  → flush left (MARGIN)
-  //       right → flush right (PAGE_WIDTH - MARGIN)
-  //       center → centered
-  const totalWidth = isEmpty ? CONTENT_WIDTH : CONTENT_WIDTH;
+  const totalWidth = CONTENT_WIDTH;
   let tableX: number;
   switch (align) {
     case "right":
@@ -736,7 +1275,6 @@ function computeTableLayout(
       tableX = MARGIN;
   }
 
-  // ── Column layout (empty table fallback) ────────────────────────────
   if (isEmpty) {
     return {
       x: tableX,
@@ -751,7 +1289,6 @@ function computeTableLayout(
     };
   }
 
-  // ── Column widths (equal distribution) ──────────────────────────────
   const columnWidth = totalWidth / colCount;
   const columns = Array.from({ length: colCount }, (_, i) => ({
     x: tableX + i * columnWidth,
@@ -760,7 +1297,6 @@ function computeTableLayout(
 
   const cellInnerWidth = columnWidth - 2 * TABLE_ROW_PADDING_X;
 
-  // ── Wrap header cells ───────────────────────────────────────────────
   const wrappedHeaders = headers.map((h) =>
     wrapText(h, cellInnerWidth, state.fonts.bold, FONT_SIZE_TABLE_HEADER)
   );
@@ -768,9 +1304,6 @@ function computeTableLayout(
   const headerHeight =
     headerLines * FONT_SIZE_TABLE_HEADER * LINE_HEIGHT + 2 * TABLE_ROW_PADDING_Y;
 
-  // ── Wrap body cells + compute per-row height ───────────────────────
-  // cellStrings: string[][] = [row][cell] → wrap each cell to lines
-  // wrappedRows: string[][][] = [row][cell][line]
   const wrappedRows: string[][][] = cellStrings.map((row) =>
     row.map((cell) =>
       wrapText(cell, cellInnerWidth, state.fonts.regular, FONT_SIZE_TABLE_CELL)
@@ -802,72 +1335,34 @@ function computeTableLayout(
 // Table drawing (with pagination + header repeat)
 // =============================================================================
 
-/**
- * Draw table with page break support.
- *
- * Pattern reuse: pdf-renderer.service.ts:renderField
- *   - ensureSpace() ก่อนแต่ละ row
- *   - reserved height = computed row height (จาก wrap จริง ไม่ใช่ fixed count)
- *
- * Header repeats on every page (re-draw header row หลัง page break)
- */
 function drawTableWithPagination(
   state: ExecState,
   layout: TableLayout
 ): void {
   if (layout.columns.length === 0) {
-    // Empty table — draw single placeholder line
-    ensureSpace(state, FONT_SIZE_BODY * LINE_HEIGHT);
-    state.page.drawText("(ไม่มีข้อมูล)", {
-      x: layout.x,
-      y: state.y - FONT_SIZE_BODY,
-      font: state.fonts.regular,
-      size: FONT_SIZE_BODY,
-      color: COLOR_GRAY,
-    });
-    state.y -= FONT_SIZE_BODY * LINE_HEIGHT;
     return;
   }
 
-  // ── Ensure header fits on current page; else break to new page ──────
   ensureSpace(state, layout.headerHeight);
   drawTableHeader(state, layout);
 
-  // ── Draw each row with page break + header repeat ───────────────────
   for (let r = 0; r < layout.rows.length; r++) {
     const rowHeight = layout.rowHeights[r];
-
-    // Page break logic:
-    //   - If current row doesn't fit AND header+row can fit on a new page
-    //     → break page + repeat header
-    //   - If current row doesn't fit AND header+row STILL doesn't fit
-    //     (i.e. even on a new page, header+row exceeds content area)
-    //     → break anyway, draw header (it might be cropped but at least
-    //       we get a page break so the next row can start cleanly)
-    //   - Otherwise: draw row in place
     const rowFits = fitsWithMargin(state, rowHeight);
-    const headerPlusRowFits = fitsWithMargin(state, layout.headerHeight + rowHeight);
 
     if (!rowFits) {
       addNewPage(state);
       drawTableHeader(state, layout);
-    } else if (!headerPlusRowFits) {
-      // Defensive: row fits but no room for next header
-      // → continue (will be caught in next iteration)
     }
 
     drawTableRow(state, layout, r);
   }
 }
 
-/**
- * Draw header row: background fill + bold text + borders.
- */
 function drawTableHeader(state: ExecState, layout: TableLayout): void {
   const rowHeight = layout.headerHeight;
   const tableBottomY = state.y - rowHeight;
 
-  // Background fill
   state.page.drawRectangle({
     x: layout.x,
     y: tableBottomY,
@@ -876,12 +1371,10 @@ function drawTableHeader(state: ExecState, layout: TableLayout): void {
     color: COLOR_HEADER_BG,
   });
 
-  // Cell text + borders
   for (let c = 0; c < layout.columns.length; c++) {
     const col = layout.columns[c];
     const lines = layout.wrappedHeaders[c] ?? [layout.headers[c] ?? ""];
 
-    // Draw cell text (top-aligned within cell)
     for (let li = 0; li < lines.length; li++) {
       state.page.drawText(lines[li], {
         x: col.x + TABLE_ROW_PADDING_X,
@@ -893,15 +1386,11 @@ function drawTableHeader(state: ExecState, layout: TableLayout): void {
     }
   }
 
-  // Borders
   drawTableBorders(state, layout, tableBottomY, rowHeight);
 
   state.y = tableBottomY;
 }
 
-/**
- * Draw body row: cell text + borders.
- */
 function drawTableRow(
   state: ExecState,
   layout: TableLayout,
@@ -931,13 +1420,6 @@ function drawTableRow(
   state.y = rowBottomY;
 }
 
-/**
- * Draw table borders (outer + vertical column separators + horizontal
- * separator between header and first row).
- *
- * Note: horizontal lines between body rows ไม่วาดเพื่อให้อ่านง่าย
- *       (V1: minimal style — vertical lines + header underline)
- */
 function drawTableBorders(
   state: ExecState,
   layout: TableLayout,
@@ -949,7 +1431,6 @@ function drawTableBorders(
   const left = layout.x;
   const right = layout.x + layout.totalWidth;
 
-  // Top border
   state.page.drawLine({
     start: { x: left, y: top },
     end: { x: right, y: top },
@@ -957,7 +1438,6 @@ function drawTableBorders(
     color: COLOR_GRAY,
   });
 
-  // Bottom border
   state.page.drawLine({
     start: { x: left, y: bottom },
     end: { x: right, y: bottom },
@@ -965,7 +1445,6 @@ function drawTableBorders(
     color: COLOR_GRAY,
   });
 
-  // Left border
   state.page.drawLine({
     start: { x: left, y: top },
     end: { x: left, y: bottom },
@@ -973,7 +1452,6 @@ function drawTableBorders(
     color: COLOR_GRAY,
   });
 
-  // Right border
   state.page.drawLine({
     start: { x: right, y: top },
     end: { x: right, y: bottom },
@@ -981,7 +1459,6 @@ function drawTableBorders(
     color: COLOR_GRAY,
   });
 
-  // Vertical column separators
   for (let c = 1; c < layout.columns.length; c++) {
     const colX = layout.columns[c].x;
     state.page.drawLine({
@@ -994,17 +1471,9 @@ function drawTableBorders(
 }
 
 // =============================================================================
-// Pagination helpers (reuse pattern from pdf-renderer.service.ts)
+// Pagination helpers
 // =============================================================================
 
-/**
- * Ensure there is enough vertical space for a block of `requiredHeight`.
- *
- * Pattern reuse: pdf-renderer.service.ts:ensureSpace
- *   - ถ้า reserved height overflow → addNewPage()
- *
- * ความแตกต่างจากต้นฉบับ: เพิ่ม SAFETY margin เพื่อกัน float drift
- */
 function ensureSpace(state: ExecState, requiredHeight: number): void {
   const SAFETY = 0.5;
   const blockBottom = state.y - requiredHeight;
@@ -1013,18 +1482,58 @@ function ensureSpace(state: ExecState, requiredHeight: number): void {
   }
 }
 
-/**
- * Check ว่า reserved height พอ + เผื่อ margin ให้ header ซ้ำได้
- */
 function fitsWithMargin(state: ExecState, requiredHeight: number): boolean {
   const SAFETY = 0.5;
   return state.y - requiredHeight >= CONTENT_BOTTOM + SAFETY;
 }
 
-function drawLogo(state: ExecState, cmd: LogoRenderCommand): void {
-  if (!state.logo) return;
+// =============================================================================
+// Logo Renderer (Requirement D — none/organization → "ยังไม่มีโลโก้")
+// =============================================================================
 
-  const targetWidth = 70;
+/**
+ * Render Logo Block
+ *
+ * ── Requirement D ────────────────────────────────────────────────────────────
+ *   source:
+ *     - "none"         → ไม่แสดงอะไรเลย (no image, no text)
+ *     - "organization" → โลโก้หน่วยงาน (ระบบยังไม่มี asset จริง → "ยังไม่มีโลโก้")
+ *     - "upload"       → ยังไม่รองรับ — แสดง "ยังไม่มีโลโก้" เพื่อไม่ให้ PDF ล้ม
+ *
+ *   width/height: จาก block (optional); ถ้าไม่มี → default 70pt / auto aspect
+ *   align: left | center | right (block-level alignment)
+ *
+ *   IMPORTANT: ถ้าไม่มี source จริง (organization/no upload available) → ไม่ render
+ *   กรอบรูปว่าง หรือ <img> empty — แสดงข้อความ "ยังไม่มีโลโก้" แทน
+ *
+ *   [Requirement K.7] ไม่ทำให้ PDF generation ล้มเมื่อไม่มีโลโก้
+ */
+function drawLogo(state: ExecState, cmd: LogoRenderCommand): void {
+  const source = cmd.source ?? "organization";
+
+  // ── source = "none" → ไม่ render (Requirement D) ─────────────────────
+  if (source === "none") {
+    return;
+  }
+
+  // ── ขนาด (block-controlled, มี default) ────────────────────────────
+  const targetWidth = clampSize(cmd.width, 70);
+
+  // ── กรณี "upload" → ยังไม่มี asset storage → แสดงข้อความเตือน ─────
+  // (ระบบไม่มี Public R2 route สำหรับ admin upload — Requirement D)
+  if (source === "upload") {
+    const note = `${NO_LOGO_TEXT} (upload)`;
+    drawLogoText(state, note, cmd.align);
+    return;
+  }
+
+  // ── "organization" → ใช้รูป SAO logo จาก asset-loader ────────────
+  if (!state.logo) {
+    // ไม่มี asset → แสดง placeholder (Requirement D)
+    drawLogoText(state, NO_LOGO_TEXT, cmd.align);
+    return;
+  }
+
   const aspectRatio = state.logo.height / state.logo.width;
   const targetHeight = targetWidth * aspectRatio;
 
@@ -1048,189 +1557,231 @@ function drawLogo(state: ExecState, cmd: LogoRenderCommand): void {
     height: targetHeight,
   });
   state.y -= targetHeight;
-}
-
-// =============================================================================
-// Signature Renderer
-// =============================================================================
-
-/**
- * Draw signature block — render lines ตาม layout เดียวกับ Preview:
- *   1) "ลงลายมือชื่อ ____________"
- *   2) "(ชื่อผู้สมัคร)"               — ถ้า showName
- *   3) roleLabel (default "ผู้สมัคร")
- *   4) "วันที่ D MONTH พ.ศ."           — ถ้า showDate
- *   5) "เวลา HH:mm น."               — ถ้า showTime (default: ปิด)
- *
- * Layout:
- *   - ใช้ align ของ block เพื่อเลือก x position
- *   - left  → ชิด MARGIN
- *   - center → centered
- *   - right → ชิด PAGE_WIDTH - MARGIN
- *   - ทุกบรรทัดวาดเป็นบรรทัดใหม่ (state.y ลดลงทุกบรรทัด)
- *
- * Fallback (isFallback=true): ใช้สี GRAY แทน BLACK เพื่อให้ดูเป็น placeholder
- */
-function drawSignature(state: ExecState, cmd: SignatureRenderCommand): void {
-  // ── Pre-compute label width for line 1 (for proper layout of label + line) ──
-  const line1Text = "ลงลายมือชื่อ";
-  const line1LabelWidth = state.fonts.regular.widthOfTextAtSize(
-    line1Text,
-    FONT_SIZE_SIGNATURE_LABEL
-  );
-
-  // Colors: ถ้ามี line ที่ show + fallback → ใช้ gray สำหรับ line นั้น
-  // (nameColor แยก เพราะ placeholder "(ชื่อผู้สมัคร)" ก็ fallback)
-  const nameColor = cmd.isFallback ? COLOR_GRAY : COLOR_BLACK;
-
-  // ── Helper: draw single text line using block-level alignment ──
-  const drawTextLine = (text: string, font: PDFFont, size: number, color: ReturnType<typeof rgb>) => {
-    const textWidth = font.widthOfTextAtSize(text, size);
-    let x: number;
-    switch (cmd.align) {
-      case "center":
-        x = (PAGE_WIDTH - textWidth) / 2;
-        break;
-      case "right":
-        x = PAGE_WIDTH - MARGIN - textWidth;
-        break;
-      case "left":
-      default:
-        x = MARGIN;
-    }
-    state.page.drawText(text, {
-      x,
-      y: state.y - size,
-      font,
-      size,
-      color,
-    });
-    state.y -= size * LINE_HEIGHT;
-  };
-
-  // ── Line 1: "ลงลายมือชื่อ ____________" — always rendered ──
-  drawSignatureLine1(
-    state,
-    line1Text,
-    line1LabelWidth,
-    SIGNATURE_LINE_MIN_WIDTH,
-    state.fonts.regular,
-    FONT_SIZE_SIGNATURE_LABEL,
-    COLOR_BLACK,
-    cmd.align
-  );
-
-  // ── Line 2: "(ชื่อผู้สมัคร)" — ถ้า showName ─────────────────
-  if (cmd.showName) {
-    drawTextLine(
-      `(${cmd.signerName})`,
-      state.fonts.regular,
-      FONT_SIZE_SIGNATURE_NAME,
-      nameColor
-    );
-  }
-
-  // ── Line 3: roleLabel (default "ผู้สมัคร") — always rendered ──
-  drawTextLine(cmd.roleLabel, state.fonts.regular, FONT_SIZE_SIGNATURE_META, COLOR_BLACK);
-
-  // ── Line 4: "วันที่ D MONTH พ.ศ." — ถ้า showDate ─────────────
-  if (cmd.showDate) {
-    const dateColor = cmd.isFallback ? COLOR_GRAY : COLOR_BLACK;
-    drawTextLine(
-      `วันที่ ${cmd.dateText}`,
-      state.fonts.regular,
-      FONT_SIZE_SIGNATURE_META,
-      dateColor
-    );
-  }
-
-  // ── Line 5: "เวลา HH:mm น." — ถ้า showTime (default ปิด) ────
-  if (cmd.showTime) {
-    const timeColor = cmd.isFallback ? COLOR_GRAY : COLOR_BLACK;
-    drawTextLine(
-      `เวลา ${cmd.timeText}`,
-      state.fonts.regular,
-      FONT_SIZE_SIGNATURE_META,
-      timeColor
-    );
-  }
-
-  // Post-block spacing
   state.y -= POST_BLOCK_SPACING;
 }
 
 /**
- * Draw signature line 1: "ลงลายมือชื่อ ____________"
+ * Helper: draw "ยังไม่มีโลโก้" placeholder text — block-level align
+ */
+function drawLogoText(state: ExecState, text: string, align: Align): void {
+  const fontSize = 11;
+  const w = state.fonts.regular.widthOfTextAtSize(text, fontSize);
+  let x: number;
+  switch (align) {
+    case "center":
+      x = (PAGE_WIDTH - w) / 2;
+      break;
+    case "right":
+      x = PAGE_WIDTH - MARGIN - w;
+      break;
+    case "left":
+    default:
+      x = MARGIN;
+  }
+  state.page.drawText(text, {
+    x,
+    y: state.y - fontSize,
+    font: state.fonts.regular,
+    size: fontSize,
+    color: COLOR_GRAY,
+  });
+  state.y -= fontSize * LINE_HEIGHT;
+  state.y -= POST_BLOCK_SPACING;
+}
+
+/**
+ * Clamp width ให้อยู่ในช่วง 8..1000 (mirror image-size schema bounds)
+ */
+function clampSize(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  const n = Math.round(value);
+  if (n < 8) return 8;
+  if (n > 1000) return 1000;
+  return n;
+}
+
+// =============================================================================
+// Signature Renderer (Requirement C — extended layout)
+// =============================================================================
+
+/**
+ * Draw signature block — render lines ตาม layout เดียวกับ Preview:
+ *   1) "<lineLabel> <lineStyle> <roleLabel>"      — always rendered
+ *   2) "(<signerName>)"            — ถ้า showName (+ showParentheses)
+ *      หรือ "<signerName>"         — ถ้า showName + !showParentheses
+ *   3) "<dateLabel> <dateText>"    — ถ้า showDate
+ *   4) "เวลา <timeText> น."         — ถ้า showTime (default: ปิด)
  *
- * Layout:
- *   - label "ลงลายมือชื่อ" ที่ x origin (block align)
- *   - underscore line (underline) ต่อจาก label
- *     ความยาว = max(SIGNATURE_LINE_MIN_WIDTH, labelWidth) - labelWidth
- *     เพื่อให้ line ไม่สั้นเกินไปและไม่ยาวเกินพื้นที่
+ * Visibility:
+ *   - ทุก fallback line ใช้สี PLACEHOLDER (ไม่ใช่ COLOR_BLACK)
+ *   - ทุกค่าจริงใช้สี BLACK
+ *
+ * [Requirement K.6] หาก block ใด ๆ render ล้ม (เช่น signature.length overflow) →
+ * ใช้ try/catch รอบ executeCommand เพื่อกันเอกสารทั้งฉบับล้ม
+ */
+function drawSignature(state: ExecState, cmd: SignatureRenderCommand): void {
+  // ── Line 1: "<lineLabel> <lineStyle> <roleLabel>" — always rendered ──
+  const labelText = cmd.lineLabel;
+  const lineText = cmd.lineStyle;
+  const roleText = cmd.roleLabel.trim().length > 0 ? cmd.roleLabel : "";
+  // (space ระหว่าง elements: 1 space)
+  drawSignatureLine1(state, labelText, lineText, roleText, cmd.align);
+
+  // ── Line 2: signerName (ถ้า showName) ──────────────────────────────
+  if (cmd.showName) {
+    const nameColor = cmd.hasRealName ? COLOR_BLACK : COLOR_PLACEHOLDER;
+    const isPlaceholder = !cmd.hasRealName;
+    // ถ้า command มี placeholder ที่ห่อด้วย (...) มาแล้ว (เช่น "(ชื่อผู้สมัคร)")
+    // → วาดตรง ๆ ห้ามใส่ () ซ้ำ
+    const text = cmd.signerName;
+    const alreadyWrapped =
+      text.startsWith("(") && text.endsWith(")");
+    let displayText: string;
+    if (isPlaceholder && alreadyWrapped) {
+      displayText = text;
+    } else if (cmd.showParentheses) {
+      displayText = `(${text})`;
+    } else {
+      displayText = text;
+    }
+    drawSignatureText(state, displayText, cmd.align, nameColor);
+  }
+
+  // ── Line 3: roleLabel (already in line 1; ตาม Requirement C signature layout) ──
+
+  // ── Line 4: วันที่ (ถ้า showDate และ dateSource !== 'none') ───────
+  if (cmd.showDate) {
+    const isPlaceholderDate = cmd.dateText === "______________";
+    const dateColor = isPlaceholderDate ? COLOR_PLACEHOLDER : COLOR_BLACK;
+    drawSignatureText(
+      state,
+      `${cmd.dateLabel} ${cmd.dateText}`,
+      cmd.align,
+      dateColor
+    );
+  }
+
+  // ── Line 5: เวลา (ถ้า showTime) ──────────────────────────────────
+  if (cmd.showTime) {
+    const isPlaceholderTime = cmd.timeText === "______________";
+    const timeColor = isPlaceholderTime ? COLOR_PLACEHOLDER : COLOR_BLACK;
+    drawSignatureText(
+      state,
+      `เวลา ${cmd.timeText} น.`,
+      cmd.align,
+      timeColor
+    );
+  }
+
+  state.y -= POST_BLOCK_SPACING;
+}
+
+/**
+ * Draw signature line 1: "<lineLabel> <lineStyle> <roleLabel>"
+ *
+ * (alias สำหรับเส้น: "......" "_____" หรือข้อความอื่นที่ Admin ตั้ง)
+ * ความยาว total = labelW + sp + lineW + sp + roleW
+ * (วาด label, line, role แยกกัน 3 elements)
  */
 function drawSignatureLine1(
   state: ExecState,
   label: string,
-  labelWidth: number,
-  lineMinWidth: number,
-  font: PDFFont,
-  fontSize: number,
-  color: ReturnType<typeof rgb>,
-  align: "left" | "center" | "right"
+  lineStyle: string,
+  roleLabel: string,
+  align: Align
 ): void {
-  // ความยาวรวม = label + space(4pt) + lineMinWidth
-  const space = 4;
-  const totalWidth = labelWidth + space + lineMinWidth;
+  const fontSize = FONT_SIZE_SIGNATURE_LABEL;
+  const labelW = state.fonts.regular.widthOfTextAtSize(label, fontSize);
+  const lineW = state.fonts.regular.widthOfTextAtSize(lineStyle, fontSize);
+  const roleW = state.fonts.regular.widthOfTextAtSize(roleLabel, fontSize);
+  const space = 8;
 
-  let labelX: number;
-  let lineX: number;
-  let lineWidth: number;
+  const totalWidth =
+    labelW +
+    space +
+    lineW +
+    (roleLabel.length > 0 ? space + roleW : 0);
 
+  // ── Determine x origin based on align ────────────────────────────
+  let blockX: number;
   switch (align) {
-    case "center": {
-      // centered ทั้งบล็อก (label + line อยู่กึ่งกลางร่วมกัน)
-      const blockX = (PAGE_WIDTH - totalWidth) / 2;
-      labelX = blockX;
-      lineX = blockX + labelWidth + space;
-      lineWidth = lineMinWidth;
+    case "center":
+      blockX = (PAGE_WIDTH - totalWidth) / 2;
       break;
-    }
-    case "right": {
-      // ชิดขวา: ปลายเส้นชิดขวา
-      const blockRightX = PAGE_WIDTH - MARGIN;
-      labelX = blockRightX - totalWidth;
-      lineX = labelX + labelWidth + space;
-      lineWidth = lineMinWidth;
+    case "right":
+      blockX = PAGE_WIDTH - MARGIN - totalWidth;
       break;
-    }
     case "left":
-    default: {
-      labelX = MARGIN;
-      lineX = MARGIN + labelWidth + space;
-      lineWidth = lineMinWidth;
-      break;
-    }
+    default:
+      blockX = MARGIN;
   }
 
   // Draw label
   state.page.drawText(label, {
-    x: labelX,
+    x: blockX,
     y: state.y - fontSize,
-    font,
+    font: state.fonts.regular,
+    size: fontSize,
+    color: COLOR_BLACK,
+  });
+  let cur = blockX + labelW + space;
+
+  // Draw line style (จุด/ขีด)
+  state.page.drawText(lineStyle, {
+    x: cur,
+    y: state.y - fontSize,
+    font: state.fonts.regular,
+    size: fontSize,
+    color: COLOR_BLACK,
+  });
+  cur += lineW + space;
+
+  // Draw role label (optional)
+  if (roleLabel.length > 0) {
+    state.page.drawText(roleLabel, {
+      x: cur,
+      y: state.y - fontSize,
+      font: state.fonts.regular,
+      size: fontSize,
+      color: COLOR_BLACK,
+    });
+  }
+
+  state.y -= fontSize * LINE_HEIGHT;
+}
+
+/**
+ * Draw signature text line (label + name / date / time)
+ * - รักษา block-level align
+ * - ใช้สีที่กำหนด (BLACK หรือ PLACEHOLDER)
+ */
+function drawSignatureText(
+  state: ExecState,
+  text: string,
+  align: Align,
+  color: ReturnType<typeof rgb>
+): void {
+  const fontSize = FONT_SIZE_SIGNATURE_META;
+  const w = state.fonts.regular.widthOfTextAtSize(text, fontSize);
+  let x: number;
+  switch (align) {
+    case "center":
+      x = (PAGE_WIDTH - w) / 2;
+      break;
+    case "right":
+      x = PAGE_WIDTH - MARGIN - w;
+      break;
+    case "left":
+    default:
+      x = MARGIN;
+  }
+  state.page.drawText(text, {
+    x,
+    y: state.y - fontSize,
+    font: state.fonts.regular,
     size: fontSize,
     color,
   });
-
-  // Draw underline (ใช้ drawLine ความหนา 0.5pt)
-  // underline อยู่ที่ baseline ของ text
-  const underlineY = state.y - fontSize + 2; // 2pt เหนือ baseline
-  state.page.drawLine({
-    start: { x: lineX, y: underlineY },
-    end: { x: lineX + lineWidth, y: underlineY },
-    thickness: 0.5,
-    color,
-  });
-
   state.y -= fontSize * LINE_HEIGHT;
 }
 
@@ -1247,6 +1798,14 @@ function resolveAnswerValue(field: FieldData, ctx: ApplicationContext): unknown 
   );
 }
 
+/**
+ * Format value สำหรับ field display
+ *
+ * mirror preview-renderer.ts (Requirement F.5/F.6/F.7)
+ * - MASTER_DATA แบบค่าเดียว { id, name } → .name (ไม่ JSON.stringify)
+ * - array ของ object → labels joined
+ * - primitive → as-is
+ */
 function formatAnswerValueForDisplay(value: unknown): string {
   if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "string") return value;
@@ -1254,25 +1813,34 @@ function formatAnswerValueForDisplay(value: unknown): string {
   if (typeof value === "boolean") return value ? "ใช่" : "ไม่ใช่";
   if (Array.isArray(value)) {
     if (value.length === 0) return "-";
+    if (value.every((v) => v !== null && typeof v === "object" && !Array.isArray(v))) {
+      const labels = value
+        .map((v) => getObjectDisplayLabel(v as Record<string, unknown>))
+        .filter((s) => s && s !== "—");
+      return labels.length > 0 ? labels.join(", ") : "-";
+    }
     return value
       .map((v) => formatAnswerValueForDisplay(v))
       .filter((s) => s && s !== "-")
       .join(", ");
   }
   if (typeof value === "object") {
-    try {
-      const json = JSON.stringify(value);
-      return json.length > 200 ? json.slice(0, 200) + "..." : json;
-    } catch {
-      return "[object]";
-    }
+    const label = getObjectDisplayLabel(value as Record<string, unknown>);
+    return label === "—" ? "-" : label;
   }
   return String(value);
 }
 
-function splitLinesForV1(text: string): string[] {
-  if (!text) return [];
-  return text.split(/\r?\n/);
+/**
+ * ตรวจว่า value มีเนื้อหาจริงหรือไม่ (ใช้กำหนดสี placeholder)
+ */
+function isNonEmptyValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
 }
 
 // =============================================================================
@@ -1308,19 +1876,9 @@ function formatThaiTime(unixSeconds: number): string {
 }
 
 // =============================================================================
-// Thai-aware text wrap (re-implementation of pdf-renderer.service.ts:wrapText)
+// Thai-aware text wrap
 // =============================================================================
 
-/**
- * Wrap text into lines that fit within maxWidth.
- *
- * Algorithm mirror: pdf-renderer.service.ts:wrapText
- *   - Try to break at whitespace (word boundary) when available
- *   - For words longer than maxWidth (typical for Thai without spaces),
- *     fall back to character-level greedy wrapping
- *   - Never drop characters; never invent extra content
- *   - Preserve explicit newlines as line breaks
- */
 function wrapText(
   text: string,
   maxWidth: number,
@@ -1387,3 +1945,7 @@ function wrapParagraph(
   if (line.length > 0) lines.push(line);
   return lines;
 }
+
+// suppress unused-import warning for some helpers kept for future
+void resolveDocumentTokens;
+void DOCUMENT_TOKEN_LABELS;

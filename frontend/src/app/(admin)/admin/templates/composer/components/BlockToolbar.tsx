@@ -3,20 +3,28 @@
 /**
  * BlockToolbar
  * --------------------------------
- * Document Composer V1 — Block Toolbar
+ * Document Composer — Block Toolbar
  *
  * ปุ่มสำหรับเพิ่ม Block ใหม่:
- *   - + Heading
- *   - + Field (เปิด Field Picker)
- *   - + Table (เปิด Field Picker)
+ *   - + Heading / Text
+ *   - + System Data  (ข้อมูลระบบ: เลขที่ใบสมัคร / ชื่อรอบ / วันที่)
+ *   - + Field        (เปิด Field Picker — ทุกชนิด)
+ *   - + Table        (เปิด Field Picker — เฉพาะฟิลด์แบบหลายรายการ)
  *   - + Logo
+ *   - + Signature
  *
  * ส่ง callback ไป parent — parent รู้ว่าจะ insert block ที่ตำแหน่งไหน
  */
 
 import { Button } from '@/components/ui/button';
 
-export type AddBlockKind = 'heading' | 'field' | 'table' | 'logo' | 'signature';
+export type AddBlockKind =
+  | 'heading'
+  | 'systemData'
+  | 'field'
+  | 'table'
+  | 'logo'
+  | 'signature';
 
 export interface BlockToolbarProps {
   onAdd: (kind: AddBlockKind) => void;
@@ -35,10 +43,21 @@ export function BlockToolbar({ onAdd, disabled }: BlockToolbarProps) {
         onClick={() => onAdd('heading')}
         disabled={disabled}
         className="h-7 text-xs"
-        title="เพิ่ม Heading block"
+        title="เพิ่ม Heading / Text block (รองรับข้อความหลายบรรทัดและผสม token)"
       >
         <span className="mr-1">📝</span>
-        Heading
+        Heading / Text
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => onAdd('systemData')}
+        disabled={disabled}
+        className="h-7 text-xs"
+        title="เพิ่ม System Data block — ข้อมูลระบบ 1 รายการ (เลขที่ใบสมัคร / ชื่อรอบ / วันที่)"
+      >
+        <span className="mr-1">🗂️</span>
+        System Data
       </Button>
       <Button
         variant="outline"
@@ -57,7 +76,7 @@ export function BlockToolbar({ onAdd, disabled }: BlockToolbarProps) {
         onClick={() => onAdd('table')}
         disabled={disabled}
         className="h-7 text-xs"
-        title="เพิ่ม Table block (เลือกจาก Field Library)"
+        title="เพิ่ม Table block (เฉพาะฟิลด์แบบหลายรายการ)"
       >
         <span className="mr-1">📊</span>
         Table

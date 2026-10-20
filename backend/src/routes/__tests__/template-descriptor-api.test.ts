@@ -86,6 +86,14 @@ function assertFalse(condition, msg = '') {
   if (condition) throw new Error(msg || 'Expected false');
 }
 
+function assertContains(haystack, needle, msg = '') {
+  if (typeof haystack !== 'string' || !haystack.includes(needle)) {
+    throw new Error(
+      `${msg || 'contains'} expected ${JSON.stringify(needle)} in ${JSON.stringify(haystack)}`
+    );
+  }
+}
+
 // =============================================================================
 // Harness — in-memory SQLite + Drizzle
 // =============================================================================
@@ -465,9 +473,13 @@ async function runAllTests() {
     // Sample formData should be populated
     assertTrue((ctx.application.formData as any)['fm-name'] !== undefined);
     assertTrue((ctx.application.formData as any)['fm-edu'] !== undefined);
-    // MASTER_DATA field gets table sample
+    // MASTER_DATA field gets single-object sample (Requirement F)
+    // - ค่าเดียวเสมอ (ไม่ใช่ array 2 แถว) — "สังกัดปัจจุบัน" render เป็น 1 ค่า
+    // - object { id, name } — ใช้ field.label เป็น display label
     const eduData = (ctx.application.formData as any)['fm-edu'];
-    assertTrue(Array.isArray(eduData), 'MASTER_DATA field should be array');
+    assertTrue(eduData !== null && typeof eduData === 'object');
+    assertFalse(Array.isArray(eduData), 'MASTER_DATA sample must be single object (Requirement F)');
+    assertEqual(typeof eduData.name, 'string');
     sqlite.close();
   });
 
@@ -499,42 +511,25 @@ async function runAllTests() {
     assertTrue(ctx !== null);
     if (!ctx) return;
 
-    const rows = (ctx.application.formData as any)['fm-aff'];
-    assertTrue(Array.isArray(rows), 'MASTER_DATA should produce array');
-    assertTrue(rows.length >= 1, 'should have at least 1 sample row');
+    // MASTER_DATA = single object { id, name } (Requirement F)
+    const sample = (ctx.application.formData as any)['fm-aff'];
+    assertTrue(sample !== null && typeof sample === 'object');
+    assertFalse(Array.isArray(sample), 'MASTER_DATA must be single object (Requirement F)');
+    assertEqual(typeof sample.name, 'string');
+    assertTrue(sample.name.length > 0, 'name should be non-empty placeholder');
 
-    // ── ตรวจ: column name (key แรกของ row แรก) ต้องตรงกับ field.label ──
-    const firstRowKeys = Object.keys(rows[0]);
-    assertEqual(
-      firstRowKeys.length,
-      1,
-      'sample should have exactly 1 column (schema-driven)'
-    );
-    assertEqual(
-      firstRowKeys[0],
+    // ── ตรวจ: display label ตรงกับ field.label "สังกัดปัจจุบัน" ──
+    assertContains(
+      sample.name,
       'สังกัดปัจจุบัน',
-      `column name should be field.label "สังกัดปัจจุบัน", got "${firstRowKeys[0]}"`
+      `name should reference field.label, got "${sample.name}"`
     );
 
-    // ── ตรวจ: cell value ไม่ใช่ hard-coded "ตัวอย่าง" ของ education data ──
-    const cellValue = rows[0][firstRowKeys[0]];
-    assertTrue(
-      typeof cellValue === 'string' && cellValue.length > 0,
-      'cell value should be non-empty placeholder'
-    );
-    // ต้องไม่มี column keys เก่าที่เคย hard-code อยู่
-    assertFalse(
-      'ปีการศึกษา' in rows[0],
-      'sample must NOT contain hard-coded "ปีการศึกษา" key'
-    );
-    assertFalse(
-      'สถาบัน' in rows[0],
-      'sample must NOT contain hard-coded "สถาบัน" key'
-    );
-    assertFalse(
-      'วุฒิ' in rows[0],
-      'sample must NOT contain hard-coded "วุฒิ" key'
-    );
+    // ── ตรวจ: ไม่มี hard-coded "ปีการศึกษา/สถาบัน/วุฒิ" keys ──
+    const sampleKeys = Object.keys(sample);
+    assertFalse(sampleKeys.includes('ปีการศึกษา'), 'must not contain "ปีการศึกษา"');
+    assertFalse(sampleKeys.includes('สถาบัน'), 'must not contain "สถาบัน"');
+    assertFalse(sampleKeys.includes('วุฒิ'), 'must not contain "วุฒิ"');
     sqlite.close();
   });
 
@@ -676,9 +671,13 @@ async function runAllTests() {
     assertTrue(ctx !== null);
     if (!ctx) return;
 
-    const rows = (ctx.application.formData as any)['fm-org'];
-    const keys = Object.keys(rows[0]);
-    assertEqual(keys[0], 'หน่วยงาน', 'each MASTER_DATA field gets its own label');
+    // MASTER_DATA = single object { id, name } (Requirement F)
+    const sample = (ctx.application.formData as any)['fm-org'];
+    assertTrue(sample !== null && typeof sample === 'object');
+    assertFalse(Array.isArray(sample), 'MASTER_DATA must be single object');
+    assertEqual(typeof sample.name, 'string');
+    // display name = field.label (per-field)
+    assertContains(sample.name, 'หน่วยงาน');
     sqlite.close();
   });
 
@@ -687,7 +686,12 @@ async function runAllTests() {
   // =====================================================================
   console.log('\n[3] Generator + Preview Renderer');
 
-  await test('generateDescriptorFromTemplate produces valid descriptor', async () => {
+  // Default descriptor now includes system data and signature blocks (Requirement H)
+// ลำดับ: Logo (1) → Heading Title (1) → SystemData APPLICATION_NO (1)
+//       → SystemData APPLICATION_DATE (1) → Section Headings (N)
+//       → Field/Table blocks (M) → Signature (1)
+// (ก่อนหน้านี้ test เคย assert 5 blocks — เพิ่มเป็น 9 เพราะ system data + title heading + signature)
+await test('generateDescriptorFromTemplate produces valid descriptor', async () => {
     const { sqlite, db } = makeInMemorySchema();
     setTemplateDb(db);
     setPreviewDb(db);
@@ -712,16 +716,32 @@ async function runAllTests() {
         overrideLabelTh: null,
         labelTh: f.label,
       })),
+      // seed fm-edu เป็น MASTER_DATA — ระบุให้เป็น table เพื่อเทียบ assertion เก่า
+      // (ถ้าไม่ระบุ tableFieldIds → heuristic: MASTER_DATA = field block ตาม Requirement F.1)
+      tableFieldIds: ctx.fields
+        .filter((f) => f.type === 'MASTER_DATA')
+        .map((f) => f.id),
     });
     assertTrue(result.ok);
     if (!result.ok) return;
-    // 1 logo + 2 headings + 1 field + 1 table = 5
-    assertEqual(result.descriptor.blocks.length, 5);
+    // ลำดับตาม Requirement H: 1 logo + 1 title heading + 2 systemData
+    // + N section headings + M fields/tables + 1 signature
+    // seedBasicData ใส่ 2 sections (sec-1, sec-2) + 2 fields (TEXT + MASTER_DATA)
+    // = 1 logo + 1 title heading + 2 systemData
+    //   + 2 section headings (1 per section)
+    //   + 1 field block (TEXT) + 1 table block (MASTER_DATA — explicit override)
+    //   + 1 signature = 9
+    assertEqual(result.descriptor.blocks.length, 9);
+    // ตรวจสอบลำดับที่สำคัญ: บล็อกแรกเป็น logo, บล็อกสุดท้ายเป็น signature
+    assertEqual(result.descriptor.blocks[0].type, 'logo');
+    assertEqual(result.descriptor.blocks[result.descriptor.blocks.length - 1].type, 'signature');
     assertEqual(result.meta.logoBlockId, result.descriptor.blocks[0].id);
-    assertEqual(result.meta.headingCount, 2);
+    // headingCount = title heading + section headings
+    assertEqual(result.meta.headingCount, 3);
     assertEqual(result.meta.fieldBlockCount, 1);
     assertEqual(result.meta.tableBlockCount, 1);
-    assertEqual(result.meta.totalBlocks, 5);
+    assertEqual(result.meta.systemDataCount, 2);
+    assertEqual(result.meta.totalBlocks, 9);
     sqlite.close();
   });
 
@@ -887,6 +907,9 @@ async function runAllTests() {
     sqlite.close();
   });
 
+  // Test: document info strip แสดง token ที่ resolve ได้จริง
+  // (อัปเดตสำหรับ requirements ใหม่: info strip แสดงเฉพาะ INSERTABLE tokens —
+  //  ไม่รวม POSITION_LEVEL / POSITION_NUMBER / ROUND_CODE ที่ระบบไม่มีข้อมูล/ไม่บังคับ)
   await test('document info strip shows resolved + unresolved tokens', async () => {
     const { sqlite, db } = makeInMemorySchema();
     setTemplateDb(db);
@@ -910,13 +933,16 @@ async function runAllTests() {
       preview.html.includes('dc-docinfo'),
       'document info strip must be present in full html'
     );
+    // CHM01 มาจาก round_code ใน application number ที่สร้างจาก pattern
     assertTrue(
       preview.html.includes('CHM01'),
       'info strip should show resolved application number'
     );
+    // info strip ตอนนี้แสดงเฉพาะ INSERTABLE tokens (Requirement A)
+    // round.title ก็เป็น INSERTABLE (ROUND_NAME) และ resolve ได้
     assertTrue(
-      preview.html.includes('ระดับปฏิบัติการ'),
-      'info strip should show resolved position level'
+      preview.html.includes('ทดสอบ'),
+      'info strip should show resolved round title (ROUND_NAME)'
     );
     sqlite.close();
   });
@@ -1062,11 +1088,10 @@ async function runAllTests() {
       'POSITION_NAME unresolved must show placeholder, not position_level'
     );
 
-    // Position number also unresolved
-    assertTrue(
-      preview.header.includes('{POSITION_NUMBER}'),
-      'POSITION_NUMBER unresolved must show placeholder'
-    );
+    // Position number ถูกลบออกจาก document header (Requirement A — ไม่บังคับใช้ POSITION_NUMBER)
+    // เพราะระบบไม่มีข้อมูลเลขตำแหน่งจริง
+    // header แสดงเฉพาะ INSERTABLE tokens:
+    //   APPLICATION_NO, ROUND_NAME, APPLICATION_DATE, PRINT_DATE, POSITION_NAME
 
     // Empty values มี class .dc-header-meta__value--empty
     assertTrue(
@@ -1129,6 +1154,11 @@ async function runAllTests() {
     sqlite.close();
   });
 
+  // Test: diagnostics tokens panel exposed for FE
+  // (อัปเดตสำหรับ requirements ใหม่: diagnostics ส่งกลับ token ทั้งหมดที่ resolve ได้
+  //  รวม legacy tokens (POSITION_NUMBER/POSITION_LEVEL/ROUND_CODE) — เพื่อให้
+  //  diagnostics ครอบคลุม descriptor เก่าที่อาจอ้างถึง token เหล่านี้
+  //  INSERTABLE tokens (5 ตัว) เป็น subset ที่ UI ใช้แสดงเท่านั้น)
   await test('[UX] diagnostics=tokens exposed for FE panels (Req 10)', async () => {
     const { sqlite, db } = makeInMemorySchema();
     setTemplateDb(db);
@@ -1151,12 +1181,18 @@ async function runAllTests() {
 
     const preview = renderDescriptorToPreview(descriptor as any, ctx);
     assertTrue(Array.isArray(preview.tokens));
-    assertEqual(preview.tokens.length, 5, 'all 5 tokens must be present');
-    for (const t of preview.tokens) {
-      assertTrue(typeof t.token === 'string');
-      assertTrue(typeof t.label === 'string');
-      assertTrue(typeof t.text === 'string');
-      assertTrue(typeof t.empty === 'boolean');
+    // diagnostics ส่ง token ทั้งหมดใน DOCUMENT_TOKENS (8 ตัว: 5 INSERTABLE + 3 legacy)
+    // เพื่อให้ผู้ดูแลระบบเห็นว่า token ไหน resolve ได้/ไม่ได้ แม้จะไม่แสดงใน insert menu
+    assertTrue(preview.tokens.length >= 5, 'all INSERTABLE tokens must be present');
+    // ตรวจสอบว่า INSERTABLE tokens ครบทั้ง 5 ตัว (Requirement A)
+    const insertable = ['APPLICATION_NO', 'ROUND_NAME', 'APPLICATION_DATE', 'PRINT_DATE', 'POSITION_NAME'];
+    for (const tokenName of insertable) {
+      const t = preview.tokens.find((p) => p.token === tokenName);
+      assertTrue(t !== undefined, `${tokenName} must be present in diagnostics`);
+      assertTrue(typeof t!.token === 'string');
+      assertTrue(typeof t!.label === 'string');
+      assertTrue(typeof t!.text === 'string');
+      assertTrue(typeof t!.empty === 'boolean');
     }
     sqlite.close();
   });

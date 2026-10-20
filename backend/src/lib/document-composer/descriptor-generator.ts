@@ -8,18 +8,22 @@
  * ใช้ตอน "สร้าง Template Version ใหม่" เพื่อ seed descriptor เริ่มต้น
  * ตาม structure ของ section/field ที่มีอยู่แล้ว
  *
- * Mapping Rules:
- *   1. ใส่ Logo Block เป็น block แรก (ด้านบนสุด)
- *   2. เรียง sections ตาม displayOrder (asc)
- *   3. ภายใน section: เรียง fields ตาม displayOrder (asc)
- *   4. แต่ละ section ที่มี name → สร้าง Heading Block (size: medium, bold)
- *      - ถ้า field ไม่มี section (sectionId === null) → ไม่สร้าง heading
- *   5. แต่ละ field → สร้าง Field Block หรือ Table Block
- *      - Field Block  : field type ปกติ (TEXT, TEXTAREA, NUMBER, DATE, FILE,
- *                       DROPDOWN, RADIO, CHECKBOX)
- *      - Table Block  : field type MASTER_DATA ที่ติ๊ก tableFields หรือ
- *                       ตาม heuristic ที่ generator เลือก
- *   6. descriptor.version = 1 (literal)
+ * Mapping Rules (อัปเดตสำหรับ requirements A–H):
+ *   1. ใส่ Logo Block เป็น block แรก
+ *      - source = "organization" (ค่าเริ่มต้น — หากไม่มีโลโก้จริง
+ *        renderer แสดง "ยังไม่มีโลโก้" ตาม Requirement D)
+ *   2. Heading/Text Block แบบ Title:
+ *      "ใบสมัครเข้ารับการคัดเลือก\n{ROUND_NAME}"
+ *   3. System Data Block:
+ *      - APPLICATION_NO
+ *      - APPLICATION_DATE
+ *   4. Sections ตามลำดับ displayOrder
+ *      - แต่ละ section ที่มี name → Heading Block (size: medium, bold)
+ *      - ภายใน section เรียง fields ตาม displayOrder
+ *   5. Fields กลายเป็น Field Block หรือ Table Block
+ *      - Field Block   : field ค่าเดียว (default — รวม MASTER_DATA แบบ single-select)
+ *      - Table Block   : field id ใน tableFieldIds
+ *   6. Signature Block ต่อท้าย (Requirement C + H.8)
  *
  * Pure:
  *   - ไม่อ่าน DB
@@ -27,9 +31,11 @@
  *   - ไม่มี side effect
  *   - input เดียวกัน → output เดียวกัน
  *
- * Output:
- *   - DocumentDescriptor (validated ผ่าน validateDescriptor() ภายใน)
- *   - คืนเป็น result type เพื่อให้ caller ตรวจสอบได้ (ok / errors)
+ * ── Replace semantics (Requirement H — Generate ไม่สร้าง Block ซ้ำ) ────
+ *   generator สร้าง descriptor ใหม่ทุกครั้ง ไม่ merge/append — caller
+ *   (Generate route) ต้อง overwrite ทับ descriptor เดิม ไม่ใช่ append
+ *   การเปลี่ยนแปลงนี้ทำใน service layer (ไม่ใช่ใน generator) เพื่อไม่ให้
+ *   pure function นี้มี side effect
  */
 
 import { validateDescriptor } from "./descriptor-validator";
@@ -40,6 +46,8 @@ import type {
   FieldBlock,
   TableBlock,
   LogoBlock,
+  SignatureBlock,
+  SystemDataBlock,
 } from "./types";
 
 // =============================================================================
@@ -59,7 +67,8 @@ export interface GeneratorSectionInput {
 /**
  * Field type ที่ generator รู้จัก
  *
- * ตรงกับ field_master.fieldType (subset)
+ * ── รวม REPEATER / TABLE (Requirement G) ──────────────────────────────────
+ * เพื่อให้ heuristic ในการเลือก Table Block ครอบคลุม field ใหม่ในอนาคต
  */
 export type GeneratorFieldType =
   | "TEXT"
@@ -70,7 +79,11 @@ export type GeneratorFieldType =
   | "RADIO"
   | "CHECKBOX"
   | "FILE"
-  | "MASTER_DATA";
+  | "EMAIL"
+  | "PHONE"
+  | "MASTER_DATA"
+  | "REPEATER"
+  | "TABLE";
 
 /**
  * Input field (subset ของ template_fields + field_master)
@@ -97,11 +110,19 @@ export interface GeneratorInput {
   /**
    * IDs ของ field (template_fields.id) ที่ต้องการให้ render เป็น Table Block
    *
-   * ถ้าไม่ระบุ → generator จะใช้ heuristic:
-   *   - MASTER_DATA → Table Block
-   *   - อื่นๆ → Field Block
+   * ถ้าไม่ระบุ → heuristic ตาม type:
+   *   - REPEATER / TABLE → Table Block
+   *   - MASTER_DATA       → Field Block (Requirement F: ค่าเดียว ไม่ใช่ตาราง
+   *                       จนกว่า Admin จะยืนยันว่าเป็น multi-select)
+   *   - อื่นๆ            → Field Block
    */
   tableFieldIds?: string[];
+  /**
+   * Field id ที่ใช้เป็น "ชื่อผู้สมัคร" ใน Signature Block (Requirement C.4)
+   * เก็บเป็น field_master.id (stable mapping key)
+   * ถ้าไม่ระบุ → Signature block ใช้ application.fullname เป็น fallback
+   */
+  signatureNameFieldId?: string;
 }
 
 // =============================================================================
@@ -121,13 +142,12 @@ export type GenerateResult =
 
 export interface GeneratorMeta {
   logoBlockId: string;
-  /** จำนวน heading block (เท่ากับจำนวน section ที่มี name) */
   headingCount: number;
-  /** จำนวน field block ที่ generate */
   fieldBlockCount: number;
-  /** จำนวน table block ที่ generate */
   tableBlockCount: number;
-  /** block ทั้งหมดที่ generate (รวม logo) */
+  systemDataCount: number;
+  signatureBlockId: string;
+  /** block ทั้งหมดที่ generate (รวม logo/heading/systemData/signature) */
   totalBlocks: number;
 }
 
@@ -137,6 +157,13 @@ export interface GeneratorMeta {
 
 /**
  * สร้าง DocumentDescriptor จาก sections + fields
+ *
+ * ── ลำดับ (Requirement H) ─────────────────────────────────────────────────
+ *   1. Logo Block
+ *   2. Heading Title: "ใบสมัครเข้ารับการคัดเลือก\n{ROUND_NAME}"
+ *   3. System Data Block: APPLICATION_NO, APPLICATION_DATE
+ *   4. Section Heading + Field/Table blocks (ตาม template version)
+ *   5. Signature Block (ต่อท้าย)
  *
  * @param input - sections, fields, tableFieldIds (optional)
  * @returns GenerateResult { ok: true, descriptor, meta } | { ok: false, issues }
@@ -194,21 +221,69 @@ export function generateDescriptorFromTemplate(
   let headingCount = 0;
   let fieldBlockCount = 0;
   let tableBlockCount = 0;
+  let systemDataCount = 0;
 
-  // 5a) Logo block (ด้านบนสุด)
+  // 5a) Logo block (ด้านบนสุด — Requirement H.1)
   const logoBlock: LogoBlock = {
     id: makeBlockId("logo"),
     type: "logo",
     align: "left",
+    source: "organization", // ถ้าไม่มี source จริง → แสดง "ยังไม่มีโลโก้"
+    alt: "โลโก้หน่วยงาน",
+    width: 70,
   };
   blocks.push(logoBlock);
 
-  // 5b) Sections + their fields
+  // 5b) Title heading — "ใบสมัครเข้ารับการคัดเลือก\n{ROUND_NAME}"
+  // (Requirement H.2)
+  const titleBlock: HeadingBlock = {
+    id: makeBlockId("heading-title"),
+    type: "heading",
+    text: "ใบสมัครเข้ารับการคัดเลือก\n{ROUND_NAME}",
+    size: "large",
+    bold: true,
+    align: "center",
+    marginTop: 12,
+    marginBottom: 12,
+  };
+  blocks.push(titleBlock);
+  headingCount += 1;
+
+  // 5c) System Data Blocks (Requirement H.3)
+  const applicationNoBlock: SystemDataBlock = {
+    id: makeBlockId("systemData-application-no"),
+    type: "systemData",
+    key: "APPLICATION_NO",
+    layout: "inline",
+    showLabel: true,
+    labelStyle: "small",
+    valueStyle: "medium",
+    marginTop: 4,
+    marginBottom: 4,
+  };
+  blocks.push(applicationNoBlock);
+  systemDataCount += 1;
+
+  const applicationDateBlock: SystemDataBlock = {
+    id: makeBlockId("systemData-application-date"),
+    type: "systemData",
+    key: "APPLICATION_DATE",
+    layout: "inline",
+    showLabel: true,
+    labelStyle: "small",
+    valueStyle: "medium",
+    marginTop: 0,
+    marginBottom: 8,
+  };
+  blocks.push(applicationDateBlock);
+  systemDataCount += 1;
+
+  // 5d) Sections + their fields (Requirement H.4-H.6)
   for (const section of sortedSections) {
-    // 5b-i) Section header (only ถ้า section.name ไม่ว่าง)
+    // 5d-i) Section header (only ถ้า section.name ไม่ว่าง)
     if (section.name && section.name.trim().length > 0) {
       const headingBlock: HeadingBlock = {
-        id: makeBlockId(`heading-${section.id}`),
+        id: makeBlockId(`heading-section-${section.id}`),
         type: "heading",
         text: section.name,
         size: "medium",
@@ -221,7 +296,7 @@ export function generateDescriptorFromTemplate(
       headingCount += 1;
     }
 
-    // 5b-ii) Fields ใน section
+    // 5d-ii) Fields ใน section
     const sectionFields = (fieldsBySection.get(section.id) ?? []).sort(
       (a, b) => a.displayOrder - b.displayOrder
     );
@@ -237,7 +312,7 @@ export function generateDescriptorFromTemplate(
     }
   }
 
-  // 5c) Unsectioned fields (เรียงต่อท้ายสุด ตาม displayOrder)
+  // 5e) Unsectioned fields (เรียงต่อท้ายสุด ตาม displayOrder)
   const unsectionedFields = (fieldsBySection.get("__unsectioned__") ?? []).sort(
     (a, b) => a.displayOrder - b.displayOrder
   );
@@ -250,6 +325,28 @@ export function generateDescriptorFromTemplate(
     }
     blocks.push(block);
   }
+
+  // 5f) Signature Block ต่อท้าย (Requirement H.8)
+  const signatureBlock: SignatureBlock = {
+    id: makeBlockId("signature"),
+    type: "signature",
+    align: "right",
+    marginTop: 24,
+    marginBottom: 12,
+    lineLabel: "ลงลายมือชื่อ",
+    roleLabel: "ผู้สมัคร",
+    lineStyle: "........................................",
+    dateLabel: "วันที่",
+    dateSource: "APPLICATION_DATE",
+    showName: true,
+    showParentheses: true,
+    showDate: true,
+    showTime: false,
+    // ถ้า caller ระบุ signatureNameFieldId มา → ใช้ Application Field
+    // มิฉะนั้น → fallback ไปใช้ application.fullname (ของเดิม)
+    nameFieldId: input.signatureNameFieldId,
+  };
+  blocks.push(signatureBlock);
 
   // ── 6) Validate ผ่าน zod (defense in depth) ───────────────────────
   const candidate: DocumentDescriptor = {
@@ -267,6 +364,8 @@ export function generateDescriptorFromTemplate(
     headingCount,
     fieldBlockCount,
     tableBlockCount,
+    systemDataCount,
+    signatureBlockId: signatureBlock.id,
     totalBlocks: blocks.length,
   };
 
@@ -284,18 +383,26 @@ export function generateDescriptorFromTemplate(
 /**
  * Build field block จาก input field
  *
- * Decision table:
- *   - field.id ∈ tableFieldIds        → Table Block
- *   - type === 'MASTER_DATA'          → Table Block (heuristic)
- *   - else                            → Field Block
+ * Decision table (Requirement F + G):
+ *   - field.id ∈ tableFieldIds            → Table Block (explicit override)
+ *   - type === 'REPEATER' | 'TABLE'       → Table Block (explicit type)
+ *   - type === 'MASTER_DATA'              → Field Block (Requirement F.1:
+ *                                          ห้ามถือว่า MASTER_DATA ทุกชนิดเป็น Table
+ *                                          — แยก MASTER_DATA แบบค่าเดียวออกจาก
+ *                                          repeatable; Admin ต้องระบุ tableFieldIds
+ *                                          เองเมื่อ multi-select)
+ *   - else                                → Field Block
  */
 function buildFieldBlock(
   field: GeneratorFieldInput,
   tableFieldIds: string[] | undefined
 ): FieldBlock | TableBlock {
-  const isTable =
-    (tableFieldIds?.includes(field.id) ?? false) ||
-    field.type === "MASTER_DATA";
+  const isExplicitTable =
+    tableFieldIds?.includes(field.id) ?? false;
+  const isRepeatableType =
+    field.type === "REPEATER" || field.type === "TABLE";
+
+  const isTable = isExplicitTable || isRepeatableType;
 
   const label = field.overrideLabelTh ?? field.labelTh;
   const common = {
@@ -317,6 +424,11 @@ function buildFieldBlock(
     type: "field",
     fieldId: field.fieldId,
     label,
+    // Requirement E: ค่า default
+    showLabel: true,
+    showRequired: true,
+    valueStyle: "medium",
+    layout: "stacked",
   };
 }
 

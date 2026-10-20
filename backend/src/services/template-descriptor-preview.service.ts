@@ -26,7 +26,7 @@ import {
   templateVersions,
   recruitmentRounds,
 } from '../db/schema';
-import type { ApplicationContext, FieldData } from '../lib/pdf-types';
+import type { ApplicationContext, FieldData, FieldObjectValue } from '../lib/pdf-types';
 import { buildPreview } from '../utils/application-pattern';
 
 type DB = ReturnType<typeof drizzleFn<any>>;
@@ -45,27 +45,33 @@ function resolveDb(db: DB): DB {
 }
 
 /**
- * Build sample row สำหรับ MASTER_DATA (table block) ที่ตรงกับ schema ของ field นั้นๆ
+ * Build sample value สำหรับ MASTER_DATA field
+ *
+ * ── Value shape จริงของ MASTER_DATA (Requirement F) ─────────────────────
+ *   "สังกัดปัจจุบัน" เก็บเป็น object เดียว { id, name } (ไม่ใช่ array)
+ *   → preview ต้องแสดงค่าเดียว ไม่ใช่ array 2 แถว
+ *   → ใช้ display field = name เป็น display label
  *
  * ── ก่อนหน้านี้ (BUG) ──────────────────────────────────────────────
- * ทุก MASTER_DATA field ได้ row hard-coded:
- *   { ปีการศึกษา: '2566', สถาบัน: 'ตัวอย่าง', วุฒิ: 'ตัวอย่าง' }
- * → Preview ของ Table block แสดง header "ปีการศึกษา | สถาบัน | วุฒิ"
- *   ไม่ว่า field จริงจะเป็น "สังกัดปัจจุบัน", "หน่วยงาน", หรือ field อื่นใดก็ตาม
- * → หลอกผู้ใช้ + ไม่ตรงกับ field ที่เลือก
+ *   ทุก MASTER_DATA field ได้ row hard-coded:
+ *     { ปีการศึกษา: '2566', สถาบัน: 'ตัวอย่าง', วุฒิ: 'ตัวอย่าง' }
+ *   และ generate เป็น array 2 แถว (เหมือน multi-row table)
+ *   → Table block สำหรับ "สังกัดปัจจุบัน" แสดง 2 แถวของ header เก่า
+ *   → single-value preview ผิด semantic
  *
  * ── หลัง (FIX) ─────────────────────────────────────────────────────
- * ใช้ field.label เป็น column name → schema-driven sample
- * - preview สะท้อน field ที่ผู้ใช้เลือกจริง
- * - cell value ใช้ placeholder สั้นๆ เพื่อทดสอบ wrap/length
- *
- * NOTE: จำนวน column ถูก derive จาก `Object.keys(row[0])` ใน preview-renderer.ts:502
- *       ดังนั้นตัวอย่าง row นี้จะกำหนด column structure ทั้งหมดของ preview
+ *   - MASTER_DATA แบบค่าเดียว (ที่ส่วนใหญ่ใช้) → object { id, name }
+ *   - ไม่ generate array 2 แถว — ไม่ตรง schema จริง
+ *   - Preview/PDF renderer ใช้ .name เป็น display label (ดู field-capabilities.ts)
+ *   - ถ้าในอนาคต field รองรับ multi-select (array of objects) —
+ *     caller สามารถส่ง array เข้ามา และ renderer จะแสดงเป็น list อัตโนมัติ
  */
-function buildMasterDataSample(field: FieldData): Record<string, unknown> {
-  // ใช้ label เป็น column name (เป็นชื่อเดียวกับที่ผู้ใช้เห็นใน Composer)
-  const columnName = field.label || field.fieldId;
-  return { [columnName]: `ตัวอย่าง ${columnName}` };
+function buildMasterDataSample(field: FieldData): FieldObjectValue {
+  const displayName = field.label || field.fieldId;
+  return {
+    id: null,
+    name: `ตัวอย่าง ${displayName}`,
+  };
 }
 
 /**
@@ -91,12 +97,10 @@ function buildSampleFormData(fields: FieldData[]): Record<string, unknown> {
       // ── [Live Preview] field ที่เป็น document token → ค่าตัวอย่างที่อ่านได้จริง
       formData[field.fieldId] = buildDocumentTokenSample(field);
     } else if (field.type === 'MASTER_DATA') {
-      // ── FIX: schema-aware sample (ตาม field.label) แทน hard-coded education data ──
-      const columnName = field.label || field.fieldId;
-      formData[field.fieldId] = [
-        buildMasterDataSample(field),
-        { [columnName]: `ตัวอย่าง ${columnName} 2` },
-      ];
+      // ── FIX: single object sample ตาม value shape จริงของ MASTER_DATA ──
+      // ไม่ใช่ array 2 แถว — เพราะ "สังกัดปัจจุบัน" เป็น single-value field
+      // Renderer จะใช้ .name เป็น display label (field-capabilities.ts)
+      formData[field.fieldId] = buildMasterDataSample(field);
     } else if (field.type === 'DATE') {
       formData[field.fieldId] = '2566-01-15';
     } else if (field.type === 'CHECKBOX') {

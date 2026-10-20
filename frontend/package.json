@@ -7,8 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "echo \"(no lint configured)\" && exit 0",
-    "test": "node --import tsx src/lib/__tests__/date.test.ts",
+    "test": "node --import tsx src/lib/__tests__/date.test.ts && node --import tsx src/lib/__tests__/document-composer.test.ts",
     "test:date": "node --import tsx src/lib/__tests__/date.test.ts",
+    "test:composer": "node --import tsx src/lib/__tests__/document-composer.test.ts",
     "typecheck": "tsc --noEmit",
     "deploy": "npm run build && wrangler pages deploy out --project-name=sao-recruitment-frontend --commit-dirty=true"
   },

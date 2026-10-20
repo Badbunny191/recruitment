@@ -16,7 +16,11 @@
  *   8. Right thumbnail = compact preview เดิม (ไม่เปลี่ยน PreviewPanel)
  *   9. Single source of truth: backend renderer ตัวเดียวกัน
  *       (consumer FE เปลี่ยนแค่ options = mode + includeHeader)
- *  10. Diagnostics ซ่อนโดย default + ปุ่มเปิด
+ *  10. "ตรวจสอบข้อมูลเอกสาร" ซ่อนโดย default + ปุ่มเปิด
+ *      - ปุ่มแสดงจำนวนที่ยังขาด: "ตรวจสอบข้อมูลเอกสาร: ยังขาด N"
+ *      - สถานะ: "มีข้อมูลแล้ว" / "ยังไม่มีข้อมูล"
+ *      - ไม่อยู่ใน PDF เด็ดขาด
+ *      - ไม่ assert จำนวนตายตัว — รายการขึ้นกับ token ที่ descriptor ใช้จริง
  *  11. ESC + close button ปิด modal
  *  12. Responsive: จอเล็ก → scroll ภายใน modal ไม่บีบ
  *
@@ -151,10 +155,21 @@ export function PreviewModal({
     };
   }, [open]);
 
-  // ── diagnostics entries (memo) ──────────────────────────────────
-  const tokensByMode: PreviewTokenInfo[] = useMemo(
+// ── diagnostics entries (memo) ──────────────────────────────────
+const tokensByMode: PreviewTokenInfo[] = useMemo(
     () => modalPreview?.tokens ?? [],
     [modalPreview]
+  );
+
+  /**
+   * จำนวน token ที่**ยังไม่มีข้อมูลจริง** (Requirement I.12)
+   *
+   * ปุ่มแสดง "ตรวจสอบข้อมูลเอกสาร: ยังขาด N"
+   * → นับเฉพาะ `empty === true` (ยังไม่มีข้อมูล)
+   */
+  const missingCount = useMemo(
+    () => tokensByMode.filter((t) => t.empty).length,
+    [tokensByMode]
   );
 
   if (!open) return null;
@@ -190,6 +205,7 @@ export function PreviewModal({
           loading={loading}
           onClose={onClose}
           tokensCount={tokensByMode.length}
+          missingCount={missingCount}
         />
 
         {/* ── Stage (A4 paper) ───────────────────────────────────── */}
@@ -222,6 +238,8 @@ interface ToolbarProps {
   loading: boolean;
   onClose: () => void;
   tokensCount: number;
+  /** จำนวน token ที่ยังไม่มีข้อมูลจริง */
+  missingCount: number;
 }
 
 function Toolbar({
@@ -232,6 +250,7 @@ function Toolbar({
   loading,
   onClose,
   tokensCount,
+  missingCount,
 }: ToolbarProps) {
   return (
     <div className="flex items-center justify-between gap-3 px-4 py-3 bg-white border-b border-slate-200 shrink-0">
@@ -275,13 +294,16 @@ function Toolbar({
               ? 'bg-amber-100 border-amber-300 text-amber-800'
               : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
           }`}
-          title="แสดง/ซ่อน token diagnostics"
+          title="แสดง/ซ่อนรายการตรวจสอบข้อมูลเอกสาร"
+          aria-expanded={showDiagnostics}
         >
-          {showDiagnostics ? '🔍' : '🔎'} Diagnostics
-          {tokensCount > 0 && (
-            <span className="ml-1 text-[10px] text-slate-500">
-              ({tokensCount})
+          {showDiagnostics ? '🔍' : '🔎'} ตรวจสอบข้อมูลเอกสาร
+          {missingCount > 0 ? (
+            <span className="ml-1 text-[10px] font-medium text-amber-700">
+              ยังขาด {missingCount}
             </span>
+          ) : (
+            <span className="ml-1 text-[10px] text-emerald-700">ครบแล้ว</span>
           )}
         </button>
 
@@ -370,19 +392,37 @@ function StageSkeleton({ loading }: { loading: boolean }) {
 }
 
 // =============================================================================
-// Diagnostics Panel
+// Diagnostics Panel — "ตรวจสอบข้อมูลเอกสาร"
 // =============================================================================
 
+/**
+ * แผงตรวจสอบข้อมูลเอกสาร (เดิมชื่อ "Token Diagnostics")
+ *
+ * Requirement I.12:
+ *   - ซ่อนเป็นค่าเริ่มต้น (คุมที่ parent)
+ *   - **ไม่อยู่ใน PDF** — เป็น debug strip ของ UI เท่านั้น
+ *   - ห้าม assert จำนวนตายตัว → รายการขึ้นกับ token ที่ descriptor ใช้จริง
+ *
+ * ── ไม่ใช้ข้อมูลคนละความหมายทดแทน ────────────────────────────────────────
+ * token ที่ยังไม่มีข้อมูลจะแสดงเป็น placeholder เสมอ ไม่ใช้ค่าอื่นมาแทน
+ * (Requirement K.10)
+ */
 function DiagnosticsPanel({ tokens }: { tokens: PreviewTokenInfo[] }) {
   if (tokens.length === 0) return null;
+
+  const missing = tokens.filter((t) => t.empty).length;
+  const resolved = tokens.length - missing;
+
   return (
     <div className="bg-slate-50 border-t border-slate-200 px-4 py-3 shrink-0 max-h-[30vh] overflow-y-auto">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-slate-700">
-          🛠 Token Diagnostics
+          🛠 ตรวจสอบข้อมูลเอกสาร
         </span>
         <span className="text-[10px] text-slate-500">
-          ห้ามใช้ข้อมูลคนละความหมายทดแทน — token ว่างต้องแสดงเป็น placeholder
+          {missing > 0
+            ? `ยังขาด ${missing} รายการ · มีข้อมูลแล้ว ${resolved} รายการ`
+            : `มีข้อมูลครบทั้งหมด ${resolved} รายการ`}
         </span>
       </div>
       <table className="w-full text-xs">
@@ -391,7 +431,7 @@ function DiagnosticsPanel({ tokens }: { tokens: PreviewTokenInfo[] }) {
             <th className="py-1 pr-3 font-medium">Token</th>
             <th className="py-1 pr-3 font-medium">Label</th>
             <th className="py-1 pr-3 font-medium">Value</th>
-            <th className="py-1 font-medium">Status</th>
+            <th className="py-1 font-medium">สถานะ</th>
           </tr>
         </thead>
         <tbody>
@@ -411,11 +451,11 @@ function DiagnosticsPanel({ tokens }: { tokens: PreviewTokenInfo[] }) {
               <td className="py-1">
                 {t.empty ? (
                   <span className="inline-block px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 text-[10px] font-medium">
-                    PLACEHOLDER
+                    ยังไม่มีข้อมูล
                   </span>
                 ) : (
                   <span className="inline-block px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-medium">
-                    RESOLVED
+                    มีข้อมูลแล้ว
                   </span>
                 )}
               </td>
@@ -423,6 +463,11 @@ function DiagnosticsPanel({ tokens }: { tokens: PreviewTokenInfo[] }) {
           ))}
         </tbody>
       </table>
+      <p className="mt-2 text-[10px] text-slate-500 leading-relaxed">
+        แผงนี้ใช้ตรวจสอบเฉพาะในหน้าจอจัดหน้าเอกสาร
+        <strong>ไม่ถูกพิมพ์ลง PDF</strong> และไม่ใช้ข้อมูลคนละความหมายทดแทน —
+        token ที่ว่างจะแสดงเป็นรูป {'{TOKEN}'} เสมอ
+      </p>
     </div>
   );
 }

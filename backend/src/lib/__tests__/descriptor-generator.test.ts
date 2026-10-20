@@ -133,10 +133,10 @@ async function main() {
     const result = generateDescriptorFromTemplate(input);
     assertTrue(result.ok);
     if (!result.ok) return;
-    const headings = result.descriptor.blocks.filter(
-      (b) => b.type === "heading"
+    const sectionHeadings = result.descriptor.blocks.filter(
+      (b) => b.type === "heading" && (b as any).text !== "ใบสมัครเข้ารับการคัดเลือก\n{ROUND_NAME}"
     );
-    assertEqual(headings.length, 2);
+    assertEqual(sectionHeadings.length, 2);
   });
 
   // ── 2. Sort order ─────────────────────────────────────────────────
@@ -153,19 +153,19 @@ async function main() {
     const result = generateDescriptorFromTemplate(input);
     assertTrue(result.ok);
     if (!result.ok) return;
-    const headings = result.descriptor.blocks.filter(
-      (b) => b.type === "heading"
+    const sectionHeadings = result.descriptor.blocks.filter(
+      (b) => b.type === "heading" && (b as any).text !== "ใบสมัครเข้ารับการคัดเลือก\n{ROUND_NAME}"
     );
     assertEqual(
-      (headings[0] as any).text,
+      (sectionHeadings[0] as any).text,
       "A Section"
     );
     assertEqual(
-      (headings[1] as any).text,
+      (sectionHeadings[1] as any).text,
       "B Section"
     );
     assertEqual(
-      (headings[2] as any).text,
+      (sectionHeadings[2] as any).text,
       "C Section"
     );
   });
@@ -224,9 +224,9 @@ async function main() {
     assertEqual(fields.length, 3);
   });
 
-  // ── 4. Field → TableBlock (MASTER_DATA heuristic) ─────────────────
-  console.log("\n[4] Field → TableBlock (MASTER_DATA heuristic)");
-  await test("MASTER_DATA field becomes TableBlock by default", () => {
+  // ── 4. Field → FieldBlock (MASTER_DATA single-select default) ───
+  console.log("\n[4] Field → FieldBlock (MASTER_DATA single-select default)");
+  await test("MASTER_DATA field becomes FieldBlock by default (single-select)", () => {
     const input: GeneratorInput = {
       sections: [makeSection("s1", "Org", 1)],
       fields: [
@@ -236,10 +236,10 @@ async function main() {
     const result = generateDescriptorFromTemplate(input);
     assertTrue(result.ok);
     if (!result.ok) return;
-    const table = result.descriptor.blocks.find((b) => b.type === "table");
-    assertTrue(table !== undefined);
-    if (!table || table.type !== "table") return;
-    assertEqual(table.fieldId, "fm-org");
+    const field = result.descriptor.blocks.find((b) => b.type === "field");
+    assertTrue(field !== undefined);
+    if (!field || field.type !== "field") return;
+    assertEqual(field.fieldId, "fm-org");
   });
 
   // ── 5. Field → TableBlock (tableFieldIds override) ────────────────
@@ -295,11 +295,11 @@ async function main() {
     const result = generateDescriptorFromTemplate(input);
     assertTrue(result.ok);
     if (!result.ok) return;
-    const headings = result.descriptor.blocks.filter(
-      (b) => b.type === "heading"
+    const sectionHeadings = result.descriptor.blocks.filter(
+      (b) => b.type === "heading" && (b as any).text !== "ใบสมัครเข้ารับการคัดเลือก\n{ROUND_NAME}"
     );
-    assertEqual(headings.length, 1);
-    assertEqual((headings[0] as any).text, "Section A");
+    assertEqual(sectionHeadings.length, 1);
+    assertEqual((sectionHeadings[0] as any).text, "Section A");
   });
 
   await test("unsectioned fields are appended after sections", () => {
@@ -313,23 +313,25 @@ async function main() {
     const result = generateDescriptorFromTemplate(input);
     assertTrue(result.ok);
     if (!result.ok) return;
-    const last = result.descriptor.blocks[result.descriptor.blocks.length - 1];
-    assertEqual(last.type, "field");
-    if (last.type === "field") {
-      assertEqual(last.fieldId, "fm-x");
+    // Signature block is at the very end; unsectioned field is immediately before it
+    const target = result.descriptor.blocks[result.descriptor.blocks.length - 2];
+    assertEqual(target.type, "field");
+    if (target.type === "field") {
+      assertEqual(target.fieldId, "fm-x");
     }
   });
 
   // ── 7. Empty input ────────────────────────────────────────────────
   console.log("\n[7] Empty input");
-  await test("empty sections + fields still returns logo block", () => {
+  await test("empty sections + fields still returns default document blocks", () => {
     const result = generateDescriptorFromTemplate({
       sections: [],
       fields: [],
     });
     assertTrue(result.ok);
     if (!result.ok) return;
-    assertEqual(result.descriptor.blocks.length, 1);
+    // Default document blocks: Logo, Title heading, Application No, Application Date, Signature
+    assertEqual(result.descriptor.blocks.length, 5);
     assertEqual(result.descriptor.blocks[0].type, "logo");
   });
 
@@ -465,11 +467,11 @@ async function main() {
     assertTrue(result.ok);
     if (!result.ok) return;
     assertEqual(result.meta.logoBlockId, result.descriptor.blocks[0].id);
-    assertEqual(result.meta.headingCount, 2);
-    assertEqual(result.meta.fieldBlockCount, 3);
-    assertEqual(result.meta.tableBlockCount, 1);
-    // 1 logo + 2 headings + 3 fields + 1 table = 7
-    assertEqual(result.meta.totalBlocks, 7);
+    assertEqual(result.meta.headingCount, 3);
+    assertEqual(result.meta.fieldBlockCount, 4);
+    assertEqual(result.meta.tableBlockCount, 0);
+    // 1 logo + 1 title heading + 2 systemData + 2 section headings + 4 fields + 1 signature = 11
+    assertEqual(result.meta.totalBlocks, 11);
   });
 
   // ── 14. Section with empty name → no heading ──────────────────────
@@ -485,11 +487,11 @@ async function main() {
     const result = generateDescriptorFromTemplate(input);
     assertTrue(result.ok);
     if (!result.ok) return;
-    const headings = result.descriptor.blocks.filter(
-      (b) => b.type === "heading"
+    const sectionHeadings = result.descriptor.blocks.filter(
+      (b) => b.type === "heading" && (b as any).text !== "ใบสมัครเข้ารับการคัดเลือก\n{ROUND_NAME}"
     );
-    assertEqual(headings.length, 1);
-    assertEqual((headings[0] as any).text, "Real Section");
+    assertEqual(sectionHeadings.length, 1);
+    assertEqual((sectionHeadings[0] as any).text, "Real Section");
   });
 
   // ── 15. Heading style defaults ────────────────────────────────────
@@ -502,7 +504,9 @@ async function main() {
     const result = generateDescriptorFromTemplate(input);
     assertTrue(result.ok);
     if (!result.ok) return;
-    const heading = result.descriptor.blocks.find((b) => b.type === "heading");
+    const heading = result.descriptor.blocks.find(
+      (b) => b.type === "heading" && (b as any).text === "Info"
+    );
     if (heading?.type === "heading") {
       assertEqual(heading.size, "medium");
       assertEqual(heading.bold, true);
