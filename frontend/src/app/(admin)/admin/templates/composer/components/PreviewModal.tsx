@@ -378,11 +378,15 @@ function ModeButton({
  * - ใช้ fixed mm dimensions ผ่าน CSS class .dc-a4-sheet
  * - เงา + ขอบกระดาษ + padding เหมือนเอกสารจริง
  * - ใช้ PreviewFrame (srcdoc) เพื่อแชร์ renderer ตัวเดียวกับ thumbnail
+ *
+ * ⚠️ withHeader ต้องเป็น true ตามค่าที่ fetch ใช้อยู่เดิม
+ *    (fetchPreview({ mode, includeHeader: true })) → หัวเอกสาร (โลโก้/ชื่อเอกสาร/เลขที่)
+ *    ต้องถูกส่งเข้า PreviewFrame ไม่ใช่แค่ถูก fetch มาเก็บไว้เฉย ๆ
  */
 function A4Page({ preview }: { preview: PreviewResponse }) {
   return (
     <div className="dc-a4-sheet">
-      <PreviewFrame preview={preview} />
+      <PreviewFrame preview={preview} withHeader />
     </div>
   );
 }

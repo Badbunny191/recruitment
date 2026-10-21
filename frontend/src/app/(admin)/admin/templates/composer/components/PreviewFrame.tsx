@@ -29,18 +29,36 @@ import type { PreviewResponse } from '@/lib/api/template-descriptor';
 const PREVIEW_FRAME_CSS = `
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  padding: 16px;
+  padding: 0;
   margin: 0;
   color: #1e293b;
   background: white;
   line-height: 1.5;
 }
+
+/*
+ * Page box (A4 ในหน่วย pt) — ใช้ตัวเดียวกันทั้ง Compact และ Fullscreen
+ *
+ * ⚠️ ห้าม override padding/margin ของ .dc-page ที่นี่ (หรือที่อื่น)
+ *    เพราะจะทำให้กระดาษหายขอบ / ไม่ตรงกับ PDF
+ */
+.dc-page {
+  width: 595.28pt;
+  min-height: 841.89pt;
+  padding: 40pt;
+  box-sizing: border-box;
+  margin: 0 auto;
+  background: white;
+}
 .dc-heading { font-weight: 600; margin: 0; }
 .dc-heading.size-small { font-size: 14px; }
 .dc-heading.size-medium { font-size: 18px; }
 .dc-heading.size-large { font-size: 24px; }
-.dc-preview { max-width: none; box-shadow: none; margin: 0; padding: 0; }
-.dc-preview-modal { max-width: none; box-shadow: none; margin: 0; padding: 0; }
+/*
+ * ⚠️ เคยมี override .dc-preview / .dc-preview-modal ที่ตั้ง padding: 0
+ *    → ทำให้ page box หายขอบ ตอนนี้ page box คือ .dc-page เท่านั้น
+ *    ห้ามเพิ่ม rule ที่ override padding/margin ของ .dc-page อีก
+ */
 .dc-field-label { font-weight: 500; color: #475569; font-size: 12px; margin-bottom: 4px; }
 .dc-field-value { font-size: 14px; }
 .dc-field-block, .dc-table-block, .dc-logo-block, .dc-heading-block { margin-bottom: 8px; }
@@ -120,7 +138,7 @@ ${PREVIEW_FRAME_CSS}
 ${backendCss}
   </style>
 </head>
-<body>${inner}</body>
+<body><div class="dc-page">${inner}</div></body>
 </html>`;
   }, [inner, preview.mode, preview.styles]);
 
