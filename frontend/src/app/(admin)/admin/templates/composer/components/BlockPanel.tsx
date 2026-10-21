@@ -7,21 +7,31 @@
  *
  * แสดง Block ทั้งหมดใน descriptor.blocks
  * ประกอบด้วย:
- *   - BlockToolbar (ด้านบน)
+ *   - BlockToolbar (ด้านบน) + ป้ายบอกตำแหน่งที่จะเพิ่ม
  *   - รายการ BlockItem (แต่ละประเภทมี editor เฉพาะ)
  *   - Empty state เมื่อไม่มี block
  *
  * Operations:
- *   - add(kind)
- *   - update(index, patch)
- *   - move(index, direction)
- *   - remove(index)
+ *   - add(kind)        → เพิ่มต่อจาก block ที่เลือก (ไม่มีการเลือก → ต่อท้าย)
+ *   - update(blockId)  → แก้ไข block
+ *   - move(blockId)    → ย้ายขึ้น/ลง
+ *   - remove(blockId)  → ลบ block
+ *
+ * ── Contextual Insertion ────────────────────────────────────────────────
+ * ผู้ใช้คลิกเลือก block ได้ (state `selectedBlockId`) แล้ว:
+ *   1. กดเพิ่ม block → แทรกต่อจาก block ที่เลือก
+ *   2. ไม่มีการเลือก → ต่อท้าย descriptor
+ *   3. หลังเพิ่ม → block ใหม่ถูกเลือก + เปิด editor + scroll เข้ามา + ไฮไลต์
+ *
+ * ⚠️ Identity ใช้ `block.id` เสมอ (ห้ามใช้ array index) → การย้าย/ลบ
+ *    ไม่ทำให้ selection ผิดตัว
  */
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BlockToolbar, type AddBlockKind } from './BlockToolbar';
 import { BlockItem } from './BlockItem';
 import { FieldPicker } from './FieldPicker';
+import { useOptionalToast } from '@/components/ui/toast';
 import {
   createFieldBlock,
   createHeadingBlock,
@@ -36,7 +46,21 @@ import {
   type SignatureBlock,
   type SystemDataBlock,
 } from '@/lib/api/template-descriptor';
+import {
+  createEditorOpenRequest,
+  describeInsertionMessage,
+  describeInsertionTarget,
+  findBlockIndexById,
+  insertBlockWithSelection,
+  moveBlockById,
+  removeBlockById,
+  resolveSelection,
+  type EditorOpenRequest,
+} from '../lib/block-operations';
 import type { TemplateFieldLibraryItem } from '../hooks/useTemplateFields';
+
+/** ระยะเวลาที่ไฮไลต์ block ใหม่ (ms) */
+const NEW_BLOCK_HIGHLIGHT_MS = 2500;
 
 export interface BlockPanelProps {
   descriptor: DocumentDescriptor;
@@ -63,11 +87,74 @@ export function BlockPanel({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<'field' | 'table'>('field');
 
+  // ---------------------------------------------------------------------------
+  // Selection state — อยู่ใน BlockPanel (ไม่ต้องข้าม component)
+  // ---------------------------------------------------------------------------
+  /** block.id ของ block ที่ผู้ใช้เลือกอยู่ */
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  /** block.id ของ block ที่เพิ่งถูกเพิ่ม (ไฮไลต์ชั่วคราว) */
+  const [newlyAddedBlockId, setNewlyAddedBlockId] = useState<string | null>(null);
+  /** สั่งให้ BlockItem เปิด inline editor */
+  const [editorOpenRequest, setEditorOpenRequest] =
+    useState<EditorOpenRequest | null>(null);
+  /** ข้อความ feedback ล่าสุด (inline เสริมจาก toast) */
+  const [feedback, setFeedback] = useState<string | null>(null);
+  /**
+   * block ที่เลือก ณ ตอนที่กดเปิด Field/Table Picker
+   * → ใช้เป็นจุด anchor ตอนแทรก block ที่เลือกจาก picker
+   */
+  const [pickerAnchorId, setPickerAnchorId] = useState<string | null>(null);
+
+  const toast = useOptionalToast();
+
+  /** ใช้กัน timer ค้างเมื่อ component unmount */
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** timer ของข้อความ feedback (ซ่อนอัตโนมัติ) */
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** nonce ของ editorOpenRequest — เพิ่มขึ้นทุกครั้ง (ไม่พึ่ง Date.now ที่อาจซ้ำ) */
+  const requestNonceRef = useRef(0);
+
+  // ---------------------------------------------------------------------------
+  // Cleanup timers เมื่อ unmount
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = null;
+      }
+      if (feedbackTimerRef.current) {
+        clearTimeout(feedbackTimerRef.current);
+        feedbackTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // ล้าง selection ถ้า block ที่เลือกถูกลบไปแล้ว
+  // (ครอบคลุมทั้งลบทันที และลบผ่าน confirm dialog ของ ComposerClient)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!selectedBlockId) return;
+    const next = resolveSelection(descriptor.blocks, selectedBlockId);
+    if (next === selectedBlockId) return;
+    setSelectedBlockId(next);
+  }, [descriptor.blocks, selectedBlockId]);
+
+  // ---------------------------------------------------------------------------
+  // ล้าง highlight ถ้า block ที่เพิ่งเพิ่มถูกลบไปก่อนหมดเวลาไฮไลต์
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!newlyAddedBlockId) return;
+    if (findBlockIndexById(descriptor.blocks, newlyAddedBlockId) !== -1) return;
+    setNewlyAddedBlockId(null);
+  }, [descriptor.blocks, newlyAddedBlockId]);
+
   /**
    * Map fieldId (field_master.id) → library item (สำหรับ resolve label/type)
    *
    * สำคัญ: `descriptor.block.fieldId` = `field_master.id` (FK string)
-   * **ไม่ใช่** `template_fields.id` (UUID)
+   *   **ไม่ใช่** `template_fields.id` (UUID)
    * — backend generator + preview/PDF renderer ใช้ fieldMaster.id เป็น
    *   identifier ฝั่งเดียว
    */
@@ -81,53 +168,118 @@ export function BlockPanel({
   // Handlers — ทั้งหมดเปลี่ยน immutable (สร้าง array ใหม่)
   // ---------------------------------------------------------------------------
 
-  const append = (block: DocumentBlock) => {
-    onChange({ ...descriptor, blocks: [...descriptor.blocks, block] });
-  };
+  /**
+   * เพิ่ม block ใหม่ตามกฎ contextual insertion
+   *
+   * - มี block ที่เลือก → แทรกต่อจาก block นั้น
+   * - ไม่มี → ต่อท้าย descriptor
+   *
+   * หลังเพิ่ม: เลือก block ใหม่ + เปิด editor + scroll + ไฮไลต์ + แจ้งผู้ใช้
+   */
+  const insertBlock = useCallback(
+    (block: DocumentBlock, anchorBlockId: string | null) => {
+      const target = describeInsertionTarget(descriptor.blocks, anchorBlockId);
+      const result = insertBlockWithSelection(
+        descriptor.blocks,
+        block,
+        anchorBlockId
+      );
+
+      onChange({ ...descriptor, blocks: result.blocks });
+
+      // เลือก block ใหม่
+      setSelectedBlockId(result.selectedBlockId);
+      // เปิด editor ของ block ใหม่
+      requestNonceRef.current += 1;
+      setEditorOpenRequest(
+        createEditorOpenRequest(result.selectedBlockId, requestNonceRef.current)
+      );
+      // ไฮไลต์ชั่วคราว
+      setNewlyAddedBlockId(result.selectedBlockId);
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current);
+      }
+      highlightTimerRef.current = setTimeout(() => {
+        setNewlyAddedBlockId((current) =>
+          current === result.selectedBlockId ? null : current
+        );
+        highlightTimerRef.current = null;
+      }, NEW_BLOCK_HIGHLIGHT_MS);
+
+      // แจ้งตำแหน่งที่เพิ่ม
+      const message = describeInsertionMessage(block, target);
+      setFeedback(message);
+      if (feedbackTimerRef.current) {
+        clearTimeout(feedbackTimerRef.current);
+      }
+      feedbackTimerRef.current = setTimeout(() => {
+        setFeedback((current) => (current === message ? null : current));
+        feedbackTimerRef.current = null;
+      }, NEW_BLOCK_HIGHLIGHT_MS);
+
+      toast?.showToast({
+        title: message,
+        description:
+          target.kind === 'after'
+            ? `เพิ่มต่อจาก Block #${target.blockNumber}`
+            : 'เพิ่มต่อท้ายเอกสาร',
+        variant: 'success',
+      });
+    },
+    [descriptor, onChange, toast]
+  );
 
   const handleAdd = (kind: AddBlockKind) => {
+    if (kind === 'field' || kind === 'table') {
+      // เปิด picker — จำ anchor (block ที่เลือก) ไว้ก่อน
+      setPickerAnchorId(selectedBlockId);
+      setPickerMode(kind);
+      setPickerOpen(true);
+      return;
+    }
+
+    const anchor = selectedBlockId;
     if (kind === 'heading') {
-      append(createHeadingBlock());
+      insertBlock(createHeadingBlock(), anchor);
       return;
     }
     if (kind === 'systemData') {
-      append(createSystemDataBlock('APPLICATION_NO'));
+      insertBlock(createSystemDataBlock('APPLICATION_NO'), anchor);
       return;
     }
     if (kind === 'logo') {
-      append(createLogoBlock());
+      insertBlock(createLogoBlock(), anchor);
       return;
     }
     if (kind === 'signature') {
-      append(createSignatureBlock());
+      insertBlock(createSignatureBlock(), anchor);
       return;
     }
-    // field / table → เปิด picker
-    setPickerMode(kind);
-    setPickerOpen(true);
   };
 
   const handlePickerSelect = (field: TemplateFieldLibraryItem) => {
     // fieldId ต้องเป็น fieldMaster.id (FK) — ไม่ใช่ templateFields.id (UUID)
-    append(
+    insertBlock(
       pickerMode === 'table'
         ? createTableBlock(field.fieldId)
-        : createFieldBlock(field.fieldId)
+        : createFieldBlock(field.fieldId),
+      pickerAnchorId
     );
+    setPickerAnchorId(null);
   };
 
-  const handleBlockChange = (index: number, patch: Partial<DocumentBlock>) => {
+  const handleBlockChange = (blockId: string, patch: Partial<DocumentBlock>) => {
+    const idx = findBlockIndexById(descriptor.blocks, blockId);
+    if (idx === -1) return;
     const next = descriptor.blocks.slice();
-    next[index] = { ...next[index], ...patch } as DocumentBlock;
+    next[idx] = { ...next[idx], ...patch } as DocumentBlock;
     onChange({ ...descriptor, blocks: next });
   };
 
-  const handleMove = (index: number, direction: -1 | 1) => {
-    const target = index + direction;
-    if (target < 0 || target >= descriptor.blocks.length) return;
-    const next = descriptor.blocks.slice();
-    [next[index], next[target]] = [next[target], next[index]];
+  const handleMove = (blockId: string, direction: -1 | 1) => {
+    const next = moveBlockById(descriptor.blocks, blockId, direction);
     onChange({ ...descriptor, blocks: next });
+    // selection ผูกกับ block.id → ย้ายแล้วยังเลือกตัวเดิมอยู่
   };
 
   // ---------------------------------------------------------------------------
@@ -136,13 +288,17 @@ export function BlockPanel({
   // ---------------------------------------------------------------------------
   const handleDelete = (index: number) => {
     const block = descriptor.blocks[index];
+    if (!block) return;
     const summary = describeBlock(block, fieldMap);
     if (onDeleteRequest) {
       onDeleteRequest(index, summary);
     } else {
-      const next = descriptor.blocks.slice();
-      next.splice(index, 1);
-      onChange({ ...descriptor, blocks: next });
+      onChange({
+        ...descriptor,
+        blocks: removeBlockById(descriptor.blocks, block.id),
+      });
+      // ล้าง selection ถ้าลบ block ที่เลือกอยู่
+      setSelectedBlockId((current) => (current === block.id ? null : current));
     }
   };
 
@@ -150,9 +306,27 @@ export function BlockPanel({
   // Render
   // ---------------------------------------------------------------------------
 
+  const insertionTarget = describeInsertionTarget(descriptor.blocks, selectedBlockId);
+
   return (
     <div className="space-y-3">
-      <BlockToolbar onAdd={handleAdd} disabled={disabled} />
+      <BlockToolbar
+        onAdd={handleAdd}
+        disabled={disabled}
+        insertionHint={insertionTarget.label}
+      />
+
+      {/* Inline feedback (เสริมจาก toast — ใช้เป็น live region สำหรับ screen reader) */}
+      <div aria-live="polite" className="min-h-[0px]">
+        {feedback && (
+          <p
+            data-testid="block-panel-feedback"
+            className="text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-1"
+          >
+            {feedback}
+          </p>
+        )}
+      </div>
 
       {descriptor.blocks.length === 0 ? (
         <div className="border-2 border-dashed border-slate-200 rounded-lg p-8 text-center text-slate-500">
@@ -181,9 +355,13 @@ export function BlockPanel({
                   fields={fields}
                   fieldsLoading={fieldsLoading}
                   disabled={disabled}
-                  onChange={(patch) => handleBlockChange(idx, patch)}
-                  onMoveUp={() => handleMove(idx, -1)}
-                  onMoveDown={() => handleMove(idx, 1)}
+                  isSelected={selectedBlockId === block.id}
+                  isNewlyAdded={newlyAddedBlockId === block.id}
+                  editorOpenRequest={editorOpenRequest}
+                  onSelect={(blockId) => setSelectedBlockId(blockId)}
+                  onChange={(patch) => handleBlockChange(block.id, patch)}
+                  onMoveUp={() => handleMove(block.id, -1)}
+                  onMoveDown={() => handleMove(block.id, 1)}
                   onDelete={() => handleDelete(idx)}
                 />
               </li>
@@ -195,7 +373,10 @@ export function BlockPanel({
       <FieldPicker
         open={pickerOpen}
         mode={pickerMode}
-        onClose={() => setPickerOpen(false)}
+        onClose={() => {
+          setPickerOpen(false);
+          setPickerAnchorId(null);
+        }}
         onSelect={handlePickerSelect}
         fields={fields}
         loading={fieldsLoading}

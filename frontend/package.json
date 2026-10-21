@@ -7,9 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "echo \"(no lint configured)\" && exit 0",
-    "test": "node --import tsx src/lib/__tests__/date.test.ts && node --import tsx src/lib/__tests__/document-composer.test.ts",
+    "test": "node --import tsx src/lib/__tests__/date.test.ts && node --import tsx src/lib/__tests__/document-composer.test.ts && node --import tsx src/lib/__tests__/composer-block-operations.test.ts && npm run test:composer-render && npm run test:preview",
     "test:date": "node --import tsx src/lib/__tests__/date.test.ts",
-    "test:composer": "node --import tsx src/lib/__tests__/document-composer.test.ts",
+    "test:composer": "node --import tsx src/lib/__tests__/document-composer.test.ts && node --import tsx src/lib/__tests__/composer-block-operations.test.ts && npm run test:composer-render",
+    "test:composer-render": "TSX_TSCONFIG_PATH=tsconfig.test.json node --import tsx src/lib/__tests__/composer-block-render.test.tsx",
+    "test:preview": "node --import tsx \"src/app/(admin)/admin/templates/composer/__tests__/preview-real-application.test.tsx\"",
     "typecheck": "tsc --noEmit",
     "deploy": "npm run build && wrangler pages deploy out --project-name=sao-recruitment-frontend --commit-dirty=true"
   },

@@ -29,14 +29,28 @@ export type AddBlockKind =
 export interface BlockToolbarProps {
   onAdd: (kind: AddBlockKind) => void;
   disabled?: boolean;
+  /**
+   * คำอธิบายตำแหน่งที่ block ใหม่จะถูกแทรก
+   * - "เพิ่มต่อจาก Block #X"  → มี block ที่ผู้ใช้เลือกอยู่
+   * - "เพิ่มต่อท้ายเอกสาร" → ยังไม่มี block ที่เลือก
+   */
+  insertionHint?: string;
 }
 
-export function BlockToolbar({ onAdd, disabled }: BlockToolbarProps) {
+export function BlockToolbar({ onAdd, disabled, insertionHint }: BlockToolbarProps) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span className="text-[10px] uppercase font-semibold text-slate-500 mr-1">
         เพิ่ม Block:
       </span>
+      {insertionHint && (
+        <span
+          data-testid="block-toolbar-insertion-hint"
+          className="text-[11px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded px-2 py-0.5"
+        >
+          {insertionHint}
+        </span>
+      )}
       <Button
         variant="outline"
         size="sm"

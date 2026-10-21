@@ -22,7 +22,7 @@
  * ใช้ callback ทั้งหมด — parent ถือ source of truth
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   NO_LOGO_TEXT,
@@ -36,6 +36,7 @@ import {
   type SystemDataBlock,
 } from '@/lib/api/template-descriptor';
 import { normalizeDateSource } from './SignatureEditor';
+import { cn } from '@/lib/utils';
 import { HeadingEditor, AlignRow } from './HeadingEditor';
 import { SystemDataEditor } from './SystemDataEditor';
 import { FieldEditor } from './FieldEditor';
@@ -43,6 +44,13 @@ import { TableEditor } from './TableEditor';
 import { LogoEditor } from './LogoEditor';
 import { SignatureEditor } from './SignatureEditor';
 import type { TemplateFieldLibraryItem } from '../hooks/useTemplateFields';
+import {
+  getBlockHighlightClasses,
+  scrollBlockIntoView,
+  shouldOpenEditor,
+  shouldSelectOnClick,
+  type EditorOpenRequest,
+} from '../lib/block-operations';
 
 export interface BlockItemProps {
   block: DocumentBlock;
@@ -58,6 +66,14 @@ export interface BlockItemProps {
   onMoveDown: () => void;
   onDelete: () => void;
   disabled?: boolean;
+  /** block นี้ถูกเลือกอยู่ (คลิกที่ card/header เพื่อเลือก) */
+  isSelected?: boolean;
+  /** block นี้เพิ่งถูกเพิ่ม → ไฮไลต์ชั่วคราว */
+  isNewlyAdded?: boolean;
+  /** สั่งให้ parent เปิด inline editor ของ block นี้ */
+  editorOpenRequest?: EditorOpenRequest | null;
+  /** คลิกเลือก block */
+  onSelect?: (blockId: string) => void;
 }
 
 const TYPE_META: Record<
@@ -100,12 +116,90 @@ export function BlockItem({
   onMoveDown,
   onDelete,
   disabled,
+  isSelected = false,
+  isNewlyAdded = false,
+  editorOpenRequest = null,
+  onSelect,
 }: BlockItemProps) {
-  const [editing, setEditing] = useState(false);
+  /**
+   * `editing` ที่ผู้ใช้สั่งเอง (กดปุ่ม "แก้ไข")
+   */
+  const [manualEditing, setManualEditing] = useState(false);
+  /**
+   * nonce ของ request ที่ผู้ใช้กดปิดไปแล้ว
+   * → กันไม่ให้ request เดิมเปิด editor กลับมาต่อ (ผู้ใช้ปิดเองได้)
+   */
+  const [dismissedRequestNonce, setDismissedRequestNonce] = useState<
+    number | null
+  >(null);
+
   const meta = TYPE_META[block.type];
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // ---------------------------------------------------------------------------
+  // Controlled editor opening — parent สั่งเปิด inline editor ของ block นี้
+  // (ใช้เมื่อเพิ่งเพิ่ม block ใหม่ → เปิด editor อัตโนมัติ)
+  //
+  // คำนวณตอน render (ไม่ใช่ใน effect) → ทำงานถูกต้องทั้ง client และ SSR
+  // ---------------------------------------------------------------------------
+  const request = editorOpenRequest;
+  const requestApplies =
+    !!request &&
+    shouldOpenEditor(request, block.id) &&
+    request.nonce !== dismissedRequestNonce;
+
+  const editing = manualEditing || requestApplies;
+
+  const toggleEditing = () => {
+    if (editing) {
+      setManualEditing(false);
+      // ถ้ากำลังเปิดเพราะ request → ต้อง dismiss request ด้วย ไม่ใช่แค่ manual
+      if (requestApplies && request) {
+        setDismissedRequestNonce(request.nonce);
+      }
+      return;
+    }
+    setManualEditing(true);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Auto-scroll — เลื่อน block ใหม่เข้ามาในบริเวณมองเห็น
+  //
+  // ใช้ `block: 'nearest'` เพื่อไม่ให้หน้ากระโดดแรงเกินไป
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isNewlyAdded) return;
+    scrollBlockIntoView(containerRef.current);
+  }, [isNewlyAdded, block.id]);
+
+  // ---------------------------------------------------------------------------
+  // คลิกเลือก block — ใช้ data attribute เพื่อไม่ชนกับปุ่ม / input
+  // ---------------------------------------------------------------------------
+  const handleSelect = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const shouldSelect = shouldSelectOnClick(event.target as HTMLElement | null, {
+      disabled,
+      hasHandler: !!onSelect,
+    });
+    if (!shouldSelect || !onSelect) return;
+    onSelect(block.id);
+  };
+
+  const containerClass = cn(
+    'rounded-lg border overflow-hidden transition-shadow',
+    meta.tone,
+    // newly-added มี priority สูงกว่า selected (block ใหม่ถูกเลือกด้วยเสมอ)
+    getBlockHighlightClasses({ isSelected, isNewlyAdded })
+  );
 
   return (
-    <div className={`rounded-lg border ${meta.tone} overflow-hidden`}>
+    <div
+      ref={containerRef}
+      data-block-id={block.id}
+      data-selected={isSelected ? 'true' : 'false'}
+      data-newly-added={isNewlyAdded ? 'true' : 'false'}
+      className={containerClass}
+      onClick={handleSelect}
+    >
       {/* Header row: type + index + actions */}
       <div className="flex items-center gap-2 px-3 py-2 bg-white/70">
         <span className="text-base shrink-0">{meta.icon}</span>
@@ -114,6 +208,16 @@ export function BlockItem({
             <span className="text-[10px] font-semibold uppercase text-slate-500">
               {meta.label} #{index + 1}
             </span>
+            {isSelected && (
+              <span className="text-[10px] font-medium text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded">
+                เลือกอยู่
+              </span>
+            )}
+            {isNewlyAdded && (
+              <span className="text-[10px] font-medium text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded">
+                ✨ เพิ่มใหม่
+              </span>
+            )}
             {block.type === 'logo' && (
               <span className="text-[10px] text-slate-500">
                 source: {(block as LogoBlock).source ?? 'organization'}
@@ -136,7 +240,7 @@ export function BlockItem({
             )}
           </div>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-1 shrink-0" data-no-select>
           <Button
             variant="ghost"
             size="sm"
@@ -162,11 +266,12 @@ export function BlockItem({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setEditing((v) => !v)}
+            onClick={toggleEditing}
             disabled={disabled}
             className="h-7 px-2 text-[11px]"
             title={editing ? 'ซ่อนรายละเอียด' : 'แก้ไข'}
             aria-label={editing ? 'ซ่อนรายละเอียด' : 'แก้ไข'}
+            aria-expanded={editing}
           >
             {editing ? 'ซ่อนรายละเอียด' : 'แก้ไข'}
           </Button>
@@ -191,7 +296,7 @@ export function BlockItem({
 
       {/* Inline editor */}
       {editing && (
-        <div className="px-3 py-2 border-t border-slate-200 bg-white/50">
+        <div className="px-3 py-2 border-t border-slate-200 bg-white/50" data-no-select>
           <BlockEditor
             block={block}
             field={field}

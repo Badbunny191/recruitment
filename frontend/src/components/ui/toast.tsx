@@ -54,6 +54,17 @@ export function useToast() {
   return ctx;
 }
 
+/**
+ * Toast แบบ optional — ไม่ throw ถ้าไม่มี ToastProvider
+ *
+ * ใช้ใน component ที่อาจถูก render นอก <ToastProvider> (เช่น unit test
+ * หรือ preview ที่ mount เดี่ยว ๆ) → ถ้ามี provider ให้ใช้ได้ปกติ
+ * ถ้าไม่มี → คืน null แล้วผู้เรียก fallback ไปใช้ inline feedback แทน
+ */
+export function useOptionalToast(): ToastContextValue | null {
+  return React.useContext(ToastContext);
+}
+
 // =============================================================================
 // Provider
 // =============================================================================
