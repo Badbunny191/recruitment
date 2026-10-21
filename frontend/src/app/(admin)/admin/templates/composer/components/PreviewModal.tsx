@@ -36,6 +36,7 @@ import type {
   PreviewMode,
   PreviewTokenInfo,
 } from '@/lib/api/template-descriptor';
+import { TOKEN_SOURCE_LABELS } from '@/lib/api/template-descriptor';
 import { PreviewFrame } from './PreviewFrame';
 
 export interface PreviewModalProps {
@@ -44,9 +45,13 @@ export interface PreviewModalProps {
   /** Latest preview already fetched (thumbnail) — used as initial cache */
   currentPreview: PreviewResponse | null;
   /** Re-render with current descriptor + new mode/header */
-  fetchPreview: (options: { mode: PreviewMode; includeHeader: true }) => Promise<boolean>;
+  fetchPreview: (options: { mode: PreviewMode; includeHeader: true }, applicationId?: string) => Promise<boolean>;
   /** True while a preview fetch is in flight */
   loading: boolean;
+  /** Data source mode for diagnostics */
+  dataSource?: 'sample' | 'real';
+  /** Current selected application for display */
+  selectedApplication?: { id?: string; applicationNo: string; fullname: string } | null;
   /**
    * Block mode control until first frame is ready.
    * (ปุ่ม mode จะถูก disable ถ้า modal เพิ่งเปิด + fetch ยังไม่เสร็จ)
@@ -59,6 +64,8 @@ export function PreviewModal({
   currentPreview,
   fetchPreview,
   loading,
+  dataSource = 'sample',
+  selectedApplication = null,
 }: PreviewModalProps) {
   // ── mode state (default = 'form' ตามที่ผู้ใช้คุ้นเคยจาก compact) ──
   const [mode, setMode] = useState<PreviewMode>(currentPreview?.mode ?? 'form');
@@ -73,9 +80,20 @@ export function PreviewModal({
 
   // ── ref เพื่อกัน stale closure ──
   const fetchPreviewRef = useRef(fetchPreview);
+  const dataSourceRef = useRef(dataSource);
+  const selectedApplicationRef = useRef(selectedApplication);
   useEffect(() => {
     fetchPreviewRef.current = fetchPreview;
   }, [fetchPreview]);
+  useEffect(() => {
+    dataSourceRef.current = dataSource;
+  }, [dataSource]);
+  useEffect(() => {
+    selectedApplicationRef.current = selectedApplication;
+  }, [selectedApplication]);
+
+  // Get applicationId from selectedApplication
+  const applicationId = selectedApplication?.id ?? undefined;
 
   // ── เมื่อ modal เปิด → fetch preview ครั้งแรก ─────────────────────
   useEffect(() => {
@@ -91,10 +109,10 @@ export function PreviewModal({
     const initialMode: PreviewMode = currentPreview?.mode ?? 'form';
     setMode(initialMode);
     (async () => {
-      const ok = await fetchPreviewRef.current({
-        mode: initialMode,
-        includeHeader: true,
-      });
+      const ok = await fetchPreviewRef.current(
+        { mode: initialMode, includeHeader: true },
+        applicationId
+      );
       if (cancelled) return;
       // ใช้ cached currentPreview ที่เพิ่ง refresh
       if (ok) {
@@ -105,19 +123,18 @@ export function PreviewModal({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, applicationId]);
 
   // ── เมื่อ mode เปลี่ยน → refetch (option: header) ─────────────────
-  // ไม่ต้องรอเปลี่ยน mode ให้ cache เดียวกัน — header ก็ true ตลอด
   const handleModeChange = useCallback(
     async (next: PreviewMode) => {
       setMode(next);
-      await fetchPreviewRef.current({ mode: next, includeHeader: true });
-      // เพิ่มความแน่ใจว่า modalPreview เป็นของ mode ใหม่
-      // (จริง ๆ hook จะ setPreviewResult ให้ consumer อ่านผ่าน prop `currentPreview`
-      //  แต่เพื่อกัน race เราเก็บ snapshot ไว้ใน local state ผ่าน useEffect ต่อไป)
+      await fetchPreviewRef.current(
+        { mode: next, includeHeader: true },
+        applicationId
+      );
     },
-    []
+    [applicationId]
   );
 
   // ── sync modalPreview กับ currentPreview ที่ hook refresh แล้ว ────
@@ -219,7 +236,7 @@ const tokensByMode: PreviewTokenInfo[] = useMemo(
 
         {/* ── Diagnostics strip (ท้าย modal, ซ่อนโดย default) ── */}
         {showDiagnosticsPanel && (
-          <DiagnosticsPanel tokens={tokensByMode} />
+          <DiagnosticsPanel tokens={tokensByMode} dataSource={dataSource} />
         )}
       </div>
     </div>
@@ -407,66 +424,105 @@ function StageSkeleton({ loading }: { loading: boolean }) {
  * token ที่ยังไม่มีข้อมูลจะแสดงเป็น placeholder เสมอ ไม่ใช้ค่าอื่นมาแทน
  * (Requirement K.10)
  */
-function DiagnosticsPanel({ tokens }: { tokens: PreviewTokenInfo[] }) {
+function DiagnosticsPanel({ tokens, dataSource = 'sample' }: { tokens: PreviewTokenInfo[]; dataSource?: 'sample' | 'real' }) {
   if (tokens.length === 0) return null;
 
-  const missing = tokens.filter((t) => t.empty).length;
-  const resolved = tokens.length - missing;
+  const ready = tokens.filter((t) => !t.empty).length;
+  const needsCheck = tokens.filter((t) => t.empty).length;
+
+  const dataSourceLabel =
+    dataSource === 'sample'
+      ? 'ข้อมูลตัวอย่าง'
+      : 'ข้อมูลผู้สมัครจริง';
 
   return (
     <div className="bg-slate-50 border-t border-slate-200 px-4 py-3 shrink-0 max-h-[30vh] overflow-y-auto">
+      {/* Header */}
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-slate-700">
-          🛠 ตรวจสอบข้อมูลเอกสาร
+          🛠 ตรวจสอบข้อมูลที่จะใช้ในเอกสาร
         </span>
         <span className="text-[10px] text-slate-500">
-          {missing > 0
-            ? `ยังขาด ${missing} รายการ · มีข้อมูลแล้ว ${resolved} รายการ`
-            : `มีข้อมูลครบทั้งหมด ${resolved} รายการ`}
+          {needsCheck > 0
+            ? `พร้อมใช้งาน ${ready} รายการ · ต้องตรวจสอบ ${needsCheck} รายการ`
+            : `พร้อมใช้งาน ${ready} รายการ`}
         </span>
       </div>
+
+      {/* Data source summary */}
+      <div className="mb-2 px-2 py-1.5 bg-blue-50 border border-blue-200 rounded text-[11px]">
+        <span className="text-slate-600">แหล่งข้อมูล: </span>
+        <span className={`font-medium ${dataSource === 'sample' ? 'text-slate-600' : 'text-blue-700'}`}>
+          {dataSourceLabel}
+        </span>
+      </div>
+
+      {/* Table: ข้อมูล | ค่าที่จะแสดง | แหล่งที่มา | สถานะ */}
       <table className="w-full text-xs">
         <thead>
           <tr className="text-left text-slate-500">
-            <th className="py-1 pr-3 font-medium">Token</th>
-            <th className="py-1 pr-3 font-medium">Label</th>
-            <th className="py-1 pr-3 font-medium">Value</th>
+            <th className="py-1 pr-3 font-medium">ข้อมูล</th>
+            <th className="py-1 pr-3 font-medium">ค่าที่จะแสดง</th>
+            <th className="py-1 pr-3 font-medium">แหล่งที่มา</th>
             <th className="py-1 font-medium">สถานะ</th>
           </tr>
         </thead>
         <tbody>
-          {tokens.map((t) => (
-            <tr key={t.token} className="border-t border-slate-200">
-              <td className="py-1 pr-3 font-mono text-[10px] text-slate-700">
-                {`{${t.token}}`}
-              </td>
-              <td className="py-1 pr-3 text-slate-700">{t.label}</td>
-              <td className="py-1 pr-3">
-                {t.empty ? (
-                  <span className="text-slate-400 italic">{t.text}</span>
-                ) : (
-                  <span className="text-slate-900">{t.text}</span>
-                )}
-              </td>
-              <td className="py-1">
-                {t.empty ? (
-                  <span className="inline-block px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 text-[10px] font-medium">
-                    ยังไม่มีข้อมูล
+          {tokens.map((t) => {
+            const sourceLabel = t.source
+              ? TOKEN_SOURCE_LABELS[t.source]
+              : 'ไม่ระบุ';
+            const isEmpty = t.empty;
+            const statusBadge = isEmpty
+              ? { text: 'ต้องตรวจสอบ', className: 'bg-amber-100 text-amber-700' }
+              : { text: 'พร้อมใช้งาน', className: 'bg-emerald-100 text-emerald-700' };
+
+            return (
+              <tr key={t.token} className="border-t border-slate-200">
+                <td className="py-1 pr-3 text-slate-700">{t.label}</td>
+                <td className="py-1 pr-3">
+                  {t.empty ? (
+                    <span className="text-slate-400 italic">{t.text}</span>
+                  ) : (
+                    <span className="text-slate-900">{t.text}</span>
+                  )}
+                </td>
+                <td className="py-1 pr-3 text-slate-500 text-[11px]">{sourceLabel}</td>
+                <td className="py-1">
+                  <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${statusBadge.className}`}>
+                    {statusBadge.text}
                   </span>
-                ) : (
-                  <span className="inline-block px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-medium">
-                    มีข้อมูลแล้ว
-                  </span>
-                )}
-              </td>
-            </tr>
-          ))}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+
+      {/* Technical details collapsible */}
+      <details className="mt-2">
+        <summary className="text-[10px] text-slate-500 cursor-pointer hover:text-slate-700">
+          รายละเอียดทางเทคนิค
+        </summary>
+        <div className="mt-1 pt-1 border-t border-slate-200">
+          <table className="w-full text-[10px] text-slate-400">
+            <tbody>
+              {tokens.map((t) => (
+                <tr key={`tech-${t.token}`} className="border-t border-slate-100">
+                  <td className="py-0.5 pr-2 font-mono">{`{${t.token}}`}</td>
+                  <td className="py-0.5 pr-2 text-slate-500">{t.text}</td>
+                  <td className="py-0.5 pr-2">{t.empty ? '(ว่าง)' : '(มีค่า)'}</td>
+                  <td className="py-0.5">{t.source ?? '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+
       <p className="mt-2 text-[10px] text-slate-500 leading-relaxed">
         แผงนี้ใช้ตรวจสอบเฉพาะในหน้าจอจัดหน้าเอกสาร
-        <strong>ไม่ถูกพิมพ์ลง PDF</strong> และไม่ใช้ข้อมูลคนละความหมายทดแทน —
-        token ที่ว่างจะแสดงเป็นรูป {'{TOKEN}'} เสมอ
+        <strong>ไม่ถูกพิมพ์ลง PDF</strong> และไม่ใช้ข้อมูลคนละความหมายทดแทน
       </p>
     </div>
   );

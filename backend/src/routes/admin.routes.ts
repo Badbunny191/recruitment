@@ -1848,6 +1848,79 @@ adminRoutes.get('/applications', async (c) => {
   return c.json({ data: results });
 });
 
+// GET /admin/rounds/:id/applications — Search applications by round for Document Composer picker
+// Requirement G: Application search API for frontend picker
+// - Uses existing adminOnlyMiddleware
+// - Limits results (max 20)
+// - Returns only non-sensitive fields
+// - Supports search by applicationNo, fullname, or email
+adminRoutes.get(
+  '/rounds/:id/applications',
+  adminOnlyMiddleware,
+  async (c) => {
+    const db = drizzle(c.env.DB);
+    const roundId = c.req.param('id');
+    const search = c.req.query('search');
+
+    // Verify round exists
+    const round = await db
+      .select({ id: recruitmentRounds.id })
+      .from(recruitmentRounds)
+      .where(and(
+        eq(recruitmentRounds.id, roundId),
+        isNull(recruitmentRounds.deletedAt)
+      ))
+      .get();
+
+    if (!round) {
+      return c.json({ error: 'ไม่พบรอบรับสมัครที่ระบุ' }, 404);
+    }
+
+    // Build where clause
+    let whereClause = and(
+      eq(applications.roundId, roundId),
+      isNull(applications.deletedAt)
+    );
+
+    if (search && search.trim().length > 0) {
+      const q = `%${search.trim().toLowerCase()}%`;
+      whereClause = and(
+        eq(applications.roundId, roundId),
+        isNull(applications.deletedAt),
+        or(
+          like(applications.applicationNo, q),
+          like(applications.fullname, q),
+          like(applications.email, q)
+        )
+      )!;
+    }
+
+    const results = await db
+      .select({
+        id: applications.id,
+        applicationNo: applications.applicationNo,
+        fullname: applications.fullname,
+        email: applications.email,
+        status: applications.status,
+        submittedAt: applications.submittedAt,
+      })
+      .from(applications)
+      .where(whereClause)
+      .orderBy(desc(applications.submittedAt))
+      .limit(20);
+
+    // Convert submittedAt to unix timestamp
+    const data = results.map((r) => ({
+      ...r,
+      submittedAt: r.submittedAt
+        ? Math.floor(new Date(r.submittedAt).getTime() / 1000)
+        : null,
+    }));
+
+    return c.json({ data });
+  }
+);
+
 // GET /admin/applications/summary - Get application counts by status
 adminRoutes.get('/applications/summary', async (c) => {
   const db = drizzle(c.env.DB);

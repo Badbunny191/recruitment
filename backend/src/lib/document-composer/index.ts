@@ -117,6 +117,8 @@ export type {
   RenderedBlockSummary,
   PreviewMode,
   PreviewTokenInfo,
+  TokenSource,
+  ResolvedTokenEntry,
 } from "./preview-model";
 
 // =============================================================================
@@ -132,6 +134,7 @@ export {
   buildFieldToken,
   listFieldTokensInText,
   formatThaiDate,
+  collectUsedTokens,
   DOCUMENT_TOKENS,
   DOCUMENT_TOKEN_LABELS,
   INSERTABLE_DOCUMENT_TOKENS,

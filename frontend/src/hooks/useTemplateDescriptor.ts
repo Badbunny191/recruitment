@@ -88,10 +88,11 @@ export interface UseTemplateDescriptorReturn {
    * Render preview ที่ระบุ mode + header options
    * - default: 'form' mode + includeHeader=false (preview thumbnail ขวา)
    * - สำหรับ modal: เรียกด้วย { mode: 'document' | 'form', includeHeader: true }
+   * - applicationId: ถ้าใส่ → โหลดข้อมูลผู้สมัครจริง ถ้าไม่ใส่ → ใช้ข้อมูลตัวอย่าง
    *
    * @returns PreviewResponse ล่าสุด (ยังเขียนลง previewResult state ปกติ)
    */
-  runPreview: (options?: PreviewOptions) => Promise<boolean>;
+  runPreview: (options?: PreviewOptions, applicationId?: string) => Promise<boolean>;
   generate: () => Promise<boolean>;
   /** รีเซ็ต error state */
   clearError: () => void;
@@ -295,7 +296,7 @@ export function useTemplateDescriptor(
 const previewSeqRef = useRef(0);
 
   const runPreview = useCallback(
-    async (options?: PreviewOptions): Promise<boolean> => {
+    async (options?: PreviewOptions, applicationId?: string): Promise<boolean> => {
       if (!descriptor) {
         setLastError('Descriptor is empty or invalid — fix errors first');
         return false;
@@ -309,6 +310,7 @@ const previewSeqRef = useRef(0);
       const res = await apiPreview(templateVersionId, {
         descriptor,
         options: options ?? {},
+        applicationId,
       });
 
       // ── stale response guard ──────────────────────────────────

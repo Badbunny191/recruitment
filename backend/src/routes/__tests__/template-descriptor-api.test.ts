@@ -1102,7 +1102,10 @@ await test('generateDescriptorFromTemplate produces valid descriptor', async () 
     sqlite.close();
   });
 
-  await test('[UX] POSITION_NAME must NOT fallback to positionLevel (Req 6)', async () => {
+  // Test: POSITION_NAME must NOT fallback to positionLevel (Req 6)
+  // Descriptor ใช้ POSITION_NAME ผ่าน SystemDataBlock → diagnostics แสดง POSITION_NAME
+  // แต่ไม่บังคับให้ POSITION_LEVEL อยู่ใน diagnostics ถ้า descriptor ไม่ได้ใช้
+  await test('[UX] POSITION_NAME must NOT fallback to positionLevel — descriptor uses POSITION_NAME (Req 6)', async () => {
     const { sqlite, db } = makeInMemorySchema();
     setTemplateDb(db);
     setPreviewDb(db);
@@ -1117,23 +1120,27 @@ await test('generateDescriptorFromTemplate produces valid descriptor', async () 
     assertTrue(ctx !== null);
     if (!ctx) return;
 
+    // ── Descriptor ใช้ POSITION_NAME ผ่าน SystemDataBlock ──
     const descriptor = {
       version: 1 as const,
-      blocks: [{ id: 'h-1', type: 'heading', text: 'X', size: 'large' } as const],
+      blocks: [
+        { id: 'sd-pn', type: 'systemData' as const, key: 'POSITION_NAME' as const },
+        { id: 'h-1', type: 'heading' as const, text: 'X', size: 'large' as const },
+      ],
     };
 
     const preview = renderDescriptorToPreview(descriptor as any, ctx);
 
-    // body content: title token text ห้ามเป็น "ระดับปฏิบัติการ" (positionLevel)
+    // ── POSITION_NAME ต้องอยู่ใน diagnostics (descriptor ใช้) ──
     const positionNameRow = preview.tokens.find(
       (t) => t.token === 'POSITION_NAME'
     );
-    assertTrue(positionNameRow !== undefined, 'POSITION_NAME token must exist');
+    assertTrue(positionNameRow !== undefined, 'POSITION_NAME must exist in diagnostics');
     if (positionNameRow) {
       assertEqual(
         positionNameRow.empty,
         true,
-        'POSITION_NAME must be empty (no source data)'
+        'POSITION_NAME must be empty (no source data in system)'
       );
       assertTrue(
         positionNameRow.text === '{POSITION_NAME}',
@@ -1141,25 +1148,23 @@ await test('generateDescriptorFromTemplate produces valid descriptor', async () 
       );
     }
 
-    // Sanity: ห้ามมี "ระดับปฏิบัติการ" ปะปนกับ POSITION_NAME slot
-    // (มีอยู่ใน POSITION_LEVEL ได้ ซึ่งถูกต้อง)
+    // ── POSITION_LEVEL ไม่ต้องอยู่ใน diagnostics (descriptor ไม่ได้ใช้) ──
     const positionLevelRow = preview.tokens.find(
       (t) => t.token === 'POSITION_LEVEL'
     );
-    assertTrue(positionLevelRow !== undefined);
-    if (positionLevelRow) {
-      assertEqual(positionLevelRow.empty, false);
-    }
+    assertTrue(
+      positionLevelRow === undefined,
+      'POSITION_LEVEL must NOT be in diagnostics (descriptor does not use it)'
+    );
 
     sqlite.close();
   });
 
-  // Test: diagnostics tokens panel exposed for FE
-  // (อัปเดตสำหรับ requirements ใหม่: diagnostics ส่งกลับ token ทั้งหมดที่ resolve ได้
-  //  รวม legacy tokens (POSITION_NUMBER/POSITION_LEVEL/ROUND_CODE) — เพื่อให้
-  //  diagnostics ครอบคลุม descriptor เก่าที่อาจอ้างถึง token เหล่านี้
-  //  INSERTABLE tokens (5 ตัว) เป็น subset ที่ UI ใช้แสดงเท่านั้น)
-  await test('[UX] diagnostics=tokens exposed for FE panels (Req 10)', async () => {
+  // Test: diagnostics tokens panel — shows ONLY tokens actually used in descriptor
+  // (อัปเดตสำหรับ Requirement E ใหม่:
+  //  diagnostics ส่งกลับเฉพาะ token ที่ descriptor ใช้จริง
+  //  Token ที่ไม่ได้ใช้ → ไม่ปรากฏใน diagnostics และไม่ถูกนับว่าขาด)
+  await test('[UX] diagnostics=tokens exposed for FE panels — only used tokens (Req E)', async () => {
     const { sqlite, db } = makeInMemorySchema();
     setTemplateDb(db);
     setPreviewDb(db);
@@ -1174,26 +1179,91 @@ await test('generateDescriptorFromTemplate produces valid descriptor', async () 
     assertTrue(ctx !== null);
     if (!ctx) return;
 
+    // ── Descriptor ใช้จริง: APPLICATION_NO (SystemDataBlock) + ROUND_NAME (Heading) ──
     const descriptor = {
       version: 1 as const,
-      blocks: [{ id: 'h-1', type: 'heading', text: 'X', size: 'small' } as const],
+      blocks: [
+        { id: 'sd-1', type: 'systemData' as const, key: 'APPLICATION_NO' as const },
+        { id: 'h-1', type: 'heading' as const, text: 'รอบ {ROUND_NAME}', size: 'medium' as const },
+      ],
     };
 
     const preview = renderDescriptorToPreview(descriptor as any, ctx);
     assertTrue(Array.isArray(preview.tokens));
-    // diagnostics ส่ง token ทั้งหมดใน DOCUMENT_TOKENS (8 ตัว: 5 INSERTABLE + 3 legacy)
-    // เพื่อให้ผู้ดูแลระบบเห็นว่า token ไหน resolve ได้/ไม่ได้ แม้จะไม่แสดงใน insert menu
-    assertTrue(preview.tokens.length >= 5, 'all INSERTABLE tokens must be present');
-    // ตรวจสอบว่า INSERTABLE tokens ครบทั้ง 5 ตัว (Requirement A)
-    const insertable = ['APPLICATION_NO', 'ROUND_NAME', 'APPLICATION_DATE', 'PRINT_DATE', 'POSITION_NAME'];
-    for (const tokenName of insertable) {
-      const t = preview.tokens.find((p) => p.token === tokenName);
-      assertTrue(t !== undefined, `${tokenName} must be present in diagnostics`);
-      assertTrue(typeof t!.token === 'string');
-      assertTrue(typeof t!.label === 'string');
-      assertTrue(typeof t!.text === 'string');
-      assertTrue(typeof t!.empty === 'boolean');
-    }
+
+    // ── Token ที่ descriptor ใช้จริง: เฉพาะ APPLICATION_NO + ROUND_NAME ──
+    assertTrue(preview.tokens.length >= 2, 'must include used tokens');
+    assertTrue(
+      preview.tokens.some((t) => t.token === 'APPLICATION_NO'),
+      'APPLICATION_NO must be present (SystemDataBlock)'
+    );
+    assertTrue(
+      preview.tokens.some((t) => t.token === 'ROUND_NAME'),
+      'ROUND_NAME must be present (heading text)'
+    );
+
+    // ── Token ที่ descriptor ไม่ได้ใช้: ห้ามอยู่ใน diagnostics ──
+    const tokenNames = preview.tokens.map((t) => t.token);
+    assertFalse(
+      tokenNames.includes('POSITION_NAME'),
+      'POSITION_NAME must NOT be in diagnostics (not used in this descriptor)'
+    );
+    assertFalse(
+      tokenNames.includes('POSITION_NUMBER'),
+      'POSITION_NUMBER must NOT be in diagnostics (not used in this descriptor)'
+    );
+    assertFalse(
+      tokenNames.includes('POSITION_LEVEL'),
+      'POSITION_LEVEL must NOT be in diagnostics (not used in this descriptor)'
+    );
+    assertFalse(
+      tokenNames.includes('APPLICATION_DATE'),
+      'APPLICATION_DATE must NOT be in diagnostics (not used in this descriptor)'
+    );
+    assertFalse(
+      tokenNames.includes('PRINT_DATE'),
+      'PRINT_DATE must NOT be in diagnostics (not used in this descriptor)'
+    );
+    sqlite.close();
+  });
+
+  // ── Regression test: descriptor ใช้เฉพาะ APPLICATION_NO → diagnostics มีแค่ APPLICATION_NO ──
+  await test('[UX] diagnostics=APPLICATION_NO only when descriptor uses only APPLICATION_NO (Req E regression)', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    db.run(sql`INSERT INTO recruitment_rounds
+      (id, template_version_id, title, position_level, open_date, close_date,
+       application_pattern, round_code)
+      VALUES ('round-1', 'tv-1', 'ทดสอบ', 'ระดับปฏิบัติการ',
+              1794000000, 1800000000,
+              '{YEAR}-{ROUND_CODE}-{RUNNING:4}', 'CHM01')`);
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    // Descriptor ใช้แค่ APPLICATION_NO ผ่าน SystemDataBlock
+    const descriptor = {
+      version: 1 as const,
+      blocks: [
+        { id: 'sd-1', type: 'systemData' as const, key: 'APPLICATION_NO' as const },
+      ],
+    };
+
+    const preview = renderDescriptorToPreview(descriptor as any, ctx);
+
+    // ต้องมีเฉพาะ APPLICATION_NO
+    assertEqual(preview.tokens.length, 1, 'must have exactly 1 token');
+    assertEqual(preview.tokens[0].token, 'APPLICATION_NO');
+
+    // ROUND_CODE, POSITION_NAME, POSITION_LEVEL ต้องไม่ปรากฏ
+    const names = preview.tokens.map((t) => t.token);
+    assertFalse(names.includes('ROUND_CODE'), 'ROUND_CODE must not appear');
+    assertFalse(names.includes('POSITION_NAME'), 'POSITION_NAME must not appear');
+    assertFalse(names.includes('POSITION_LEVEL'), 'POSITION_LEVEL must not appear');
+    assertFalse(names.includes('PRINT_DATE'), 'PRINT_DATE must not appear');
+
     sqlite.close();
   });
 

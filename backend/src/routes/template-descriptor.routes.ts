@@ -38,6 +38,10 @@ import {
   saveTemplateDescriptor,
 } from '../services/template-descriptor.service';
 import { buildPreviewContext } from '../services/template-descriptor-preview.service';
+import {
+  loadApplicationContext,
+  ApplicationContextError,
+} from '../services/application-context.service';
 
 import {
   generateDescriptorFromTemplate,
@@ -78,6 +82,11 @@ const SaveDescriptorRequestSchema = z.object({
  * Schema สำหรับ POST /admin/template-versions/:id/descriptor/preview
  *
  * รับ descriptor เพื่อ preview (ไม่บันทึก)
+ *
+ * ── [Live Preview with Real Applicant Data] ──────────────────────────────────
+ * applicationId: optional — ถ้าไม่ใส่ใช้ sample preview context (เดิม)
+ *               ถ้าใส่ → โหลด ApplicationContext จริง
+ *               ถ้าไม่ตรง template version → คืน validation error ภาษาไทย
  */
 const PreviewDescriptorRequestSchema = z.object({
   descriptor: z.object({
@@ -94,6 +103,9 @@ const PreviewDescriptorRequestSchema = z.object({
       title: z.string().optional(),
     })
     .optional(),
+  // ── [Live Preview] Real applicant data ───────────────────────────────
+  // optional — backward compatible (ถ้าไม่ใส่ใช้ sample context)
+  applicationId: z.string().min(1).optional(),
 });
 
 /**
@@ -304,7 +316,9 @@ descriptorRouter.put(
 // =============================================================================
 // Route 3: POST /admin/template-versions/:id/descriptor/preview
 //
-// รับ descriptor (จาก request body) + ใช้ template version's fields
+// รับ descriptor (จาก request body) + optional applicationId
+// → ถ้าไม่มี applicationId → ใช้ buildPreviewContext() (sample data)
+// → ถ้ามี applicationId → ใช้ loadApplicationContext() (real data)
 // → renderDescriptorToPreview() → คืน HTML preview
 //
 // ไม่บันทึก — แค่ preview ดูผลลัพธ์
@@ -324,10 +338,30 @@ descriptorRouter.post(
       return c.json({ error: 'Template version not found' }, 404);
     }
 
-    // 2. Build preview context (from template version's sections + fields)
-    const ctx = await buildPreviewContext(db, id);
-    if (!ctx) {
-      return c.json({ error: 'Failed to build preview context' }, 500);
+    // 2. Build preview context
+    //    - ถ้าไม่มี applicationId → ใช้ sample context (backward compatible)
+    //    - ถ้ามี applicationId → โหลด real application context
+    let ctx;
+    if (payload.applicationId) {
+      try {
+        ctx = await loadApplicationContext(db, payload.applicationId, id);
+      } catch (err) {
+        if (err instanceof ApplicationContextError) {
+          // NOT_FOUND or TEMPLATE_MISMATCH → friendly Thai error
+          return c.json({ error: err.message, code: err.code }, 400);
+        }
+        // Unexpected error
+        return c.json(
+          { error: 'ไม่สามารถโหลดข้อมูลผู้สมัคร กรุณาลองใหม่หรือกลับไปใช้ข้อมูลตัวอย่าง' },
+          500
+        );
+      }
+    } else {
+      // Backward compatible: ใช้ sample preview context
+      ctx = await buildPreviewContext(db, id);
+      if (!ctx) {
+        return c.json({ error: 'Failed to build preview context' }, 500);
+      }
     }
 
     // 3. Cast to DocumentDescriptor (zValidator already checked shape basics,

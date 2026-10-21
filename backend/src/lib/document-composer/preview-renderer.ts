@@ -55,6 +55,7 @@ import type {
   RenderedBlockSummary,
   PreviewMode,
   PreviewTokenInfo,
+  TokenSource,
 } from "./preview-model";
 import {
   resolveDocumentTokens,
@@ -64,6 +65,7 @@ import {
   DOCUMENT_TOKENS,
   DOCUMENT_TOKEN_LABELS,
   INSERTABLE_DOCUMENT_TOKENS,
+  collectUsedTokens,
   type DocumentToken,
   type TokenValue,
 } from "./document-tokens";
@@ -667,8 +669,13 @@ export function renderDescriptorToPreview(
   // ── 4) Wrap with document shell ───────────────────────────────
   const html = wrapDocument(body, header, tokens);
 
-  // ── 5) Diagnostics — ข้อมูล token ที่ resolve ได้ ────────────────
-  const tokensInfo = buildTokenDiagnostics(tokens);
+  // ── 5) Diagnostics — ข้อมูล token ที่ใช้จริง + source metadata ────
+  // Requirement E: filter to only tokens used in descriptor
+  // Requirement F: include source metadata (application/round/system/sample)
+  // isRealApplication: true when using real application data (not sample)
+  // id starts with "preview-" when using sample context
+  const isRealApplication = !!(ctx.application.id && !String(ctx.application.id).startsWith("preview-"));
+  const tokensInfo = buildTokenDiagnostics(tokens, descriptor, ctx, isRealApplication);
 
   return { html, body, header, styles: PREVIEW_STYLES, meta, mode, tokens: tokensInfo };
 }
@@ -1824,27 +1831,137 @@ function renderDocumentHeader(
 }
 
 /**
- * Build token diagnostics (สำหรับ FE consumer — UI ใช้แสดงแผง
- * "ตรวจสอบข้อมูลเอกสาร" — Requirement I)
+ * Build token diagnostics filtered to only used tokens
  *
- * คืน token ทุกตัวใน DOCUMENT_TOKENS (รวม legacy ที่ยัง resolve ได้)
- * เพื่อให้ diagnostics ยังครอบคลุม descriptor เก่า
+ * Requirement E: Show only tokens that the descriptor actually uses.
+ * Tokens not used by the descriptor must NOT appear in diagnostics
+ * and must NOT be counted as "missing".
  *
- * label มาจาก DOCUMENT_TOKEN_LABELS (single source — เดียวกับ insert menu)
+ * Requirement F: Include source metadata for each token:
+ *   - "application"    → comes from application table
+ *   - "application_form" → comes from application formData
+ *   - "round"          → comes from recruitment round
+ *   - "system"         → comes from system (e.g., PRINT_DATE)
+ *   - "sample"         → sample data (default preview mode)
+ *   - "unresolved"     → token not bound to any data
+ *
+ * @param tokens - resolved token values
+ * @param descriptor - the descriptor being previewed
+ * @param isRealApplication - true if using real applicant data (not sample)
+ */
+/**
+ * Build token diagnostics for the preview panel.
+ *
+ * Requirement E: Show only tokens that the descriptor actually uses.
+ * Tokens not used by the descriptor must NOT appear in diagnostics
+ * and must NOT be counted as "missing".
+ *
+ * Token collection sources:
+ *   - SystemDataBlock.key
+ *   - HeadingBlock text: {TOKEN} patterns
+ *   - HeadingBlock text: {FIELD:<fieldId>} patterns
+ *   - SignatureBlock.dateSource
+ *   - SignatureBlock.nameFieldId
+ *   - FieldBlock.fieldId
+ *   - TableBlock.fieldId
+ *
+ * @param tokens - resolved token values
+ * @param descriptor - the descriptor being previewed
+ * @param isRealApplication - true if using real applicant data (not sample)
  */
 function buildTokenDiagnostics(
-  tokens: Record<DocumentToken, TokenValue>
+  tokens: Record<DocumentToken, TokenValue>,
+  descriptor: DocumentDescriptor,
+  ctx: ApplicationContext,
+  isRealApplication: boolean
 ): PreviewTokenInfo[] {
+  // ── Step 1: collect tokens used in this descriptor ─────────────────────
+  // Uses collectUsedTokens() from document-tokens.ts
+  // Returns Set of: "APPLICATION_NO", "ROUND_NAME", "FIELD:abc123", etc.
+  const usedTokens = collectUsedTokens(descriptor);
+
+  // ── Step 2: filter tokens to only those used in descriptor ─────────────
+  // System tokens (e.g. "APPLICATION_NO", "ROUND_NAME")
+  const systemTokenNames = DOCUMENT_TOKENS.filter((t) => usedTokens.has(t));
+
+  // Field tokens (e.g. "FIELD:abc123")
+  const fieldTokenNames = Array.from(usedTokens).filter((t) => t.startsWith("FIELD:"));
+
   const out: PreviewTokenInfo[] = [];
-  for (const token of DOCUMENT_TOKENS) {
+
+  // ── Step 3: add system tokens in DOCUMENT_TOKENS order ─────────────────
+  for (const token of systemTokenNames) {
+    const source = resolveTokenSource(token, tokens, isRealApplication);
     out.push({
       token,
       label: DOCUMENT_TOKEN_LABELS[token],
       text: tokens[token].text,
       empty: tokens[token].empty,
+      source,
     });
   }
+
+  // ── Step 4: add field tokens ───────────────────────────────────────────
+  for (const fieldToken of fieldTokenNames) {
+    const fieldId = fieldToken.replace("FIELD:", "");
+    const resolved = resolveFieldValue(fieldId, ctx);
+
+    out.push({
+      token: fieldToken,
+      label: `Field: ${fieldId}`,
+      text: resolved?.text ?? `{FIELD:${fieldId}}`,
+      empty: resolved?.empty ?? true,
+      source: resolved ? "application_form" : "unresolved",
+    });
+  }
+
   return out;
+}
+
+/**
+ * Resolve the data source for a system token
+ *
+ * This determines what category the token value comes from:
+ *   - "application"      → application table fields (fullname, email, submittedAt)
+ *   - "application_form" → application formData (form field answers)
+ *   - "round"           → recruitment round fields (title, roundCode, etc.)
+ *   - "system"          → system-generated (PRINT_DATE)
+ *   - "sample"          → sample data (default preview mode)
+ *   - "unresolved"      → no data source found (placeholder)
+ */
+function resolveTokenSource(
+  token: DocumentToken,
+  tokens: Record<DocumentToken, TokenValue>,
+  isRealApplication: boolean
+): TokenSource {
+  // If token is empty, it's unresolved
+  if (tokens[token].empty) {
+    return "unresolved";
+  }
+
+  // If not using real application, all tokens are from sample
+  if (!isRealApplication) {
+    return "sample";
+  }
+
+  // Map tokens to their sources
+  switch (token) {
+    case "APPLICATION_NO":
+    case "APPLICATION_DATE":
+      return "application";
+    case "ROUND_NAME":
+    case "ROUND_CODE":
+    case "POSITION_LEVEL":
+      return "round";
+    case "PRINT_DATE":
+      return "system";
+    case "POSITION_NAME":
+    case "POSITION_NUMBER":
+      // These have no data source in the current system
+      return "unresolved";
+    default:
+      return "unresolved";
+  }
 }
 
 /**

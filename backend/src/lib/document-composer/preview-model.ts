@@ -104,10 +104,46 @@ export type PreviewMode = "form" | "document";
  * - `text`  = ค่าที่ resolve ได้ (อาจเป็น placeholder text เช่น "{APPLICATION_NO}")
  * - `empty` = true เมื่อไม่มีข้อมูลจริง
  * - `label` = ชื่อ human-readable สำหรับแสดงใน UI
+ *
+ * ── Requirement F: Source Metadata ───────────────────────────────────────
+ * แต่ละรายการระบุที่มาของข้อมูล:
+ *   - application       → ข้อมูลผู้สมัคร
+ *   - application_form  → คำตอบในใบสมัคร
+ *   - round             → รอบรับสมัคร
+ *   - system            → ระบบ
+ *   - descriptor         → การตั้งค่าเอกสาร
+ *   - sample            → ข้อมูลตัวอย่าง
+ *   - unresolved        → ยังไม่ได้ผูกข้อมูล
+ *
+ * Backend resolver เป็นผู้ส่ง source metadata ที่เชื่อถือได้
+ * Frontend แปลงเป็นภาษาไทย (Application → ข้อมูลผู้สมัคร, ฯลฯ)
  */
+export type TokenSource =
+  | "application"
+  | "application_form"
+  | "round"
+  | "system"
+  | "descriptor"
+  | "sample"
+  | "unresolved";
+
 export interface PreviewTokenInfo {
   token: string;
   label: string;
   text: string;
   empty: boolean;
+  /** แหล่งที่มาของข้อมูล (default = "sample" สำหรับ backward compat) */
+  source?: TokenSource;
+}
+
+/**
+ * ค่า resolved ของ system token ที่ใช้จริงใน descriptor หนึ่ง
+ * ใช้สำหรับ buildTokenDiagnosticsWithSource()
+ */
+export interface ResolvedTokenEntry {
+  token: string;
+  label: string;
+  text: string;
+  empty: boolean;
+  source: TokenSource;
 }

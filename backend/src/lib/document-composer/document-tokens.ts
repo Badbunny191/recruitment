@@ -29,6 +29,7 @@
  */
 
 import type { ApplicationContext, FieldData } from "../pdf-types";
+import type { DocumentBlock } from "./types";
 
 // =============================================================================
 // Token vocabulary
@@ -259,6 +260,49 @@ export function listFieldTokensInText(text: string): string[] {
     }
   }
   return out;
+}
+
+/**
+ * Collect all tokens used in a document descriptor
+ *
+ * Used by preview-renderer to filter diagnostics to only show
+ * tokens that are actually used in the document.
+ *
+ * Requirement E: Diagnostics must show only tokens used by the descriptor,
+ * not all DOCUMENT_TOKENS. Tokens not used should not be counted as "missing".
+ *
+ * @param descriptor - DocumentDescriptor to analyze
+ * @returns Set of token names (e.g. "APPLICATION_NO", "FIELD:abc123")
+ */
+export function collectUsedTokens(descriptor: { blocks: DocumentBlock[] }): Set<string> {
+  const used = new Set<string>();
+
+  for (const block of descriptor.blocks) {
+    if (block.type === "systemData") {
+      used.add(block.key);
+    } else if (block.type === "heading") {
+      // Collect system tokens from heading text
+      for (const token of DOCUMENT_TOKENS) {
+        if (block.text.includes(`{${token}}`)) {
+          used.add(token);
+        }
+      }
+      // Collect field tokens from heading text
+      for (const fieldId of listFieldTokensInText(block.text)) {
+        used.add(`FIELD:${fieldId}`);
+      }
+    } else if (block.type === "field") {
+      used.add(`FIELD:${block.fieldId}`);
+    } else if (block.type === "table") {
+      used.add(`FIELD:${block.fieldId}`);
+    } else if (block.type === "signature") {
+      if (block.nameFieldId) {
+        used.add(`FIELD:${block.nameFieldId}`);
+      }
+    }
+  }
+
+  return used;
 }
 
 /**

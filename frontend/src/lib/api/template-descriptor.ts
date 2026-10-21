@@ -231,7 +231,32 @@ export interface PreviewTokenInfo {
   text: string;
   /** true = ยังไม่มีข้อมูลจริง → ใช้ placeholder */
   empty: boolean;
+  /**
+   * แหล่งที่มาของข้อมูล (Requirement F — Source Metadata)
+   * - application        → ข้อมูลผู้สมัคร (application table)
+   * - application_form  → คำตอบในใบสมัคร (formData)
+   * - round            → รอบรับสมัคร (recruitment rounds)
+   * - system           → ระบบ (PRINT_DATE)
+   * - sample           → ข้อมูลตัวอย่าง (default preview)
+   * - unresolved       → ยังไม่ได้ผูกข้อมูล
+   *
+   * Backend เป็นผู้ส่ง source metadata ที่เชื่อถือได้
+   * Frontend แปลงเป็นภาษาไทยใน Diagnostics Panel
+   */
+  source?: 'application' | 'application_form' | 'round' | 'system' | 'sample' | 'unresolved';
 }
+
+/**
+ * Thai labels for token source (Requirement F — Frontend translation)
+ */
+export const TOKEN_SOURCE_LABELS: Record<NonNullable<PreviewTokenInfo['source']>, string> = {
+  application: 'ข้อมูลผู้สมัคร',
+  application_form: 'คำตอบในใบสมัคร',
+  round: 'รอบรับสมัคร',
+  system: 'ระบบ',
+  sample: 'ข้อมูลตัวอย่าง',
+  unresolved: 'ยังไม่ได้ผูกข้อมูล',
+};
 
 // =============================================================================
 // Document Token Vocabulary (mirror backend document-tokens.ts)
@@ -586,6 +611,11 @@ export async function saveTemplateDescriptor(
 export interface PreviewPayload {
   descriptor: DocumentDescriptor;
   options?: PreviewOptions;
+  /**
+   * ถ้าไม่ใส่ → ใช้ข้อมูลตัวอย่าง (backward compatible)
+   * ถ้าใส่ → โหลดข้อมูลผู้สมัครจริงสำหรับ preview
+   */
+  applicationId?: string;
 }
 
 export async function previewTemplateDescriptor(

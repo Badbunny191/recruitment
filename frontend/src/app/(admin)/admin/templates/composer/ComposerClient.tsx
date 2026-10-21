@@ -70,6 +70,7 @@ import { BlockPanel } from './components/BlockPanel';
 import { JsonEditor } from './components/JsonEditor';
 import { PreviewPanel } from './components/PreviewPanel';
 import { PreviewModal } from './components/PreviewModal';
+import { DataSourceToolbar } from './components/DataSourceToolbar';
 import { useTemplateFields } from './hooks/useTemplateFields';
 
 // =============================================================================
@@ -338,6 +339,21 @@ function ComposerInner() {
     lastError
   );
 
+  // -------------------------------------------------------------------------
+  // Preview Data Source (Requirement A)
+  // -------------------------------------------------------------------------
+  const [previewDataSource, setPreviewDataSource] = useState<{
+    mode: 'sample' | 'real';
+    selectedRound: { id: string; title: string; positionLevel: string; templateVersionId: string; status: string; roundCode?: string | null } | null;
+    selectedApplication: { id: string; applicationNo: string; fullname: string; email: string } | null;
+    applicationId: string | null;
+  }>({
+    mode: 'sample',
+    selectedRound: null,
+    selectedApplication: null,
+    applicationId: null,
+  });
+
   // Track: เมื่อ descriptor เปลี่ยนจากภายใน (Visual Composer) → mark unsaved
   // ห้าม mark ตอน load/generate เสร็จ (เพราะตอนนั้น source จะเปลี่ยน)
   const lastDescriptorRef = useRef<DocumentDescriptor | null>(null);
@@ -552,13 +568,13 @@ function ComposerInner() {
     setPreviewModalOpen(true);
   };
 
-  // Wrapper สำหรับ PreviewModal — เรียก hook.runPreview พร้อม options
-  // (type-cast เพราะ useTemplateDescriptor ประกาศ runPreview(options?: PreviewOptions))
+  // Wrapper สำหรับ PreviewModal — เรียก hook.runPreview พร้อม options + applicationId
   const fetchPreviewForModal = useCallback(
-    async (options: { mode: PreviewMode; includeHeader: true }) => {
-      return await (runPreview as (opts?: typeof options) => Promise<boolean>)(
-        options
-      );
+    async (
+      options: { mode: PreviewMode; includeHeader: true },
+      applicationId?: string
+    ) => {
+      return await runPreview(options, applicationId);
     },
     [runPreview]
   );
@@ -608,17 +624,23 @@ function ComposerInner() {
   // หมายเหตุ: ใช้ ref กัน stale closure (useEffect dep = descriptor เท่านั้น)
   // -------------------------------------------------------------------------
   const runPreviewRef = useRef(runPreview);
+  const previewDataSourceRef = useRef(previewDataSource);
   useEffect(() => {
     runPreviewRef.current = runPreview;
   }, [runPreview]);
+  useEffect(() => {
+    previewDataSourceRef.current = previewDataSource;
+  }, [previewDataSource]);
 
   useEffect(() => {
     if (!isTextValid || !descriptor) return;
     const timer = setTimeout(() => {
-      runPreviewRef.current();
+      const { selectedApplication } = previewDataSourceRef.current;
+      const applicationId = selectedApplication?.id ?? undefined;
+      runPreviewRef.current(undefined, applicationId);
     }, 1500);
     return () => clearTimeout(timer);
-  }, [descriptor, isTextValid]);
+  }, [descriptor, isTextValid, previewDataSource]);
 
   // -------------------------------------------------------------------------
   // Render — no versionId yet
@@ -926,7 +948,15 @@ function ComposerInner() {
               <span>Live Preview</span>
             </CardTitle>
           </CardHeader>
-          <CardContent className="pt-0">
+          <CardContent className="pt-0 space-y-3">
+            {/* Data Source Toolbar (Requirement A) */}
+            <DataSourceToolbar
+              value={previewDataSource}
+              onChange={setPreviewDataSource}
+              templateVersionId={versionId}
+              disabled={loading.save || loading.generate || isVersionMismatch}
+            />
+
             <PreviewPanel
               preview={previewResult}
               loading={loading.preview}
@@ -982,6 +1012,8 @@ function ComposerInner() {
         currentPreview={previewResult}
         fetchPreview={fetchPreviewForModal}
         loading={loading.preview}
+        dataSource={previewDataSource.mode}
+        selectedApplication={previewDataSource.selectedApplication}
       />
     </div>
   );
