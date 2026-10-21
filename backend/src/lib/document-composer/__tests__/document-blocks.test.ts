@@ -1392,9 +1392,573 @@ async function main() {
   });
 
   // ============================================================================
-  // [21] showParentheses toggle in Signature
+  // [24] SystemData align — all directions (left/center/right)
   // ============================================================================
-  console.log("\n[21] Signature — showParentheses toggle");
+  console.log("\n[24] SystemData align — left / center / right");
+
+  await test("systemData align=left renders dc-align--left class", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-l",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "left",
+      layout: "stacked",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    assertContains(preview.body, "dc-align--left");
+    assertNotContains(preview.body, "dc-align--center");
+    assertNotContains(preview.body, "dc-align--right");
+  });
+
+  await test("systemData align=center renders dc-align--center class", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-c",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "center",
+      layout: "stacked",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    assertContains(preview.body, "dc-align--center");
+    assertNotContains(preview.body, "dc-align--left");
+    assertNotContains(preview.body, "dc-align--right");
+  });
+
+  await test("systemData align=right renders dc-align--right class", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-r",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "right",
+      layout: "stacked",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    assertContains(preview.body, "dc-align--right");
+    assertNotContains(preview.body, "dc-align--left");
+    assertNotContains(preview.body, "dc-align--center");
+  });
+
+  await test("systemData align=center stacked has no left-indent padding", () => {
+    // Regression: stacked + center/right must NOT have padding-left:12px
+    // because that breaks text-align: center
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-c2",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "center",
+      layout: "stacked",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    // The value div must NOT have left padding when center — no indent
+    assertContains(preview.body, "dc-align--center");
+    assertContains(preview.body, "dc-systemdata--stacked");
+  });
+
+  await test("systemData align=center PDF plan has align=center", () => {
+    const ctx = buildAppContext({ applicationNo: "CENTER-001" });
+    const block: SystemDataBlock = {
+      id: "sd-c3",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "center",
+    };
+    const plan = buildRenderPlan({ version: 1, blocks: [block] }, ctx);
+    const cmd = plan.commands.find((c) => c.type === "systemData");
+    assertTrue(cmd?.type === "systemData");
+    if (cmd?.type !== "systemData") return;
+    assertEqual(cmd.align, "center");
+  });
+
+  await test("systemData align=right PDF plan has align=right", () => {
+    const ctx = buildAppContext({ applicationNo: "RIGHT-001" });
+    const block: SystemDataBlock = {
+      id: "sd-r2",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "right",
+    };
+    const plan = buildRenderPlan({ version: 1, blocks: [block] }, ctx);
+    const cmd = plan.commands.find((c) => c.type === "systemData");
+    assertTrue(cmd?.type === "systemData");
+    if (cmd?.type !== "systemData") return;
+    assertEqual(cmd.align, "right");
+  });
+
+  // ============================================================================
+  // [24b] SystemData inline alignment — justify-content for flex body
+  // ============================================================================
+  console.log("\n[24b] SystemData inline alignment — flex justify-content");
+
+  await test("systemData inline align=left has dc-align--left class", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-il",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "left",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    assertContains(preview.body, "dc-align--left");
+    assertContains(preview.body, "dc-systemdata--inline");
+  });
+
+  await test("systemData inline align=center has dc-align--center class", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-ic",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "center",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    assertContains(preview.body, "dc-align--center");
+    assertContains(preview.body, "dc-systemdata--inline");
+  });
+
+  await test("systemData inline align=right has dc-align--right class", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-ir",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "right",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    assertContains(preview.body, "dc-align--right");
+    assertContains(preview.body, "dc-systemdata--inline");
+  });
+
+  await test("systemData inline align=center has justify-content:center in CSS", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-ic2",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "center",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    // CSS ต้องมี justify-content สำหรับ inline+center
+    assertContains(preview.html, "justify-content: center");
+  });
+
+  await test("systemData inline align=right has justify-content:flex-end in CSS", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-ir2",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "right",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    assertContains(preview.html, "justify-content: flex-end");
+  });
+
+  await test("systemData inline body has width:100% for justify-content to work", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-iw",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "center",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    // dc-systemdata__body ต้องมี width: 100%
+    assertContains(preview.html, "width: 100%");
+  });
+
+  // ============================================================================
+  // [24c] SystemData inline — DOM structure (ROOT CAUSE ของ bug align ไม่มีผล)
+  //
+  // Bug: inline layout emit label เป็น child โดยตรงของ <section> ไม่ได้อยู่
+  //      ใน .dc-systemdata__body (flex container)
+  //      → justify-content จัดแค่ value ไปขวา แต่ label ยังอยู่ซ้ายเสมอ
+  //      → UI เลือก align=right แต่ preview ยังดูเหมือนซ้าย
+  // Fix: inline ต้องห่อ label + value ไว้ใน .dc-systemdata__body เหมือน FieldBlock
+  // ============================================================================
+  console.log("\n[24c] SystemData inline — DOM structure (label inside flex body)");
+
+  await test("systemData inline puts BOTH label and value inside dc-systemdata__body", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-dom",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      showLabel: true,
+      align: "right",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    // จับ .dc-systemdata__body แบบ greedy ไปจนถึง </div></section>
+    // (non-greedy จะหยุดที่ </div> ของ label ที่อยู่ข้างใน)
+    const bodyMatch = preview.body.match(
+      /<div class="dc-systemdata__body">([\s\S]*)<\/div>\s*<\/section>/
+    );
+    assertTrue(bodyMatch !== null);
+    if (!bodyMatch) return;
+    assertContains(bodyMatch[1], "dc-systemdata__label");
+    assertContains(bodyMatch[1], "dc-systemdata__value");
+  });
+
+  await test("systemData inline label is NOT a direct child of section", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-dom2",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      showLabel: true,
+      align: "center",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    // โครงสร้างที่ถูก: <section ...><div class="dc-systemdata__body">LABEL VALUE</div></section>
+    // โครงสร้างที่ผิด: <section ...>LABEL<div class="dc-systemdata__body">VALUE</div></section>
+    const sectionMatch = preview.body.match(
+      /<section class="dc-systemdata[^"]*">([\s\S]*?)<\/section>/
+    );
+    assertTrue(sectionMatch !== null);
+    if (!sectionMatch) return;
+    const inner = sectionMatch[1];
+    // inner ต้องขึ้นต้นด้วย wrapper body (ไม่ใช่ label)
+    assertTrue(inner.trimStart().startsWith("<div class=\"dc-systemdata__body\">"));
+  });
+
+  await test("systemData inline align=right moves label together with value", () => {
+    const ctx = buildAppContext({ applicationNo: "MOVE-001" });
+    const block: SystemDataBlock = {
+      id: "sd-dom3",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      showLabel: true,
+      align: "right",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    // ทั้ง label และ value ต้องอยู่ในกลุ่มเดียวกัน → เคลื่อนไปขวาพร้อมกัน
+    const bodyMatch = preview.body.match(
+      /<div class="dc-systemdata__body">([\s\S]*)<\/div>\s*<\/section>/
+    );
+    assertTrue(bodyMatch !== null);
+    if (!bodyMatch) return;
+    assertContains(bodyMatch[1], "เลขที่ใบสมัคร");
+    assertContains(bodyMatch[1], "MOVE-001");
+  });
+
+  await test("systemData stacked keeps label OUTSIDE body wrapper", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-dom4",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      showLabel: true,
+      align: "left",
+      layout: "stacked",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    // stacked ไม่ต้องมี flex wrapper (ไม่มี .dc-systemdata__body)
+    assertNotContains(preview.body, "dc-systemdata__body");
+    assertContains(preview.body, "dc-systemdata--stacked");
+  });
+
+  await test("systemData inline showLabel=false renders value only inside body", () => {
+    const ctx = buildAppContext({ applicationNo: "NOLBL-001" });
+    const block: SystemDataBlock = {
+      id: "sd-dom5",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      showLabel: false,
+      align: "right",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    assertNotContains(preview.body, "dc-systemdata__label");
+    assertContains(preview.body, "dc-systemdata__body");
+    assertContains(preview.body, "NOLBL-001");
+  });
+
+  // ============================================================================
+  // [24d] preview.styles — CSS ต้องถูกส่งถึง consumer (single source of truth)
+  //
+  // Bug: backend มี CSS ครบ แต่ PreviewFrame สร้าง iframe จาก preview.body
+  //      ซึ่งไม่มี <style> → CSS ที่แก้ใน backend ไม่เคยมีผลใน browser
+  // ============================================================================
+  console.log("\n[24d] preview.styles — backend CSS ต้องส่งถึง consumer");
+
+  await test("preview.styles is non-empty", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-st1",
+      type: "systemData",
+      key: "APPLICATION_NO",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    assertTrue(typeof preview.styles === "string" && preview.styles.length > 0);
+  });
+
+  await test("preview.styles contains systemData alignment rules", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-st2",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "right",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    // previewFrame inject styles ลง iframe → ต้องมี rule ที่ทำให้ right มีผล
+    assertContains(preview.styles, ".dc-systemdata--inline.dc-align--right");
+    assertContains(preview.styles, "justify-content: flex-end");
+  });
+
+  await test("preview.styles matches the CSS embedded in preview.html", () => {
+    const ctx = buildAppContext();
+    const block: SystemDataBlock = {
+      id: "sd-st3",
+      type: "systemData",
+      key: "APPLICATION_NO",
+      align: "center",
+      layout: "inline",
+    };
+    const preview = renderDescriptorToPreview(
+      { version: 1, blocks: [block] },
+      ctx
+    );
+    const styleMatch = preview.html.match(/<style>([\s\S]*?)<\/style>/);
+    assertTrue(styleMatch !== null);
+    if (!styleMatch) return;
+    assertEqual(styleMatch[1], preview.styles);
+  });
+
+  // ============================================================================
+  // [25] All block types — align propagates to plan + preview
+  // ============================================================================
+  console.log("\n[25] Block alignment — all types");
+
+  for (const blockType of ["heading", "field", "table", "logo", "signature"] as const) {
+    for (const align of ["left", "center", "right"] as const) {
+      await test(`${blockType} align=${align} renders correct align class in preview`, () => {
+        const ctx = buildAppContext();
+        const fields = [fmField("fm-name", "ชื่อ", "TEXT")];
+        const extraCtx = buildAppContext({
+          formData: { "fm-name": "test" },
+          fields,
+        });
+
+        let block: DocumentBlock;
+        switch (blockType) {
+          case "heading":
+            block = { id: `h-${align}`, type: "heading", text: "Test", size: "medium", align };
+            break;
+          case "field":
+            block = { id: `f-${align}`, type: "field", fieldId: "fm-name", align };
+            break;
+          case "table":
+            block = { id: `t-${align}`, type: "table", fieldId: "fm-name", align };
+            break;
+          case "logo":
+            // logo source=none returns "" — check plan command instead of preview body
+            {
+              const logoBlock = { id: `l-${align}`, type: "logo" as const, source: "none" as const, align };
+              const plan = buildRenderPlan({ version: 1, blocks: [logoBlock] }, ctx);
+              const cmd = plan.commands.find((c) => c.type === "logo");
+              assertTrue(cmd?.type === "logo", "logo command must exist");
+              if (cmd?.type !== "logo") return;
+              assertEqual(cmd.align, align);
+              return; // skip preview body check for logo (no HTML output)
+            }
+          case "signature":
+            block = { id: `s-${align}`, type: "signature", align };
+            break;
+        }
+
+        const preview = renderDescriptorToPreview(
+          { version: 1, blocks: [block] },
+          extraCtx
+        );
+        assertContains(preview.body, `dc-align--${align}`);
+      });
+    }
+  }
+
+  // ============================================================================
+  // [26] Document Header — no duplicate rendering of tokens with SystemDataBlocks
+  // ============================================================================
+  console.log("\n[26] Document Header — no duplicate tokens");
+
+  await test("includeHeader=true does not duplicate APPLICATION_NO when SystemDataBlock exists", () => {
+    const ctx = buildAppContext({ applicationNo: "APP-001" });
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [
+        { id: "sd-1", type: "systemData", key: "APPLICATION_NO", align: "center" },
+      ],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx, { includeHeader: true });
+    // Header should NOT have APPLICATION_NO row (block already renders it)
+    // Body should have the SystemDataBlock rendered
+    assertNotContains(preview.header, "เลขที่ใบสมัคร");
+    assertContains(preview.body, "APP-001");
+  });
+
+  await test("includeHeader=true shows APPLICATION_NO only when NO SystemDataBlock for it", () => {
+    const ctx = buildAppContext({ applicationNo: "APP-002" });
+    // No systemData block at all — header should show tokens
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [
+        { id: "h-1", type: "heading", text: "Test", size: "medium" },
+      ],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx, { includeHeader: true });
+    // Header SHOULD have APPLICATION_NO (no block for it)
+    assertContains(preview.header, "เลขที่ใบสมัคร");
+    assertContains(preview.header, "APP-002");
+  });
+
+  await test("includeHeader=true shows ROUND_NAME only when NO SystemDataBlock for it", () => {
+    const ctx = buildAppContext({ roundTitle: "รอบทดสอบ 2569" });
+    // ROUND_NAME block not in descriptor
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [
+        { id: "h-1", type: "heading", text: "Test", size: "medium" },
+      ],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx, { includeHeader: true });
+    assertContains(preview.header, "ชื่อรอบการสมัคร");
+    assertContains(preview.header, "รอบทดสอบ 2569");
+  });
+
+  await test("SystemData APPLICATION_NO align=center visible in fullscreen preview", () => {
+    const ctx = buildAppContext({ applicationNo: "CENTER-APP" });
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [
+        { id: "sd-1", type: "systemData", key: "APPLICATION_NO", align: "center", layout: "stacked" },
+      ],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx, { includeHeader: true });
+    // Body should have the centered block
+    assertContains(preview.body, "dc-align--center");
+    assertContains(preview.body, "CENTER-APP");
+    // Header should NOT duplicate it
+    assertNotContains(preview.header, "เลขที่ใบสมัคร");
+  });
+
+  await test("SystemData APPLICATION_NO align=right visible in fullscreen preview", () => {
+    const ctx = buildAppContext({ applicationNo: "RIGHT-APP" });
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [
+        { id: "sd-1", type: "systemData", key: "APPLICATION_NO", align: "right", layout: "stacked" },
+      ],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx, { includeHeader: true });
+    assertContains(preview.body, "dc-align--right");
+    assertContains(preview.body, "RIGHT-APP");
+    assertNotContains(preview.header, "เลขที่ใบสมัคร");
+  });
+
+  await test("Multiple SystemData blocks — header only shows remaining tokens", () => {
+    const ctx = buildAppContext({
+      applicationNo: "APP-MULTI",
+      roundTitle: "รอบหลาย",
+    });
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [
+        { id: "sd-1", type: "systemData", key: "APPLICATION_NO", align: "right" },
+        { id: "sd-2", type: "systemData", key: "ROUND_NAME", align: "center" },
+      ],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx, { includeHeader: true });
+    // APPLICATION_NO and ROUND_NAME are in blocks — header should NOT show them
+    assertNotContains(preview.header, "เลขที่ใบสมัคร");
+    assertNotContains(preview.header, "ชื่อรอบการสมัคร");
+    // APPLICATION_DATE and PRINT_DATE still in header (no blocks for them)
+    assertContains(preview.header, "วันที่สมัคร");
+    assertContains(preview.header, "วันที่พิมพ์");
+  });
+
+  await test("includeHeader=false suppresses entire header (no duplicate)", () => {
+    const ctx = buildAppContext({ applicationNo: "APP-NO-HEADER" });
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [
+        { id: "sd-1", type: "systemData", key: "APPLICATION_NO" },
+      ],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx, { includeHeader: false });
+    // header should be empty
+    assertEqual(preview.header, "");
+    // body should have the SystemDataBlock
+    assertContains(preview.body, "APP-NO-HEADER");
+  });
+
+  // ============================================================================
+  // [27] Signature showParentheses toggle
+  // ============================================================================
+  console.log("\n[27] Signature — showParentheses toggle");
 
   await test("signature showParentheses=true wraps name in parens", () => {
     const ctx = buildAppContext({ fullname: "นาย ก" });

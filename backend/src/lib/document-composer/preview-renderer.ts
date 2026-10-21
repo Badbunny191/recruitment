@@ -184,9 +184,13 @@ const PREVIEW_STYLES = `
   color: #000000;
   font-weight: 600;
 }
+/* stacked: indent 12px เฉพาะเมื่อ align=left
+   center/right → ไม่ indent เพื่อให้ text-align ทำงานถูกต้อง */
+.dc-systemdata--stacked.dc-align--left .dc-systemdata__value {
+  padding-left: 12px;
+}
 .dc-systemdata--stacked .dc-systemdata__value {
   margin-top: 2px;
-  padding-left: 12px;
 }
 .dc-systemdata--inline .dc-systemdata__label {
   margin-right: 8px;
@@ -197,6 +201,18 @@ const PREVIEW_STYLES = `
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0 4px;
+  width: 100%;
+  box-sizing: border-box;
+}
+/* inline alignment — justify-content จัดตำแหน่ง flex children ตาม block.align */
+.dc-systemdata--inline.dc-align--left .dc-systemdata__body {
+  justify-content: flex-start;
+}
+.dc-systemdata--inline.dc-align--center .dc-systemdata__body {
+  justify-content: center;
+}
+.dc-systemdata--inline.dc-align--right .dc-systemdata__body {
+  justify-content: flex-end;
 }
 .dc-systemdata--empty .dc-systemdata__value {
   color: #9aa5b1;
@@ -646,7 +662,7 @@ export function renderDescriptorToPreview(
   // ใช้ร่วมกันทั้ง modal และ thumbnail — single source of truth
   // (consumer เลือกว่าจะ inject ลง html หรือไม่ผ่าน `includeHeader`)
   const title = options.title ?? resolveDescriptorTitle(descriptor);
-  const header = includeHeader ? renderDocumentHeader(title, tokens) : "";
+  const header = includeHeader ? renderDocumentHeader(title, tokens, descriptor) : "";
 
   // ── 4) Wrap with document shell ───────────────────────────────
   const html = wrapDocument(body, header, tokens);
@@ -654,7 +670,7 @@ export function renderDescriptorToPreview(
   // ── 5) Diagnostics — ข้อมูล token ที่ resolve ได้ ────────────────
   const tokensInfo = buildTokenDiagnostics(tokens);
 
-  return { html, body, header, meta, mode, tokens: tokensInfo };
+  return { html, body, header, styles: PREVIEW_STYLES, meta, mode, tokens: tokensInfo };
 }
 
 /**
@@ -1414,11 +1430,21 @@ function renderSystemDataBlock(
 
   const layoutClass = layout === "inline" ? " dc-systemdata--inline" : " dc-systemdata--stacked";
   const emptyClass = isEmpty ? " dc-systemdata--empty" : "";
-  const bodyClass = layout === "inline" ? " dc-systemdata__body" : "";
 
+  // ── layout inline → label + value ต้องอยู่ในกลุ่มเดียวกัน ──────
+  // mirror renderFieldBlock: inline ห่อทั้ง label และ value ไว้ใน
+  // .dc-systemdata__body (flex container) → justify-content จัดกลุ่ม
+  // เดียวได้ ถ้า label อยู่นอก body จะถูกจัดตำแหน่งแยกจน alignment ไม่มีผล
+  if (layout === "inline") {
+    return `<section class="dc-systemdata dc-block ${alignClass}${layoutClass}${emptyClass}"${styleAttr}>
+    <div class="dc-systemdata__body">${labelHtml}${valueHtml}</div>
+  </section>`;
+  }
+
+  // stacked → label บนบรรทัด / value ล่างบรรทัด (ไม่ต้องมี wrapper)
   return `<section class="dc-systemdata dc-block ${alignClass}${layoutClass}${emptyClass}"${styleAttr}>
     ${labelHtml}
-    <div class="${bodyClass.trim()}">${valueHtml}</div>
+    ${valueHtml}
   </section>`;
 }
 
@@ -1737,44 +1763,61 @@ ${renderDocumentHeaderInfo(tokens)}
 }
 
 /**
- * Render document header block — Logo placeholder + Title + Application No + Position info
+ * Render document header block — Logo placeholder + Title + Application tokens
  *
  * [Live Preview UX — Requirement I.5]
  * - Logo: ใช้ <img> ถ้ามี URL จริง ไม่มี → placeholder สีเทา "ยังไม่มีโลโก้"
  * - Title: ชื่อเอกสารจาก descriptor (heading large ตัวแรก)
- * - Token rows: ใช้เฉพาะ token ที่ INSERTABLE (ดู renderDocumentHeaderInfo)
+ * - Token rows: แสดงเฉพาะ token ที่**ยังไม่มี** SystemDataBlock ใน descriptor
+ *   → descriptor เป็น single source of truth สำหรับ layout ข้อมูลระบบ
+ *   → ถ้า Admin เพิ่ม SystemDataBlock APPLICATION_NO → header ไม่แสดงซ้ำ
  *
  * โครงสร้าง:
  *   <header class="dc-doc-header">
  *     <div class="dc-doc-header__logo">…</div>
  *     <h1 class="dc-doc-header__title">ชื่อเอกสาร</h1>
  *     <dl class="dc-doc-header__meta">
- *       <dt>เลขที่ใบสมัคร</dt><dd>{APPLICATION_NO}</dd>
- *       <dt>ชื่อรอบการสมัคร</dt><dd>{ROUND_NAME}</dd>
+ *       <dt>เลขที่ใบสมัคร</dt><dd>{APPLICATION_NO}</dd>  ← ถ้ายังไม่มี block
+ *       <dt>ชื่อรอบการสมัคร</dt><dd>{ROUND_NAME}</dd>      ← ถ้ายังไม่มี block
  *     </dl>
  *   </header>
+ *
+ * @param descriptor - สำหรับตรวจว่า token ใดถูก render โดย SystemDataBlock แล้ว
  */
 function renderDocumentHeader(
   title: string,
-  tokens: Record<DocumentToken, TokenValue>
+  tokens: Record<DocumentToken, TokenValue>,
+  descriptor: DocumentDescriptor
 ): string {
   const resolvedTitle = escapeHtml(applyDocumentTokens(title, tokens));
 
-  // ── ใช้เฉพาะ token ที่ UI อนุญาต (INSERTABLE_DOCUMENT_TOKENS) ─────
-  const metaRows = INSERTABLE_DOCUMENT_TOKENS.map((token) => {
-    const value = tokens[token];
-    const label = DOCUMENT_TOKEN_LABELS[token];
-    const emptyClass = value.empty ? " dc-header-meta__value--empty" : "";
-    return `<dt>${escapeHtml(label)}</dt>
+  // ── Collect keys ที่มี SystemDataBlock แล้วใน descriptor ─────
+  // → header ไม่ต้องแสดงซ้ำ (descriptor เป็น single source)
+  const systemDataKeys = new Set<string>();
+  for (const block of descriptor.blocks) {
+    if (block.type === "systemData") {
+      systemDataKeys.add(block.key);
+    }
+  }
+
+  // ── Render เฉพาะ token ที่ยังไม่มี block ─────────────────────
+  const metaRows = INSERTABLE_DOCUMENT_TOKENS
+    .filter((token) => !systemDataKeys.has(token))
+    .map((token) => {
+      const value = tokens[token];
+      const label = DOCUMENT_TOKEN_LABELS[token];
+      const emptyClass = value.empty ? " dc-header-meta__value--empty" : "";
+      return `<dt>${escapeHtml(label)}</dt>
       <dd class="dc-header-meta__value${emptyClass}">${escapeHtml(value.text)}</dd>`;
-  }).join("\n      ");
+    })
+    .join("\n      ");
 
   return `<header class="dc-doc-header">
   <div class="dc-doc-header__logo">
     <span class="dc-doc-header__logo-placeholder">${NO_LOGO_TEXT}</span>
   </div>
   <h1 class="dc-doc-header__title">${resolvedTitle}</h1>
-  <dl class="dc-header-meta">
+  <dl class="dc-doc-header__meta">
       ${metaRows}
   </dl>
 </header>`;

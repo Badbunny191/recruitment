@@ -33,7 +33,7 @@
  *   - lastError normalize เป็น string เสมอก่อนเก็บใน state → ป้องกัน React Error #31
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   loadTemplateDescriptor as apiLoad,
   saveTemplateDescriptor as apiSave,
@@ -287,6 +287,13 @@ export function useTemplateDescriptor(
   // ---------------------------------------------------------------------------
   // action: preview
   // ---------------------------------------------------------------------------
+  // ── request sequencing: กัน response เก่าทับ response ใหม่ ────────────
+// Race condition ที่เคยเกิด: ผู้ใช้แก้ align เร็ว ๆ (left → right) ภายใน debounce
+// window เดียว → request เก่า (left) อาจกลับมาทับ request ใหม่ (right)
+// → preview ค้างค่าเก่า แม้ผู้ใช้เห็น UI ว่าเป็น right
+// ใช้เลขลำดับเพิ่ม: response ที่ seq ไม่ตรงกับ seq ล่าสุด → ทิ้ง
+const previewSeqRef = useRef(0);
+
   const runPreview = useCallback(
     async (options?: PreviewOptions): Promise<boolean> => {
       if (!descriptor) {
@@ -294,6 +301,7 @@ export function useTemplateDescriptor(
         return false;
       }
 
+      const seq = ++previewSeqRef.current;
       setLoading((p) => ({ ...p, preview: true }));
       setLastError(null);
       setLastIssues([]);
@@ -302,6 +310,14 @@ export function useTemplateDescriptor(
         descriptor,
         options: options ?? {},
       });
+
+      // ── stale response guard ──────────────────────────────────
+      // ถ้าระหว่างรอ response มี request ใหม่เกิดขึ้นแล้ว
+      // → response นี้เก่ากว่า → ทิ้ง ไม่เขียนทับ state
+      if (seq !== previewSeqRef.current) {
+        return false;
+      }
+
       setLoading((p) => ({ ...p, preview: false }));
 
       if (!res.ok) {

@@ -35,6 +35,12 @@ export interface PreviewModel {
   body: string;
   /** document header block (logo placeholder + title + token strip) */
   header: string;
+  /**
+   * CSS ชุดเดียวกับที่ฝังใน `html` — ส่งให้ consumer ที่ประกอบ document
+   * shell เอง (เช่น PreviewFrame iframe srcdoc) เพื่อไม่ให้เกิด CSS drift
+   * ระหว่าง backend กับ frontend
+   */
+  styles: string;
   /** debug + inspect info */
   meta: PreviewMeta;
   /** โหมดที่ใช้ render (UI ใช้ toggle Form ↔ Document โดยไม่ต้อง parse HTML) */

@@ -408,6 +408,11 @@ export interface PreviewResponse {
   body: string;
   /** Document header block (logo placeholder + title + token strip) */
   header: string;
+  /**
+   * CSS ชุดเดียวกับที่ฝังใน `html` — PreviewFrame inject ลง iframe
+   * เพื่อไม่ให้เกิด CSS drift กับ backend
+   */
+  styles?: string;
   meta: PreviewMeta;
   /** โหมดที่ใช้ render (UI ใช้ toggle Form ↔ Document) */
   mode: PreviewMode;

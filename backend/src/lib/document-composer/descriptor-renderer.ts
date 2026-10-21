@@ -909,8 +909,10 @@ function drawSystemData(state: ExecState, cmd: SystemDataRenderCommand): void {
     }
   }
 
-  // stacked (or no label): วาด value ในบรรทัดถัดไป (indent 12pt เหมือน field)
-  const valueX = cmd.showLabel && cmd.layout === "stacked"
+  // stacked (or no label): วาด value ในบรรทัดถัดไป
+  // indent 12pt เฉพาะเมื่อ align=left (เหมือน field)
+  // center/right → drawValueBlock จัดตำแหน่งตาม align แล้ว ไม่ต้อง indent
+  const valueX = cmd.showLabel && cmd.layout === "stacked" && cmd.align === "left"
     ? MARGIN + 12
     : MARGIN;
   drawValueBlock(state, cmd, valueX, valueColor);

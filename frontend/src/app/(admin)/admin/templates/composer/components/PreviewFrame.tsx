@@ -19,12 +19,12 @@ import { useMemo } from 'react';
 import type { PreviewResponse } from '@/lib/api/template-descriptor';
 
 /**
- * Inline CSS ที่ใช้ใน iframe (เหมือนเดิม — โหมด Form
- * ต้องการ rule สำหรับ alignment และ form controls ที่ backend ไม่ได้ pack ไว้)
+ * Frame-level CSS ที่ต้องมีเสมอ (ไม่เกี่ยวกับ block layout)
  *
- * หมายเหตุ: backend renderer มี style block ครบอยู่แล้วใน PreviewResponse.html
- * → CSS ที่นี่เป็น "รายงานเสริม" สำหรับ compact preview (ที่ใช้แค่ body)
- *   เพื่อให้ alignment/control spacing คงเดิมช่วง compat
+ * CSS ของ block ทั้งหมด (.dc-systemdata, .dc-field, ...) มาจาก backend
+ * `preview.styles` เพื่อไม่ให้เกิด CSS drift — ถ้า hardcode ซ้ำที่นี่
+ * แก้ backend แล้ว preview จะไม่เปลี่ยน (bug ที่เคยเจอ: rule ที่แก้ใน
+ * backend ไม่เคยถูกส่งมาถึง iframe เลย)
  */
 const PREVIEW_FRAME_CSS = `
 body {
@@ -39,6 +39,8 @@ body {
 .dc-heading.size-small { font-size: 14px; }
 .dc-heading.size-medium { font-size: 18px; }
 .dc-heading.size-large { font-size: 24px; }
+.dc-preview { max-width: none; box-shadow: none; margin: 0; padding: 0; }
+.dc-preview-modal { max-width: none; box-shadow: none; margin: 0; padding: 0; }
 .dc-field-label { font-weight: 500; color: #475569; font-size: 12px; margin-bottom: 4px; }
 .dc-field-value { font-size: 14px; }
 .dc-field-block, .dc-table-block, .dc-logo-block, .dc-heading-block { margin-bottom: 8px; }
@@ -101,18 +103,23 @@ export function PreviewFrame({
     : preview.body;
 
   const srcDoc = useMemo(() => {
+    // ── Backend CSS เป็น single source of truth ──────────────────
+    // preview.styles คือ PREVIEW_STYLES ชุดเดียวกับที่ฝังใน preview.html
+    // ถ้าไม่ inject ตรงนี้ CSS ของ block (เช่น .dc-systemdata) จะไม่มีใน iframe
+    // เลย → แก้ backend แล้ว preview ไม่เปลี่ยน (root cause ที่เจอรอบนี้)
+    const backendCss = preview.styles ?? '';
     return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8" />
   <style>
 ${PREVIEW_FRAME_CSS}
-${preview.mode === 'form' ? '' : ''}
+${backendCss}
   </style>
 </head>
 <body>${inner}</body>
 </html>`;
-  }, [inner, preview.mode]);
+  }, [inner, preview.mode, preview.styles]);
 
   return (
     <iframe

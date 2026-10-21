@@ -346,6 +346,7 @@ descriptorRouter.post(
         html: preview.html,
         body: preview.body,
         header: preview.header,
+        styles: preview.styles,
         meta: preview.meta,
         mode: preview.mode,
         tokens: preview.tokens,
