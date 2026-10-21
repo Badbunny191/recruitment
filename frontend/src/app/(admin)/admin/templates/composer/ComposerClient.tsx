@@ -5,10 +5,16 @@
  * --------------------------------
  * Document Composer V1 — Admin UI Orchestrator
  *
- * Layout:
- *   - Left:   Actions (Generate / Load / Save / Preview)
+ * Layout (ก้อนที่ 2 — Responsive Composer Workspace):
+ *   - Left:   Actions (Generate / Load / Save / Preview) — ย่อ/ขยายได้
  *   - Middle: Block Panel (Visual Composer) + Advanced JSON Editor
+ *   - Divider: เส้นแบ่งที่ลากปรับขนาดได้
  *   - Right:  Live Preview
+ *   - < 1024px → โหมดแท็บ [แก้ไขเอกสาร] [ดูตัวอย่าง]
+ *
+ * ⚠️ Layout state (splitRatio / sidebarCollapsed / tab) แยกจาก
+ *    DocumentDescriptor เด็ดขัด — เก็บใน localStorage เป็น UI preference เท่านั้น
+ *    (ไม่มี descriptor / token / ข้อมูลผู้สมัครถูกบันทึก)
  *
  * State Model (UAT Hardening):
  *   - useTemplateDescriptor hook เป็น single source of truth (ไม่มี local mirror)
@@ -71,7 +77,11 @@ import { JsonEditor } from './components/JsonEditor';
 import { PreviewPanel } from './components/PreviewPanel';
 import { PreviewModal } from './components/PreviewModal';
 import { DataSourceToolbar } from './components/DataSourceToolbar';
+import { ComposerWorkspace } from './components/ComposerWorkspace';
 import { useTemplateFields } from './hooks/useTemplateFields';
+import { useWorkspaceLayout } from './hooks/useWorkspaceLayout';
+import { useAvailableHeight } from './hooks/useAvailableHeight';
+import { previewTriggerSignature } from './lib/workspace-layout';
 
 // =============================================================================
 // Template Version Meta
@@ -354,6 +364,35 @@ function ComposerInner() {
     applicationId: null,
   });
 
+  // -------------------------------------------------------------------------
+  // Workspace Layout (ก้อนที่ 2)
+  //
+  // ⚠️ Layout state แยกจาก DocumentDescriptor เด็ดขัด
+  //    - เก็บใน localStorage เป็น UI preference เท่านั้น
+  //    - ไม่มีการเขียนค่าใด ๆ กลับเข้า descriptor / backend
+  // -------------------------------------------------------------------------
+  const {
+    splitRatio,
+    sidebarCollapsed,
+    layoutMode,
+    activeTab,
+    isDragging,
+    setActiveTab,
+    toggleSidebar,
+    resetLayout,
+    dividerProps,
+    containerRef,
+  } = useWorkspaceLayout();
+
+  /** ความสูงพื้นที่ทำงานที่เหลือจาก viewport (วัดจริง ไม่ hard-code) */
+  const { ref: heightRef, height: workspaceHeight } = useAvailableHeight(360, [
+    layoutMode,
+    // alert ที่แสดง/ซ่อนทำให้ความสูงพื้นที่ทำงานเปลี่ยน → วัดใหม่
+    source,
+    fallbackReason,
+    lastError,
+  ]);
+
   // Track: เมื่อ descriptor เปลี่ยนจากภายใน (Visual Composer) → mark unsaved
   // ห้าม mark ตอน load/generate เสร็จ (เพราะตอนนั้น source จะเปลี่ยน)
   const lastDescriptorRef = useRef<DocumentDescriptor | null>(null);
@@ -622,6 +661,10 @@ function ComposerInner() {
   // -------------------------------------------------------------------------
   // Auto-refresh preview (debounced) — เมื่อ descriptor เปลี่ยน
   // หมายเหตุ: ใช้ ref กัน stale closure (useEffect dep = descriptor เท่านั้น)
+  //
+  // [ก้อนที่ 2] ใช้ "ลายเซ็น" (trigger signature) เป็น dependency แทน descriptor
+  //   → การสลับแท็บ / ลาก divider / ย่อ sidebar **ไม่** ทำให้เกิด
+  //     Preview request ซ้ำ (เพราะเหตุผลของ layout เพียงอย่างเดียว)
   // -------------------------------------------------------------------------
   const runPreviewRef = useRef(runPreview);
   const previewDataSourceRef = useRef(previewDataSource);
@@ -632,6 +675,13 @@ function ComposerInner() {
     previewDataSourceRef.current = previewDataSource;
   }, [previewDataSource]);
 
+  const previewTrigger = previewTriggerSignature({
+    descriptor,
+    descriptorText,
+    isTextValid,
+    dataSource: previewDataSource,
+  });
+
   useEffect(() => {
     if (!isTextValid || !descriptor) return;
     const timer = setTimeout(() => {
@@ -640,7 +690,8 @@ function ComposerInner() {
       runPreviewRef.current(undefined, applicationId);
     }, 1500);
     return () => clearTimeout(timer);
-  }, [descriptor, isTextValid, previewDataSource]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewTrigger]);
 
   // -------------------------------------------------------------------------
   // Render — no versionId yet
@@ -816,154 +867,141 @@ function ComposerInner() {
         </Alert>
       )}
 
-      {/* ===== 3-COLUMN LAYOUT ===== */}
-      <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr_1fr] gap-4">
-        {/* LEFT: Actions */}
-        <Card className="lg:sticky lg:top-4 lg:self-start">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <span>⚡</span>
-              <span>Actions</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 pt-0">
-            <Button
-              variant="default"
-              size="sm"
-              onClick={handleGenerate}
-              disabled={loading.generate || loading.load || loading.save}
-              className="w-full justify-start"
-            >
-              {loading.generate ? <Spinner /> : <span className="shrink-0">✨</span>}
-              <span>Generate</span>
-            </Button>
+      {/* ===== WORKSPACE LAYOUT (ก้อนที่ 2) ===== */}
+      {/*
+        โครงสร้างใหม่:
+          Desktop/Laptop: [Actions] [Visual Composer | Divider | Live Preview]
+          Mobile:          [แท็บ: แก้ไขเอกสาร | ดูตัวอย่าง]
 
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleLoad}
-              disabled={loading.load || loading.save}
-              className="w-full justify-start"
-            >
-              {loading.load ? <Spinner /> : <span className="shrink-0">📥</span>}
-              <span>Load</span>
-            </Button>
-
-            <Button
-              variant="default"
-              size="sm"
-              onClick={handleSave}
-              disabled={loading.save || !isTextValid || isVersionMismatch}
-              className="w-full justify-start bg-blue-600 hover:bg-blue-700"
-            >
-              {loading.save ? <Spinner /> : <span className="shrink-0">💾</span>}
-              <span>{loading.save ? 'Saving...' : 'Save'}</span>
-            </Button>
-
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleManualPreview}
-              disabled={loading.preview || !isTextValid || isVersionMismatch}
-              className="w-full justify-start"
-              title="เปิด Fullscreen A4 Preview"
-            >
-              {loading.preview ? (
-                <Spinner />
-              ) : (
-                <span className="shrink-0">👁</span>
-              )}
-              <span>Preview (Fullscreen)</span>
-            </Button>
-
-            <div className="pt-3 mt-3 border-t border-slate-200">
-              <p className="text-[10px] text-slate-500 leading-relaxed">
-                <strong>Generate:</strong> สร้าง default descriptor จาก template structure
-                <br />
-                <strong>Load:</strong> โหลด descriptor ที่บันทึกไว้
-                <br />
-                <strong>Save:</strong> บันทึก descriptor เข้า template version
-                <br />
-                <strong>Preview:</strong> เปิด Fullscreen A4 · รองรับ Form/Document toggle
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* MIDDLE: Visual Composer */}
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <span>🧩</span>
-                <span>Visual Composer</span>
-              </CardTitle>
-              <span className="text-[10px] text-slate-500">
-                {descriptor?.blocks.length ?? 0} block(s) · {fields.length} field(s)
-              </span>
-            </div>
-          </CardHeader>
-          <CardContent className="pt-0 space-y-3">
-            {/* Friendly Empty State */}
-            {!isVersionMismatch && (!descriptor || descriptor.blocks.length === 0) ? (
-              <div className="border-2 border-dashed border-slate-200 rounded-lg p-8 text-center bg-slate-50">
-                <div className="text-4xl mb-2">📄</div>
-                <p className="text-sm font-medium text-slate-700">
-                  ยังไม่มี Block ใน Descriptor
-                </p>
-                <p className="text-xs mt-2 text-slate-500 max-w-sm mx-auto">
-                  กด <strong>Generate</strong> เพื่อสร้างอัตโนมัติจาก Template Structure
-                  หรือเพิ่ม Block ทีละตัวจากแถบเครื่องมือด้านบน
-                </p>
+        ⚠️ แต่ละคอลัมน์เลื่อนแยกกัน (overflow-y-auto + min-h-0)
+           หัวของแต่ละคอลัมน์อยู่นิ่ง และไม่ hard-code viewport offset
+      */}
+      <ComposerWorkspace
+        layoutMode={layoutMode}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={toggleSidebar}
+        onResetLayout={resetLayout}
+        onGenerate={handleGenerate}
+        onLoad={handleLoad}
+        onSave={handleSave}
+        onFullscreenPreview={handleManualPreview}
+        loading={{
+          generate: loading.generate,
+          load: loading.load,
+          save: loading.save,
+          preview: loading.preview,
+        }}
+        canSave={isTextValid && !isVersionMismatch}
+        canPreview={isTextValid && !isVersionMismatch}
+        splitRatio={splitRatio}
+        isDragging={isDragging}
+        dividerProps={dividerProps}
+        containerRef={containerRef}
+        heightRef={heightRef}
+        workspaceHeight={workspaceHeight}
+        composerContent={
+          <Card className="flex flex-col min-h-0 h-full overflow-hidden">
+            <CardHeader className="pb-3 shrink-0">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <span>🧩</span>
+                  <span>Visual Composer</span>
+                </CardTitle>
+                <span className="text-[10px] text-slate-500">
+                  {descriptor?.blocks.length ?? 0} block(s) · {fields.length}{' '}
+                  field(s)
+                </span>
               </div>
-            ) : (
-              <BlockPanel
-                descriptor={descriptor ?? { version: 1, blocks: [] }}
-                onChange={setDescriptor}
-                fields={fields}
-                fieldsLoading={fieldsLoading}
-                disabled={loading.save || loading.generate || isVersionMismatch}
-                onDeleteRequest={handleDeleteRequest}
+            </CardHeader>
+            <CardContent className="pt-0 space-y-3 flex-1 min-h-0 overflow-y-auto">
+              {/* Friendly Empty State */}
+              {!isVersionMismatch &&
+              (!descriptor || descriptor.blocks.length === 0) ? (
+                <div className="border-2 border-dashed border-slate-200 rounded-lg p-8 text-center bg-slate-50">
+                  <div className="text-4xl mb-2">📄</div>
+                  <p className="text-sm font-medium text-slate-700">
+                    ยังไม่มี Block ใน Descriptor
+                  </p>
+                  <p className="text-xs mt-2 text-slate-500 max-w-sm mx-auto">
+                    กด <strong>Generate</strong> เพื่อสร้างอัตโนมัติจาก Template
+                    Structure หรือเพิ่ม Block ทีละตัวจากแถบเครื่องมือด้านบน
+                  </p>
+                </div>
+              ) : (
+                <BlockPanel
+                  descriptor={descriptor ?? { version: 1, blocks: [] }}
+                  onChange={setDescriptor}
+                  fields={fields}
+                  fieldsLoading={fieldsLoading}
+                  disabled={loading.save || loading.generate || isVersionMismatch}
+                  onDeleteRequest={handleDeleteRequest}
+                />
+              )}
+
+              <JsonEditor
+                text={descriptorText}
+                onTextChange={setDescriptorText}
+                isValid={isTextValid}
+                parseIssues={parseIssues}
+                charCount={descriptorText.length}
+                onFormatFromObject={() => {
+                  if (descriptor) setDescriptor(descriptor);
+                }}
               />
-            )}
+            </CardContent>
+          </Card>
+        }
+        previewContent={
+          <Card className="flex flex-col min-h-0 h-full overflow-hidden">
+            <CardHeader className="pb-3 shrink-0 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <span>👁</span>
+                  <span>Live Preview</span>
+                </CardTitle>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleManualPreview}
+                  disabled={loading.preview || !isTextValid || isVersionMismatch}
+                  className="h-7 text-[11px]"
+                  title="เปิด Fullscreen A4 Preview"
+                  aria-label="เปิด Fullscreen A4 Preview"
+                >
+                  {loading.preview ? (
+                    <Spinner />
+                  ) : (
+                    <span aria-hidden="true">⛶</span>
+                  )}
+                  <span>Fullscreen</span>
+                </Button>
+              </div>
 
-            <JsonEditor
-              text={descriptorText}
-              onTextChange={setDescriptorText}
-              isValid={isTextValid}
-              parseIssues={parseIssues}
-              charCount={descriptorText.length}
-              onFormatFromObject={() => {
-                if (descriptor) setDescriptor(descriptor);
-              }}
-            />
-          </CardContent>
-        </Card>
+              {/* Data Source Toolbar (Requirement A) — อยู่ในหัว จึงไม่เลื่อนตาม */}
+              <DataSourceToolbar
+                value={previewDataSource}
+                onChange={setPreviewDataSource}
+                templateVersionId={versionId}
+                disabled={loading.save || loading.generate || isVersionMismatch}
+              />
+            </CardHeader>
+            {/*
+              ⚠️ hierarchy ความสูง (ก้อนที่ 2 — UAT fix):
+                 Card (flex-col) → CardHeader (shrink-0) → CardContent (flex-1 min-h-0 flex flex-col)
+                 → PreviewPanel (flex-1 min-h-0) → wrapper (flex-1 min-h-0) → iframe (h-full)
 
-        {/* RIGHT: Live Preview */}
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <span>👁</span>
-              <span>Live Preview</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0 space-y-3">
-            {/* Data Source Toolbar (Requirement A) */}
-            <DataSourceToolbar
-              value={previewDataSource}
-              onChange={setPreviewDataSource}
-              templateVersionId={versionId}
-              disabled={loading.save || loading.generate || isVersionMismatch}
-            />
-
-            <PreviewPanel
-              preview={previewResult}
-              loading={loading.preview}
-            />
-          </CardContent>
-        </Card>
-      </div>
+                 - CardContent ต้องเป็น **flex column** ไม่ใช่ block
+                   (ถ้าเป็น block → PreviewPanel ไม่ได้ flex-1/h-full → iframe จบกลางคอลัมน์)
+                 - overflow-y-auto อยู่ที่ชั้นนี้ไม่ได้ (เอกสารยาวให้ scroll ภายใน iframe)
+            */}
+            <CardContent className="pt-0 !px-3 !pb-3 flex-1 min-h-0 flex flex-col overflow-hidden">
+              <PreviewPanel preview={previewResult} loading={loading.preview} />
+            </CardContent>
+          </Card>
+        }
+      />
 
       {/* Confirm Delete Block Dialog */}
       <Dialog

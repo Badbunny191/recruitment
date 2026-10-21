@@ -46,7 +46,9 @@ import { SignatureEditor } from './SignatureEditor';
 import type { TemplateFieldLibraryItem } from '../hooks/useTemplateFields';
 import {
   getBlockHighlightClasses,
+  findScrollableAncestor,
   scrollBlockIntoView,
+  scrollWithinContainer,
   shouldOpenEditor,
   shouldSelectOnClick,
   type EditorOpenRequest,
@@ -165,11 +167,22 @@ export function BlockItem({
   // ---------------------------------------------------------------------------
   // Auto-scroll — เลื่อน block ใหม่เข้ามาในบริเวณมองเห็น
   //
-  // ใช้ `block: 'nearest'` เพื่อไม่ให้หน้ากระโดดแรงเกินไป
+  // [ก้อนที่ 2] เลื่อน **เฉพาะพื้นที่ Composer** (scroll container ที่อยู่ใกล้สุด)
+  //   ไม่ใช้ scrollIntoView ตรง ๆ เพราะจะไปเลื่อน body ของหน้าเว็บด้วย
+  //   (ทำให้ "ลากทั้งหน้าเว็บ" โดยไม่จำเป็น)
+  //
+  // Fallback: ถ้าไม่มี container ที่เลื่อนได้ → ใช้ scrollIntoView แบบเดิม
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!isNewlyAdded) return;
-    scrollBlockIntoView(containerRef.current);
+    const element = containerRef.current;
+    if (!element) return;
+
+    const container = findScrollableAncestor(element);
+    if (container && scrollWithinContainer(element, container)) {
+      return;
+    }
+    scrollBlockIntoView(element);
   }, [isNewlyAdded, block.id]);
 
   // ---------------------------------------------------------------------------

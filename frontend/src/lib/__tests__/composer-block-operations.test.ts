@@ -26,6 +26,7 @@ import {
   describeInsertionMessage,
   describeInsertionTarget,
   findBlockIndexById,
+  findScrollableAncestor,
   getBlockHighlightClasses,
   insertBlockAt,
   insertBlockWithSelection,
@@ -36,6 +37,7 @@ import {
   resolveSelection,
   SCROLL_INTO_VIEW_OPTIONS,
   scrollBlockIntoView,
+  scrollWithinContainer,
   shouldOpenEditor,
   shouldSelectOnClick,
 } from '../../app/(admin)/admin/templates/composer/lib/block-operations';
@@ -565,6 +567,81 @@ test('scroll ไม่เกิดซ้ำเมื่อไม่ได้เ�
   };
   scrollBlockIntoView(el);
   assertEqual(count, 1, 'เรียกครั้งเดียว');
+});
+
+// ============================================================== [11b]
+section('[11b] Auto-scroll แบบ scoped (เลื่อนเฉพาะพื้นที่ Composer)');
+
+test('scrollWithinContainer เลื่อนเฉพาะ container ไม่แตะ body', () => {
+  const container = {
+    scrollTop: 100,
+    getBoundingClientRect: () => ({ top: 0, bottom: 400 }),
+  };
+  // target อยู่ต่ำกว่าขอบล่างของ container → ต้องเลื่อนลง 100px
+  const target = {
+    getBoundingClientRect: () => ({ top: 380, bottom: 500 }),
+  };
+
+  const result = scrollWithinContainer(target, container);
+  assertTrue(result, 'ต้องเลื่อน');
+  assertEqual(container.scrollTop, 200, 'ต้องเลื่อนลง 100px (100 → 200)');
+});
+
+test('scrollWithinContainer เลื่อนขึ้นเมื่อ target อยู่เหนือขอบบน', () => {
+  const container = {
+    scrollTop: 200,
+    getBoundingClientRect: () => ({ top: 100, bottom: 500 }),
+  };
+  const target = {
+    getBoundingClientRect: () => ({ top: 40, bottom: 80 }),
+  };
+
+  const result = scrollWithinContainer(target, container);
+  assertTrue(result, 'ต้องเลื่อน');
+  assertEqual(container.scrollTop, 140, 'ต้องเลื่อนขึ้น 60px');
+});
+
+test('scrollWithinContainer ถ้าอยู่ในมุมมองอยู่แล้ว → ไม่เลื่อน', () => {
+  const container = {
+    scrollTop: 200,
+    getBoundingClientRect: () => ({ top: 100, bottom: 500 }),
+  };
+  const target = {
+    getBoundingClientRect: () => ({ top: 200, bottom: 260 }),
+  };
+
+  const result = scrollWithinContainer(target, container);
+  assertFalse(result, 'ไม่ต้องเลื่อน');
+  assertEqual(container.scrollTop, 200, 'scrollTop ต้องไม่เปลี่ยน');
+});
+
+test('scrollWithinContainer ปลอดภัยเมื่อไม่มี container', () => {
+  const target = {
+    getBoundingClientRect: () => ({ top: 0, bottom: 100 }),
+  };
+  assertFalse(scrollWithinContainer(target, null), 'null container');
+  assertFalse(scrollWithinContainer(null, null), 'null target');
+  assertFalse(scrollWithinContainer(target, undefined), 'undefined container');
+});
+
+test('findScrollableAncestor คืน null เมื่อไม่มี container ที่เลื่อนได้', () => {
+  assertEqual(findScrollableAncestor(null), null, 'null');
+  assertEqual(findScrollableAncestor(undefined), null, 'undefined');
+  assertEqual(findScrollableAncestor({}), null, 'object เปล่า');
+});
+
+test('findScrollableAncestor หา container ที่เลื่อนได้จาก ancestor', () => {
+  const container = {
+    scrollTop: 0,
+    clientHeight: 400,
+    getBoundingClientRect: () => ({ top: 0, bottom: 400 }),
+  };
+  const child = {
+    parentElement: container,
+    getBoundingClientRect: () => ({ top: 10, bottom: 20 }),
+  };
+  const result = findScrollableAncestor(child);
+  assertTrue(result === container, 'ต้องได้ container ที่ถูกต้อง');
 });
 
 // ============================================================== [12]

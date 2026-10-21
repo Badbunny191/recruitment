@@ -7,22 +7,36 @@
  *
  * Requirements:
  *   - Compact preview on the right (รักษาความ compact สำหรับ auto-refresh)
- *   - ไม่แสดง document header (modal handles that)
+    10| *   - ไม่แสดง document header (modal handles that)
  *   - ใช้ shared PreviewFrame — single source of truth กับ fullscreen modal
+ *
+ * ก้อนที่ 2 (Responsive Workspace) — UAT fix:
+ *   - ไม่ hard-code ความสูงคงที่อีกต่อไป
+ *     → ใช้ `flex-1` + `min-h-0` + `h-full` ให้พื้นที่ Preview
+ *       ขยายเต็มความสูงที่เหลือของคอลัมน์
+ *   - เอกสารยาวให้ scroll ภายใน iframe เอง (ไม่ใช่ scroll ที่ CardContent)
  */
 
 import type { PreviewResponse } from '@/lib/api/template-descriptor';
 import { PreviewFrame } from './PreviewFrame';
+import { cn } from '@/lib/utils';
 
 export interface PreviewPanelProps {
   preview: PreviewResponse | null;
   loading: boolean;
+  /** className เพิ่มเติมของ container */
+  className?: string;
 }
 
-export function PreviewPanel({ preview, loading }: PreviewPanelProps) {
+export function PreviewPanel({ preview, loading, className }: PreviewPanelProps) {
   if (loading && !preview) {
     return (
-      <div className="flex items-center justify-center h-[500px] text-slate-500 text-sm">
+      <div
+        className={cn(
+          'flex flex-1 min-h-0 items-center justify-center w-full text-slate-500 text-sm',
+          className
+        )}
+      >
         <Spinner />
         <span className="ml-2">กำลัง render preview...</span>
       </div>
@@ -31,15 +45,21 @@ export function PreviewPanel({ preview, loading }: PreviewPanelProps) {
 
   if (!preview) {
     return (
-      <div className="flex items-center justify-center h-[500px] text-slate-400 text-sm border-2 border-dashed border-slate-200 rounded">
+      <div
+        className={cn(
+          'flex flex-1 min-h-0 items-center justify-center w-full text-slate-400 text-sm',
+          'border-2 border-dashed border-slate-200 rounded',
+          className
+        )}
+      >
         แก้ไข Block เพื่อดู preview แบบ live
       </div>
     );
   }
 
   return (
-    <>
-      <div className="flex items-center justify-between text-[10px] text-slate-500 px-1 mb-1">
+    <div className={cn('flex flex-col flex-1 min-h-0 h-full', className)}>
+      <div className="flex items-center justify-between text-[10px] text-slate-500 px-1 mb-1 shrink-0">
         <span>
           {preview.meta.blockCount} blocks
           {preview.meta.missingFieldIds.length > 0 && (
@@ -51,10 +71,20 @@ export function PreviewPanel({ preview, loading }: PreviewPanelProps) {
         <span>auto-refresh 1.5s</span>
       </div>
 
-      <PreviewFrame preview={preview} />
+      {/*
+        พื้นที่ Preview — ขยายเต็มความสูงที่เหลือ (flex-1 + min-h-0)
+        ⚠️ ห้าม hard-code ความสูงคงที่ที่นี่
+           เอกสารยาวให้ scroll ภายใน iframe เอง
+      */}
+      <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
+        <PreviewFrame
+          preview={preview}
+          className="w-full h-full flex-1 min-h-0 border border-slate-200 rounded bg-white"
+        />
+      </div>
 
       {preview.meta.missingFieldIds.length > 0 && (
-        <div className="mt-3 bg-amber-50 border border-amber-200 rounded p-2 text-[11px]">
+        <div className="mt-3 bg-amber-50 border border-amber-200 rounded p-2 text-[11px] shrink-0">
           <p className="font-semibold text-amber-800">Missing Fields:</p>
           <ul className="mt-1 space-y-0.5">
             {preview.meta.missingFieldIds.map((fid) => (
@@ -65,7 +95,7 @@ export function PreviewPanel({ preview, loading }: PreviewPanelProps) {
           </ul>
         </div>
       )}
-    </>
+    </div>
   );
 }
 

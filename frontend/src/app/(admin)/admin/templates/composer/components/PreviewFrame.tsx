@@ -83,20 +83,23 @@ export interface PreviewFrameProps {
   preview: PreviewResponse;
   /** Compact mode = no header (just body). A4 Modal = header + body. Default: compact */
   withHeader?: boolean;
-  /** iframe class — caller decides sizing */
+  /**
+   * iframe class — caller decides sizing
+   *
+   * ⚠️ ห้าม hard-code ความสูงคงที่ที่นี่
+   *    เพราะจะทำให้ Live Preview ใน Workspace ไม่เต็มความสูงที่เหลือ
+   *    → ผู้เรียกใช้ควรส่ง w-full h-full เพื่อให้ iframe เต็มพื้นที่ที่ได้รับ
+   */
   className?: string;
   /** iframe title (a11y) */
   title?: string;
-  /** Height class for compact (e.g. h-[500px]) */
-  compactHeight?: string;
 }
 
 export function PreviewFrame({
   preview,
   withHeader = false,
-  className = 'w-full h-[500px] border border-slate-200 rounded bg-white',
+  className = 'w-full h-full border border-slate-200 rounded bg-white',
   title = 'Document Preview',
-  compactHeight,
 }: PreviewFrameProps) {
   const inner = withHeader
     ? `${preview.header}\n${preview.body}`
@@ -125,7 +128,7 @@ ${backendCss}
     <iframe
       srcDoc={srcDoc}
       title={title}
-      className={compactHeight ? `${className} ${compactHeight}` : className}
+      className={className}
       sandbox="allow-same-origin"
     />
   );

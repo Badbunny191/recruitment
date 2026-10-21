@@ -303,6 +303,107 @@ export function scrollBlockIntoView(
 }
 
 // =============================================================================
+// Auto-scroll (scoped) — เลื่อนเฉพาะพื้นที่ Composer
+// =============================================================================
+
+/** element ที่มีข้อมูล geometry พอสำหรับคำนวณ scroll (subset ของ HTMLElement) */
+export interface ScrollContainerLike {
+  scrollTop: number;
+  clientHeight?: number;
+  getBoundingClientRect?: () => { top: number; bottom: number };
+}
+
+/** element ที่ต้องการ scroll (subset ของ HTMLElement) */
+export interface ScrollTargetLike {
+  getBoundingClientRect?: () => { top: number; bottom: number };
+}
+
+/**
+ * หา container ที่เลื่อนได้ที่ใกล้ที่สุดของ element
+ *
+ * คืน null ถ้าไม่มี (แปลว่าไม่มีพื้นที่เลื่อนเฉพาะ → ใช้ scrollIntoView แทน)
+ */
+export function findScrollableAncestor(
+  element: unknown
+): ScrollContainerLike | null {
+  let current = element as
+    | (Element & { parentElement?: Element | null })
+    | null
+    | undefined;
+  let depth = 0;
+
+  while (current && typeof current.getBoundingClientRect === 'function') {
+    const style = readOverflowY(current);
+    const scrollable =
+      style === 'auto' ||
+      style === 'scroll' ||
+      (typeof current.scrollTop === 'number' &&
+        typeof current.clientHeight === 'number' &&
+        current.clientHeight > 0);
+    if (scrollable && typeof current.scrollTop === 'number') {
+      return current as unknown as ScrollContainerLike;
+    }
+    current = current.parentElement;
+    depth += 1;
+    if (depth > 20) break;
+  }
+  return null;
+}
+
+function readOverflowY(element: unknown): string | null {
+  try {
+    const view = element as { ownerDocument?: { defaultView?: { getComputedStyle?: (el: unknown) => { overflowY?: string } | null } } };
+    const getComputedStyle = view?.ownerDocument?.defaultView?.getComputedStyle;
+    if (!getComputedStyle) return null;
+    const style = getComputedStyle(element);
+    return style?.overflowY ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * เลื่อน target เข้ามาในมุมมอง **โดยเลื่อนเฉพาะ container ที่กำหนด**
+ *
+ * เหตุผล: `scrollIntoView` จะเลื่อนทุก ancestor ที่เลื่อนได้
+ * รวมถึงหน้าเว็บ (body) → ทำให้ "ลากทั้งหน้าเว็บ" โดยไม่จำเป็น
+ * เมื่อพื้นที่ทำงานถูกออกแบบให้เลื่อนแยกกัน (ก้อนที่ 2)
+ *
+ * คืนค่า true ถ้าเลื่อนใน container สำเร็จ / false ถ้าไม่มี container
+ */
+export function scrollWithinContainer(
+  target: ScrollTargetLike | null | undefined,
+  container: ScrollContainerLike | null | undefined
+): boolean {
+  if (!target || !container) return false;
+  if (typeof target.getBoundingClientRect !== 'function') return false;
+  if (typeof container.getBoundingClientRect !== 'function') return false;
+
+  const targetRect = target.getBoundingClientRect();
+  const containerRect = container.getBoundingClientRect();
+  if (typeof container.clientHeight === 'number') {
+    // ใช้ clientHeight เป็นหลัก (สูงกว่า visible area จริง)
+  }
+
+  const visibleTop = containerRect.top;
+  const visibleBottom = containerRect.bottom;
+  const targetTop = targetRect.top;
+  const targetBottom = targetRect.bottom;
+
+  let delta = 0;
+  if (targetTop < visibleTop) {
+    delta = targetTop - visibleTop;
+  } else if (targetBottom > visibleBottom) {
+    delta = targetBottom - visibleBottom;
+  } else {
+    return false; // อยู่ในมุมมองอยู่แล้ว → ไม่ต้องเลื่อน
+  }
+
+  container.scrollTop = container.scrollTop + delta;
+  return true;
+}
+
+// =============================================================================
 // Highlight styles
 // =============================================================================
 
