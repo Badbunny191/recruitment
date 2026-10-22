@@ -252,13 +252,22 @@ export function buildFieldToken(fieldId: string): string {
 export function listFieldTokensInText(text: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const match of text.matchAll(FIELD_TOKEN_PATTERN)) {
+
+  // ใช้ exec() loop บน regex ที่คัดลอกมาเอง (ไม่แตะ lastIndex ของ
+  // FIELD_TOKEN_PATTERN ตัวจริง) — กัน state ของ global regex หลุดร่วมกับ
+  // applyFieldTokens() ที่ยังใช้ pattern ตัวเดิมอยู่
+  const pattern = new RegExp(FIELD_TOKEN_PATTERN.source, "g");
+
+  let match = pattern.exec(text);
+  while (match !== null) {
     const id = match[1];
     if (id && !seen.has(id)) {
       seen.add(id);
       out.push(id);
     }
+    match = pattern.exec(text);
   }
+
   return out;
 }
 
@@ -514,14 +523,22 @@ function resolveFromFields(
   if (aliases.length === 0) return null;
   const aliasesLower = aliases.map((a) => a.toLowerCase());
 
-  for (const [fieldId, mapped] of fieldTokenIndex) {
-    if (mapped !== token) continue;
+  // ใช้ forEach แทน for...of บน Map (ไม่ต้องเปิด downlevelIteration)
+  // คงพฤติกรรมเดิม: เจอ field ที่ resolve ได้ "ตัวแรก" ก็หยุด (เก็บตัวแรกไว้)
+  let resolvedText: string | null = null;
+  fieldTokenIndex.forEach((mapped, fieldId) => {
+    if (resolvedText !== null) return; // เจอแล้ว — ข้ามที่เหลือ
+    if (mapped !== token) return;
 
     const raw = formData[fieldId] ?? null;
 
     const text = normalizeTokenValue(raw, aliases);
-    if (text !== null) return text;
-  }
+    if (text !== null) {
+      resolvedText = text;
+    }
+  });
+
+  if (resolvedText !== null) return resolvedText;
 
   // ── Fallback: scan formData ด้วย alias ตรง ๆ (กัน field ที่ไม่ได้อยู่ใน version) ──
   for (const [key, raw] of Object.entries(formData)) {
