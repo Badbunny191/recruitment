@@ -256,13 +256,13 @@ const PREVIEW_STYLES = `
   color: #666666;
   font-weight: 700;
   margin: 0 0 0 0;
-  line-height: 1.4;
+  line-height: 1.25;
 }
 .dc-field__value {
   font-size: 12pt;
   color: #000000;
-  margin: 4px 0 0 12px;
-  line-height: 1.4;
+  margin: 2px 0 0 12px;
+  line-height: 1.25;
   white-space: pre-wrap;
   word-wrap: break-word;
   overflow-wrap: break-word;
@@ -288,8 +288,8 @@ const PREVIEW_STYLES = `
   border: 1px solid #c9d4de;
   border-radius: 3px;
   padding: 3px 6px;
-  margin: 4px 0 0 12px;
-  line-height: 1.4;
+  margin: 2px 0 0 12px;
+  line-height: 1.25;
   pointer-events: none;
   -webkit-user-select: text;
   user-select: text;

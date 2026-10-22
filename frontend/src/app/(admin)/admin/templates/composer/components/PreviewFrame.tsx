@@ -87,9 +87,9 @@ body {
 .dc-heading.size-small { font-size: 14px; }
 .dc-heading.size-medium { font-size: 18px; }
 .dc-heading.size-large { font-size: 24px; }
-.dc-field-label { font-weight: 500; color: #475569; font-size: 12px; margin-bottom: 3px; }
+.dc-field-label { font-weight: 500; color: #475569; font-size: 12px; margin-bottom: 2px; }
 .dc-field-value { font-size: 14px; }
-.dc-field-block, .dc-table-block, .dc-logo-block, .dc-heading-block { margin-bottom: 5px; }
+.dc-field-block, .dc-table-block, .dc-logo-block, .dc-heading-block { margin-bottom: 3px; }
 .dc-table-block table { border-collapse: collapse; width: 100%; font-size: 12px; }
 .dc-table-block th, .dc-table-block td { border: 1px solid #cbd5e1; padding: 4px 8px; text-align: left; }
 .dc-table-block th { background: #f1f5f9; font-weight: 600; }

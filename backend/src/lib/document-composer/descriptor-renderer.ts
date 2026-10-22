@@ -259,10 +259,13 @@ const FOOTER_RESERVE = 60;
 const MIN_CONTENT_HEIGHT = 120;
 
 /** ระยะเว้นระหว่าง block (pt) */
-const POST_BLOCK_SPACING = 5;
+const POST_BLOCK_SPACING = 4;
 
 /** อัตราส่วนความสูงบรรทัด */
 const LINE_HEIGHT = 1.4;
+
+/** อัตราส่วนความสูงบรรทัดสำหรับ Field Block (กระชับแน่นขึ้น 20-25%) */
+const FIELD_LINE_HEIGHT = 1.25;
 
 /** อัตราส่วนความสูงบรรทัดสำหรับ Signature Block (กระชับขึ้น) */
 const SIGNATURE_LINE_HEIGHT = 1.3;
@@ -1224,7 +1227,7 @@ function drawField(
     const startX = alignX(box, cmd.align, compoundW);
 
     const maxFontSize = Math.max(FONT_SIZE_LABEL, FONT_SIZE_BODY);
-    const lineHeight = maxFontSize * LINE_HEIGHT;
+    const lineHeight = maxFontSize * FIELD_LINE_HEIGHT;
     ensureLineSpace(state, lineHeight);
 
     // Draw label
@@ -1250,7 +1253,7 @@ function drawField(
     for (let i = 1; i < valueLines.length; i++) {
       const line = valueLines[i];
       const lw = state.fonts.regular.widthOfTextAtSize(line, FONT_SIZE_BODY);
-      ensureLineSpace(state, FONT_SIZE_BODY * LINE_HEIGHT);
+      ensureLineSpace(state, FONT_SIZE_BODY * FIELD_LINE_HEIGHT);
       const x = cmd.align === "center"
         ? alignX(box, "center", lw)
         : cmd.align === "right"
@@ -1263,7 +1266,7 @@ function drawField(
         size: FONT_SIZE_BODY,
         color: valueColor,
       });
-      state.y -= FONT_SIZE_BODY * LINE_HEIGHT;
+      state.y -= FONT_SIZE_BODY * FIELD_LINE_HEIGHT;
     }
 
     state.y -= POST_BLOCK_SPACING;
@@ -1275,7 +1278,7 @@ function drawField(
     const labelLines = wrapText(labelText, box.contentWidth, state.fonts.bold, FONT_SIZE_LABEL);
     for (const line of labelLines) {
       const lw = state.fonts.bold.widthOfTextAtSize(line, FONT_SIZE_LABEL);
-      ensureLineSpace(state, FONT_SIZE_LABEL * LINE_HEIGHT);
+      ensureLineSpace(state, FONT_SIZE_LABEL * FIELD_LINE_HEIGHT);
       state.page.drawText(line, {
         x: alignX(box, cmd.align, lw),
         y: state.y - FONT_SIZE_LABEL,
@@ -1283,7 +1286,7 @@ function drawField(
         size: FONT_SIZE_LABEL,
         color: COLOR_GRAY,
       });
-      state.y -= FONT_SIZE_LABEL * LINE_HEIGHT;
+      state.y -= FONT_SIZE_LABEL * FIELD_LINE_HEIGHT;
     }
   }
 
@@ -1339,7 +1342,7 @@ function drawFieldValue(
   for (const line of lines) {
     const w = state.fonts.regular.widthOfTextAtSize(line, FONT_SIZE_BODY);
     // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
-    ensureLineSpace(state, FONT_SIZE_BODY * LINE_HEIGHT);
+    ensureLineSpace(state, FONT_SIZE_BODY * FIELD_LINE_HEIGHT);
     const x =
       align === "center"
         ? alignX(box, "center", w)
@@ -1353,7 +1356,7 @@ function drawFieldValue(
       size: FONT_SIZE_BODY,
       color,
     });
-    state.y -= FONT_SIZE_BODY * LINE_HEIGHT;
+    state.y -= FONT_SIZE_BODY * FIELD_LINE_HEIGHT;
   }
 }
 

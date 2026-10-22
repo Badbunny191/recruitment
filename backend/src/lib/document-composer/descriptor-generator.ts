@@ -289,8 +289,8 @@ export function generateDescriptorFromTemplate(
         size: "medium",
         bold: true,
         align: "left",
-        marginTop: 12,
-        marginBottom: 8,
+        marginTop: 10,
+        marginBottom: 3,
       };
       blocks.push(headingBlock);
       headingCount += 1;
@@ -408,7 +408,7 @@ function buildFieldBlock(
   const common = {
     id: makeBlockId(`${field.type}-${field.id}`),
     marginTop: 0,
-    marginBottom: 8,
+    marginBottom: 3,
   };
 
   if (isTable) {
