@@ -1053,20 +1053,52 @@ function drawSystemData(state: ExecState, cmd: SystemDataRenderCommand): void {
   const labelColor = COLOR_GRAY;
   const box = state.box;
 
+  if (cmd.showLabel && cmd.layout === "inline") {
+    // ── Inline Compound Layout: Label + Space + Value จัดเป็นก้อนเดียว ──
+    const spaceW = state.fonts.regular.widthOfTextAtSize(" ", cmd.valueFontSize);
+    const labelW = state.fonts.bold.widthOfTextAtSize(cmd.label, cmd.labelFontSize);
+    const valueW = state.fonts.regular.widthOfTextAtSize(cmd.valueText, cmd.valueFontSize);
+    const compoundW = labelW + spaceW + valueW;
+
+    const startX = alignX(box, cmd.align, compoundW);
+    const maxFontSize = Math.max(cmd.labelFontSize, cmd.valueFontSize);
+    const lineHeight = maxFontSize * LINE_HEIGHT;
+    ensureLineSpace(state, lineHeight);
+
+    // Draw label
+    state.page.drawText(cmd.label, {
+      x: startX,
+      y: state.y - maxFontSize,
+      font: state.fonts.bold,
+      size: cmd.labelFontSize,
+      color: labelColor,
+    });
+
+    // Draw value
+    state.page.drawText(cmd.valueText || "", {
+      x: startX + labelW + spaceW,
+      y: state.y - maxFontSize,
+      font: state.fonts.regular,
+      size: cmd.valueFontSize,
+      color: valueColor,
+    });
+
+    // ลด Y เพียงครั้งเดียวสำหรับบรรทัดนี้ + post spacing
+    state.y -= lineHeight;
+    state.y -= POST_BLOCK_SPACING;
+    return;
+  }
+
+  // Stacked layout (or showLabel = false)
   if (cmd.showLabel) {
-    const labelText = `${cmd.label}`;
-    // label ยาวเกิน content box → wrap ให้อยู่ในกรอบ
     const labelLines = wrapText(
-      labelText,
+      cmd.label,
       box.contentWidth,
       state.fonts.bold,
       cmd.labelFontSize
     );
-    for (let i = 0; i < labelLines.length; i++) {
-      const line = labelLines[i];
+    for (const line of labelLines) {
       const lw = state.fonts.bold.widthOfTextAtSize(line, cmd.labelFontSize);
-      // รายบรรทัดจัดตำแหน่งตาม align ของ block
-      // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
       ensureLineSpace(state, cmd.labelFontSize * LINE_HEIGHT);
       state.page.drawText(line, {
         x: alignX(box, cmd.align, lw),
@@ -1075,40 +1107,14 @@ function drawSystemData(state: ExecState, cmd: SystemDataRenderCommand): void {
         size: cmd.labelFontSize,
         color: labelColor,
       });
-      if (cmd.layout === "stacked") {
-        state.y -= cmd.labelFontSize * LINE_HEIGHT;
-      } else if (i < labelLines.length - 1) {
-        // inline: ถ้า label ยาวเกิน 1 บรรทัด → บรรทัดถัดไปลงมาใหม่
-        state.y -= cmd.labelFontSize * LINE_HEIGHT;
-      }
-    }
-    if (cmd.layout === "stacked") {
-      // (y ถูกลดไปแล้วใน loop ข้างบน)
-    } else {
-      // inline: label + value ต่อกัน (เว้น space 8pt)
-      const spaceW = state.fonts.regular.widthOfTextAtSize(" ", cmd.valueFontSize);
-      const lastLabel = labelLines[labelLines.length - 1] ?? "";
-      const lastLabelW = state.fonts.bold.widthOfTextAtSize(
-        lastLabel,
-        cmd.labelFontSize
-      );
-      const valueStartX =
-        cmd.align === "left"
-          ? box.contentLeft + lastLabelW + spaceW
-          : alignX(box, cmd.align, lastLabelW + spaceW);
-      drawValueBlock(state, cmd, valueStartX, valueColor);
-      // (คงพฤติกรรมเดิม: inline ลด y เพิ่มอีก 1 บรรทัดหลัง value)
-      state.y -= cmd.valueFontSize * LINE_HEIGHT;
-      state.y -= POST_BLOCK_SPACING;
-      return;
+      state.y -= cmd.labelFontSize * LINE_HEIGHT;
     }
   }
 
   // stacked (or no label): วาด value ในบรรทัดถัดไป
-  // indent 12pt เฉพาะเมื่อ align=left (เหมือน field)
-  // center/right → drawValueBlock จัดตำแหน่งตาม align แล้ว ไม่ต้อง indent
+  // indent 12pt เฉพาะเมื่อ align=left และ showLabel
   const valueX =
-    cmd.showLabel && cmd.layout === "stacked" && cmd.align === "left"
+    cmd.showLabel && cmd.align === "left"
       ? box.contentLeft + 12
       : box.contentLeft;
   drawValueBlock(state, cmd, valueX, valueColor);
@@ -1180,61 +1186,115 @@ function drawField(
   const requiredMarker =
     cmd.field.isRequired && cmd.showRequired ? " *" : "";
   const box = state.box;
+  const labelText = `${label}${requiredMarker}`;
+  const isEmpty = !isNonEmptyValue(rawValue);
+  const valueColor = isEmpty ? COLOR_PLACEHOLDER : COLOR_BLACK;
 
+  if (cmd.layout === "inline" && cmd.showLabel) {
+    // ── Inline Compound Layout: Label + Space + Value เป็นก้อนเดียว ──
+    const spaceW = state.fonts.regular.widthOfTextAtSize("  ", FONT_SIZE_BODY);
+    const labelW = state.fonts.bold.widthOfTextAtSize(labelText, FONT_SIZE_LABEL);
+    const rawLines = displayValue.split(/\r?\n/);
+    const availableValW = box.contentWidth - labelW - spaceW;
+    const valueLines: string[] = [];
+    if (availableValW > 30) {
+      const firstLineWrapped = wrapText(rawLines[0] || "", availableValW, state.fonts.regular, FONT_SIZE_BODY);
+      valueLines.push(firstLineWrapped[0] || "");
+      const remainingFirst = firstLineWrapped.slice(1);
+      for (const rem of remainingFirst) {
+        valueLines.push(rem);
+      }
+      for (let i = 1; i < rawLines.length; i++) {
+        const wrapped = wrapText(rawLines[i], box.contentWidth, state.fonts.regular, FONT_SIZE_BODY);
+        valueLines.push(...(wrapped.length > 0 ? wrapped : [""]));
+      }
+    } else {
+      for (const raw of rawLines) {
+        const wrapped = wrapText(raw, box.contentWidth, state.fonts.regular, FONT_SIZE_BODY);
+        valueLines.push(...(wrapped.length > 0 ? wrapped : [""]));
+      }
+    }
+
+    const valLine0 = valueLines[0] ?? "";
+    const valLine0W = state.fonts.regular.widthOfTextAtSize(valLine0, FONT_SIZE_BODY);
+    const compoundW = labelW + spaceW + valLine0W;
+    const startX = alignX(box, cmd.align, compoundW);
+
+    const maxFontSize = Math.max(FONT_SIZE_LABEL, FONT_SIZE_BODY);
+    const lineHeight = maxFontSize * LINE_HEIGHT;
+    ensureLineSpace(state, lineHeight);
+
+    // Draw label
+    state.page.drawText(labelText, {
+      x: startX,
+      y: state.y - maxFontSize,
+      font: state.fonts.bold,
+      size: FONT_SIZE_LABEL,
+      color: COLOR_GRAY,
+    });
+
+    // Draw value line 0
+    state.page.drawText(valLine0, {
+      x: startX + labelW + spaceW,
+      y: state.y - maxFontSize,
+      font: state.fonts.regular,
+      size: FONT_SIZE_BODY,
+      color: valueColor,
+    });
+    state.y -= lineHeight;
+
+    // Subsequent value lines if any
+    for (let i = 1; i < valueLines.length; i++) {
+      const line = valueLines[i];
+      const lw = state.fonts.regular.widthOfTextAtSize(line, FONT_SIZE_BODY);
+      ensureLineSpace(state, FONT_SIZE_BODY * LINE_HEIGHT);
+      const x = cmd.align === "center"
+        ? alignX(box, "center", lw)
+        : cmd.align === "right"
+          ? alignX(box, "right", lw)
+          : startX + labelW + spaceW;
+      state.page.drawText(line, {
+        x,
+        y: state.y - FONT_SIZE_BODY,
+        font: state.fonts.regular,
+        size: FONT_SIZE_BODY,
+        color: valueColor,
+      });
+      state.y -= FONT_SIZE_BODY * LINE_HEIGHT;
+    }
+
+    state.y -= POST_BLOCK_SPACING;
+    return;
+  }
+
+  // Stacked layout (or showLabel = false)
   if (cmd.showLabel) {
-    // label — draw at content box left (or to left when inline)
-    const labelText = `${label}${requiredMarker}`;
-    // label ยาวเกิน content box → wrap ให้อยู่ในกรอบ
-    const labelLines = wrapText(
-      labelText,
-      box.contentWidth,
-      state.fonts.bold,
-      FONT_SIZE_LABEL
-    );
-    const lw = state.fonts.bold.widthOfTextAtSize(
-      labelLines[labelLines.length - 1] ?? labelText,
-      FONT_SIZE_LABEL
-    );
-    const labelX = alignX(box, cmd.align, lw);
-
-    for (let i = 0; i < labelLines.length; i++) {
-      const line = labelLines[i];
-      const lineW = state.fonts.bold.widthOfTextAtSize(line, FONT_SIZE_LABEL);
-      // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
+    const labelLines = wrapText(labelText, box.contentWidth, state.fonts.bold, FONT_SIZE_LABEL);
+    for (const line of labelLines) {
+      const lw = state.fonts.bold.widthOfTextAtSize(line, FONT_SIZE_LABEL);
       ensureLineSpace(state, FONT_SIZE_LABEL * LINE_HEIGHT);
       state.page.drawText(line, {
-        x: alignX(box, cmd.align, lineW),
+        x: alignX(box, cmd.align, lw),
         y: state.y - FONT_SIZE_LABEL,
         font: state.fonts.bold,
         size: FONT_SIZE_LABEL,
         color: COLOR_GRAY,
       });
-      if (i < labelLines.length - 1) {
-        state.y -= FONT_SIZE_LABEL * LINE_HEIGHT;
-      }
+      state.y -= FONT_SIZE_LABEL * LINE_HEIGHT;
     }
-
-    if (cmd.layout === "inline") {
-      // inline: label + value ในบรรทัดเดียวกัน
-      const spaceW = state.fonts.regular.widthOfTextAtSize("  ", FONT_SIZE_BODY);
-      const valueX = labelX + lw + spaceW;
-      // render value text starting at valueX; align to valueX (left)
-      drawFieldValue(state, displayValue, valueX, rawValue);
-      state.y -= FONT_SIZE_BODY * LINE_HEIGHT;
-      state.y -= POST_BLOCK_SPACING;
-      return;
-    }
-
-    // stacked: ลด y สำหรับ label + ลงไปอีกบรรทัดสำหรับ value (indent 12)
-    state.y -= FONT_SIZE_LABEL * LINE_HEIGHT;
   }
 
-  // stacked (or no label): วาด value
+  // Draw stacked value
+  const valueX =
+    cmd.showLabel && cmd.align === "left"
+      ? box.contentLeft + 12
+      : box.contentLeft;
   drawFieldValue(
     state,
     displayValue,
-    cmd.showLabel ? box.contentLeft + 12 : box.contentLeft,
-    rawValue
+    valueX,
+    rawValue,
+    cmd.align
   );
 
   state.y -= POST_BLOCK_SPACING;
@@ -1249,7 +1309,8 @@ function drawFieldValue(
   state: ExecState,
   displayValue: string,
   xHint: number,
-  rawValue: unknown
+  rawValue: unknown,
+  align: Align = "left"
 ): void {
   const box = state.box;
   const rawLines = displayValue.split(/\r?\n/);
@@ -1273,10 +1334,17 @@ function drawFieldValue(
   const color = isEmpty ? COLOR_PLACEHOLDER : COLOR_BLACK;
 
   for (const line of lines) {
+    const w = state.fonts.regular.widthOfTextAtSize(line, FONT_SIZE_BODY);
     // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
     ensureLineSpace(state, FONT_SIZE_BODY * LINE_HEIGHT);
+    const x =
+      align === "center"
+        ? alignX(box, "center", w)
+        : align === "right"
+          ? alignX(box, "right", w)
+          : xHint;
     state.page.drawText(line || "", {
-      x: xHint,
+      x,
       y: state.y - FONT_SIZE_BODY,
       font: state.fonts.regular,
       size: FONT_SIZE_BODY,
@@ -1862,7 +1930,63 @@ function clampSize(value: number | undefined, fallback: number): number {
  * [Requirement K.6] หาก block ใด ๆ render ล้ม (เช่น signature.length overflow) →
  * ใช้ try/catch รอบ executeCommand เพื่อกันเอกสารทั้งฉบับล้ม
  */
+function computeSignatureHeight(
+  state: ExecState,
+  cmd: SignatureRenderCommand
+): number {
+  let height = FONT_SIZE_SIGNATURE_LABEL * LINE_HEIGHT;
+  const box = state.box;
+
+  if (cmd.showName) {
+    const text = cmd.signerName;
+    const isPlaceholder = !cmd.hasRealName;
+    const alreadyWrapped = text.startsWith("(") && text.endsWith(")");
+    let displayText: string;
+    if (isPlaceholder && alreadyWrapped) {
+      displayText = text;
+    } else if (cmd.showParentheses) {
+      displayText = `(${text})`;
+    } else {
+      displayText = text;
+    }
+    const lines = wrapText(
+      displayText,
+      box.contentWidth,
+      state.fonts.regular,
+      FONT_SIZE_SIGNATURE_META
+    );
+    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * LINE_HEIGHT);
+  }
+
+  if (cmd.showDate) {
+    const lines = wrapText(
+      `${cmd.dateLabel} ${cmd.dateText}`,
+      box.contentWidth,
+      state.fonts.regular,
+      FONT_SIZE_SIGNATURE_META
+    );
+    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * LINE_HEIGHT);
+  }
+
+  if (cmd.showTime) {
+    const lines = wrapText(
+      `เวลา ${cmd.timeText} น.`,
+      box.contentWidth,
+      state.fonts.regular,
+      FONT_SIZE_SIGNATURE_META
+    );
+    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * LINE_HEIGHT);
+  }
+
+  height += POST_BLOCK_SPACING;
+  return height;
+}
+
 function drawSignature(state: ExecState, cmd: SignatureRenderCommand): void {
+  // Keep Together: คำนวณความสูงทั้งบล็อก ถ้าพื้นที่หน้าเดิมไม่พอ ให้ขึ้นหน้าใหม่ทันทีก่อนวาด Line 1
+  const requiredHeight = computeSignatureHeight(state, cmd);
+  ensureSpace(state, requiredHeight);
+
   // ── Line 1: "<lineLabel> <lineStyle> <roleLabel>" — always rendered ──
   const labelText = cmd.lineLabel;
   const lineText = cmd.lineStyle;

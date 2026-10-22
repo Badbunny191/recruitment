@@ -233,6 +233,18 @@ const PREVIEW_STYLES = `
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0 4px;
+  width: 100%;
+  box-sizing: border-box;
+}
+/* inline alignment — justify-content จัดตำแหน่ง flex children ตาม block.align */
+.dc-field--inline.dc-align--left .dc-field__body {
+  justify-content: flex-start;
+}
+.dc-field--inline.dc-align--center .dc-field__body {
+  justify-content: center;
+}
+.dc-field--inline.dc-align--right .dc-field__body {
+  justify-content: flex-end;
 }
 .dc-field--inline .dc-field__value,
 .dc-field--inline .dc-control {
@@ -394,6 +406,8 @@ select.dc-control {
   font-size: 12pt;
   color: #000000;
   line-height: 1.4;
+  break-inside: avoid;
+  page-break-inside: avoid;
 }
 /* เส้นลายเซ็นแบบข้อความ (lineStyle) — default = จุด 40 ตัว */
 .dc-signature__line-text {
