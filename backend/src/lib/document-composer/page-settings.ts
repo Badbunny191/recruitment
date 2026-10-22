@@ -4,8 +4,10 @@
  * Feature: Document Composer — Page Settings (margin ของหน้ากระดาษ)
  *
  * ⚠️ ขอบเขตของก้อนนี้
- *   - ตั้งค่านี้มีผลกับ **ตัวอย่างเอกสาร (Preview)** เท่านั้น
- *   - PDF Renderer (descriptor-renderer.ts) ยังไม่รองรับ → รอก้อนถัดไป
+ *   - ใช้กับ **Preview** (`preview-renderer.ts`) และ **Descriptor PDF Renderer**
+ *     (`descriptor-renderer.ts`) — ทั้งสองฝั่งใช้ `resolvePageGeometry()` ชุดเดียวกัน
+ *   - Legacy `pdf-renderer.service.ts` ยังใช้ margin แบบ hardcoded (40pt) เดิม
+ *     → PDF download route ปัจจุบันยังเรียก legacy renderer นั้น
  *
  * ── Design Principles ────────────────────────────────────────────────────
  *   1. **Pure functions** — ไม่มี side effect → เขียน test ได้ง่าย

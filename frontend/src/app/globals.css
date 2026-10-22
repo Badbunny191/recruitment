@@ -41,6 +41,15 @@ body {
    - ที่ขอบ stage (`flex-1 overflow-y-auto`) ทำหน้าที่ scroll ภายใน
      → จอเล็กจะเลื่อนเอกสารได้ทั้งแผ่น ไม่ถูกบีบจนอ่านไม่ออก (Req 12)
    ───────────────────────────────────────────────────────────────────────── */
+
+/*
+ * หลายหน้า A4: iframe สูงตามเนื้อหาจริง (หน้า N × 297mm + ช่องว่าง)
+ * หน้ากระดาษแต่ละแผ่นถูกแบ่งภายใน iframe โดย PreviewFrame
+ * (script ใน lib/preview-pagination.ts) → .dc-pages / .dc-page--paged
+ *
+ * ⚠️ ห้าม fix height ที่นี่ — ต้องให้ iframe สูงตามจำนวนหน้าจริง
+ *    (height ที่ fix ไว้จะ clip เนื้อหาหน้าที่ 2, 3 ... ทิ้ง)
+ */
 .dc-a4-sheet {
   width: 210mm;
   min-height: 297mm;
@@ -49,7 +58,10 @@ body {
     0 1px 2px rgba(0, 0, 0, 0.06),
     0 8px 24px rgba(0, 0, 0, 0.12);
   border-radius: 2px;
-  overflow: hidden;
+  /*
+   * ⚠️ ห้ามใส่ overflow: hidden ที่นี่
+   *    → เนื้อหาที่ยาวกว่า 1 หน้าจะถูก clip ทิ้ง (ข้อความหายไป)
+   */
   display: block;
   /* ระยะเผื่อ bottom สำหรับ stage ให้เอกสารไม่ติดขอบ modal */
   margin: 0 auto 16px auto;
@@ -58,11 +70,11 @@ body {
   width: 100%;
   border: 0;
   display: block;
-}
-/* บังคับให้ iframe สูงเท่าเนื้อหา A4 (auto) — เอกสารยาวก็ยาว
-   ในกรณี scroll ภายใน modal คือ parent `dc-a4-sheet` ก็จะ scroll เอง
-   แต่สำหรับแผ่นเอกสารขนาด A4 เราตั้งความสูงเป็น mm-based เพื่อให้
-   preview ตรงกับเค้า A4 (1 หน้า = 297mm) */
-.dc-a4-sheet iframe {
-  height: 297mm;
+  /*
+   * iframe สูงเท่าเนื้อหาจริง (auto) — เอกสารยาวก็ยาว
+   * การแบ่งหน้าทำภายใน iframe → ช่องว่างระหว่างหน้ามาจาก .dc-pages gap
+   * ⚠️ ห้าม fix height เป็น 297mm (จะ clip หน้าที่ 2+ ทิ้ง)
+   */
+  height: auto;
+  min-height: 297mm;
 }

@@ -35,6 +35,10 @@ import {
 } from "./document-tokens";
 import { getObjectDisplayLabel } from "./field-capabilities";
 import {
+  resolvePageGeometry,
+  type PageGeometry,
+} from "./page-settings";
+import {
   SYSTEM_DATA_LABELS,
   NO_LOGO_TEXT,
   DEFAULT_SIGNATURE_LINE_LABEL,
@@ -205,6 +209,14 @@ export interface SystemDataRenderCommand {
 
 export interface RenderPlan {
   commands: RenderCommand[];
+  /**
+   * Page geometry ที่ resolve จาก descriptor.pageSettings
+   *
+   * - descriptor เก่าที่ไม่มี pageSettings → normal (40pt ทุกด้าน)
+   * - ใช้เป็น single source of truth ของ PDF layout
+   *   (Preview ใช้ resolvePageGeometry() ชุดเดียวกัน)
+   */
+  page?: PageGeometry;
   meta: {
     blockCount: number;
     fieldRefCount: number;
@@ -216,15 +228,111 @@ export interface RenderPlan {
 // Constants (mirror pdf-renderer.service.ts เพื่อ visual consistency)
 // =============================================================================
 
-const PAGE_WIDTH = 595.28; // A4
-const PAGE_HEIGHT = 841.89;
-const MARGIN = 40;
+/**
+ * ความสูงที่กันไว้สำหรับ header ของเอกสาร (pt)
+ *
+ * ค่าเดิมของ renderer — คงไว้เพื่อให้ descriptor เก่า (ไม่มี pageSettings)
+ * ได้ผลลัพธ์เดิมทุกประการ
+ */
+const HEADER_RESERVE = 80;
+
+/** ความสูงที่กันไว้สำหรับ footer (pt) */
 const FOOTER_RESERVE = 60;
-const CONTENT_TOP_AFTER_HEADER = PAGE_HEIGHT - MARGIN - 80;
-const CONTENT_BOTTOM = MARGIN + FOOTER_RESERVE;
-const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
-const LINE_HEIGHT = 1.4;
+
+/**
+ * ความสูงขั้นต่ำของ content area (pt)
+ * ป้องกัน content box ติดลบเมื่อ margin สูงมาก → pagination ไม่ infinite
+ */
+const MIN_CONTENT_HEIGHT = 120;
+
+/** ระยะเว้นระหว่าง block (pt) */
 const POST_BLOCK_SPACING = 8;
+
+/** อัตราส่วนความสูงบรรทัด */
+const LINE_HEIGHT = 1.4;
+
+/**
+ * Page Box — กรอบพื้นที่เนื้อหาที่คำนวณจาก PageGeometry
+ *
+ * ทุกจุดใน renderer ที่เคยใช้ค่าคงที่ MARGIN / CONTENT_WIDTH /
+ * CONTENT_TOP / CONTENT_BOTTOM ต้องเปลี่ยนมาใช้ box นี้แทน
+ */
+export interface PageBox {
+  /** ความกว้างหน้ากระดาษ (pt) */
+  pageWidth: number;
+  /** ความสูงหน้ากระดาษ (pt) */
+  pageHeight: number;
+  /** ขอบบน (pt) */
+  marginTop: number;
+  /** ขอบขวา (pt) */
+  marginRight: number;
+  /** ขอบล่าง (pt) */
+  marginBottom: number;
+  /** ขอบซ้าย (pt) */
+  marginLeft: number;
+  /** ขอบซ้ายของ content box (pt) */
+  contentLeft: number;
+  /** ขอบขวาของ content box (pt) */
+  contentRight: number;
+  /** พิกัด y สูงสุดของ content box (pt) — เส้นบน */
+  contentTop: number;
+  /** พิกัด y ต่ำสุดของ content box (pt) — เส้นล่าง */
+  contentBottom: number;
+  /** ความกว้างพื้นที่เนื้อหา (pt) */
+  contentWidth: number;
+  /** ความสูงพื้นที่เนื้อหา (pt) */
+  contentHeight: number;
+}
+
+/**
+ * คำนวณ PageBox จาก PageGeometry
+ *
+ * ── กฎ ────────────────────────────────────────────────────────────────────
+ *   - contentTop    = pageHeight - marginTop - HEADER_RESERVE
+ *   - contentBottom = marginBottom + FOOTER_RESERVE
+ *   - contentLeft   = marginLeft
+ *   - contentRight  = pageWidth - marginRight
+ *   - contentWidth  = min(geometry.contentWidth, contentRight - contentLeft)
+ *   - ป้องกัน content box ติดลบ: ถ้า contentBottom >= contentTop
+ *     → บีบ contentBottom ลงให้เหลือพื้นที่อย่างน้อย MIN_CONTENT_HEIGHT
+ */
+export function buildPageBox(geometry: PageGeometry): PageBox {
+  const pageWidth = geometry.pageWidth;
+  const pageHeight = geometry.pageHeight;
+
+  const contentLeft = geometry.marginLeft;
+  const contentRight = pageWidth - geometry.marginRight;
+
+  let contentTop = pageHeight - geometry.marginTop - HEADER_RESERVE;
+  let contentBottom = geometry.marginBottom + FOOTER_RESERVE;
+
+  // ── ป้องกัน content box ติดลบ / เล็กเกินจนพิมพ์ไม่ได้ ──────────────
+  if (!Number.isFinite(contentTop)) contentTop = pageHeight;
+  if (!Number.isFinite(contentBottom)) contentBottom = 0;
+
+  if (contentBottom > contentTop - MIN_CONTENT_HEIGHT) {
+    contentBottom = contentTop - MIN_CONTENT_HEIGHT;
+  }
+  if (contentBottom < 0) contentBottom = 0;
+
+  const availableWidth = Math.max(0, contentRight - contentLeft);
+  const contentWidth = Math.min(geometry.contentWidth, availableWidth);
+
+  return {
+    pageWidth,
+    pageHeight,
+    marginTop: geometry.marginTop,
+    marginRight: geometry.marginRight,
+    marginBottom: geometry.marginBottom,
+    marginLeft: geometry.marginLeft,
+    contentLeft,
+    contentRight,
+    contentTop,
+    contentBottom,
+    contentWidth,
+    contentHeight: Math.max(0, contentTop - contentBottom),
+  };
+}
 
 const FONT_SIZE_LARGE = 16;
 const FONT_SIZE_MEDIUM = 13;
@@ -289,6 +397,11 @@ export function buildRenderPlan(
   // [Requirement I.6] คำนวณ token ครั้งเดียวต่อ render ผ่าน shared resolver
   const tokens = resolveDocumentTokens(ctx);
 
+  // ── Page geometry (ขอบกระดาษ) ────────────────────────────────────────
+  // descriptor เก่าที่ไม่มี pageSettings → resolvePageGeometry(undefined)
+  // → fallback normal (40pt ทุกด้าน) = ผลเดิมของ renderer
+  const page = resolvePageGeometry(descriptor.pageSettings);
+
   for (const block of descriptor.blocks) {
     if (block.marginTop && block.marginTop > 0) {
       commands.push({
@@ -326,6 +439,7 @@ export function buildRenderPlan(
 
   return {
     commands,
+    page,
     meta: {
       blockCount: descriptor.blocks.length,
       fieldRefCount,
@@ -710,12 +824,19 @@ export async function renderPlanToPdf(
   const hasLogo = plan.commands.some((c) => c.type === "logo");
   const logo: PDFImage | null = hasLogo ? await loadSaoLogo(doc) : null;
 
+  // ── Page geometry ─────────────────────────────────────────────────────
+  // plan.page มาจาก resolvePageGeometry(descriptor.pageSettings)
+  // - plan ที่ไม่มี page (เช่น เรียกใช้เก่า / unit test) → fallback normal 40pt
+  const geometry = plan.page ?? resolvePageGeometry(undefined);
+  const box = buildPageBox(geometry);
+
   const state: ExecState = {
     doc,
-    page: doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]),
-    y: CONTENT_TOP_AFTER_HEADER,
+    page: doc.addPage([box.pageWidth, box.pageHeight]),
+    y: box.contentTop,
     fonts,
     logo,
+    box,
   };
 
   const generatedAt = Math.floor(Date.now() / 1000);
@@ -753,6 +874,8 @@ interface ExecState {
   y: number;
   fonts: { regular: PDFFont; bold: PDFFont };
   logo: PDFImage | null;
+  /** กรอบพื้นที่เนื้อหา (จาก resolvePageGeometry) */
+  box: PageBox;
 }
 
 function executeCommand(
@@ -761,7 +884,7 @@ function executeCommand(
   cmd: RenderCommand
 ): void {
   // Pagination guard (mirror pdf-renderer.service.ts:ensureSpace)
-  if (state.y < CONTENT_BOTTOM) {
+  if (state.y < state.box.contentBottom) {
     addNewPage(state);
   }
 
@@ -794,8 +917,8 @@ function executeCommand(
  * Add new page and reset cursor to top of content area.
  */
 function addNewPage(state: ExecState): void {
-  state.page = state.doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-  state.y = CONTENT_TOP_AFTER_HEADER;
+  state.page = state.doc.addPage([state.box.pageWidth, state.box.pageHeight]);
+  state.y = state.box.contentTop;
 }
 
 // =============================================================================
@@ -815,29 +938,29 @@ function drawHeading(state: ExecState, cmd: HeadingRenderCommand): void {
   const font = cmd.bold ? state.fonts.bold : state.fonts.regular;
   const italicFont = state.fonts.regular; // pdf-lib ไม่รองรับ oblique — ใช้ regular แต่รักษา semantic
   const drawFont = (cmd.italic ? italicFont : font);
+  const box = state.box;
 
   // Multiline: split by \n (Requirement A.2)
-  const lines = cmd.text.split(/\r?\n/);
+  // + wrap ข้อความยาวให้อยู่ใน content box (อิง contentWidth)
+  const rawLines = cmd.text.split(/\r?\n/);
+  const lines: string[] = [];
+  for (const raw of rawLines) {
+    const wrapped = wrapText(raw, box.contentWidth, drawFont, cmd.fontSize);
+    if (wrapped.length === 0) {
+      lines.push("");
+    } else {
+      lines.push(...wrapped);
+    }
+  }
 
-  // Pre-compute longest line for centering
-  const measuredLines = lines.map((ln) => drawFont.widthOfTextAtSize(ln, cmd.fontSize));
   const lineSpacing = cmd.fontSize * LINE_HEIGHT;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const w = measuredLines[i];
-    let x: number;
-    switch (cmd.align) {
-      case "center":
-        x = (PAGE_WIDTH - w) / 2;
-        break;
-      case "right":
-        x = PAGE_WIDTH - MARGIN - w;
-        break;
-      case "left":
-      default:
-        x = MARGIN;
-    }
+    const w = drawFont.widthOfTextAtSize(line, cmd.fontSize);
+    // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
+    ensureLineSpace(state, lineSpacing);
+    const x = alignX(box, cmd.align, w);
     state.page.drawText(line || "", {
       x,
       y: state.y - cmd.fontSize,
@@ -858,6 +981,26 @@ function drawHeading(state: ExecState, cmd: HeadingRenderCommand): void {
   state.y -= POST_BLOCK_SPACING;
 }
 
+/**
+ * คำนวณ x ของข้อความตาม align ภายใน content box
+ *
+ * - center → กึ่งกลาง content box (ไม่ใช่กึ่งกลางหน้ากระดาษ)
+ *   → เมื่อ margin ซ้าย/ขวาเท่ากัน ผลเหมือนเดิมทุกประการ
+ * - right  → ขวาชิด contentRight
+ * - left   → contentLeft
+ */
+function alignX(box: PageBox, align: Align, textWidth: number): number {
+  switch (align) {
+    case "center":
+      return box.contentLeft + (box.contentWidth - textWidth) / 2;
+    case "right":
+      return box.contentRight - textWidth;
+    case "left":
+    default:
+      return box.contentLeft;
+  }
+}
+
 // =============================================================================
 // SystemData Renderer (Requirement B)
 // =============================================================================
@@ -873,36 +1016,53 @@ function drawHeading(state: ExecState, cmd: HeadingRenderCommand): void {
 function drawSystemData(state: ExecState, cmd: SystemDataRenderCommand): void {
   const valueColor = cmd.isEmpty ? COLOR_PLACEHOLDER : COLOR_BLACK;
   const labelColor = COLOR_GRAY;
+  const box = state.box;
 
   if (cmd.showLabel) {
     const labelText = `${cmd.label}`;
-    const lw = state.fonts.bold.widthOfTextAtSize(labelText, cmd.labelFontSize);
-    let lx: number;
-    switch (cmd.align) {
-      case "center":
-        lx = (PAGE_WIDTH - lw) / 2;
-        break;
-      case "right":
-        lx = PAGE_WIDTH - MARGIN - lw;
-        break;
-      case "left":
-      default:
-        lx = MARGIN;
+    // label ยาวเกิน content box → wrap ให้อยู่ในกรอบ
+    const labelLines = wrapText(
+      labelText,
+      box.contentWidth,
+      state.fonts.bold,
+      cmd.labelFontSize
+    );
+    for (let i = 0; i < labelLines.length; i++) {
+      const line = labelLines[i];
+      const lw = state.fonts.bold.widthOfTextAtSize(line, cmd.labelFontSize);
+      // รายบรรทัดจัดตำแหน่งตาม align ของ block
+      // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
+      ensureLineSpace(state, cmd.labelFontSize * LINE_HEIGHT);
+      state.page.drawText(line, {
+        x: alignX(box, cmd.align, lw),
+        y: state.y - cmd.labelFontSize,
+        font: state.fonts.bold,
+        size: cmd.labelFontSize,
+        color: labelColor,
+      });
+      if (cmd.layout === "stacked") {
+        state.y -= cmd.labelFontSize * LINE_HEIGHT;
+      } else if (i < labelLines.length - 1) {
+        // inline: ถ้า label ยาวเกิน 1 บรรทัด → บรรทัดถัดไปลงมาใหม่
+        state.y -= cmd.labelFontSize * LINE_HEIGHT;
+      }
     }
-    state.page.drawText(labelText, {
-      x: lx,
-      y: state.y - cmd.labelFontSize,
-      font: state.fonts.bold,
-      size: cmd.labelFontSize,
-      color: labelColor,
-    });
     if (cmd.layout === "stacked") {
-      state.y -= cmd.labelFontSize * LINE_HEIGHT;
+      // (y ถูกลดไปแล้วใน loop ข้างบน)
     } else {
       // inline: label + value ต่อกัน (เว้น space 8pt)
-      // ใช้ space pt คำนวณจาก font width
       const spaceW = state.fonts.regular.widthOfTextAtSize(" ", cmd.valueFontSize);
-      drawValueBlock(state, cmd, lx + lw + spaceW, valueColor);
+      const lastLabel = labelLines[labelLines.length - 1] ?? "";
+      const lastLabelW = state.fonts.bold.widthOfTextAtSize(
+        lastLabel,
+        cmd.labelFontSize
+      );
+      const valueStartX =
+        cmd.align === "left"
+          ? box.contentLeft + lastLabelW + spaceW
+          : alignX(box, cmd.align, lastLabelW + spaceW);
+      drawValueBlock(state, cmd, valueStartX, valueColor);
+      // (คงพฤติกรรมเดิม: inline ลด y เพิ่มอีก 1 บรรทัดหลัง value)
       state.y -= cmd.valueFontSize * LINE_HEIGHT;
       state.y -= POST_BLOCK_SPACING;
       return;
@@ -912,9 +1072,10 @@ function drawSystemData(state: ExecState, cmd: SystemDataRenderCommand): void {
   // stacked (or no label): วาด value ในบรรทัดถัดไป
   // indent 12pt เฉพาะเมื่อ align=left (เหมือน field)
   // center/right → drawValueBlock จัดตำแหน่งตาม align แล้ว ไม่ต้อง indent
-  const valueX = cmd.showLabel && cmd.layout === "stacked" && cmd.align === "left"
-    ? MARGIN + 12
-    : MARGIN;
+  const valueX =
+    cmd.showLabel && cmd.layout === "stacked" && cmd.align === "left"
+      ? box.contentLeft + 12
+      : box.contentLeft;
   drawValueBlock(state, cmd, valueX, valueColor);
 
   state.y -= POST_BLOCK_SPACING;
@@ -922,6 +1083,8 @@ function drawSystemData(state: ExecState, cmd: SystemDataRenderCommand): void {
 
 /**
  * Helper: draw system-data value with alignment & multiline
+ *
+ * ข้อความยาว → wrap ให้อยู่ใน content box (อิง contentWidth)
  */
 function drawValueBlock(
   state: ExecState,
@@ -929,21 +1092,33 @@ function drawValueBlock(
   xHint: number,
   color: ReturnType<typeof rgb>
 ): void {
-  const lines = cmd.valueText.split(/\r?\n/);
+  const box = state.box;
+  const rawLines = cmd.valueText.split(/\r?\n/);
+  const lines: string[] = [];
+  for (const raw of rawLines) {
+    const wrapped = wrapText(
+      raw,
+      box.contentWidth,
+      state.fonts.regular,
+      cmd.valueFontSize
+    );
+    if (wrapped.length === 0) {
+      lines.push("");
+    } else {
+      lines.push(...wrapped);
+    }
+  }
+
   for (const line of lines) {
     const w = state.fonts.regular.widthOfTextAtSize(line, cmd.valueFontSize);
-    let x: number;
-    switch (cmd.align) {
-      case "center":
-        x = (PAGE_WIDTH - w) / 2;
-        break;
-      case "right":
-        x = PAGE_WIDTH - MARGIN - w;
-        break;
-      case "left":
-      default:
-        x = xHint;
-    }
+    // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
+    ensureLineSpace(state, cmd.valueFontSize * LINE_HEIGHT);
+    const x =
+      cmd.align === "center"
+        ? alignX(box, "center", w)
+        : cmd.align === "right"
+          ? alignX(box, "right", w)
+          : xHint;
     state.page.drawText(line || "", {
       x,
       y: state.y - cmd.valueFontSize,
@@ -969,34 +1144,40 @@ function drawField(
   const label = cmd.overrideLabel ?? cmd.field.label;
   const requiredMarker =
     cmd.field.isRequired && cmd.showRequired ? " *" : "";
+  const box = state.box;
 
   if (cmd.showLabel) {
-    // label — draw at MARGIN (or to left when inline)
+    // label — draw at content box left (or to left when inline)
     const labelText = `${label}${requiredMarker}`;
-    const lw = state.fonts.bold.widthOfTextAtSize(labelText, FONT_SIZE_LABEL);
+    // label ยาวเกิน content box → wrap ให้อยู่ในกรอบ
+    const labelLines = wrapText(
+      labelText,
+      box.contentWidth,
+      state.fonts.bold,
+      FONT_SIZE_LABEL
+    );
+    const lw = state.fonts.bold.widthOfTextAtSize(
+      labelLines[labelLines.length - 1] ?? labelText,
+      FONT_SIZE_LABEL
+    );
+    const labelX = alignX(box, cmd.align, lw);
 
-    let labelX: number;
-    switch (cmd.align) {
-      case "center": {
-        labelX = (PAGE_WIDTH - lw) / 2;
-        break;
+    for (let i = 0; i < labelLines.length; i++) {
+      const line = labelLines[i];
+      const lineW = state.fonts.bold.widthOfTextAtSize(line, FONT_SIZE_LABEL);
+      // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
+      ensureLineSpace(state, FONT_SIZE_LABEL * LINE_HEIGHT);
+      state.page.drawText(line, {
+        x: alignX(box, cmd.align, lineW),
+        y: state.y - FONT_SIZE_LABEL,
+        font: state.fonts.bold,
+        size: FONT_SIZE_LABEL,
+        color: COLOR_GRAY,
+      });
+      if (i < labelLines.length - 1) {
+        state.y -= FONT_SIZE_LABEL * LINE_HEIGHT;
       }
-      case "right": {
-        labelX = PAGE_WIDTH - MARGIN - lw;
-        break;
-      }
-      case "left":
-      default:
-        labelX = MARGIN;
     }
-
-    state.page.drawText(labelText, {
-      x: labelX,
-      y: state.y - FONT_SIZE_LABEL,
-      font: state.fonts.bold,
-      size: FONT_SIZE_LABEL,
-      color: COLOR_GRAY,
-    });
 
     if (cmd.layout === "inline") {
       // inline: label + value ในบรรทัดเดียวกัน
@@ -1017,7 +1198,7 @@ function drawField(
   drawFieldValue(
     state,
     displayValue,
-    cmd.showLabel ? MARGIN + 12 : MARGIN,
+    cmd.showLabel ? box.contentLeft + 12 : box.contentLeft,
     rawValue
   );
 
@@ -1026,6 +1207,8 @@ function drawField(
 
 /**
  * Draw field value (string ที่ผ่าน format แล้ว) — multiline, alignment-aware
+ *
+ * ข้อความยาว → wrap ให้อยู่ใน content box (อิง contentWidth)
  */
 function drawFieldValue(
   state: ExecState,
@@ -1033,25 +1216,32 @@ function drawFieldValue(
   xHint: number,
   rawValue: unknown
 ): void {
-  const lines = displayValue.split(/\r?\n/);
+  const box = state.box;
+  const rawLines = displayValue.split(/\r?\n/);
+  const lines: string[] = [];
+  for (const raw of rawLines) {
+    const wrapped = wrapText(
+      raw,
+      box.contentWidth,
+      state.fonts.regular,
+      FONT_SIZE_BODY
+    );
+    if (wrapped.length === 0) {
+      lines.push("");
+    } else {
+      lines.push(...wrapped);
+    }
+  }
+
   // value color: dim grey ถ้า field ว่าง
   const isEmpty = !isNonEmptyValue(rawValue);
   const color = isEmpty ? COLOR_PLACEHOLDER : COLOR_BLACK;
 
   for (const line of lines) {
-    const w = state.fonts.regular.widthOfTextAtSize(line, FONT_SIZE_BODY);
-    // field ไม่ใช้ block-level align ที่นี่ (ใช้ indent คงที่)
-    let x: number;
-    // ถ้า xHint อยู่ที่ MARGIN (ไม่ indent) → ใช้ block-level align ผ่าน cmd
-    // เรียกจาก drawField ส่ง xHint ตรง — จัดการตามที่ส่งมา
-    if (xHint === MARGIN) {
-      // no indent → ใช้ left (ถ้าต้องการ align ที่นี่ต้อง propagate)
-      x = MARGIN;
-    } else {
-      x = xHint;
-    }
+    // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
+    ensureLineSpace(state, FONT_SIZE_BODY * LINE_HEIGHT);
     state.page.drawText(line || "", {
-      x,
+      x: xHint,
       y: state.y - FONT_SIZE_BODY,
       font: state.fonts.regular,
       size: FONT_SIZE_BODY,
@@ -1096,44 +1286,49 @@ function drawTable(
   const tableData = parseTableData(rawValue);
 
   if (cmd.showLabel && cmd.label) {
-    const lw = state.fonts.bold.widthOfTextAtSize(cmd.label, FONT_SIZE_LABEL);
-    let lx: number;
-    switch (cmd.align) {
-      case "center":
-        lx = (PAGE_WIDTH - lw) / 2;
-        break;
-      case "right":
-        lx = PAGE_WIDTH - MARGIN - lw;
-        break;
-      case "left":
-      default:
-        lx = MARGIN;
+    // label ยาวเกิน content box → wrap ให้อยู่ในกรอบ
+    const labelLines = wrapText(
+      cmd.label,
+      state.box.contentWidth,
+      state.fonts.bold,
+      FONT_SIZE_LABEL
+    );
+    for (const line of labelLines) {
+      const lw = state.fonts.bold.widthOfTextAtSize(line, FONT_SIZE_LABEL);
+      // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
+      ensureLineSpace(state, FONT_SIZE_LABEL * LINE_HEIGHT);
+      state.page.drawText(line, {
+        x: alignX(state.box, cmd.align, lw),
+        y: state.y - FONT_SIZE_LABEL,
+        font: state.fonts.bold,
+        size: FONT_SIZE_LABEL,
+        color: COLOR_BLACK,
+      });
+      state.y -= FONT_SIZE_LABEL * LINE_HEIGHT;
     }
-    state.page.drawText(cmd.label, {
-      x: lx,
-      y: state.y - FONT_SIZE_LABEL,
-      font: state.fonts.bold,
-      size: FONT_SIZE_LABEL,
-      color: COLOR_BLACK,
-    });
-    state.y -= FONT_SIZE_LABEL * LINE_HEIGHT;
   }
 
   if (tableData.length === 0) {
     // Empty state (Requirement G — emptyText)
-    const lw = state.fonts.regular.widthOfTextAtSize(cmd.emptyText, FONT_SIZE_BODY);
-    state.page.drawText(cmd.emptyText, {
-      x: cmd.align === "center"
-        ? (PAGE_WIDTH - lw) / 2
-        : cmd.align === "right"
-          ? PAGE_WIDTH - MARGIN - lw
-          : MARGIN,
-      y: state.y - FONT_SIZE_BODY,
-      font: state.fonts.regular,
-      size: FONT_SIZE_BODY,
-      color: COLOR_GRAY,
-    });
-    state.y -= FONT_SIZE_BODY * LINE_HEIGHT;
+    const emptyLines = wrapText(
+      cmd.emptyText,
+      state.box.contentWidth,
+      state.fonts.regular,
+      FONT_SIZE_BODY
+    );
+    for (const line of emptyLines) {
+      const lw = state.fonts.regular.widthOfTextAtSize(line, FONT_SIZE_BODY);
+      // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
+      ensureLineSpace(state, FONT_SIZE_BODY * LINE_HEIGHT);
+      state.page.drawText(line, {
+        x: alignX(state.box, cmd.align, lw),
+        y: state.y - FONT_SIZE_BODY,
+        font: state.fonts.regular,
+        size: FONT_SIZE_BODY,
+        color: COLOR_GRAY,
+      });
+      state.y -= FONT_SIZE_BODY * LINE_HEIGHT;
+    }
     state.y -= POST_BLOCK_SPACING;
     return;
   }
@@ -1263,19 +1458,10 @@ function computeTableLayout(
   const colCount = headers.length;
   const isEmpty = colCount === 0 || cellStrings.length === 0;
 
-  const totalWidth = CONTENT_WIDTH;
-  let tableX: number;
-  switch (align) {
-    case "right":
-      tableX = PAGE_WIDTH - MARGIN - totalWidth;
-      break;
-    case "center":
-      tableX = (PAGE_WIDTH - totalWidth) / 2;
-      break;
-    case "left":
-    default:
-      tableX = MARGIN;
-  }
+  // ── ความกว้างตาราง = contentWidth จาก page geometry ───────────────
+  const box = state.box;
+  const totalWidth = box.contentWidth;
+  const tableX = alignX(box, align, totalWidth);
 
   if (isEmpty) {
     return {
@@ -1479,14 +1665,30 @@ function drawTableBorders(
 function ensureSpace(state: ExecState, requiredHeight: number): void {
   const SAFETY = 0.5;
   const blockBottom = state.y - requiredHeight;
-  if (blockBottom < CONTENT_BOTTOM + SAFETY) {
+  if (blockBottom < state.box.contentBottom + SAFETY) {
+    addNewPage(state);
+  }
+}
+
+/**
+ * ตรวจว่ามีที่ว่างพอสำหรับ 1 บรรทัดที่กำลังจะวาด
+ *
+ * ใช้กับข้อความที่ wrap เป็นหลายบรรทัด (heading / field / systemData /
+ * signature) → ถ้าบรรทัดต่อไปล้น content box → ขึ้นหน้าใหม่ก่อนวาด
+ *
+ * ⚠️ ต้องเรียกก่อนวาดทุกบรรทัด ไม่ใช่แค่ก่อน block
+ *    เพราะข้อความยาวอาจ wrap ข้ามขอบล่างของ content box
+ */
+function ensureLineSpace(state: ExecState, lineHeight: number): void {
+  const SAFETY = 0.5;
+  if (state.y - lineHeight < state.box.contentBottom + SAFETY) {
     addNewPage(state);
   }
 }
 
 function fitsWithMargin(state: ExecState, requiredHeight: number): boolean {
   const SAFETY = 0.5;
-  return state.y - requiredHeight >= CONTENT_BOTTOM + SAFETY;
+  return state.y - requiredHeight >= state.box.contentBottom + SAFETY;
 }
 
 // =============================================================================
@@ -1537,28 +1739,40 @@ function drawLogo(state: ExecState, cmd: LogoRenderCommand): void {
   }
 
   const aspectRatio = state.logo.height / state.logo.width;
-  const targetHeight = targetWidth * aspectRatio;
 
-  let x: number;
-  switch (cmd.align) {
-    case "center":
-      x = (PAGE_WIDTH - targetWidth) / 2;
-      break;
-    case "right":
-      x = PAGE_WIDTH - MARGIN - targetWidth;
-      break;
-    case "left":
-    default:
-      x = MARGIN;
+  // ── โลโก้ต้องอยู่ภายใน content box ────────────────────────────────
+  // - ความกว้างไม่เกิน contentWidth
+  // - ความสูงไม่เกินพื้นที่ที่เหลือใน content box (ไม่ทับ footer)
+  // - align: left → contentLeft, center → กึ่งกลาง content box, right → contentRight
+  const box = state.box;
+  const maxWidth = Math.max(1, box.contentWidth);
+  let fittedWidth = Math.min(targetWidth, maxWidth);
+  let fittedHeight = fittedWidth * aspectRatio;
+
+  // พื้นที่แนวตั้งที่เหลือ (อาจน้อย/ไม่พอ → ต้องย่อหรือขึ้นหน้าใหม่)
+  const availableHeight = state.y - box.contentBottom;
+  if (fittedHeight > availableHeight) {
+    if (availableHeight <= 0) {
+      // ไม่มีที่ว่างเลย → ขึ้นหน้าใหม่แล้วลองอีกครั้ง
+      addNewPage(state);
+      const fresh = state.y - box.contentBottom;
+      fittedHeight = Math.max(0, Math.min(fittedHeight, fresh));
+      fittedWidth = fittedHeight / aspectRatio;
+    } else {
+      fittedHeight = availableHeight;
+      fittedWidth = fittedHeight / aspectRatio;
+    }
   }
+
+  const x = alignX(box, cmd.align, fittedWidth);
 
   state.page.drawImage(state.logo, {
     x,
-    y: state.y - targetHeight,
-    width: targetWidth,
-    height: targetHeight,
+    y: state.y - fittedHeight,
+    width: fittedWidth,
+    height: fittedHeight,
   });
-  state.y -= targetHeight;
+  state.y -= fittedHeight;
   state.y -= POST_BLOCK_SPACING;
 }
 
@@ -1567,27 +1781,19 @@ function drawLogo(state: ExecState, cmd: LogoRenderCommand): void {
  */
 function drawLogoText(state: ExecState, text: string, align: Align): void {
   const fontSize = 11;
-  const w = state.fonts.regular.widthOfTextAtSize(text, fontSize);
-  let x: number;
-  switch (align) {
-    case "center":
-      x = (PAGE_WIDTH - w) / 2;
-      break;
-    case "right":
-      x = PAGE_WIDTH - MARGIN - w;
-      break;
-    case "left":
-    default:
-      x = MARGIN;
+  const box = state.box;
+  const lines = wrapText(text, box.contentWidth, state.fonts.regular, fontSize);
+  for (const line of lines) {
+    const w = state.fonts.regular.widthOfTextAtSize(line, fontSize);
+    state.page.drawText(line, {
+      x: alignX(box, align, w),
+      y: state.y - fontSize,
+      font: state.fonts.regular,
+      size: fontSize,
+      color: COLOR_GRAY,
+    });
+    state.y -= fontSize * LINE_HEIGHT;
   }
-  state.page.drawText(text, {
-    x,
-    y: state.y - fontSize,
-    font: state.fonts.regular,
-    size: fontSize,
-    color: COLOR_GRAY,
-  });
-  state.y -= fontSize * LINE_HEIGHT;
   state.y -= POST_BLOCK_SPACING;
 }
 
@@ -1693,6 +1899,7 @@ function drawSignatureLine1(
   align: Align
 ): void {
   const fontSize = FONT_SIZE_SIGNATURE_LABEL;
+  const box = state.box;
   const labelW = state.fonts.regular.widthOfTextAtSize(label, fontSize);
   const lineW = state.fonts.regular.widthOfTextAtSize(lineStyle, fontSize);
   const roleW = state.fonts.regular.widthOfTextAtSize(roleLabel, fontSize);
@@ -1704,19 +1911,15 @@ function drawSignatureLine1(
     lineW +
     (roleLabel.length > 0 ? space + roleW : 0);
 
-  // ── Determine x origin based on align ────────────────────────────
-  let blockX: number;
-  switch (align) {
-    case "center":
-      blockX = (PAGE_WIDTH - totalWidth) / 2;
-      break;
-    case "right":
-      blockX = PAGE_WIDTH - MARGIN - totalWidth;
-      break;
-    case "left":
-    default:
-      blockX = MARGIN;
-  }
+  // ── Determine x origin based on align (ภายใน content box) ────────
+  const blockX = alignX(box, align, totalWidth);
+
+  // ถ้าเส้น+label ยาวเกิน content box → ตัดเส้นให้พอดีกรอบ
+  const lineText =
+    blockX + labelW + space + lineW > box.contentRight
+      ? "…"
+      : lineStyle;
+  const usedLineW = state.fonts.regular.widthOfTextAtSize(lineText, fontSize);
 
   // Draw label
   state.page.drawText(label, {
@@ -1729,17 +1932,17 @@ function drawSignatureLine1(
   let cur = blockX + labelW + space;
 
   // Draw line style (จุด/ขีด)
-  state.page.drawText(lineStyle, {
+  state.page.drawText(lineText, {
     x: cur,
     y: state.y - fontSize,
     font: state.fonts.regular,
     size: fontSize,
     color: COLOR_BLACK,
   });
-  cur += lineW + space;
+  cur += usedLineW + space;
 
   // Draw role label (optional)
-  if (roleLabel.length > 0) {
+  if (roleLabel.length > 0 && cur + roleW <= box.contentRight) {
     state.page.drawText(roleLabel, {
       x: cur,
       y: state.y - fontSize,
@@ -1756,6 +1959,7 @@ function drawSignatureLine1(
  * Draw signature text line (label + name / date / time)
  * - รักษา block-level align
  * - ใช้สีที่กำหนด (BLACK หรือ PLACEHOLDER)
+ * - ข้อความยาว → wrap ให้อยู่ใน content box
  */
 function drawSignatureText(
   state: ExecState,
@@ -1764,27 +1968,21 @@ function drawSignatureText(
   color: ReturnType<typeof rgb>
 ): void {
   const fontSize = FONT_SIZE_SIGNATURE_META;
-  const w = state.fonts.regular.widthOfTextAtSize(text, fontSize);
-  let x: number;
-  switch (align) {
-    case "center":
-      x = (PAGE_WIDTH - w) / 2;
-      break;
-    case "right":
-      x = PAGE_WIDTH - MARGIN - w;
-      break;
-    case "left":
-    default:
-      x = MARGIN;
+  const box = state.box;
+  const lines = wrapText(text, box.contentWidth, state.fonts.regular, fontSize);
+  for (const line of lines) {
+    const w = state.fonts.regular.widthOfTextAtSize(line, fontSize);
+    // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
+    ensureLineSpace(state, fontSize * LINE_HEIGHT);
+    state.page.drawText(line, {
+      x: alignX(box, align, w),
+      y: state.y - fontSize,
+      font: state.fonts.regular,
+      size: fontSize,
+      color,
+    });
+    state.y -= fontSize * LINE_HEIGHT;
   }
-  state.page.drawText(text, {
-    x,
-    y: state.y - fontSize,
-    font: state.fonts.regular,
-    size: fontSize,
-    color,
-  });
-  state.y -= fontSize * LINE_HEIGHT;
 }
 
 // =============================================================================

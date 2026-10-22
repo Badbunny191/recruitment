@@ -75,6 +75,9 @@ export function PreviewModal({
   // ── diagnostics ซ่อนโดย default (Req 10) ──
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
+  // ── จำนวนหน้าที่แบ่งแล้ว (เหมือน Compact) ──
+  const [pageCount, setPageCount] = useState(0);
+
   // ── preview state (HTML ที่จะ render ใน modal) ──
   const [modalPreview, setModalPreview] = useState<PreviewResponse | null>(
     currentPreview
@@ -84,6 +87,21 @@ export function PreviewModal({
   const fetchPreviewRef = useRef(fetchPreview);
   const dataSourceRef = useRef(dataSource);
   const selectedApplicationRef = useRef(selectedApplication);
+  /** ref ของ stage (ช่องที่ scroll เอกสาร) */
+  const stageRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * เลื่อน stage กลับด้านบน
+   *
+   * ⚠️ ห้ามล้าง descriptor / applicationId / pageSettings — มีแค่ scroll เท่านั้น
+   */
+  const resetStageScroll = useCallback(() => {
+    const el = stageRef.current;
+    if (el) {
+      el.scrollTop = 0;
+    }
+  }, []);
+
   useEffect(() => {
     fetchPreviewRef.current = fetchPreview;
   }, [fetchPreview]);
@@ -103,6 +121,7 @@ export function PreviewModal({
       // ปิด modal → reset state ให้พร้อม re-open
       setModalPreview(currentPreview);
       setShowDiagnostics(false);
+      setPageCount(0);
       return;
     }
 
@@ -128,13 +147,17 @@ export function PreviewModal({
   }, [open, applicationId]);
 
   // ── เมื่อ mode เปลี่ยน → refetch (option: header) ─────────────────
+  // ⚠️ ต้อง reset scroll ของ stage ก่อน/หลังเปลี่ยนโหมด
+  //    ไม่งั้น preview จะ "เปิดค้าง" ที่ตำแหน่งกลางเอกสาร
   const handleModeChange = useCallback(
     async (next: PreviewMode) => {
       setMode(next);
+      resetStageScroll();
       await fetchPreviewRef.current(
         { mode: next, includeHeader: true },
         applicationId
       );
+      resetStageScroll();
     },
     [applicationId]
   );
@@ -150,6 +173,21 @@ export function PreviewModal({
       setModalPreview(currentPreview);
     }
   }, [currentPreview, mode, open]);
+
+  /**
+   * ── Scroll reset เมื่อเนื้อหา preview เปลี่ยน ────────────────────────────
+   *
+   * Root cause (UAT): เมื่อสลับ Form ↔ Document/PDF หรือ re-render
+   *   → stage คง scrollTop เดิม → preview "เปิดค้าง" ที่กลางเอกสาร
+   *   → ผู้ใช้มองไม่เห็นว่าเนื้อหาช่วงบนหายไปหรืออยู่
+   *
+   * แก้โดยเลื่อน stage กลับด้านบนทุกครั้งที่ body เปลี่ยน
+   *   ⚠️ ห้ามล้าง descriptor / applicationId / pageSettings
+   */
+  useEffect(() => {
+    if (!open) return;
+    resetStageScroll();
+  }, [open, modalPreview?.body, mode, resetStageScroll]);
 
   // ── ESC key (Req 11) ────────────────────────────────────────────
   useEffect(() => {
@@ -225,12 +263,16 @@ const tokensByMode: PreviewTokenInfo[] = useMemo(
           onClose={onClose}
           tokensCount={tokensByMode.length}
           missingCount={missingCount}
+          pageCount={pageCount}
         />
 
         {/* ── Stage (A4 paper) ───────────────────────────────────── */}
-        <div className="flex-1 overflow-y-auto overflow-x-auto px-6 py-6 grid place-items-center bg-slate-200">
+        <div
+          ref={stageRef}
+          className="flex-1 overflow-y-auto overflow-x-auto px-6 py-6 grid place-items-center bg-slate-200"
+        >
           {isReady && modalPreview ? (
-            <A4Page preview={modalPreview} />
+            <A4Page preview={modalPreview} onPageCount={setPageCount} />
           ) : (
             <StageSkeleton loading={loading} />
           )}
@@ -259,6 +301,8 @@ interface ToolbarProps {
   tokensCount: number;
   /** จำนวน token ที่ยังไม่มีข้อมูลจริง */
   missingCount: number;
+  /** จำนวนหน้าที่แบ่งแล้ว (เหมือน Compact) */
+  pageCount: number;
 }
 
 function Toolbar({
@@ -270,6 +314,7 @@ function Toolbar({
   onClose,
   tokensCount,
   missingCount,
+  pageCount,
 }: ToolbarProps) {
   return (
     <div className="flex items-center justify-between gap-3 px-4 py-3 bg-white border-b border-slate-200 shrink-0">
@@ -278,6 +323,14 @@ function Toolbar({
         <span className="text-[11px] text-slate-400 truncate">
           A4 Document Composer
         </span>
+        {pageCount > 0 && (
+          <span
+            data-testid="modal-page-count"
+            className="text-[11px] text-slate-500 shrink-0"
+          >
+            {pageCount} หน้า
+          </span>
+        )}
         {loading && (
           <span className="inline-flex items-center gap-1 text-[11px] text-blue-700 font-medium">
             <Spinner /> กำลัง render…
@@ -386,10 +439,16 @@ function ModeButton({
  *    ทั้ง Compact และ Fullscreen แสดงเฉพาะ Blocks ที่อยู่ใน Descriptor
  *    (page box .dc-page + padding 40pt ยังคงอยู่ใน PreviewFrame)
  */
-function A4Page({ preview }: { preview: PreviewResponse }) {
+function A4Page({
+  preview,
+  onPageCount,
+}: {
+  preview: PreviewResponse;
+  onPageCount?: (pageCount: number) => void;
+}) {
   return (
     <div className="dc-a4-sheet">
-      <PreviewFrame preview={preview} />
+      <PreviewFrame preview={preview} onPageCount={onPageCount} autoHeight />
     </div>
   );
 }

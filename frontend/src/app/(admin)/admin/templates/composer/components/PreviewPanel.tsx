@@ -17,6 +17,7 @@
  *   - เอกสารยาวให้ scroll ภายใน iframe เอง (ไม่ใช่ scroll ที่ CardContent)
  */
 
+import { useCallback, useState } from 'react';
 import type { PreviewResponse } from '@/lib/api/template-descriptor';
 import { PreviewFrame } from './PreviewFrame';
 import { cn } from '@/lib/utils';
@@ -26,9 +27,26 @@ export interface PreviewPanelProps {
   loading: boolean;
   /** className เพิ่มเติมของ container */
   className?: string;
+  /** callback รายงานจำนวนหน้าที่แบ่งแล้ว (Compact) */
+  onPageCount?: (pageCount: number) => void;
 }
 
-export function PreviewPanel({ preview, loading, className }: PreviewPanelProps) {
+export function PreviewPanel({
+  preview,
+  loading,
+  className,
+  onPageCount,
+}: PreviewPanelProps) {
+  const [pageCount, setPageCount] = useState(0);
+
+  const handlePageCount = useCallback(
+    (count: number) => {
+      setPageCount(count);
+      onPageCount?.(count);
+    },
+    [onPageCount]
+  );
+
   if (loading && !preview) {
     return (
       <div
@@ -68,7 +86,15 @@ export function PreviewPanel({ preview, loading, className }: PreviewPanelProps)
             </span>
           )}
         </span>
-        <span>auto-refresh 1.5s</span>
+        <span className="flex items-center gap-2">
+          {/* จำนวนหน้า (เหมือน Fullscreen) */}
+          {pageCount > 0 && (
+            <span data-testid="preview-page-count">
+              {pageCount} หน้า
+            </span>
+          )}
+          <span>auto-refresh 1.5s</span>
+        </span>
       </div>
 
       {/*
@@ -79,6 +105,7 @@ export function PreviewPanel({ preview, loading, className }: PreviewPanelProps)
       <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
         <PreviewFrame
           preview={preview}
+          onPageCount={handlePageCount}
           className="w-full h-full flex-1 min-h-0 border border-slate-200 rounded bg-white"
         />
       </div>
