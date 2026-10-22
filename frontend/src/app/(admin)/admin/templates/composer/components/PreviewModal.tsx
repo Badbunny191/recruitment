@@ -10,7 +10,8 @@
  *   2. ปุ่ม Preview → เปิด Fullscreen A4 Modal
  *   3. A4 aspect (210×297mm) + พื้นหลังเหมือนเอกสารจริง + ขอบกระดาษ
  *   4. Mode toggle: Form ↔ Document/PDF
- *   5. Header ครบ: logo (หรือ "ยังไม่มีโลโก้") + title + appno + position
+ *   5. ไม่แสดง Automatic Header (โลโก้/ชื่อเอกสาร/วันที่สมัคร/ตำแหน่ง)
+ *      → ทั้ง Compact และ Fullscreen แสดงเฉพาะ Blocks ใน Descriptor
  *   6. Token resolve ไม่ได้ → placeholder สีเทา (จัดการฝั่ง renderer)
  *   7. Table เป็น <table> จริง (rendered by server renderer)
  *   8. Right thumbnail = compact preview เดิม (ไม่เปลี่ยน PreviewPanel)
@@ -27,6 +28,7 @@
  * Data Flow:
  *   ComposerClient ส่ง `descriptor` + `currentPreview` (cached, mode=form, no header)
  *   → modal เรียก runPreview({ mode, includeHeader: true }) ทุกครั้งที่ mode เปลี่ยน
+ *   → แต่ **ไม่ render** Automatic Header (ไม่ส่ง withHeader ให้ PreviewFrame)
  *   → ใช้ shared `PreviewFrame` (srcdoc) เพื่อ render HTML เดียวกัน
  */
 
@@ -379,14 +381,15 @@ function ModeButton({
  * - เงา + ขอบกระดาษ + padding เหมือนเอกสารจริง
  * - ใช้ PreviewFrame (srcdoc) เพื่อแชร์ renderer ตัวเดียวกับ thumbnail
  *
- * ⚠️ withHeader ต้องเป็น true ตามค่าที่ fetch ใช้อยู่เดิม
- *    (fetchPreview({ mode, includeHeader: true })) → หัวเอกสาร (โลโก้/ชื่อเอกสาร/เลขที่)
- *    ต้องถูกส่งเข้า PreviewFrame ไม่ใช่แค่ถูก fetch มาเก็บไว้เฉย ๆ
+ * ⚠️ ไม่ส่ง withHeader → ไม่แสดง Automatic Header
+ *    (โลโก้/ยังไม่มีโลโก้, ชื่อเอกสาร "Document", วันที่สมัคร, {POSITION_NAME})
+ *    ทั้ง Compact และ Fullscreen แสดงเฉพาะ Blocks ที่อยู่ใน Descriptor
+ *    (page box .dc-page + padding 40pt ยังคงอยู่ใน PreviewFrame)
  */
 function A4Page({ preview }: { preview: PreviewResponse }) {
   return (
     <div className="dc-a4-sheet">
-      <PreviewFrame preview={preview} withHeader />
+      <PreviewFrame preview={preview} />
     </div>
   );
 }
