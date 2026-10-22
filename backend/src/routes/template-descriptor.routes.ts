@@ -7,6 +7,7 @@
  *   GET    /admin/template-versions/:id/descriptor
  *   PUT    /admin/template-versions/:id/descriptor
  *   POST   /admin/template-versions/:id/descriptor/preview
+ *   POST   /admin/template-versions/:id/descriptor/pdf-preview   ← PDF จริง (source of truth การแบ่งหน้า)
  *   POST   /admin/template-versions/:id/descriptor/generate
  *
  * Design Principles:
@@ -51,6 +52,8 @@ import {
 } from '../lib/document-composer';
 import { PageSettingsSchema } from '../lib/document-composer/page-settings';
 import { renderDescriptorToPreview } from '../lib/document-composer';
+import { buildRenderPlan, renderPlanToPdf } from '../lib/document-composer';
+import { validateDescriptor } from '../lib/document-composer';
 import type { DocumentDescriptor } from '../lib/document-composer/types';
 
 const descriptorRouter = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
@@ -110,6 +113,22 @@ const PreviewDescriptorRequestSchema = z.object({
     .optional(),
   // ── [Live Preview] Real applicant data ───────────────────────────────
   // optional — backward compatible (ถ้าไม่ใส่ใช้ sample context)
+  applicationId: z.string().min(1).optional(),
+});
+
+/**
+ * Schema สำหรับ POST /admin/template-versions/:id/descriptor/pdf-preview
+ *
+ * รับ descriptor เพื่อ generate PDF preview จริง (ไม่บันทึก)
+ * - ใช้ PDF Renderer ตัวเดียวกับ export (buildRenderPlan → renderPlanToPdf)
+ * - applicationId optional → sample context / real applicant data
+ */
+const PdfPreviewDescriptorRequestSchema = z.object({
+  descriptor: z.object({
+    version: z.literal(1),
+    blocks: z.array(z.any()).min(1),
+    pageSettings: PageSettingsSchema.optional(),
+  }),
   applicationId: z.string().min(1).optional(),
 });
 
@@ -396,7 +415,100 @@ descriptorRouter.post(
 );
 
 // =============================================================================
-// Route 4: POST /admin/template-versions/:id/descriptor/generate
+// Route 4: POST /admin/template-versions/:id/descriptor/pdf-preview
+//
+// 🔑 PDF Preview = SOURCE OF TRUTH เรื่องการแบ่งหน้า
+//
+// ใช้ PDF Renderer ตัวเดียวกับที่ใช้ export จริง:
+//   buildRenderPlan(descriptor, ctx) → renderPlanToPdf(plan, ctx)
+//   (block.pageBreak → addNewPage() ทันที ไม่มีการเดาจากความสูง)
+//
+// คืน PDF bytes (application/pdf) + header X-Pdf-Page-Count
+// → ฝั่ง browser เปิดใน <iframe> / <embed> ได้ทันที
+//
+// ไม่บันทึก — แค่ preview
+// =============================================================================
+
+descriptorRouter.post(
+  '/:id/descriptor/pdf-preview',
+  zValidator('json', PdfPreviewDescriptorRequestSchema),
+  async (c) => {
+    const db = drizzle(c.env.DB);
+    const id = c.req.param('id');
+    const payload = c.req.valid('json');
+
+    // 1. Verify template version exists
+    const found = await findTemplateVersion(db, id);
+    if (!found.exists) {
+      return c.json({ error: 'Template version not found' }, 404);
+    }
+
+    // 2. Validate descriptor (pageBreak ผ่าน schema แล้ว)
+    const validated = validateDescriptor(payload.descriptor);
+    if (!validated.ok) {
+      return c.json(
+        { error: 'Descriptor validation failed', issues: validated.issues },
+        400
+      );
+    }
+
+    // 3. Build context — reuse โค้ดเดียวกับ preview route
+    //    (sample context หรือ real applicant data)
+    let ctx;
+    if (payload.applicationId) {
+      try {
+        ctx = await loadApplicationContext(db, payload.applicationId, id);
+      } catch (err) {
+        if (err instanceof ApplicationContextError) {
+          return c.json({ error: err.message, code: err.code }, 400);
+        }
+        return c.json(
+          {
+            error:
+              'ไม่สามารถโหลดข้อมูลผู้สมัคร กรุณาลองใหม่หรือกลับไปใช้ข้อมูลตัวอย่าง',
+          },
+          500
+        );
+      }
+    } else {
+      ctx = await buildPreviewContext(db, id);
+      if (!ctx) {
+        return c.json({ error: 'Failed to build preview context' }, 500);
+      }
+    }
+
+    // 4. ⚙️ PDF Renderer ตัวเดียวกับ export
+    //    - pageBreak → ขึ้นหน้าใหม่ทันที (addNewPage)
+    //    - ไม่มี height estimation
+    //
+    // Cast เป็น DocumentDescriptor เหมือน preview route
+    // (zod output ยังรองรับ legacy `dateSource: 'application'` ที่ type ไม่ระบุ)
+    const descriptor = validated.value as DocumentDescriptor;
+    try {
+      const plan = buildRenderPlan(descriptor, ctx);
+      const rendered = await renderPlanToPdf(plan, ctx);
+
+      // 5. Return PDF bytes
+      return new Response(rendered.bytes as unknown as BodyInit, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': 'inline; filename="descriptor-preview.pdf"',
+          'Content-Length': String(rendered.bytes.byteLength),
+          'X-Pdf-Page-Count': String(rendered.pageCount),
+          'Cache-Control': 'no-store',
+        },
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[descriptor/pdf-preview] render failed:', err);
+      return c.json({ error: 'Failed to render PDF preview' }, 500);
+    }
+  }
+);
+
+// =============================================================================
+// Route 5: POST /admin/template-versions/:id/descriptor/generate
 //
 // Generate descriptor จาก template version's sections + fields
 // → ใช้ generateDescriptorFromTemplate() (pure function)

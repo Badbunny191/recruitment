@@ -7,7 +7,7 @@
  *
  * Requirements:
  *   - Compact preview on the right (รักษาความ compact สำหรับ auto-refresh)
-    10| *   - ไม่แสดง document header (modal handles that)
+ *   - ไม่แสดง document header (modal handles that)
  *   - ใช้ shared PreviewFrame — single source of truth กับ fullscreen modal
  *
  * ก้อนที่ 2 (Responsive Workspace) — UAT fix:
@@ -15,11 +15,19 @@
  *     → ใช้ `flex-1` + `min-h-0` + `h-full` ให้พื้นที่ Preview
  *       ขยายเต็มความสูงที่เหลือของคอลัมน์
  *   - เอกสารยาวให้ scroll ภายใน iframe เอง (ไม่ใช่ scroll ที่ CardContent)
+ *
+ * ── ⚠️ Continuous Preview (2026-10-22) ──────────────────────────────────────
+ *   - ตัด browser pagination ออกทั้งหมด → ไม่มี pageCount ที่นี่แล้ว
+ *   - `view` prop เลือกได้ระหว่าง 'html' (continuous) กับ 'pdf' (PDF จริง)
+ *   - 🔑 PDF Preview คือ source of truth เรื่องการแบ่งหน้า
  */
 
-import { useCallback, useState } from 'react';
-import type { PreviewResponse } from '@/lib/api/template-descriptor';
+import type {
+  DocumentDescriptor,
+  PreviewResponse,
+} from '@/lib/api/template-descriptor';
 import { PreviewFrame } from './PreviewFrame';
+import { PdfPreviewFrame, type PdfPreviewStatus } from './PdfPreviewFrame';
 import { cn } from '@/lib/utils';
 
 export interface PreviewPanelProps {
@@ -27,25 +35,41 @@ export interface PreviewPanelProps {
   loading: boolean;
   /** className เพิ่มเติมของ container */
   className?: string;
-  /** callback รายงานจำนวนหน้าที่แบ่งแล้ว (Compact) */
-  onPageCount?: (pageCount: number) => void;
+  /** โหมด preview: 'html' = continuous HTML (default) | 'pdf' = PDF จริง */
+  view?: 'html' | 'pdf';
+  /** ── สำหรับ view='pdf' ─────────────────────────────────────────────────── */
+  /** Template version id (endpoint pdf-preview) */
+  templateVersionId?: string;
+  /** Descriptor ปัจจุบัน (ส่งตรง ๆ เพื่อไม่ต้องรอ auto-refresh) */
+  descriptor?: DocumentDescriptor | null;
+  /** applicationId — ดูข้อมูลผู้สมัครจริงแทนข้อมูลตัวอย่าง */
+  applicationId?: string;
+  /** callback รายงานสถานะ PDF preview */
+  onPdfStatus?: (status: PdfPreviewStatus) => void;
 }
 
 export function PreviewPanel({
   preview,
   loading,
   className,
-  onPageCount,
+  view = 'html',
+  templateVersionId,
+  descriptor,
+  applicationId,
+  onPdfStatus,
 }: PreviewPanelProps) {
-  const [pageCount, setPageCount] = useState(0);
-
-  const handlePageCount = useCallback(
-    (count: number) => {
-      setPageCount(count);
-      onPageCount?.(count);
-    },
-    [onPageCount]
-  );
+  if (view === 'pdf') {
+    return (
+      <PdfPreviewFrame
+        className={className}
+        templateVersionId={templateVersionId}
+        descriptor={descriptor}
+        applicationId={applicationId}
+        descriptorReady={!!descriptor}
+        onStatusChange={onPdfStatus}
+      />
+    );
+  }
 
   if (loading && !preview) {
     return (
@@ -87,12 +111,6 @@ export function PreviewPanel({
           )}
         </span>
         <span className="flex items-center gap-2">
-          {/* จำนวนหน้า (เหมือน Fullscreen) */}
-          {pageCount > 0 && (
-            <span data-testid="preview-page-count">
-              {pageCount} หน้า
-            </span>
-          )}
           <span>auto-refresh 1.5s</span>
         </span>
       </div>
@@ -100,12 +118,11 @@ export function PreviewPanel({
       {/*
         พื้นที่ Preview — ขยายเต็มความสูงที่เหลือ (flex-1 + min-h-0)
         ⚠️ ห้าม hard-code ความสูงคงที่ที่นี่
-           เอกสารยาวให้ scroll ภายใน iframe เอง
+           เอกสารยาวให้ scroll ภายใน iframe เอง (continuous)
       */}
       <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
         <PreviewFrame
           preview={preview}
-          onPageCount={handlePageCount}
           className="w-full h-full flex-1 min-h-0 border border-slate-200 rounded bg-white"
         />
       </div>

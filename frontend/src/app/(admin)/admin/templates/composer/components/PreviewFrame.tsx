@@ -3,43 +3,50 @@
 /**
  * PreviewFrame — shared iframe-based HTML preview renderer
  * --------------------------------
- * Document Composer V1 — Live Preview
+ * Document Composer V1 — Live Preview (Continuous Preview)
  *
  * Single source of truth สำหรับ render HTML preview ทั้งใน
  *   - PreviewPanel (compact/thumbnail ด้านขวา)
- *   - PreviewModal (fullscreen A4)
+ *   - PreviewModal (fullscreen)
  *
  * ใช้ srcdoc + inline CSS เพื่อให้:
  *   - ไม่ขึ้นกับ external stylesheet
  *   - mode + header toggle ผ่าน backend options (single renderer)
  *   - ไม่มี token logic ซ้ำ (ทุกอย่างจาก backend renderDescriptorToPreview)
  *
- * ── Pagination (UAT fix) ─────────────────────────────────────────────────────
- * เดิม `.dc-page` มีแต่ `min-height` → เนื้อหาที่เกิน A4 ไหลต่อใต้หน้าแรก
- * (ไม่ใช่ pagination จริง) → ตอนนี้ใช้ script วัดความสูงจริงใน iframe
- * แล้วแบ่งเป็นหลายหน้า A4 แยกกัน มีช่องว่างระหว่างหน้า
+ * ── ⚠️ Continuous Preview (เปลี่ยนแนวทาง 2026-10-22) ────────────────────────────
+ *   **ตัด Browser Pagination ออกทั้งหมด**
+ *   - ไม่วัด DOM ไม่แบ่งหน้า A4 ในเบราว์เซอร์อีก
+ *   - ไม่มี script ฝัง ไม่มีการ scale/zoom ไม่มีการวัดความสูง
+ *   - เอกสารเป็น **ลำดับต่อเนื่องยาวเดียว** ในกรอบกระดาษกว้าง A4
+ *   - คง Page Settings (margin จาก `preview.page`) เป็น padding ของกรอบ
+ *   - คงการแสดงข้อมูลผู้สมัคร, Page Settings, ความเร็ว/เสถียร
+ *
+ *   🔑 **การแบ่งหน้าจริง = PDF Preview เท่านั้น (source of truth)**
+ *      ดู PdfPreviewFrame.tsx — เรียก PDF Renderer ตัวเดียวกับ export
+ *      block `pageBreak` ใน HTML preview แสดงเป็น separator `📄 หน้าใหม่`
  *
  * ⚠️ Compact และ Fullscreen ใช้ component นี้ตัวเดียวกัน
- *    → จำนวนหน้า + ลำดับหน้า (หน้า X / N) จึงตรงกันเสมอ
- * ⚠️ ไม่มี Automatic Header ในการแบ่งหน้า (ห้ามนำกลับมา)
+ *    → หน้าตาจึงตรงกันเสมอ
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import type { PreviewResponse } from '@/lib/api/template-descriptor';
-import {
-  PREVIEW_PAGE_GAP_PT,
-  PREVIEW_PAGE_HEIGHT_PT,
-  PREVIEW_PAGE_WIDTH_PT,
-  buildPaginationScript,
-} from '../lib/preview-pagination';
+
+/**
+ * ความกว้าง/สูงกระดาษ A4 (pt) — fallback เมื่อ backend ยังไม่ส่ง page geometry
+ *
+ * ⚠️ ใช้แค่กำหนด "ความกว้าง" ของกรอบกระดาษเพื่อให้เส้นเนื้อหาตรงกับ A4
+ *    ไม่ใช้กำหนดความสูง (continuous → โตตามเนื้อหา)
+ */
+const PREVIEW_PAGE_WIDTH_PT = 595.28;
 
 /**
  * Frame-level CSS ที่ต้องมีเสมอ (ไม่เกี่ยวกับ block layout)
  *
  * CSS ของ block ทั้งหมด (.dc-systemdata, .dc-field, ...) มาจาก backend
  * `preview.styles` เพื่อไม่ให้เกิด CSS drift — ถ้า hardcode ซ้ำที่นี่
- * แก้ backend แล้ว preview จะไม่เปลี่ยน (bug ที่เคยเจอ: rule ที่แก้ใน
- * backend ไม่เคยถูกส่งมาถึง iframe เลย)
+ * แก้ backend แล้ว preview จะไม่เปลี่ยน
  */
 const PREVIEW_FRAME_CSS = `
 body {
@@ -52,7 +59,7 @@ body {
 }
 
 /*
- * Page box (A4 ในหน่วย pt) — ใช้ตัวเดียวกันทั้ง Compact และ Fullscreen
+ * กรอบกระดาษ A4 (แบบ continuous — โตตามเนื้อหา)
  *
  * ⚠️ padding ถูกกำหนดจาก resolvePageGeometry() (backend) ผ่าน inline style
  *    ที่ inject ลงใน srcdoc → override ได้โดยไม่ต้องแก้ CSS ที่นี่
@@ -60,79 +67,19 @@ body {
  *
  * ⚠️ ห้าม override padding/margin ของ .dc-page ที่นี่ (หรือที่อื่น)
  *    เพราะจะทำให้กระดาษหายขอบ / ไม่ตรงกับ PDF
+ *
+ * ⚠️ ห้ามใส่ height / min-height ที่ตายตัว
+ *    → เอกสารยาวต้องไหลต่อแบบ continuous เพียงอย่างเดียว
  */
 .dc-page {
-  width: 595.28pt;
-  min-height: 841.89pt;
+  width: ${PREVIEW_PAGE_WIDTH_PT}pt;
+  max-width: 100%;
   padding: 40pt;
   box-sizing: border-box;
   margin: 0 auto;
   background: white;
 }
 
-/*
- * ── Pagination ────────────────────────────────────────────────────────────────
- * .dc-scale-host = ภาชนะนอกสุด (ใช้วัดสเกล + กัน horizontal scrollbar)
- * .dc-scaler     = ภาชนะที่ถูกย่อ/ขยายทั้งชุด (ไม่ให้เกิด horizontal scrollbar)
- * .dc-pages      = ภาชนะของแผ่นกระดาษทั้งหมด (แบ่งหน้าแล้ว)
- * .dc-source     = ภาชนะต้นทาง (ถูก script ย้ายเข้า .dc-flow ของแต่ละหน้า)
- *
- * ทุกหน้าใช้ margin ชุดเดียวกัน (ค่าเดียวกับทุกหน้า)
- * แต่ละแผ่น = "แผ่นกระดาษ" แยกกันชัดเจน (พื้นขาว + เส้นขอบ/เงา + ช่องว่าง)
- */
-#dc-scale-host {
-  width: 100%;
-  overflow-x: hidden;
-}
-#dc-scaler {
-  width: 100%;
-}
-.dc-pages {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: ${PREVIEW_PAGE_GAP_PT}pt;
-  padding: ${PREVIEW_PAGE_GAP_PT}pt 0;
-  width: 100%;
-}
-
-/* แผ่นกระดาษ 1 แผ่น = 1 หน้า (label + ตัวกระดาษ) */
-.dc-page-sheet {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4pt;
-  width: ${PREVIEW_PAGE_WIDTH_PT}pt;
-  max-width: 100%;
-}
-
-/*
- * ป้าย "หน้า X / N" — อยู่นอกพื้นที่เอกสาร (ไม่ติดไปกับ PDF)
- * ⚠️ ห้ามย้ายเข้า .dc-page เด็ดขาด
- */
-.dc-page__label {
-  font-size: 9pt;
-  color: #64748b;
-  letter-spacing: 0.02em;
-  user-select: none;
-}
-
-/* ตัวกระดาษ — ขนาด A4 เต็ม (595.28pt × 841.89pt) */
-.dc-page--paged {
-  position: relative;
-  min-height: ${PREVIEW_PAGE_HEIGHT_PT}pt;
-  width: ${PREVIEW_PAGE_WIDTH_PT}pt;
-  max-width: 100%;
-  margin: 0;
-  background: #ffffff;
-  border: 1px solid #cbd5e1;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08), 0 6px 18px rgba(15, 23, 42, 0.10);
-  /*
-   * ⚠️ ห้ามใส่ overflow:hidden ที่นี่
-   *    → เนื้อหาที่ยาวเกินหน้าจะถูก clip ทิ้ง (ข้อความหายไป)
-   *    → ใช้ min-height (ไม่ fix height) เพื่อให้หน้าโตได้ถ้าจำเป็น
-   */
-}
 .dc-flow {
   display: flow-root;
 }
@@ -140,11 +87,6 @@ body {
 .dc-heading.size-small { font-size: 14px; }
 .dc-heading.size-medium { font-size: 18px; }
 .dc-heading.size-large { font-size: 24px; }
-/*
- * ⚠️ เคยมี override .dc-preview / .dc-preview-modal ที่ตั้ง padding: 0
- *    → ทำให้ page box หายขอบ ตอนนี้ page box คือ .dc-page เท่านั้น
- *    ห้ามเพิ่ม rule ที่ override padding/margin ของ .dc-page อีก
- */
 .dc-field-label { font-weight: 500; color: #475569; font-size: 12px; margin-bottom: 4px; }
 .dc-field-value { font-size: 14px; }
 .dc-field-block, .dc-table-block, .dc-logo-block, .dc-heading-block { margin-bottom: 8px; }
@@ -197,17 +139,6 @@ export interface PreviewFrameProps {
   className?: string;
   /** iframe title (a11y) */
   title?: string;
-  /**
-   * callback เมื่อทราบจำนวนหน้าที่แบ่งแล้ว
-   * (Compact และ Fullscreen รายงานจำนวนหน้าเดียวกัน)
-   */
-  onPageCount?: (pageCount: number) => void;
-  /**
-   * ให้ iframe สูงตามเนื้อหาจริง (ใช้กับ Fullscreen ที่มีหลายหน้า)
-   *
-   * ⚠️ Compact ใช้ h-full (เต็มพื้นที่ที่ได้รับ) → ไม่ส่ง prop นี้
-   */
-  autoHeight?: boolean;
 }
 
 export function PreviewFrame({
@@ -215,35 +146,9 @@ export function PreviewFrame({
   withHeader = false,
   className = 'w-full h-full border border-slate-200 rounded bg-white',
   title = 'Document Preview',
-  onPageCount,
-  autoHeight = false,
 }: PreviewFrameProps) {
-  const [pageCount, setPageCount] = useState(0);
-  /** ความสูงเนื้อหาจริงใน iframe (px) — ใช้เมื่อ autoHeight */
-  const [contentHeight, setContentHeight] = useState(0);
   /** ref ของ iframe — ใช้ส่งสัญญาณ scroll reset เข้าไป */
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-
-  // ── รับจำนวนหน้า + ความสูงจาก iframe ผ่าน postMessage ───────────────
-  // (script ฝังอยู่ใน srcdoc → ส่งกลับมาที่ parent)
-  useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      const data = event.data;
-      if (
-        data &&
-        typeof data === 'object' &&
-        (data as { type?: string }).type === 'dc-preview-pagination'
-      ) {
-        const count = Number((data as { pageCount?: number }).pageCount ?? 0);
-        const height = Number((data as { contentHeight?: number }).contentHeight ?? 0);
-        setPageCount((prev) => (prev === count ? prev : count));
-        setContentHeight((prev) => (prev === height ? prev : height));
-        onPageCount?.(count);
-      }
-    };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, [onPageCount]);
 
   const inner = withHeader
     ? `${preview.header}\n${preview.body}`
@@ -266,18 +171,10 @@ export function PreviewFrame({
     const marginBottom = page?.marginBottom ?? 40;
     const marginLeft = page?.marginLeft ?? 40;
     const pageWidth = page?.pageWidth ?? PREVIEW_PAGE_WIDTH_PT;
-    const pageHeight = page?.pageHeight ?? PREVIEW_PAGE_HEIGHT_PT;
     const padding = `${marginTop}pt ${marginRight}pt ${marginBottom}pt ${marginLeft}pt`;
 
-    const paginationScript = buildPaginationScript({
-      pageWidthPt: pageWidth,
-      pageHeightPt: pageHeight,
-      marginTop,
-      marginRight,
-      marginBottom,
-      marginLeft,
-    });
-
+    // ⚠️ ไม่มี <script> เลย → ไม่มีการวัด DOM / ไม่มีการแบ่งหน้าในเบราว์เซอร์
+    //    Scroll reset ทำผ่าน parent postMessage listener (ด้านล่าง)
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -288,15 +185,7 @@ ${backendCss}
   </style>
 </head>
 <body>
-<div id="dc-scale-host">
-  <div id="dc-scaler">
-    <div id="dc-pages" class="dc-pages"></div>
-  </div>
-</div>
-<div id="dc-source" class="dc-source" style="width: ${pageWidth}pt; margin: 0 auto; padding: ${padding};">${inner}</div>
-<script>
-${paginationScript}
-</script>
+<div class="dc-page" style="width: ${pageWidth}pt; padding: ${padding};">${inner}</div>
 </body>
 </html>`;
   }, [inner, preview.mode, preview.styles, preview.page]);
@@ -307,7 +196,7 @@ ${paginationScript}
    * Root cause ที่พบ: เมื่อสลับ Form ↔ Document/PDF หรือ re-render
    *   → iframe คง scrollTop เดิมไว้ → ผู้ใช้เปิดมาเจอกลางเอกสาร / ข้อความบางส่วนหาย
    *
-   * แก้โดย: ส่งสัญญาณ "เลื่อนกลับด้านบน" เข้า iframe ทุกครั้งที่ srcdoc เปลี่ยน
+   *   * แก้โดย: ส่งสัญญาณ "เลื่อนกลับด้านบน" เข้า iframe ทุกครั้งที่ srcdoc เปลี่ยน
    *   → ไม่ล้าง descriptor / applicationId / pageSettings (มีแค่ scroll)
    *
    * ⚠️ ต้องประกาศหลัง `srcDoc` — ถ้าอยู่ก่อนจะเจอ TDZ error
@@ -316,16 +205,32 @@ ${paginationScript}
   useEffect(() => {
     const frame = iframeRef.current;
     if (!frame) return;
+
+    const scrollTop = () => {
+      try {
+        const win = frame.contentWindow;
+        win?.scrollTo(0, 0);
+        const doc = win?.document;
+        if (doc?.documentElement) doc.documentElement.scrollTop = 0;
+        if (doc?.body) doc.body.scrollTop = 0;
+      } catch {
+        /* ignore (opaque origin / sandbox) */
+      }
+    };
+
     const onLoad = () => {
+      // postMessage ให้ฝั่งใน (ถ้ามี script ในอนาคต) + scroll ตรง ๆ
       try {
         frame.contentWindow?.postMessage(
           { type: 'dc-preview-scroll-top' },
           '*'
         );
       } catch {
-        /* ignore (cross-origin / sandbox) */
+        /* ignore */
       }
+      scrollTop();
     };
+
     frame.addEventListener('load', onLoad);
     // กรณี iframe โหลดเสร็จก่อน effect ทำงาน → ส่งซ้ำอีกครั้ง
     onLoad();
@@ -338,17 +243,11 @@ ${paginationScript}
       srcDoc={srcDoc}
       title={title}
       className={className}
-      data-page-count={pageCount}
-      style={
-        autoHeight && contentHeight > 0
-          ? { height: `${contentHeight}px`, minHeight: '297mm' }
-          : undefined
-      }
-      // ⚠️ sandbox: ใช้ "allow-scripts" เท่านั้น (ไม่ใช้ allow-same-origin)
-      //    → script แบ่งหน้าทำงานได้ + postMessage ส่งจำนวนหน้ากลับได้
-      //    → แต่ origin ของ iframe เป็น opaque (แยกจาก parent)
-      //      → เนื้อหาใน iframe เข้าถึง DOM ของ parent ไม่ได้
-      sandbox="allow-scripts"
+      // ⚠️ sandbox: ไม่ใส่ "allow-scripts" (ไม่มี script ใน srcdoc แล้ว)
+      //    → srcdoc เนื้อหามาจาก backend ที่ escape HTML แล้ว แต่ก็ไม่จำเป็น
+      //      ให้รัน script ในหน้า preview
+      //    → เก็บ "allow-same-origin" ไว้เพื่อให้ parent เลื่อน scrollTop ได้
+      sandbox="allow-same-origin"
     />
   );
 }

@@ -145,6 +145,21 @@ const SystemDataBlockSchema = z.object({
 });
 
 /**
+ * Page Break Block — สั่งให้ขึ้นหน้าใหม่ทันที
+ *
+ * ⚠️ มีเฉพาะ `id` + `type` (บวก field ของ BaseBlock ที่ optional)
+ *   - ไม่มี height / size / offset → ไม่มีการเดาจุดแบ่งหน้า
+ *   - descriptor ที่ไม่มี block นี้ยัง validate ผ่านตามปกติ
+ */
+const PageBreakBlockSchema = z.object({
+  id: BlockIdSchema,
+  type: z.literal("pageBreak"),
+  align: AlignSchema.optional(),
+  marginTop: MarginSchema,
+  marginBottom: MarginSchema,
+});
+
+/**
  * Field Block — ข้อมูลที่ผู้สมัครกรอกจริง
  */
 const FieldBlockSchema = z.object({
@@ -250,6 +265,7 @@ const DocumentBlockSchema = z.discriminatedUnion("type", [
   LogoBlockSchema,
   SignatureBlockSchema,
   SystemDataBlockSchema,
+  PageBreakBlockSchema,
 ]);
 
 // =============================================================================

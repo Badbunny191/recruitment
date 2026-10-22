@@ -34,12 +34,17 @@
 
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import type {
+  DocumentDescriptor,
   PreviewResponse,
   PreviewMode,
   PreviewTokenInfo,
 } from '@/lib/api/template-descriptor';
 import { TOKEN_SOURCE_LABELS } from '@/lib/api/template-descriptor';
 import { PreviewFrame } from './PreviewFrame';
+import {
+  PdfPreviewFrame,
+  type PdfPreviewStatus,
+} from './PdfPreviewFrame';
 
 export interface PreviewModalProps {
   open: boolean;
@@ -54,10 +59,11 @@ export interface PreviewModalProps {
   dataSource?: 'sample' | 'real';
   /** Current selected application for display */
   selectedApplication?: { id?: string; applicationNo: string; fullname: string } | null;
-  /**
-   * Block mode control until first frame is ready.
-   * (ปุ่ม mode จะถูก disable ถ้า modal เพิ่งเปิด + fetch ยังไม่เสร็จ)
-   */
+  /** ── สำหรับโหมด PDF Preview (source of truth เรื่องการแบ่งหน้า) ──────────── */
+  /** Template version id → endpoint `/descriptor/pdf-preview` */
+  templateVersionId?: string;
+  /** Descriptor ปัจจุบัน (ยังไม่ save ก็ได้) */
+  descriptor?: DocumentDescriptor | null;
 }
 
 export function PreviewModal({
@@ -68,6 +74,8 @@ export function PreviewModal({
   loading,
   dataSource = 'sample',
   selectedApplication = null,
+  templateVersionId,
+  descriptor,
 }: PreviewModalProps) {
   // ── mode state (default = 'form' ตามที่ผู้ใช้คุ้นเคยจาก compact) ──
   const [mode, setMode] = useState<PreviewMode>(currentPreview?.mode ?? 'form');
@@ -75,8 +83,11 @@ export function PreviewModal({
   // ── diagnostics ซ่อนโดย default (Req 10) ──
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
-  // ── จำนวนหน้าที่แบ่งแล้ว (เหมือน Compact) ──
-  const [pageCount, setPageCount] = useState(0);
+  // ── โหมด stage: 'html' = continuous HTML | 'pdf' = PDF จริง (source of truth) ──
+  const [stageView, setStageView] = useState<'html' | 'pdf'>('html');
+
+  // ── สถานะ PDF preview (จำนวนหน้าจริงจาก renderer) ──
+  const [pdfStatus, setPdfStatus] = useState<PdfPreviewStatus>({ state: 'idle' });
 
   // ── preview state (HTML ที่จะ render ใน modal) ──
   const [modalPreview, setModalPreview] = useState<PreviewResponse | null>(
@@ -121,7 +132,7 @@ export function PreviewModal({
       // ปิด modal → reset state ให้พร้อม re-open
       setModalPreview(currentPreview);
       setShowDiagnostics(false);
-      setPageCount(0);
+      setStageView('html');
       return;
     }
 
@@ -257,26 +268,44 @@ const tokensByMode: PreviewTokenInfo[] = useMemo(
         <Toolbar
           mode={mode}
           onModeChange={handleModeChange}
+          stageView={stageView}
+          onStageViewChange={setStageView}
           showDiagnostics={showDiagnostics}
           onToggleDiagnostics={() => setShowDiagnostics((s) => !s)}
           loading={loading}
           onClose={onClose}
-          tokensCount={tokensByMode.length}
           missingCount={missingCount}
-          pageCount={pageCount}
+          pdfStatus={pdfStatus}
         />
 
-        {/* ── Stage (A4 paper) ───────────────────────────────────── */}
-        <div
-          ref={stageRef}
-          className="flex-1 overflow-y-auto overflow-x-auto px-6 py-6 grid place-items-center bg-slate-200"
-        >
-          {isReady && modalPreview ? (
-            <A4Page preview={modalPreview} onPageCount={setPageCount} />
-          ) : (
-            <StageSkeleton loading={loading} />
-          )}
-        </div>
+        {/* ── Stage ─────────────────────────────────────────────── */}
+        {stageView === 'pdf' ? (
+          /*
+           * 🔑 PDF Preview — source of truth เรื่องการแบ่งหน้า
+           *    เรียก PDF Renderer ตัวเดียวกับ export ผ่าน PdfPreviewFrame
+           */
+          <div className="flex-1 min-h-0 px-4 py-4 bg-slate-200">
+            <PdfPreviewFrame
+              className="rounded bg-white overflow-hidden"
+              templateVersionId={templateVersionId}
+              descriptor={descriptor}
+              applicationId={applicationId}
+              onStatusChange={setPdfStatus}
+            />
+          </div>
+        ) : (
+          /* Continuous HTML preview — โตตามเนื้อหา ไม่แบ่งหน้าในเบราว์เซอร์ */
+          <div
+            ref={stageRef}
+            className="flex-1 overflow-y-auto overflow-x-auto px-6 py-6 grid place-items-start bg-slate-200"
+          >
+            {isReady && modalPreview ? (
+              <A4Page preview={modalPreview} />
+            ) : (
+              <StageSkeleton loading={loading} />
+            )}
+          </div>
+        )}
 
         {/* ── Diagnostics strip (ท้าย modal, ซ่อนโดย default) ── */}
         {showDiagnosticsPanel && (
@@ -294,44 +323,50 @@ const tokensByMode: PreviewTokenInfo[] = useMemo(
 interface ToolbarProps {
   mode: PreviewMode;
   onModeChange: (m: PreviewMode) => void | Promise<void>;
+  /** โหมด stage: 'html' = continuous HTML | 'pdf' = PDF จริง */
+  stageView: 'html' | 'pdf';
+  onStageViewChange: (v: 'html' | 'pdf') => void;
   showDiagnostics: boolean;
   onToggleDiagnostics: () => void;
   loading: boolean;
   onClose: () => void;
-  tokensCount: number;
   /** จำนวน token ที่ยังไม่มีข้อมูลจริง */
   missingCount: number;
-  /** จำนวนหน้าที่แบ่งแล้ว (เหมือน Compact) */
-  pageCount: number;
+  /** สถานะ PDF preview (จำนวนหน้าจริงจาก renderer) */
+  pdfStatus: PdfPreviewStatus;
 }
 
 function Toolbar({
   mode,
   onModeChange,
+  stageView,
+  onStageViewChange,
   showDiagnostics,
   onToggleDiagnostics,
   loading,
   onClose,
-  tokensCount,
   missingCount,
-  pageCount,
+  pdfStatus,
 }: ToolbarProps) {
+  const pdfPageCount = pdfStatus.state === 'ready' ? pdfStatus.pageCount : 0;
+
   return (
     <div className="flex items-center justify-between gap-3 px-4 py-3 bg-white border-b border-slate-200 shrink-0">
       <div className="flex items-center gap-2 min-w-0">
         <span className="text-sm font-medium text-slate-700">📄 Preview</span>
         <span className="text-[11px] text-slate-400 truncate">
-          A4 Document Composer
+          Document Composer
         </span>
-        {pageCount > 0 && (
+        {/* จำนวนหน้าจริง — มาจาก PDF renderer เท่านั้น */}
+        {stageView === 'pdf' && pdfPageCount > 0 && (
           <span
             data-testid="modal-page-count"
             className="text-[11px] text-slate-500 shrink-0"
           >
-            {pageCount} หน้า
+            {pdfPageCount} หน้า (PDF จริง)
           </span>
         )}
-        {loading && (
+        {loading && stageView === 'html' && (
           <span className="inline-flex items-center gap-1 text-[11px] text-blue-700 font-medium">
             <Spinner /> กำลัง render…
           </span>
@@ -339,20 +374,36 @@ function Toolbar({
       </div>
 
       <div className="flex items-center gap-2">
-        {/* Mode toggle */}
+        {/* Stage view toggle — PDF จริง = source of truth การแบ่งหน้า */}
+        <div className="inline-flex rounded-md border border-slate-300 bg-slate-50 p-0.5">
+          <ModeButton
+            label="ต่อเนื่อง"
+            icon="↕"
+            active={stageView === 'html'}
+            onClick={() => onStageViewChange('html')}
+          />
+          <ModeButton
+            label="PDF จริง"
+            icon="📄"
+            active={stageView === 'pdf'}
+            onClick={() => onStageViewChange('pdf')}
+          />
+        </div>
+
+        {/* Mode toggle (HTML preview เท่านั้น — PDF ไม่มี Form mode) */}
         <div className="inline-flex rounded-md border border-slate-300 bg-slate-50 p-0.5">
           <ModeButton
             label="Form"
             icon="📝"
             active={mode === 'form'}
-            disabled={loading}
+            disabled={loading || stageView === 'pdf'}
             onClick={() => onModeChange('form')}
           />
           <ModeButton
             label="Document / PDF"
             icon="📄"
             active={mode === 'document'}
-            disabled={loading}
+            disabled={loading || stageView === 'pdf'}
             onClick={() => onModeChange('document')}
           />
         </div>
@@ -429,26 +480,23 @@ function ModeButton({
 // =============================================================================
 
 /**
- * A4 sheet 210×297mm
- * - ใช้ fixed mm dimensions ผ่าน CSS class .dc-a4-sheet
- * - เงา + ขอบกระดาษ + padding เหมือนเอกสารจริง
- * - ใช้ PreviewFrame (srcdoc) เพื่อแชร์ renderer ตัวเดียวกับ thumbnail
+ * A4 sheet 210×297mm (แบบ CONTINUOUS)
+ *
+ * ⚠️ เปลี่ยนแนวทาง 2026-10-22: ตัด browser pagination ออก
+ *   - ไม่แบ่งหน้าในเบราว์เซอร์ / ไม่มีการวัดความสูง
+ *   - ความสูงขึ้นตามเนื้อหา (ไม่ fix เป็น 297mm)
+ *   - คงขนาด A4 (210mm) + พื้นหลัง/เงาเหมือนเอกสารจริง
+ *   - ใช้ PreviewFrame (srcdoc) เพื่อแชร์ renderer ตัวเดียวกับ thumbnail
  *
  * ⚠️ ไม่ส่ง withHeader → ไม่แสดง Automatic Header
  *    (โลโก้/ยังไม่มีโลโก้, ชื่อเอกสาร "Document", วันที่สมัคร, {POSITION_NAME})
  *    ทั้ง Compact และ Fullscreen แสดงเฉพาะ Blocks ที่อยู่ใน Descriptor
- *    (page box .dc-page + padding 40pt ยังคงอยู่ใน PreviewFrame)
+ *    (page box .dc-page + padding จาก Page Settings อยู่ใน PreviewFrame)
  */
-function A4Page({
-  preview,
-  onPageCount,
-}: {
-  preview: PreviewResponse;
-  onPageCount?: (pageCount: number) => void;
-}) {
+function A4Page({ preview }: { preview: PreviewResponse }) {
   return (
     <div className="dc-a4-sheet">
-      <PreviewFrame preview={preview} onPageCount={onPageCount} autoHeight />
+      <PreviewFrame preview={preview} className="w-full" />
     </div>
   );
 }

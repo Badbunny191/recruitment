@@ -457,10 +457,13 @@ test('PreviewFrame ใช้ 40pt ทุกด้านเมื่อ backend �
   assertContains(html, 'padding: 40pt', 'fallback 40pt');
 });
 
-test('PreviewFrame คงขนาดกระดาษ A4 (595.28pt / 841.89pt)', () => {
+test('PreviewFrame คงความกว้างกระดาษ A4 (595.28pt) และโตตามเนื้อหา (continuous)', () => {
   const html = renderFrame(fakePreview());
-  assertContains(html, 'width: 595.28pt', 'width');
-  assertContains(html, 'min-height: 841.89pt', 'min-height');
+  assertContains(html, 'width: 595.28pt', 'width A4');
+  // ⚠️ Continuous Preview (2026-10-22): ไม่มี min-height/height ตายตัวอีกแล้ว
+  //    เพราะเอกสารต้องไหลต่อเป็นลำดับยาวเดียว (การแบ่งหน้าจริงดูจาก PDF Preview)
+  assertNotContains(html, 'min-height: 841.89pt', 'ไม่ fix ความสูงตายตัว');
+  assertNotContains(html, 'dc-pages', 'ไม่มีภาชนะแบ่งหน้า');
 });
 
 test('Compact (PreviewFrame) และ Fullscreen (PreviewModal) ใช้ค่าเดียวกัน', () => {

@@ -357,35 +357,48 @@ test('ไม่มี Automatic Header ในการแบ่งหน้า',
   assertNotContains(script, 'dc-doc-header', 'ไม่มี automatic header');
 });
 
-section('[3] PreviewFrame — inject การแบ่งหน้า');
+/*
+ * ⚠️ [3] PreviewFrame — CONTINUOUS PREVIEW (เปลี่ยนแนวทาง 2026-10-22)
+ *
+ * Browser pagination ถูกตัดออกทั้งหมด:
+ *   - ไม่ฝัง script วัด/แบ่งหน้า
+ *   - ไม่มีภาชนะ dc-pages / dc-source / dc-scaler
+ *   - ไม่มี postMessage รายงานจำนวนหน้า
+ *   - เอกสารเป็นลำดับยาวเดียว โตตามเนื้อหา
+ *
+ * 🔑 การแบ่งหน้าจริง = PDF Preview (source of truth)
+ *    → ดู PdfPreviewFrame.tsx
+ */
+section('[3] PreviewFrame — Continuous Preview (ไม่แบ่งหน้าในเบราว์เซอร์)');
 
-test('PreviewFrame ฝัง script แบ่งหน้า + ภาชนะ dc-pages / dc-source', () => {
+test('PreviewFrame ไม่ฝัง script แบ่งหน้า + ไม่มีภาชนะ dc-pages / dc-source', () => {
   const html = renderToStaticMarkup(
     React.createElement(PreviewFrame, { preview: fakePreview() })
   );
-  assertContains(html, 'dc-pages', 'มีภาชนะ dc-pages');
-  assertContains(html, 'dc-source', 'มีภาชนะ dc-source');
-  assertContains(html, 'dc-preview-pagination', 'มี postMessage รายงานจำนวนหน้า');
-  assertContains(html, 'allow-scripts', 'iframe ต้องรัน script ได้');
+  assertNotContains(html, 'dc-pages', 'ไม่มีภาชนะแบ่งหน้า');
+  assertNotContains(html, 'dc-source', 'ไม่มีภาชนะต้นทาง');
+  assertNotContains(html, 'dc-scaler', 'ไม่มีการ scale/zoom');
+  assertNotContains(html, 'dc-preview-pagination', 'ไม่มี postMessage นับหน้า');
+  assertNotContains(html, '<script>', 'ไม่มี script ใน srcdoc');
 });
 
-test('PreviewFrame ใส่ gap ระหว่างหน้า', () => {
+test('PreviewFrame ไม่ใส่ gap / ช่องว่างระหว่างหน้า (ไม่มีหน้าให้เว้น)', () => {
   const html = renderToStaticMarkup(
     React.createElement(PreviewFrame, { preview: fakePreview() })
   );
-  assertContains(html, `gap: ${PREVIEW_PAGE_GAP_PT}pt`, 'มีช่องว่างระหว่างหน้า');
+  assertNotContains(html, `gap: ${PREVIEW_PAGE_GAP_PT}pt`, 'ไม่มี gap ระหว่างหน้า');
 });
 
-test('PreviewFrame ยังคงขนาด A4 และไม่มี Automatic Header', () => {
+test('PreviewFrame คงความกว้าง A4 โดยไม่ fix ความสูง + ไม่มี Automatic Header', () => {
   const html = renderToStaticMarkup(
     React.createElement(PreviewFrame, { preview: fakePreview() })
   );
   assertContains(html, `width: ${PREVIEW_PAGE_WIDTH_PT}pt`, 'A4 width');
-  assertContains(html, `min-height: ${PREVIEW_PAGE_HEIGHT_PT}pt`, 'A4 height');
+  assertNotContains(html, `min-height: ${PREVIEW_PAGE_HEIGHT_PT}pt`, 'โตตามเนื้อหา ไม่ fix สูง');
   assertNotContains(html, 'AUTOMATIC HEADER', 'ไม่มี automatic header');
 });
 
-test('PreviewFrame ใช้ margin จาก page geometry เดียวกันทุกหน้า', () => {
+test('PreviewFrame ใช้ margin จาก page geometry (Page Settings) เดียวกัน', () => {
   const html = renderToStaticMarkup(
     React.createElement(PreviewFrame, {
       preview: fakePreview({

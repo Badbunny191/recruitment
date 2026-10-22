@@ -12,6 +12,7 @@
  *   - + Table        (เปิด Field Picker — เฉพาะฟิลด์แบบหลายรายการ)
  *   - + Logo
  *   - + Signature
+ *   - + Page Break  (📄 หน้าใหม่ — PDF ขึ้นหน้าใหม่ทันที ไม่เดาจุดแบ่งหน้า)
  *
  * ส่ง callback ไป parent — parent รู้ว่าจะ insert block ที่ตำแหน่งไหน
  */
@@ -24,7 +25,8 @@ export type AddBlockKind =
   | 'field'
   | 'table'
   | 'logo'
-  | 'signature';
+  | 'signature'
+  | 'pageBreak';
 
 export interface BlockToolbarProps {
   onAdd: (kind: AddBlockKind) => void;
@@ -116,6 +118,17 @@ export function BlockToolbar({ onAdd, disabled, insertionHint }: BlockToolbarPro
       >
         <span className="mr-1">✍️</span>
         Signature
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => onAdd('pageBreak')}
+        disabled={disabled}
+        className="h-7 text-xs"
+        title="เพิ่ม Page Break block — 📄 หน้าใหม่ (PDF ขึ้นหน้าใหม่ทันที ไม่เดาจุดแบ่งหน้าจากความสูง)"
+      >
+        <span className="mr-1">📄</span>
+        Page Break
       </Button>
     </div>
   );

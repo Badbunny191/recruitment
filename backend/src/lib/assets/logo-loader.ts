@@ -10,24 +10,28 @@
 import { PDFImage, PDFDocument } from 'pdf-lib';
 import { SAO_LOGO_BASE64 } from './sao-logo.data';
 
-let cachedLogo: PDFImage | null = null;
+let cachedLogoBytes: Uint8Array | null = null;
 
 /**
- * โหลด SAO logo เป็น PDFImage
+ * ⚠️ ทำไม cache แค่ "ไบต์" ไม่ cache PDFImage
+ * =============================================================================
  *
- * - ใช้ png-lib embedPng ในการ parse
- * - Cache ใน Worker memory หลัง load ครั้งแรก
- * - throw error ถ้า load ล้มเหลว
+ * เหตุผลเดียวกับ `font-loader.ts`:
+ *   `doc.embedPng()` ผูก image เข้ากับ PDFDocument ตัวนั้นด้วย object reference
+ *
+ * ถ้าเก็บ `PDFImage` ไว้ที่ module scope แล้วนำไป `page.drawImage()` บน doc อื่น
+ *   → resource dict จะชี้ไปยัง object ของ document เดิม
+ *   → รูปโลโก้หายเงียบ ๆ (content stream ยังมีคำสั่งวาดรูป แต่ XObject หาย)
+ *
+ * ✅ cache เฉพาะไบต์ดิบ แล้ว embed ใหม่ทุก document
  */
 export async function loadSaoLogo(doc: PDFDocument): Promise<PDFImage> {
-  if (cachedLogo) {
-    return cachedLogo;
+  if (!cachedLogoBytes) {
+    cachedLogoBytes = base64ToBytes(SAO_LOGO_BASE64);
   }
 
   try {
-    const bytes = base64ToBytes(SAO_LOGO_BASE64);
-    cachedLogo = await doc.embedPng(bytes);
-    return cachedLogo;
+    return await doc.embedPng(cachedLogoBytes);
   } catch (err) {
     throw new Error(
       `Failed to load SAO logo: ${err instanceof Error ? err.message : String(err)}`
@@ -39,7 +43,7 @@ export async function loadSaoLogo(doc: PDFDocument): Promise<PDFImage> {
  * Reset cache (สำหรับ testing หรือ hot reload)
  */
 export function resetLogoCache(): void {
-  cachedLogo = null;
+  cachedLogoBytes = null;
 }
 
 /**

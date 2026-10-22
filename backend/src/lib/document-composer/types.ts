@@ -34,7 +34,9 @@ export type BlockType =
   | "logo"
   | "signature"
   /** ข้อมูลระบบ (เลขที่ใบสมัคร / ชื่อรอบ / วันที่) — Requirement B */
-  | "systemData";
+  | "systemData"
+  /** ขึ้นหน้าใหม่ทันที (ไม่คำนวณความสูงเพื่อเดาจุดแบ่งหน้า) */
+  | "pageBreak";
 
 export type Align =
   | "left"
@@ -145,6 +147,19 @@ export interface SystemDataBlock extends BaseBlock {
   valueStyle?: Size;
   /** รูปแบบวันที่ (ใช้กับ APPLICATION_DATE / PRINT_DATE เท่านั้น) */
   dateFormat?: DateFormat;
+}
+
+/**
+ * Page Break Block — สั่งให้ PDF Renderer ขึ้นหน้าใหม่ทันที
+ *
+ * ⚠️ ขอบเขต (ห้ามละเมิด)
+ *   - **ไม่มี** height estimation / การคำนวณความสูงเพื่อเดาจุดแบ่งหน้า
+ *   - PDF Renderer พบ `type === "pageBreak"` → เรียก `addNewPage(state)` ทันที
+ *   - HTML Preview แสดงเป็น separator ประกอบ (📄 หน้าใหม่) เท่านั้น
+ *   - Page Settings schema ไม่ได้รับผลกระทบ
+ */
+export interface PageBreakBlock extends BaseBlock {
+  type: "pageBreak";
 }
 
 /** รูปแบบวันที่ที่รองรับ (Requirement B — date format) */
@@ -350,7 +365,8 @@ export type DocumentBlock =
   | TableBlock
   | LogoBlock
   | SignatureBlock
-  | SystemDataBlock;
+  | SystemDataBlock
+  | PageBreakBlock;
 
 // =============================================================================
 // Document Descriptor (top-level)

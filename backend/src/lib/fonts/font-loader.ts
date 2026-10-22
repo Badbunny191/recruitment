@@ -12,48 +12,65 @@ import fontkit from '@pdf-lib/fontkit';
 import { SARABUN_REGULAR_BASE64 } from './sarabun-regular.data';
 import { SARABUN_BOLD_BASE64 } from './sarabun-bold.data';
 
-let cachedRegular: PDFFont | null = null;
-let cachedBold: PDFFont | null = null;
+let cachedRegularBytes: Uint8Array | null = null;
+let cachedBoldBytes: Uint8Array | null = null;
 
+/**
+ * ⚠️ ทำไม cache แค่ "ไบต์" ไม่ cache PDFFont
+ * =============================================================================
+ *
+ * `doc.embedFont()` ผูกฟอนต์เข้ากับ PDFDocument ตัวนั้นด้วย object reference
+ * (font descriptor + FontFile2 stream ถูกเพิ่มลง object graph ของ doc นั้น)
+ *
+ * ถ้าเก็บ `PDFFont` ไว้ที่ module scope แล้วนำไปใช้กับ PDFDocument อื่น
+ *   → resource dict ของ doc ใหม่จะชี้ "N 0 R" ไปยัง object ที่อยู่คนละ document
+ *   → PDF ที่ได้ออกมา "เปิดไม่ error" แต่ตัวอักษร (และรูปภาพ) หายเงียบ ๆ
+ *     เพราะ content stream ยังมีคำสั่งวาดอยู่ แต่ font resource หายไป
+ *     → อาการที่เจอ: PDF Preview / Download เป็นหน้าว่าง ภาษาไทยไม่ขึ้น
+ *
+ * Worker isolate ถูก reuse หลาย request → คำขอแรกของแต่ละ isolate ปกติ
+ * ที่เหลือเสียหมด ทำให้เป็นบั๊กที่พลาดง่ายและแก้ยาก
+ *
+ * ✅ แนวทางที่ถูก: cache เฉพาะไบต์ดิบ (ผลจาก base64) ซึ่งเป็นข้อมูลบริสุทธิ์
+ *    ไม่ผูกกับ document ใด → เรียก doc.registerFontkit() + doc.embedFont()
+ *    ใหม่ทุก document ได้อย่างถูกต้อง
+ */
 export interface LoadedFonts {
   regular: PDFFont;
   bold: PDFFont;
 }
 
-/**
- * โหลด TH Sarabun (Regular + Bold) แล้ว embed กับ PDF document
- *
- * - ใช้ fontkit ในการ parse TTF
- * - ต้องเรียก registerFontkit กับ PDFDocument ก่อน embedFont
- * - Cache ใน Worker memory หลัง load ครั้งแรก
- * - throw error ถ้า load ล้มเหลว
- */
 export async function loadSarabunFonts(doc: PDFDocument): Promise<LoadedFonts> {
-  // Register fontkit once per document
-  if (!cachedRegular || !cachedBold) {
-    doc.registerFontkit(fontkit);
-    try {
-      const regularBytes = base64ToBytes(SARABUN_REGULAR_BASE64);
-      const boldBytes = base64ToBytes(SARABUN_BOLD_BASE64);
-
-      cachedRegular = await doc.embedFont(regularBytes, { subset: true });
-      cachedBold = await doc.embedFont(boldBytes, { subset: true });
-    } catch (err) {
-      throw new Error(
-        `Failed to load TH Sarabun fonts: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
+  // ── 1) Decode ฟอนต์ (cache ได้ เพราะเป็น immutable bytes ไม่ผูกกับ doc) ──
+  if (!cachedRegularBytes || !cachedBoldBytes) {
+    cachedRegularBytes = base64ToBytes(SARABUN_REGULAR_BASE64);
+    cachedBoldBytes = base64ToBytes(SARABUN_BOLD_BASE64);
   }
 
-  return { regular: cachedRegular, bold: cachedBold };
+  // ── 2) Embed เข้ากับ document นี้เสมอ ─────────────────────────────────
+  // registerFontkit เป็น per-document state → ต้องเรียกทุกครั้ง
+  doc.registerFontkit(fontkit);
+
+  let regular: PDFFont;
+  let bold: PDFFont;
+  try {
+    regular = await doc.embedFont(cachedRegularBytes, { subset: true });
+    bold = await doc.embedFont(cachedBoldBytes, { subset: true });
+  } catch (err) {
+    throw new Error(
+      `Failed to load TH Sarabun fonts: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  return { regular, bold };
 }
 
 /**
  * Reset cache (สำหรับ testing หรือ hot reload)
  */
 export function resetFontCache(): void {
-  cachedRegular = null;
-  cachedBold = null;
+  cachedRegularBytes = null;
+  cachedBoldBytes = null;
 }
 
 /**

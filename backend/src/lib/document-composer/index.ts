@@ -40,6 +40,7 @@ export type {
   SignatureBlock,
   SystemDataBlock,
   SystemDataKey,
+  PageBreakBlock,
   SignatureDateSource,
   LogoSource,
   DateFormat,

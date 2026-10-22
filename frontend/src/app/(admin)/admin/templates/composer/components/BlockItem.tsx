@@ -104,6 +104,11 @@ const TYPE_META: Record<
     label: 'Signature',
     tone: 'bg-rose-50 border-rose-200',
   },
+  pageBreak: {
+    icon: '📄',
+    label: 'Page Break',
+    tone: 'bg-slate-50 border-slate-300',
+  },
 };
 
 export function BlockItem({
@@ -424,6 +429,26 @@ function BlockSummary({
     );
   }
 
+  /*
+   * pageBreak → separator "📄 หน้าใหม่"
+   *   - ไม่มี editor (ไม่มีค่าที่ปรับได้) → PDF renderer ขึ้นหน้าใหม่ทันที
+   *   - ยัง draggable / selectable / delete ได้เหมือน block อื่น (ผ่าน BlockItem)
+   */
+  if (block.type === 'pageBreak') {
+    return (
+      <span
+        data-testid="page-break-separator"
+        className="flex items-center gap-2 text-xs text-slate-500"
+      >
+        <span className="flex-1 border-t border-dashed border-slate-300" />
+        <span className="shrink-0 px-2 py-0.5 border border-dashed border-slate-300 rounded-full bg-slate-50">
+          📄 หน้าใหม่
+        </span>
+        <span className="flex-1 border-t border-dashed border-slate-300" />
+      </span>
+    );
+  }
+
   // logo
   const logo = block as LogoBlock;
   const source = logo.source ?? 'organization';
@@ -452,6 +477,19 @@ function BlockEditor({
   onChange: (patch: Partial<DocumentBlock>) => void;
 }) {
   const patch = (p: Partial<DocumentBlock>) => onChange(p);
+
+  /*
+   * pageBreak → ไม่มี inline editor
+   *   (block มีแค่ `id` + `type` — ไม่มีค่าที่ปรับได้ และห้ามเพิ่ม height/size)
+   */
+  if (block.type === 'pageBreak') {
+    return (
+      <p className="text-[11px] text-slate-500">
+        Block นี้สั่งให้ PDF ขึ้นหน้าใหม่ทันที (ไม่มีการเดาจุดแบ่งหน้าจากความสูง)
+        — ดูผลการแบ่งหน้าจริงได้ในโหมด <strong>PDF Preview</strong>
+      </p>
+    );
+  }
 
   if (block.type === 'heading') {
     return (

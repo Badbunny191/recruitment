@@ -85,7 +85,20 @@ export type RenderCommand =
   | TableRenderCommand
   | LogoRenderCommand
   | SignatureRenderCommand
-  | SystemDataRenderCommand;
+  | SystemDataRenderCommand
+  | PageBreakRenderCommand;
+
+/**
+ * Page Break Render Command — สั่งขึ้นหน้าใหม่ทันที
+ *
+ * ⚠️ ไม่มี height / offset / any sizing field โดยเด็ดขาด
+ *   เพื่อกันไม่ให้มีการ "เดา" จุดแบ่งหน้าจากการคำนวณความสูง
+ *   executor จะเรียก `addNewPage(state)` เสมอเมื่อเจอ command นี้
+ */
+export interface PageBreakRenderCommand {
+  type: "pageBreak";
+  blockId: string;
+}
 
 export interface PaddingCommand {
   type: "padding";
@@ -403,6 +416,13 @@ export function buildRenderPlan(
   const page = resolvePageGeometry(descriptor.pageSettings);
 
   for (const block of descriptor.blocks) {
+    // ── Page Break: ขึ้นหน้าใหม่ทันที ไม่คำนวณความสูง ──────────────────
+    // ข้าม padding ของ block นี้ (margin มีผลกับหน้าใหม่อยู่แล้ว)
+    if (block.type === "pageBreak") {
+      commands.push({ type: "pageBreak", blockId: block.id });
+      continue;
+    }
+
     if (block.marginTop && block.marginTop > 0) {
       commands.push({
         type: "padding",
@@ -495,6 +515,9 @@ function buildBlockCommand(
 
     case "signature":
       return buildSignatureCommand(block, ctx, tokens, align, margins);
+
+    case "pageBreak":
+      return { type: "pageBreak", blockId: block.id };
   }
 
   // Defensive (TypeScript exhaustive switch ผ่านแล้ว แต่กันเหนือกว่า)
@@ -883,6 +906,14 @@ function executeCommand(
   ctx: ApplicationContext,
   cmd: RenderCommand
 ): void {
+  // ── Page Break: ขึ้นหน้าใหม่ทันที ────────────────────────────────────
+  // ต้องอยู่ก่อน pagination guard + switch เพื่อไม่ให้ถูก "เดา" ตำแหน่ง
+  // และไม่วาดอะไรลงหน้าที่แล้ว (ผู้ใช้สั่งตรง ๆ ด้วย block pageBreak)
+  if (cmd.type === "pageBreak") {
+    addNewPage(state);
+    return;
+  }
+
   // Pagination guard (mirror pdf-renderer.service.ts:ensureSpace)
   if (state.y < state.box.contentBottom) {
     addNewPage(state);
@@ -910,6 +941,10 @@ function executeCommand(
     case "systemData":
       drawSystemData(state, cmd);
       break;
+    // ⚠️ ไม่มี case "pageBreak" ที่นี่โดยเจตนา
+    //    → TypeScript narrow `cmd` ออกจาก union แล้วหลัง early return ข้างบน
+    //      ถ้าใส่ case ซ้ำจะเป็น dead code
+    //    → logic อยู่ที่ `if (cmd.type === "pageBreak") { addNewPage(state); return; }`
   }
 }
 

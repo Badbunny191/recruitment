@@ -31,24 +31,24 @@ body {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Document Composer — Live Preview Modal
+   Document Composer — Live Preview Modal (CONTINUOUS PREVIEW)
 
    .dc-a4-sheet wraps a PreviewFrame iframe that renders the full HTML body
    from the backend renderer (renderDescriptorToPreview).
 
-   - A4 aspect 210mm × 297mm
-   - คง mm เป็น physical units ไม่ยืดหยุ่นตาม viewport
-   - ที่ขอบ stage (`flex-1 overflow-y-auto`) ทำหน้าที่ scroll ภายใน
-     → จอเล็กจะเลื่อนเอกสารได้ทั้งแผ่น ไม่ถูกบีบจนอ่านไม่ออก (Req 12)
+   ─────────────────────────────────────────────────────────────────────────
+   ⚠️ เปลี่ยนแนวทาง 2026-10-22 — CONTINUOUS PREVIEW
+      - **ตัด Browser Pagination ออกทั้งหมด**
+        (ไม่มี .dc-pages / .dc-page--paged / .dc-page__label อีกต่อไป
+         และไม่มี script วัดความสูงใน lib/preview-pagination.ts ที่ฝังลง iframe)
+      - เอกสารเป็นลำดับยาวเดียว โตตามเนื้อหาจริง
+      - คงความกว้าง A4 (210mm) + ขอบกระดาษจาก Page Settings
+      - การแบ่งหน้าจริงดูจาก PDF Preview เท่านั้น (source of truth)
    ───────────────────────────────────────────────────────────────────────── */
 
 /*
- * หลายหน้า A4: iframe สูงตามเนื้อหาจริง (หน้า N × 297mm + ช่องว่าง)
- * หน้ากระดาษแต่ละแผ่นถูกแบ่งภายใน iframe โดย PreviewFrame
- * (script ใน lib/preview-pagination.ts) → .dc-pages / .dc-page--paged
- *
- * ⚠️ ห้าม fix height ที่นี่ — ต้องให้ iframe สูงตามจำนวนหน้าจริง
- *    (height ที่ fix ไว้จะ clip เนื้อหาหน้าที่ 2, 3 ... ทิ้ง)
+ * ⚠️ ห้าม fix height ที่นี่ — iframe ต้องสูงตามเนื้อหาจริง
+ *    (เอกสารยาวต้องไหลต่อแบบ continuous)
  */
 .dc-a4-sheet {
   width: 210mm;
@@ -71,9 +71,8 @@ body {
   border: 0;
   display: block;
   /*
-   * iframe สูงเท่าเนื้อหาจริง (auto) — เอกสารยาวก็ยาว
-   * การแบ่งหน้าทำภายใน iframe → ช่องว่างระหว่างหน้ามาจาก .dc-pages gap
-   * ⚠️ ห้าม fix height เป็น 297mm (จะ clip หน้าที่ 2+ ทิ้ง)
+   * iframe สูงเท่าเนื้อหาจริง (auto) — เอกสารยาวก็ยาว (continuous)
+   * ⚠️ ห้าม fix height เป็น 297mm (จะ clip เนื้อหาที่ยาวกว่าหน้าเดียวทิ้ง)
    */
   height: auto;
   min-height: 297mm;

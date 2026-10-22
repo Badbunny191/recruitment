@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "echo \"(no lint configured)\" && exit 0",
-    "test": "node --import tsx src/lib/__tests__/date.test.ts && node --import tsx src/lib/__tests__/document-composer.test.ts && node --import tsx src/lib/__tests__/composer-block-operations.test.ts && npm run test:composer-render && npm run test:composer-workspace && npm run test:composer-workspace-render && npm run test:composer-preview-layout && npm run test:composer-page-settings && npm run test:composer-uat-round2 && npm run test:preview",
+    "test": "node --import tsx src/lib/__tests__/date.test.ts && node --import tsx src/lib/__tests__/document-composer.test.ts && node --import tsx src/lib/__tests__/composer-block-operations.test.ts && npm run test:composer-render && npm run test:composer-workspace && npm run test:composer-workspace-render && npm run test:composer-preview-layout && npm run test:composer-page-settings && npm run test:composer-uat-round2 && npm run test:composer-page-break && npm run test:preview",
     "test:date": "node --import tsx src/lib/__tests__/date.test.ts",
     "test:composer": "node --import tsx src/lib/__tests__/document-composer.test.ts && node --import tsx src/lib/__tests__/composer-block-operations.test.ts && npm run test:composer-render",
     "test:composer-render": "tsx --tsconfig tsconfig.test.json src/lib/__tests__/composer-block-render.test.tsx",
@@ -16,6 +16,7 @@
     "test:composer-preview-layout": "tsx --tsconfig tsconfig.test.json src/lib/__tests__/composer-preview-layout.test.tsx",
     "test:composer-page-settings": "tsx --tsconfig tsconfig.test.json src/lib/__tests__/composer-page-settings.test.tsx",
     "test:composer-uat-round2": "tsx --tsconfig tsconfig.test.json src/lib/__tests__/composer-uat-round2.test.tsx",
+    "test:composer-page-break": "tsx --tsconfig tsconfig.test.json src/lib/__tests__/composer-page-break.test.tsx",
     "test:preview": "node --import tsx \"src/app/(admin)/admin/templates/composer/__tests__/preview-real-application.test.tsx\"",
     "typecheck": "tsc --noEmit",
     "deploy": "npm run build && wrangler pages deploy out --project-name=sao-recruitment-frontend --commit-dirty=true"

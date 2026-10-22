@@ -30,7 +30,9 @@ export type BlockType =
   | 'logo'
   | 'signature'
   /** ข้อมูลระบบ (เลขที่ใบสมัคร / ชื่อรอบ / วันที่) */
-  | 'systemData';
+  | 'systemData'
+  /** ขึ้นหน้าใหม่ทันที (ไม่คำนวณความสูงเพื่อเดาจุดแบ่งหน้า) */
+  | 'pageBreak';
 
 /** รูปแบบวันที่ (ใช้กับ APPLICATION_DATE / PRINT_DATE เท่านั้น) */
 export type DateFormat = 'thai_long' | 'thai_short' | 'iso' | 'numeric';
@@ -81,6 +83,17 @@ export interface SystemDataBlock extends BaseBlock {
   labelStyle?: Size;
   valueStyle?: Size;
   dateFormat?: DateFormat;
+}
+
+/**
+ * Page Break Block — สั่งให้ PDF ขึ้นหน้าใหม่ทันที
+ *
+ * ⚠️ มีแค่ `id` + `type` — ไม่มี height/size (ห้ามเดาจุดแบ่งหน้า)
+ *   - Composer: แสดงเป็น separator (📄 หน้าใหม่)
+ *   - PDF: `addNewPage()` ทันทีที่พบ block นี้
+ */
+export interface PageBreakBlock extends BaseBlock {
+  type: 'pageBreak';
 }
 
 /**
@@ -180,7 +193,8 @@ export type DocumentBlock =
   | FieldBlock
   | TableBlock
   | LogoBlock
-  | SignatureBlock;
+  | SignatureBlock
+  | PageBreakBlock;
 
 export interface DocumentDescriptor {
   version: 1;
@@ -408,6 +422,22 @@ export function createSystemDataBlock(
     valueStyle: 'medium',
     ...(SYSTEM_DATE_KEYS.includes(key) ? { dateFormat: 'thai_long' } : {}),
     align: 'left',
+    ...overrides,
+  };
+}
+
+/**
+ * สร้าง Page Break block
+ *
+ * มีแค่ `id` + `type` เท่านั้น — ไม่มี height/size โดยเจตนา
+ * (ห้ามเดาจุดแบ่งหน้าด้วยการคำนวณความสูง)
+ */
+export function createPageBreakBlock(
+  overrides: Partial<PageBreakBlock> = {}
+): PageBreakBlock {
+  return {
+    id: makeId('pb'),
+    type: 'pageBreak',
     ...overrides,
   };
 }
@@ -720,6 +750,86 @@ export async function previewTemplateDescriptor(
 }
 
 // =============================================================================
+// POST /admin/template-versions/:id/descriptor/pdf-preview
+// =============================================================================
+
+export interface PdfPreviewPayload {
+  descriptor: DocumentDescriptor;
+  /**
+   * ถ้าไม่ใส่ → ใช้ข้อมูลตัวอย่าง
+   * ถ้าใส่ → ใช้ข้อมูลผู้สมัครจริง
+   */
+  applicationId?: string;
+}
+
+export interface PdfPreviewResponse {
+  /** Blob ของ PDF (application/pdf) พร้อมเปิดใน iframe */
+  blob: Blob;
+  /** จำนวนหน้าจริงจาก PDF renderer (source of truth การแบ่งหน้า) */
+  pageCount: number;
+  /** Object URL สำหรับ <iframe src> — ต้อง revoke เมื่อใช้เสร็จ */
+  url: string;
+}
+
+/**
+ * เรียก PDF Renderer ตัวเดียวกับ export แล้วคืน blob + object URL
+ *
+ * ⚠️ ผู้เรียกต้องเรียก `URL.revokeObjectURL(res.url)` เมื่อเปลี่ยน/ปิด
+ */
+export async function previewTemplateDescriptorPdf(
+  templateVersionId: string,
+  payload: PdfPreviewPayload
+): Promise<ApiResult<PdfPreviewResponse>> {
+  let objectUrl: string | null = null;
+  try {
+    const res = await adminFetch(
+      `${getBaseUrl()}/admin/template-versions/${templateVersionId}/descriptor/pdf-preview`,
+      {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify(payload),
+      }
+    );
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return {
+        ok: false,
+        error: {
+          status: res.status,
+          error: normalizeErrorMessage(
+            body.error,
+            `PDF preview failed (${res.status})`
+          ),
+        },
+      };
+    }
+
+    const blob = await res.blob();
+    const pageCountHeader = Number(res.headers.get('X-Pdf-Page-Count') ?? '0');
+    objectUrl = URL.createObjectURL(blob);
+
+    return {
+      ok: true,
+      data: {
+        blob,
+        pageCount: Number.isFinite(pageCountHeader) ? pageCountHeader : 0,
+        url: objectUrl,
+      },
+    };
+  } catch (err) {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    return {
+      ok: false,
+      error: {
+        status: 0,
+        error: err instanceof Error ? err.message : 'Network error',
+      },
+    };
+  }
+}
+
+// =============================================================================
 // POST /admin/template-versions/:id/descriptor/generate
 // =============================================================================
 
@@ -819,6 +929,7 @@ const KNOWN_BLOCK_TYPES: readonly BlockType[] = [
   'table',
   'logo',
   'signature',
+  'pageBreak',
 ];
 
 /** key ที่ระบบรองรับใน SystemDataBlock */

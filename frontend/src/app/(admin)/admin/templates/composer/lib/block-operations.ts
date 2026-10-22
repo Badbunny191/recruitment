@@ -30,6 +30,7 @@ export const BLOCK_TYPE_LABELS: Record<DocumentBlock['type'], string> = {
   table: 'Table',
   logo: 'Logo',
   signature: 'Signature',
+  pageBreak: 'Page Break',
 };
 
 // =============================================================================

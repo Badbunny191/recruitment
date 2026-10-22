@@ -36,6 +36,7 @@ import {
   createFieldBlock,
   createHeadingBlock,
   createLogoBlock,
+  createPageBreakBlock,
   createSignatureBlock,
   createSystemDataBlock,
   createTableBlock,
@@ -253,6 +254,10 @@ export function BlockPanel({
     }
     if (kind === 'signature') {
       insertBlock(createSignatureBlock(), anchor);
+      return;
+    }
+    if (kind === 'pageBreak') {
+      insertBlock(createPageBreakBlock(), anchor);
       return;
     }
   };

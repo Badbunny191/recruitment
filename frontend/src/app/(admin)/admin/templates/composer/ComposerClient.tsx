@@ -78,6 +78,7 @@ import { BlockPanel } from './components/BlockPanel';
 import { JsonEditor } from './components/JsonEditor';
 import { PreviewPanel } from './components/PreviewPanel';
 import { PreviewModal } from './components/PreviewModal';
+import type { PdfPreviewStatus } from './components/PdfPreviewFrame';
 import { DataSourceToolbar } from './components/DataSourceToolbar';
 import { ComposerWorkspace } from './components/ComposerWorkspace';
 import { PageSettingsPanel } from './components/PageSettingsPanel';
@@ -451,6 +452,22 @@ function ComposerInner() {
   // Fullscreen Preview Modal (Live Preview UX — Req 2)
   // -------------------------------------------------------------------------
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
+
+  // -------------------------------------------------------------------------
+  // Preview view (Continuous Preview 2026-10-22)
+  //
+  // - 'html' → Continuous HTML (โตตามเนื้อหา ไม่แบ่งหน้าในเบราว์เซอร์)
+  // - 'pdf'  → PDF จริงจาก PDF Renderer ตัวเดียวกับ export
+  //            🔑 source of truth เรื่องการแบ่งหน้า
+  // -------------------------------------------------------------------------
+  const [previewView, setPreviewView] = useState<'html' | 'pdf'>('html');
+
+  /** จำนวนหน้าจริงจาก PDF renderer (null = ยังไม่ทราบ) */
+  const [pdfPageCount, setPdfPageCount] = useState<number | null>(null);
+
+  const handlePdfStatus = useCallback((status: PdfPreviewStatus) => {
+    setPdfPageCount(status.state === 'ready' ? status.pageCount : null);
+  }, []);
 
   const handleDeleteRequest = useCallback(
     (index: number, summary: string) => {
@@ -1023,8 +1040,8 @@ function ComposerInner() {
                   onClick={handleManualPreview}
                   disabled={loading.preview || !isTextValid || isVersionMismatch}
                   className="h-7 text-[11px]"
-                  title="เปิด Fullscreen A4 Preview"
-                  aria-label="เปิด Fullscreen A4 Preview"
+                  title="เปิด Fullscreen Preview"
+                  aria-label="เปิด Fullscreen Preview"
                 >
                   {loading.preview ? (
                     <Spinner />
@@ -1033,6 +1050,40 @@ function ComposerInner() {
                   )}
                   <span>Fullscreen</span>
                 </Button>
+              </div>
+
+              {/*
+                ⚠️ Preview view toggle (Continuous Preview 2026-10-22)
+                   - 'html' → Continuous HTML (เอกสารยาวต่อเนื่อง ไม่แบ่งหน้าในเบราว์เซอร์)
+                   - 'pdf'  → PDF จริงจาก renderer ตัวเดียวกับ export
+                              🔑 source of truth เรื่องการแบ่งหน้า
+              */}
+              <div
+                className="flex items-center justify-between gap-2"
+                role="tablist"
+                aria-label="โหมด preview"
+              >
+                <div className="inline-flex rounded-md border border-slate-300 bg-slate-50 p-0.5">
+                  <PreviewViewTab
+                    label="ต่อเนื่อง"
+                    icon="↕"
+                    active={previewView === 'html'}
+                    onClick={() => setPreviewView('html')}
+                  />
+                  <PreviewViewTab
+                    label="PDF จริง"
+                    icon="📄"
+                    active={previewView === 'pdf'}
+                    onClick={() => setPreviewView('pdf')}
+                  />
+                </div>
+                {previewView === 'pdf' && (
+                  <span className="text-[10px] text-slate-500">
+                    {pdfPageCount !== null
+                      ? `📄 ${pdfPageCount} หน้า (PDF จริง)`
+                      : 'กำลังสร้าง PDF…'}
+                  </span>
+                )}
               </div>
 
               {/* Data Source Toolbar (Requirement A) — อยู่ในหัว จึงไม่เลื่อนตาม */}
@@ -1053,7 +1104,15 @@ function ComposerInner() {
                  - overflow-y-auto อยู่ที่ชั้นนี้ไม่ได้ (เอกสารยาวให้ scroll ภายใน iframe)
             */}
             <CardContent className="pt-0 !px-3 !pb-3 flex-1 min-h-0 flex flex-col overflow-hidden">
-              <PreviewPanel preview={previewResult} loading={loading.preview} />
+              <PreviewPanel
+                preview={previewResult}
+                loading={loading.preview}
+                view={previewView}
+                templateVersionId={versionId}
+                descriptor={descriptor}
+                applicationId={previewDataSource.selectedApplication?.id}
+                onPdfStatus={handlePdfStatus}
+              />
             </CardContent>
           </Card>
         }
@@ -1099,7 +1158,7 @@ function ComposerInner() {
         </DialogContent>
       </Dialog>
 
-      {/* Fullscreen A4 Preview Modal (Live Preview UX — Req 2+) */}
+      {/* Fullscreen Preview Modal (Live Preview UX — Req 2+) */}
       <PreviewModal
         open={previewModalOpen}
         onClose={() => setPreviewModalOpen(false)}
@@ -1108,6 +1167,8 @@ function ComposerInner() {
         loading={loading.preview}
         dataSource={previewDataSource.mode}
         selectedApplication={previewDataSource.selectedApplication}
+        templateVersionId={versionId}
+        descriptor={descriptor}
       />
     </div>
   );
@@ -1116,6 +1177,36 @@ function ComposerInner() {
 // =============================================================================
 // Sub-Components
 // =============================================================================
+
+/** Tab สลับโหมด preview (ต่อเนื่อง ↔ PDF จริง) */
+function PreviewViewTab({
+  label,
+  icon,
+  active,
+  onClick,
+}: {
+  label: string;
+  icon: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={`text-[11px] px-2 py-1 rounded transition-colors ${
+        active
+          ? 'bg-white text-slate-900 shadow-sm font-medium'
+          : 'text-slate-500 hover:text-slate-700'
+      }`}
+    >
+      <span className="mr-1">{icon}</span>
+      {label}
+    </button>
+  );
+}
 
 function Spinner() {
   return (

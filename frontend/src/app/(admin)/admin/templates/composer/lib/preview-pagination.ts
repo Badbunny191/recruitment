@@ -1,11 +1,30 @@
 /**
- * Preview Pagination (HTML Preview เท่านั้น)
+ * ⚠️⚠️⚠️ DEPRECATED — ไม่อยู่ใน flow หลักแล้ว (2026-10-22) ⚠️⚠️⚠️
+ * ------------------------------------------------------------------
+ * Document Composer เปลี่ยนเป็น **Continuous Preview** แล้ว:
+ *   - ตัด Browser Pagination ออกทั้งหมด
+ *   - `PreviewFrame.tsx` **ไม่ import** ไฟล์นี้อีกต่อไป (ไม่มี script ฝังใน iframe)
+ *   - ไม่มีการวัด DOM / ไม่มีการเดาจุดแบ่งหน้า / ไม่มีการ scale-zoom
+ *   - เอกสารแสดงเป็นลำดับยาวเดียว (`.dc-page` โตตามเนื้อหา)
+ *   - 🔑 การแบ่งหน้าจริงดูจาก **PDF Preview** (renderer ตัวเดียวกับ export)
+ *
+ * 🚫 ห้ามนำกลับมาใน flow หลัก
+ *    - ถ้าต้องการแบ่งหน้า → ใช้ block `pageBreak` (PDF renderer ขึ้นหน้าใหม่ทันที)
+ *    - ถ้าต้องการดูการแบ่งหน้าจริง → เปิดโหมด PDF Preview
+ *
+ * ⚠️ ไฟล์นี้ยังอยู่เพื่อให้เทสต์เดิม (composer-uat-round2.test.tsx) รันได้
+ *    เพื่อทบทวนพฤติกรรมเก่าเทียบกับแนวทางใหม่
+ * ------------------------------------------------------------------
+ */
+
+/**
+ * Preview Pagination (HTML Preview เท่านั้น) — ❌ RETIRED
  * --------------------------------------------
  * Document Composer — แบ่งหน้ากระดาษ A4 สำหรับตัวอย่างเอกสาร (HTML Preview)
  *
- * ⚠️ ขอบเขต
- *   - มีผลกับ HTML Preview เท่านั้น (Compact + Fullscreen ใช้ชุดเดียวกัน)
- *   - **ห้ามแตะ PDF Renderer / Legacy PDF route**
+ * ⚠️ ขอบเขต (เก็บไว้เป็น historical reference เท่านั้น)
+ *   - ~~มีผลกับ HTML Preview~~ → **ถูกถอดออกจาก PreviewFrame แล้ว**
+ *   - ไม่แตะ PDF Renderer / Legacy PDF route
  *   - ไม่แก้ Page Settings schema (ใช้ค่า margin ที่ backend resolve มาแล้ว)
  *
  * ── แนวทาง Pagination ───────────────────────────────────────────────────────

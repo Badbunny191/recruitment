@@ -30,6 +30,8 @@ import {
 } from '../db/schema';
 import { renderApplicationPdf } from './pdf-renderer.service';
 import { buildPdfCacheKey, ApplicationContext } from './pdf-types';
+import { loadTemplateDescriptor } from '../services/template-descriptor.service';
+import { buildRenderPlan, renderPlanToPdf } from './document-composer';
 import type { Bindings } from '../types';
 
 // =============================================================================
@@ -79,7 +81,16 @@ export async function getApplicationPdf(
   }
 
   // 3. Render fresh
-  const rendered = await renderApplicationPdf(ctx);
+  // ถ้า template version มี descriptor ในฐานข้อมูล → render ด้วย Document Composer (renderPlanToPdf)
+  // ถ้าไม่มี (legacy template) → fallback ไปยัง legacy hardcoded renderer (renderApplicationPdf)
+  let rendered: { bytes: Uint8Array; pageCount: number; generatedAt: number };
+  const descResult = await loadTemplateDescriptor(db, ctx.templateVersion.id);
+  if (descResult.ok && descResult.meta.source === 'db') {
+    const plan = buildRenderPlan(descResult.descriptor, ctx);
+    rendered = await renderPlanToPdf(plan, ctx);
+  } else {
+    rendered = await renderApplicationPdf(ctx);
+  }
 
   // 4. Upload to R2 (best-effort, don't fail request if R2 unavailable)
   if (r2) {

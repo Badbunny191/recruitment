@@ -86,7 +86,7 @@ export interface RenderedBlockSummary {
   /** block id (จาก descriptor) */
   blockId: string;
   /** block type */
-  type: "heading" | "field" | "table" | "logo" | "signature" | "systemData";
+  type: "heading" | "field" | "table" | "logo" | "signature" | "systemData" | "pageBreak";
   /** align ที่ใช้ render */
   align: "left" | "center" | "right";
   /** margin top ที่ใช้ render (pt) */

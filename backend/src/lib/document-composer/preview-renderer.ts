@@ -423,13 +423,33 @@ select.dc-control {
   color: #999999;
 }
 
-/* ── Page break hint (สำหรับ print emulation) ───────────── */
+/* ── Page break separator (Continuous Preview) ────────────────
+   HTML Preview เป็น continuous → ไม่แบ่งหน้า A4 ในเบราว์เซอร์
+   แสดงเป็น separator ประกอบเท่านั้น
+   จุดแบ่งหน้าจริง = PDF Preview (source of truth)
+   ───────────────────────────────────────────────────────────── */
 .dc-page-break {
-  border-top: 1px dashed #cccccc;
-  margin: 12px 0;
-  text-align: center;
-  font-size: 9pt;
-  color: #999999;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0;
+  color: #64748b;
+  font-size: 10pt;
+  user-select: none;
+}
+.dc-page-break::before,
+.dc-page-break::after {
+  content: "";
+  flex: 1;
+  border-top: 1px dashed #cbd5e1;
+}
+.dc-page-break__label {
+  flex: none;
+  white-space: nowrap;
+  padding: 2px 10px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 999px;
+  background: #f8fafc;
 }
 
 /* ── Radio group wrapper ──────────────────────────────────── */
@@ -810,8 +830,32 @@ function renderBlock(
           marginBottom: rctx.marginBottom,
         },
       };
+
+    case "pageBreak":
+      return {
+        html: PAGE_BREAK_HTML,
+        summary: {
+          blockId: block.id,
+          type: "pageBreak",
+          align: rctx.align,
+          marginTop: rctx.marginTop,
+          marginBottom: rctx.marginBottom,
+        },
+      };
   }
 }
+
+/**
+ * Page Break separator (HTML Preview แบบ continuous)
+ *
+ * ⚠️ Preview นี้เป็น "continuous" — ไม่พยายามแบ่งหน้า A4 ในเบราว์เซอร์
+ *    จึงแสดงเป็น separator ประกอบเท่านั้น
+ *    จุดแบ่งหน้าจริงดูได้จาก PDF Preview (source of truth)
+ */
+const PAGE_BREAK_HTML =
+  '<div class="dc-page-break" data-dc-page-break="1" style="page-break-after: always; break-after: page;">' +
+  '<span class="dc-page-break__label">📄 หน้าใหม่</span>' +
+  "</div>";
 
 // =============================================================================
 // Heading / Text Block
