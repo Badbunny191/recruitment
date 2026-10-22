@@ -42,7 +42,6 @@ bucket_name = "sao-storage"
 
 [vars]
 # ตัวแปรเหล่านี้ตั้งค่าผ่าน .env หรือ Cloudflare Dashboard สำหรับ Production
-JWT_SECRET = "REPLACE_WITH_SUPER_SECRET_KEY"
 
 # =============================================================================
 # PR #1 - Hardening / Anti-bot foundation
