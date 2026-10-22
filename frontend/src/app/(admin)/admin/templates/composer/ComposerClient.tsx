@@ -728,10 +728,10 @@ function ComposerInner() {
   }, [previewTrigger]);
 
   // -------------------------------------------------------------------------
-  // Auto-refresh preview (ทันที) — เมื่อเปลี่ยน "ตั้งค่าหน้ากระดาษ"
+  // Auto-refresh preview (debounced) — เมื่อเปลี่ยน "ตั้งค่าหน้ากระดาษ"
   //
-  // ⚠️ ตั้งค่าหน้ากระดาษมีผลกับ Preview โดยตรง → ต้องเห็นผลทันที
-  //    ไม่ต้องรอ debounce 1.5 วินาที (ผู้ใช้กำลังลากค่าขอบกระดาษ)
+  // ⚠️ ตั้งค่าหน้ากระดาษมีผลกับ Preview โดยตรง → debounce 500ms
+  //    (ป้องกันการยิง request ซ้ำซ้อนและโหลด Worker เมื่อผู้ใช้กดสลับ preset รัว ๆ)
   //
   // ⚠️ ใช้ "ลายเซ็น" ของ pageSettings เป็น dependency → ไม่ยิงซ้ำเมื่อ
   //    descriptor เปลี่ยนจากสาเหตุอื่น (เช่น แก้ block)
@@ -751,9 +751,13 @@ function ComposerInner() {
     if (lastPageSettingsRef.current === pageSettingsSignature) return;
     lastPageSettingsRef.current = pageSettingsSignature;
 
-    const { selectedApplication } = previewDataSourceRef.current;
-    const applicationId = selectedApplication?.id ?? undefined;
-    runPreviewRef.current(undefined, applicationId);
+    const timer = setTimeout(() => {
+      const { selectedApplication } = previewDataSourceRef.current;
+      const applicationId = selectedApplication?.id ?? undefined;
+      runPreviewRef.current(undefined, applicationId);
+    }, 500);
+
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageSettingsSignature]);
 

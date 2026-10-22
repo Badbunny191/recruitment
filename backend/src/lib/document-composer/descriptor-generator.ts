@@ -243,8 +243,8 @@ export function generateDescriptorFromTemplate(
     size: "large",
     bold: true,
     align: "center",
-    marginTop: 12,
-    marginBottom: 12,
+    marginTop: 4,
+    marginBottom: 4,
   };
   blocks.push(titleBlock);
   headingCount += 1;

@@ -244,10 +244,10 @@ export interface RenderPlan {
 /**
  * ความสูงที่กันไว้สำหรับ header ของเอกสาร (pt)
  *
- * ปรับลดตาม Task 3 Option A (80 → 30 pt) เพื่อลดพื้นที่ว่างด้านบน
- * แต่ยังคงระยะเว้นหัวกระดาษให้ Logo และ Heading ไม่ชิดขอบบนเกินไป
+ * ปรับลดเป็น 0 pt เพื่อให้ระยะขอบบน (marginTop) จาก Page Settings เป็น source of truth
+ * ของระยะห่างจากขอบบนหน้ากระดาษอย่างแท้จริง ไม่เกิดพื้นที่ว่างซ้ำซ้อนใน Header Area
  */
-const HEADER_RESERVE = 30;
+const HEADER_RESERVE = 0;
 
 /** ความสูงที่กันไว้สำหรับ footer (pt) */
 const FOOTER_RESERVE = 60;

@@ -47,7 +47,7 @@ export interface PdfPreviewFrameProps {
   descriptorReady?: boolean;
   /** callback รายงานสถานะ (หน้า count / error) */
   onStatusChange?: (status: PdfPreviewStatus) => void;
-  /** debounce ms ก่อนยิง renderer (default 800ms — PDF ช้ากว่า HTML) */
+  /** debounce ms ก่อนยิง renderer (default 1000ms — PDF ช้ากว่า HTML) */
   debounceMs?: number;
 }
 
@@ -58,7 +58,7 @@ export function PdfPreviewFrame({
   className,
   descriptorReady = false,
   onStatusChange,
-  debounceMs = 800,
+  debounceMs = 1000,
 }: PdfPreviewFrameProps) {
   const [status, setStatus] = useState<PdfPreviewStatus>({ state: 'idle' });
   const [pdf, setPdf] = useState<PdfPreviewResponse | null>(null);
@@ -66,9 +66,12 @@ export function PdfPreviewFrame({
   /** object URL ปัจจุบัน — ต้อง revoke เมื่อเปลี่ยน/ปิด */
   const urlRef = useRef<string | null>(null);
 
+  /** AbortController สำหรับยกเลิก request เก่าที่ยัง in-flight */
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   const ready = !!templateVersionId && (!!descriptor || descriptorReady);
 
-  // ── ยิง PDF renderer เมื่อ descriptor เปลี่ยน (debounced) ────────────────
+  // ── ยิง PDF renderer เมื่อ descriptor เปลี่ยน (debounced + abort controller) ──
   useEffect(() => {
     if (!ready) return;
     if (!descriptor || descriptor.blocks.length === 0) {
@@ -79,40 +82,71 @@ export function PdfPreviewFrame({
     let cancelled = false;
     setStatus({ state: 'loading' });
 
+    // ยกเลิก in-flight request ก่อนหน้าทันทีเมื่อ descriptor เปลี่ยน
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
     const timer = setTimeout(async () => {
-      const res = await previewTemplateDescriptorPdf(templateVersionId!, {
-        descriptor: descriptor!,
-        applicationId,
-      });
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
 
-      if (cancelled) {
-        // ผลลัพธ์มาช้า — ปล่อย URL ทิ้งทันที
-        if (res.ok) URL.revokeObjectURL(res.data.url);
-        return;
+      try {
+        const res = await previewTemplateDescriptorPdf(
+          templateVersionId!,
+          {
+            descriptor: descriptor!,
+            applicationId,
+          },
+          controller.signal
+        );
+
+        if (cancelled || controller.signal.aborted) {
+          // ผลลัพธ์มาช้าหรือถูกยกเลิก — ปล่อย URL ทิ้งทันที
+          if (res.ok) URL.revokeObjectURL(res.data.url);
+          return;
+        }
+
+        if (!res.ok) {
+          // ถ้าถูกยกเลิก ไม่ต้องแสดง error ใน UI
+          if (res.error.error === 'Request aborted') return;
+          setStatus({ state: 'error', message: res.error.error });
+          setPdf(null);
+          return;
+        }
+
+        // เปลี่ยน URL เดิม → revoke ก่อน (กัน memory leak)
+        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+        urlRef.current = res.data.url;
+        setPdf(res.data);
+        setStatus({ state: 'ready', pageCount: res.data.pageCount });
+      } catch (err) {
+        if (cancelled || controller.signal.aborted) return;
+        setStatus({
+          state: 'error',
+          message: err instanceof Error ? err.message : 'Render failed',
+        });
       }
-
-      if (!res.ok) {
-        setStatus({ state: 'error', message: res.error.error });
-        setPdf(null);
-        return;
-      }
-
-      // เปลี่ยน URL เดิม → revoke ก่อน (กัน memory leak)
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-      urlRef.current = res.data.url;
-      setPdf(res.data);
-      setStatus({ state: 'ready', pageCount: res.data.pageCount });
     }, debounceMs);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
     };
   }, [ready, templateVersionId, descriptor, applicationId, debounceMs]);
 
   // ── cleanup เมื่อ unmount ────────────────────────────────────────────────
   useEffect(() => {
     return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
       if (urlRef.current) {
         URL.revokeObjectURL(urlRef.current);
         urlRef.current = null;

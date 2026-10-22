@@ -713,7 +713,8 @@ export interface PreviewPayload {
 
 export async function previewTemplateDescriptor(
   templateVersionId: string,
-  payload: PreviewPayload
+  payload: PreviewPayload,
+  signal?: AbortSignal
 ): Promise<ApiResult<PreviewResponse>> {
   try {
     const res = await adminFetch(
@@ -722,6 +723,7 @@ export async function previewTemplateDescriptor(
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify(payload),
+        signal,
       }
     );
 
@@ -815,7 +817,8 @@ export async function extractPdfPageCount(blob: Blob): Promise<number> {
  */
 export async function previewTemplateDescriptorPdf(
   templateVersionId: string,
-  payload: PdfPreviewPayload
+  payload: PdfPreviewPayload,
+  signal?: AbortSignal
 ): Promise<ApiResult<PdfPreviewResponse>> {
   let objectUrl: string | null = null;
   try {
@@ -825,6 +828,7 @@ export async function previewTemplateDescriptorPdf(
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify(payload),
+        signal,
       }
     );
 
@@ -860,11 +864,20 @@ export async function previewTemplateDescriptorPdf(
     };
   } catch (err) {
     if (objectUrl) URL.revokeObjectURL(objectUrl);
+    const isAborted =
+      (typeof DOMException !== 'undefined' &&
+        err instanceof DOMException &&
+        err.name === 'AbortError') ||
+      (err instanceof Error && err.name === 'AbortError');
     return {
       ok: false,
       error: {
         status: 0,
-        error: err instanceof Error ? err.message : 'Network error',
+        error: isAborted
+          ? 'Request aborted'
+          : err instanceof Error
+            ? err.message
+            : 'Network error',
       },
     };
   }
