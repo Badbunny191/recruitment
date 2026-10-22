@@ -49,6 +49,7 @@ import {
   type GeneratorFieldInput,
   type GeneratorFieldType,
 } from '../lib/document-composer';
+import { PageSettingsSchema } from '../lib/document-composer/page-settings';
 import { renderDescriptorToPreview } from '../lib/document-composer';
 import type { DocumentDescriptor } from '../lib/document-composer/types';
 
@@ -61,9 +62,11 @@ const descriptorRouter = new Hono<{ Bindings: Bindings; Variables: AppVariables 
 /**
  * Schema สำหรับ PUT /admin/template-versions/:id/descriptor
  *
- * รับ descriptor แบบ { version, blocks } เท่านั้น
+ * รับ descriptor แบบ { version, blocks, pageSettings? }
  * - blocks: array ของ block (zod discriminated union)
  * - version: literal 1
+ * - pageSettings: optional (ขอบกระดาษ) — **ต้อง .passthrough()/กำหนดไว้**
+ *   มิฉะนั้น Zod จะ strip ค่าทิ้ง → การบันทึกจะไม่เก็บค่า
  */
 const SaveDescriptorRequestSchema = z.object({
   descriptor: z.object({
@@ -71,6 +74,7 @@ const SaveDescriptorRequestSchema = z.object({
     blocks: z
       .array(z.any()) // ปล่อยให้ validateDescriptor() ตรวจ block-level เอง
       .min(1, 'Descriptor must have at least one block'),
+    pageSettings: PageSettingsSchema.optional(),
   }),
   /**
    * Optional optimistic lock — ถ้าใส่ จะตรวจกับ schema version ใน DB
@@ -92,6 +96,7 @@ const PreviewDescriptorRequestSchema = z.object({
   descriptor: z.object({
     version: z.literal(1),
     blocks: z.array(z.any()).min(1),
+    pageSettings: PageSettingsSchema.optional(),
   }),
   // ── [Live Preview UX] options (optional)
   // - mode: 'form' | 'document' — body field rendering
@@ -384,6 +389,7 @@ descriptorRouter.post(
         meta: preview.meta,
         mode: preview.mode,
         tokens: preview.tokens,
+        page: preview.page,
       },
     });
   }

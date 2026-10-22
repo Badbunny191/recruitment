@@ -14,6 +14,8 @@
  *   - ไม่มี inline-script / iframe / external resource
  */
 
+import type { PageGeometry } from "./page-settings";
+
 /**
  * HTML Preview Model — output ของ preview renderer
  *
@@ -47,6 +49,13 @@ export interface PreviewModel {
   mode: PreviewMode;
   /** resolved token values (ใช้กับแผง diagnostics) */
   tokens: PreviewTokenInfo[];
+  /**
+   * Geometry ของหน้ากระดาษ (ขอบกระดาษที่ resolve แล้ว)
+   *
+   * ใช้โดย consumer (PreviewFrame) เพื่อกำหนด padding ของ `.dc-page`
+   * ให้ตรงกับค่าที่ Admin เลือกใน UI "ตั้งค่าหน้ากระดาษ"
+   */
+  page: PageGeometry;
 }
 
 /**

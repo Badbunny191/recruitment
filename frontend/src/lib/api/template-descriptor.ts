@@ -185,7 +185,63 @@ export type DocumentBlock =
 export interface DocumentDescriptor {
   version: 1;
   blocks: DocumentBlock[];
+  /**
+   * การตั้งค่าหน้ากระดาษ (ขอบกระดาษ) — optional
+   *
+   * ⚠️ Backward compatibility: descriptor เก่าที่ไม่มี field นี้
+   *   → fallback เป็น 40pt ทุกด้าน (ดู resolvePageGeometry)
+   *
+   * ⚠️ ขอบเขต: มีผลกับตัวอย่างเอกสาร (Preview) เท่านั้น
+   *   ส่วน PDF จะรองรับในก้อนถัดไป
+   */
+  pageSettings?: PageSettings;
 }
+
+// =============================================================================
+// Page Settings (ขอบกระดาษ)
+// =============================================================================
+
+/**
+ * Re-export จาก `page-settings.ts` (single source of truth)
+ *
+ * ⚠️ implementation ทั้งหมดอยู่ที่ `@/lib/api/page-settings`
+ *   → UI และ API client ใช้ชุด helper ชุดเดียวกัน
+ */
+export {
+  DEFAULT_MARGIN_PT,
+  MIN_MARGIN_PT,
+  MAX_MARGIN_PT,
+  MIN_CONTENT_SIZE_PT,
+  PRESET_MARGIN_PT,
+  PAGE_WIDTH_PT,
+  PAGE_HEIGHT_PT,
+  PT_PER_INCH,
+  MM_PER_INCH,
+  PRESET_LABELS,
+  MARGIN_SIDE_LABELS,
+  PAGE_SETTINGS_DISCLAIMER,
+  resolvePageGeometry,
+  createDefaultPageSettings,
+  clampMarginPt,
+  normalizePreset,
+  ptToMm,
+  mmToPt,
+  applyPreset,
+  resetPageSettings,
+  validateMarginInput,
+  marginInputToPt,
+  marginPtToInput,
+  type PageSettings,
+  type PageGeometry,
+  type PageMarginPresetKey,
+  type MarginSide,
+  type MarginValidation,
+} from './page-settings';
+
+import type {
+  PageSettings,
+  PageGeometry,
+} from './page-settings';
 
 export interface DescriptorMeta {
   source: 'db' | 'default';
@@ -443,6 +499,13 @@ export interface PreviewResponse {
   mode: PreviewMode;
   /** resolved tokens (สำหรับแผง diagnostics) */
   tokens: PreviewTokenInfo[];
+  /**
+   * Geometry ของหน้ากระดาษ (ขอบกระดาษที่ backend resolve แล้ว)
+   *
+   * ใช้กำหนด padding ของ `.dc-page` ให้ตรงกับค่าที่ Admin เลือก
+   * (Compact และ Fullscreen ใช้ค่าเดียวกัน)
+   */
+  page?: PageGeometry;
 }
 
 export interface GeneratorMeta {

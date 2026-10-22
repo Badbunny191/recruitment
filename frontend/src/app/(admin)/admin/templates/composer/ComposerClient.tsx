@@ -49,6 +49,7 @@ import {
   useEffect,
   useState,
   useCallback,
+  useMemo,
   useRef,
 } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -71,6 +72,7 @@ import type {
   ValidationIssue,
   PreviewMode,
 } from '@/lib/api/template-descriptor';
+import type { PageSettings } from '@/lib/api/page-settings';
 
 import { BlockPanel } from './components/BlockPanel';
 import { JsonEditor } from './components/JsonEditor';
@@ -78,6 +80,7 @@ import { PreviewPanel } from './components/PreviewPanel';
 import { PreviewModal } from './components/PreviewModal';
 import { DataSourceToolbar } from './components/DataSourceToolbar';
 import { ComposerWorkspace } from './components/ComposerWorkspace';
+import { PageSettingsPanel } from './components/PageSettingsPanel';
 import { useTemplateFields } from './hooks/useTemplateFields';
 import { useWorkspaceLayout } from './hooks/useWorkspaceLayout';
 import { useAvailableHeight } from './hooks/useAvailableHeight';
@@ -466,6 +469,20 @@ function ComposerInner() {
   }, [descriptor, confirmDelete, setDescriptor, showToast]);
 
   // -------------------------------------------------------------------------
+  // Page Settings (ตั้งค่าหน้ากระดาษ)
+  //
+  // ⚠️ มีผลกับ Preview เท่านั้น — PDF Renderer ยังไม่รองรับ (รอก้อนถัดไป)
+  // ⚠️ ไม่แตะ Block selection / contextual insertion
+  // -------------------------------------------------------------------------
+  const handlePageSettingsChange = useCallback(
+    (next: PageSettings) => {
+      if (!descriptor) return;
+      setDescriptor({ ...descriptor, pageSettings: next });
+    },
+    [descriptor, setDescriptor]
+  );
+
+  // -------------------------------------------------------------------------
   // Load template version meta
   // -------------------------------------------------------------------------
   useEffect(() => {
@@ -694,6 +711,36 @@ function ComposerInner() {
   }, [previewTrigger]);
 
   // -------------------------------------------------------------------------
+  // Auto-refresh preview (ทันที) — เมื่อเปลี่ยน "ตั้งค่าหน้ากระดาษ"
+  //
+  // ⚠️ ตั้งค่าหน้ากระดาษมีผลกับ Preview โดยตรง → ต้องเห็นผลทันที
+  //    ไม่ต้องรอ debounce 1.5 วินาที (ผู้ใช้กำลังลากค่าขอบกระดาษ)
+  //
+  // ⚠️ ใช้ "ลายเซ็น" ของ pageSettings เป็น dependency → ไม่ยิงซ้ำเมื่อ
+  //    descriptor เปลี่ยนจากสาเหตุอื่น (เช่น แก้ block)
+  // -------------------------------------------------------------------------
+  const pageSettingsSignature = useMemo(
+    () => JSON.stringify(descriptor?.pageSettings ?? null),
+    [descriptor?.pageSettings]
+  );
+  const lastPageSettingsRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isTextValid || !descriptor) return;
+    if (lastPageSettingsRef.current === null) {
+      // ครั้งแรก → บันทึกค่า แล้วปล่อยให้ effect ของ debounce จัดการ
+      lastPageSettingsRef.current = pageSettingsSignature;
+      return;
+    }
+    if (lastPageSettingsRef.current === pageSettingsSignature) return;
+    lastPageSettingsRef.current = pageSettingsSignature;
+
+    const { selectedApplication } = previewDataSourceRef.current;
+    const applicationId = selectedApplication?.id ?? undefined;
+    runPreviewRef.current(undefined, applicationId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageSettingsSignature]);
+
+  // -------------------------------------------------------------------------
   // Render — no versionId yet
   // -------------------------------------------------------------------------
 
@@ -916,6 +963,15 @@ function ComposerInner() {
               </div>
             </CardHeader>
             <CardContent className="pt-0 space-y-3 flex-1 min-h-0 overflow-y-auto">
+              {/* Page Settings (ตั้งค่าหน้ากระดาษ) — มีผลกับ Preview เท่านั้น */}
+              {!isVersionMismatch && descriptor && (
+                <PageSettingsPanel
+                  value={descriptor.pageSettings}
+                  onChange={handlePageSettingsChange}
+                  disabled={loading.save || loading.generate}
+                />
+              )}
+
               {/* Friendly Empty State */}
               {!isVersionMismatch &&
               (!descriptor || descriptor.blocks.length === 0) ? (

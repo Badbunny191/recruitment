@@ -21,6 +21,8 @@
  *   `DocumentDescriptor.version` ยังเป็น literal 1 (ไม่ bump)
  */
 
+import type { PageSettings } from "./page-settings";
+
 // =============================================================================
 // Common Enums
 // =============================================================================
@@ -364,6 +366,16 @@ export interface DocumentDescriptor {
   version: 1;
   /** ordered list of blocks */
   blocks: DocumentBlock[];
+  /**
+   * การตั้งค่าหน้ากระดาษ (ขอบกระดาษ) — optional
+   *
+   * ⚠️ Backward compatibility:
+   *   descriptor เก่าที่ไม่มี field นี้ → ต้อง fallback เป็น 40pt ทุกด้าน
+   *   (ดู resolvePageGeometry() ใน page-settings.ts)
+   *
+   * ⚠️ ขอบเขต: มีผลกับ Preview เท่านั้น — PDF Renderer ยังไม่รองรับ
+   */
+  pageSettings?: PageSettings;
 }
 
 // =============================================================================

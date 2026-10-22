@@ -18,6 +18,7 @@
  */
 
 import { z } from "zod";
+import { PageSettingsSchema } from "./page-settings";
 
 // =============================================================================
 // Shared Schemas
@@ -268,6 +269,13 @@ export const DocumentDescriptorSchema = z.object({
   blocks: z
     .array(DocumentBlockSchema)
     .min(1, "Descriptor must have at least one block"),
+  /**
+   * การตั้งค่าหน้ากระดาษ (ขอบกระดาษ) — optional
+   *
+   * ⚠️ Backward compatibility: descriptor เก่าที่ไม่มี field นี้ยังผ่านได้
+   *   (fallback เป็น 40pt ทุกด้านที่ resolvePageGeometry())
+   */
+  pageSettings: PageSettingsSchema.optional(),
 });
 
 // =============================================================================

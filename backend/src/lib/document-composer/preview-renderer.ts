@@ -70,6 +70,7 @@ import {
   type TokenValue,
 } from "./document-tokens";
 import { getObjectDisplayLabel } from "./field-capabilities";
+import { resolvePageGeometry } from "./page-settings";
 
 // =============================================================================
 // Style mapping — mirror descriptor-renderer.ts (visual consistency)
@@ -677,7 +678,12 @@ export function renderDescriptorToPreview(
   const isRealApplication = !!(ctx.application.id && !String(ctx.application.id).startsWith("preview-"));
   const tokensInfo = buildTokenDiagnostics(tokens, descriptor, ctx, isRealApplication);
 
-  return { html, body, header, styles: PREVIEW_STYLES, meta, mode, tokens: tokensInfo };
+  // ── 5.1) Page geometry (ขอบกระดาษ) ─────────────────────────────────
+  //  มีผลกับ Preview เท่านั้น — PDF Renderer ยังไม่รองรับ (รอก้อนถัดไป)
+  //  descriptor เก่าที่ไม่มี pageSettings → fallback 40pt ทุกด้าน
+  const page = resolvePageGeometry(descriptor.pageSettings);
+
+  return { html, body, header, styles: PREVIEW_STYLES, meta, mode, tokens: tokensInfo, page };
 }
 
 /**

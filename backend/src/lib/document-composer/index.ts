@@ -86,6 +86,36 @@ export {
 export { DocumentDescriptorSchema } from "./descriptor-schema";
 
 // =============================================================================
+// Page Settings (ขอบกระดาษ — Preview only)
+// =============================================================================
+
+export {
+  resolvePageGeometry,
+  createDefaultPageSettings,
+  clampMarginPt,
+  normalizePreset,
+  ptToMm,
+  mmToPt,
+  PageSettingsSchema,
+  PageMarginPtSchema,
+  PAGE_MARGIN_PT_RANGE,
+  DEFAULT_MARGIN_PT,
+  MIN_MARGIN_PT,
+  MAX_MARGIN_PT,
+  MIN_CONTENT_SIZE_PT,
+  PRESET_MARGIN_PT,
+  PAGE_WIDTH_PT,
+  PAGE_HEIGHT_PT,
+  PT_PER_INCH,
+  MM_PER_INCH,
+  type PageSettings,
+  type PageSettingsInput,
+  type PageMarginPreset,
+  type PageMarginSide,
+  type PageGeometry,
+} from "./page-settings";
+
+// =============================================================================
 // Renderer
 // =============================================================================
 

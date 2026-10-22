@@ -39,6 +39,10 @@ body {
 /*
  * Page box (A4 ในหน่วย pt) — ใช้ตัวเดียวกันทั้ง Compact และ Fullscreen
  *
+ * ⚠️ padding ถูกกำหนดจาก resolvePageGeometry() (backend) ผ่าน inline style
+ *    ที่ inject ลงใน srcdoc → override ได้โดยไม่ต้องแก้ CSS ที่นี่
+ *    (ค่า default 40pt ใช้กรณี backend ยังไม่ส่ง page geometry มา)
+ *
  * ⚠️ ห้าม override padding/margin ของ .dc-page ที่นี่ (หรือที่อื่น)
  *    เพราะจะทำให้กระดาษหายขอบ / ไม่ตรงกับ PDF
  */
@@ -129,6 +133,17 @@ export function PreviewFrame({
     // ถ้าไม่ inject ตรงนี้ CSS ของ block (เช่น .dc-systemdata) จะไม่มีใน iframe
     // เลย → แก้ backend แล้ว preview ไม่เปลี่ยน (root cause ที่เจอรอบนี้)
     const backendCss = preview.styles ?? '';
+
+    // ── Page geometry (ขอบกระดาษ) ─────────────────────────────────
+    // มาจาก resolvePageGeometry() ฝั่ง backend → ใช้ค่าเดียวกันทั้ง
+    // Compact (PreviewPanel) และ Fullscreen (PreviewModal)
+    // ถ้า backend ยังไม่ส่งมา → ใช้ค่า default (40pt ทุกด้าน)
+    const page = preview.page;
+    const padding = page
+      ? `${page.marginTop}pt ${page.marginRight}pt ${page.marginBottom}pt ${page.marginLeft}pt`
+      : '40pt';
+    const pageStyle = `padding: ${padding};`;
+
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -138,9 +153,9 @@ ${PREVIEW_FRAME_CSS}
 ${backendCss}
   </style>
 </head>
-<body><div class="dc-page">${inner}</div></body>
+<body><div class="dc-page" style="${pageStyle}">${inner}</div></body>
 </html>`;
-  }, [inner, preview.mode, preview.styles]);
+  }, [inner, preview.mode, preview.styles, preview.page]);
 
   return (
     <iframe
