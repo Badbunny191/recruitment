@@ -879,7 +879,7 @@ export async function renderPlanToPdf(
     }
   }
 
-  const bytes = await doc.save();
+  const bytes = await doc.save({ useObjectStreams: false });
   return {
     bytes,
     pageCount: doc.getPageCount(),
