@@ -405,7 +405,7 @@ select.dc-control {
 .dc-signature {
   font-size: 12pt;
   color: #000000;
-  line-height: 1.4;
+  line-height: 1.3;
   break-inside: avoid;
   page-break-inside: avoid;
 }

@@ -772,6 +772,43 @@ export interface PdfPreviewResponse {
 }
 
 /**
+ * ดึงจำนวนหน้าจริงจาก PDF Blob โดยตรง
+ *
+ * ทำหน้าที่เป็น Single Source of Truth / Fallback กรณี:
+ * - Browser บล็อก CORS headers ไม่ให้เข้าถึง X-Pdf-Page-Count
+ * - Proxy / CDN strip custom headers ออก
+ * - ค่าใน Header ขาดหายหรือไม่สมบูรณ์
+ *
+ * การันตี PDF Viewer = Header Page Count ตรงกันเสมอ
+ */
+export async function extractPdfPageCount(blob: Blob): Promise<number> {
+  try {
+    const arrayBuffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    let text = '';
+    const chunkSize = 32768;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+      text += String.fromCharCode.apply(null, chunk as unknown as number[]);
+    }
+    // Pattern 1: /Type /Pages /Count N ใน PDF catalog tree
+    const countMatches = text.match(/\/Type\s*\/Pages\b[\s\S]*?\/Count\s+(\d+)/);
+    if (countMatches && countMatches[1]) {
+      const parsed = parseInt(countMatches[1], 10);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    // Pattern 2: นับ /Type /Page (leaf page object ที่ไม่ใช่ /Pages)
+    const pageMatches = text.match(/\/Type\s*\/Page\b(?!\s*s)/g);
+    if (pageMatches && pageMatches.length > 0) {
+      return pageMatches.length;
+    }
+  } catch (err) {
+    console.warn('[extractPdfPageCount] failed to parse pdf page count:', err);
+  }
+  return 0;
+}
+
+/**
  * เรียก PDF Renderer ตัวเดียวกับ export แล้วคืน blob + object URL
  *
  * ⚠️ ผู้เรียกต้องเรียก `URL.revokeObjectURL(res.url)` เมื่อเปลี่ยน/ปิด
@@ -806,14 +843,18 @@ export async function previewTemplateDescriptorPdf(
     }
 
     const blob = await res.blob();
-    const pageCountHeader = Number(res.headers.get('X-Pdf-Page-Count') ?? '0');
+    const rawHeader = res.headers.get('X-Pdf-Page-Count');
+    let pageCount = rawHeader ? Number(rawHeader) : 0;
+    if (!Number.isFinite(pageCount) || pageCount <= 0) {
+      pageCount = await extractPdfPageCount(blob);
+    }
     objectUrl = URL.createObjectURL(blob);
 
     return {
       ok: true,
       data: {
         blob,
-        pageCount: Number.isFinite(pageCountHeader) ? pageCountHeader : 0,
+        pageCount,
         url: objectUrl,
       },
     };

@@ -257,7 +257,7 @@ async function probePdf(bytes: Uint8Array): Promise<PdfProbe> {
 }
 
 /** ค่าคงที่ที่ mirror renderer (HEADER_RESERVE / FOOTER_RESERVE) */
-const HEADER_RESERVE = 80;
+const HEADER_RESERVE = 30;
 const FOOTER_RESERVE = 60;
 
 /** คำนวณ content box เดียวกับ renderer เพื่อใช้ตรวจใน test */

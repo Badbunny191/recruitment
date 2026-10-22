@@ -496,6 +496,7 @@ descriptorRouter.post(
           'Content-Disposition': 'inline; filename="descriptor-preview.pdf"',
           'Content-Length': String(rendered.bytes.byteLength),
           'X-Pdf-Page-Count': String(rendered.pageCount),
+          'Access-Control-Expose-Headers': 'X-Pdf-Page-Count, Content-Length, Content-Disposition',
           'Cache-Control': 'no-store',
         },
       });

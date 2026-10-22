@@ -244,10 +244,10 @@ export interface RenderPlan {
 /**
  * ความสูงที่กันไว้สำหรับ header ของเอกสาร (pt)
  *
- * ค่าเดิมของ renderer — คงไว้เพื่อให้ descriptor เก่า (ไม่มี pageSettings)
- * ได้ผลลัพธ์เดิมทุกประการ
+ * ปรับลดตาม Task 3 Option A (80 → 30 pt) เพื่อลดพื้นที่ว่างด้านบน
+ * แต่ยังคงระยะเว้นหัวกระดาษให้ Logo และ Heading ไม่ชิดขอบบนเกินไป
  */
-const HEADER_RESERVE = 80;
+const HEADER_RESERVE = 30;
 
 /** ความสูงที่กันไว้สำหรับ footer (pt) */
 const FOOTER_RESERVE = 60;
@@ -259,10 +259,13 @@ const FOOTER_RESERVE = 60;
 const MIN_CONTENT_HEIGHT = 120;
 
 /** ระยะเว้นระหว่าง block (pt) */
-const POST_BLOCK_SPACING = 8;
+const POST_BLOCK_SPACING = 5;
 
 /** อัตราส่วนความสูงบรรทัด */
 const LINE_HEIGHT = 1.4;
+
+/** อัตราส่วนความสูงบรรทัดสำหรับ Signature Block (กระชับขึ้น) */
+const SIGNATURE_LINE_HEIGHT = 1.3;
 
 /**
  * Page Box — กรอบพื้นที่เนื้อหาที่คำนวณจาก PageGeometry
@@ -1934,7 +1937,7 @@ function computeSignatureHeight(
   state: ExecState,
   cmd: SignatureRenderCommand
 ): number {
-  let height = FONT_SIZE_SIGNATURE_LABEL * LINE_HEIGHT;
+  let height = FONT_SIZE_SIGNATURE_LABEL * SIGNATURE_LINE_HEIGHT;
   const box = state.box;
 
   if (cmd.showName) {
@@ -1955,7 +1958,7 @@ function computeSignatureHeight(
       state.fonts.regular,
       FONT_SIZE_SIGNATURE_META
     );
-    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * LINE_HEIGHT);
+    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * SIGNATURE_LINE_HEIGHT);
   }
 
   if (cmd.showDate) {
@@ -1965,7 +1968,7 @@ function computeSignatureHeight(
       state.fonts.regular,
       FONT_SIZE_SIGNATURE_META
     );
-    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * LINE_HEIGHT);
+    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * SIGNATURE_LINE_HEIGHT);
   }
 
   if (cmd.showTime) {
@@ -1975,7 +1978,7 @@ function computeSignatureHeight(
       state.fonts.regular,
       FONT_SIZE_SIGNATURE_META
     );
-    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * LINE_HEIGHT);
+    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * SIGNATURE_LINE_HEIGHT);
   }
 
   height += POST_BLOCK_SPACING;
@@ -2111,7 +2114,7 @@ function drawSignatureLine1(
     });
   }
 
-  state.y -= fontSize * LINE_HEIGHT;
+  state.y -= fontSize * SIGNATURE_LINE_HEIGHT;
 }
 
 /**
@@ -2132,7 +2135,7 @@ function drawSignatureText(
   for (const line of lines) {
     const w = state.fonts.regular.widthOfTextAtSize(line, fontSize);
     // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
-    ensureLineSpace(state, fontSize * LINE_HEIGHT);
+    ensureLineSpace(state, fontSize * SIGNATURE_LINE_HEIGHT);
     state.page.drawText(line, {
       x: alignX(box, align, w),
       y: state.y - fontSize,
@@ -2140,7 +2143,7 @@ function drawSignatureText(
       size: fontSize,
       color,
     });
-    state.y -= fontSize * LINE_HEIGHT;
+    state.y -= fontSize * SIGNATURE_LINE_HEIGHT;
   }
 }
 

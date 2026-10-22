@@ -45,7 +45,15 @@ app.onError((err, c) => {
 });
 
 // เปิด CORS ให้ Frontend เรียกใช้งานได้
-app.use('*', cors());
+app.use(
+  '*',
+  cors({
+    origin: '*',
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    exposeHeaders: ['Content-Length', 'Content-Disposition', 'X-Pdf-Page-Count'],
+  })
+);
 
 // Routes
 app.route('/api/v1/public/uploads', uploadRoutes);

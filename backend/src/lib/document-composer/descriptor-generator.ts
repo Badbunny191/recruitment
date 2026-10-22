@@ -258,8 +258,8 @@ export function generateDescriptorFromTemplate(
     showLabel: true,
     labelStyle: "small",
     valueStyle: "medium",
-    marginTop: 4,
-    marginBottom: 4,
+    marginTop: 0,
+    marginBottom: 2,
   };
   blocks.push(applicationNoBlock);
   systemDataCount += 1;
@@ -273,7 +273,7 @@ export function generateDescriptorFromTemplate(
     labelStyle: "small",
     valueStyle: "medium",
     marginTop: 0,
-    marginBottom: 8,
+    marginBottom: 6,
   };
   blocks.push(applicationDateBlock);
   systemDataCount += 1;
@@ -331,8 +331,8 @@ export function generateDescriptorFromTemplate(
     id: makeBlockId("signature"),
     type: "signature",
     align: "right",
-    marginTop: 24,
-    marginBottom: 12,
+    marginTop: 14,
+    marginBottom: 8,
     lineLabel: "ลงลายมือชื่อ",
     roleLabel: "ผู้สมัคร",
     lineStyle: "........................................",

@@ -342,8 +342,8 @@ function ApplicationSelector({
   return (
     <div className="flex flex-col gap-2 pl-4 border-l-2 border-slate-200">
       {/* Round Selector */}
-      <div className="flex items-center gap-2">
-        <label className="text-xs text-slate-600 shrink-0">รอบรับสมัคร:</label>
+      <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2 w-full min-w-0">
+        <label className="text-xs text-slate-600 font-medium shrink-0">รอบรับสมัคร:</label>
         {roundsLoading ? (
           <span className="text-xs text-slate-400">กำลังโหลด...</span>
         ) : rounds.length === 0 ? (
@@ -353,15 +353,22 @@ function ApplicationSelector({
             value={selectedRound?.id ?? ''}
             onChange={(e) => onRoundChange(e.target.value)}
             disabled={disabled}
-            className="text-xs border border-slate-300 rounded px-2 py-1 max-w-[200px] disabled:opacity-50"
+            title={
+              selectedRound
+                ? `${selectedRound.title}${selectedRound.roundCode ? ` (${selectedRound.roundCode})` : ''}`
+                : 'เลือกรอบรับสมัคร'
+            }
+            className="text-xs border border-slate-300 rounded px-2.5 py-1.5 w-full flex-1 min-w-0 bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 shadow-sm disabled:opacity-50"
           >
-            <option value="">เลือกรอบ...</option>
-            {rounds.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.title}
-                {r.roundCode ? ` (${r.roundCode})` : ''}
-              </option>
-            ))}
+            <option value="">-- เลือกรอบรับสมัคร --</option>
+            {rounds.map((r) => {
+              const fullTitle = `${r.title}${r.roundCode ? ` (${r.roundCode})` : ''}`;
+              return (
+                <option key={r.id} value={r.id} title={fullTitle}>
+                  {fullTitle}
+                </option>
+              );
+            })}
           </select>
         )}
       </div>
@@ -443,7 +450,7 @@ function ApplicationPicker({
           onChange={(e) => onSearchChange(e.target.value)}
           placeholder="เลขที่ใบสมัคร ชื่อ หรืออีเมล"
           disabled={disabled}
-          className="text-xs border border-slate-300 rounded px-2 py-1 w-48 disabled:opacity-50"
+          className="text-xs border border-slate-300 rounded px-2.5 py-1.5 w-full flex-1 min-w-0 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 shadow-sm disabled:opacity-50"
         />
       </div>
 
