@@ -9,14 +9,17 @@
  *   1. Visual Composer — ไม่แตะ (handled in ComposerClient)
  *   2. ปุ่ม Preview → เปิด Fullscreen A4 Modal
  *   3. A4 aspect (210×297mm) + พื้นหลังเหมือนเอกสารจริง + ขอบกระดาษ
- *   4. Mode toggle: Form ↔ Document/PDF
+ *   4. 🔑 HTML Preview = **เอกสาร** เสมอ (ไม่ใช่ฟอร์ม)
+ *      - ไม่มีตัวสลับ Form ↔ Document ใน toolbar แล้ว
+ *      - ไม่มี input / textarea / select / checkbox / radio ใน preview
+ *      → เป้าหมาย: HTML Preview กับ PDF Preview มีหน้าตาใกล้เคียงกันที่สุด
  *   5. ไม่แสดง Automatic Header (โลโก้/ชื่อเอกสาร/วันที่สมัคร/ตำแหน่ง)
  *      → ทั้ง Compact และ Fullscreen แสดงเฉพาะ Blocks ใน Descriptor
  *   6. Token resolve ไม่ได้ → placeholder สีเทา (จัดการฝั่ง renderer)
  *   7. Table เป็น <table> จริง (rendered by server renderer)
  *   8. Right thumbnail = compact preview เดิม (ไม่เปลี่ยน PreviewPanel)
  *   9. Single source of truth: backend renderer ตัวเดียวกัน
- *       (consumer FE เปลี่ยนแค่ options = mode + includeHeader)
+ *       (consumer FE เปลี่ยนแค่ options = includeHeader)
  *  10. "ตรวจสอบข้อมูลเอกสาร" ซ่อนโดย default + ปุ่มเปิด
  *      - ปุ่มแสดงจำนวนที่ยังขาด: "ตรวจสอบข้อมูลเอกสาร: ยังขาด N"
  *      - สถานะ: "มีข้อมูลแล้ว" / "ยังไม่มีข้อมูล"
@@ -26,8 +29,8 @@
  *  12. Responsive: จอเล็ก → scroll ภายใน modal ไม่บีบ
  *
  * Data Flow:
- *   ComposerClient ส่ง `descriptor` + `currentPreview` (cached, mode=form, no header)
- *   → modal เรียก runPreview({ mode, includeHeader: true }) ทุกครั้งที่ mode เปลี่ยน
+ *   ComposerClient ส่ง `descriptor` + `currentPreview` (cached, no header)
+ *   → modal เรียก runPreview({ mode: 'document', includeHeader: true })
  *   → แต่ **ไม่ render** Automatic Header (ไม่ส่ง withHeader ให้ PreviewFrame)
  *   → ใช้ shared `PreviewFrame` (srcdoc) เพื่อ render HTML เดียวกัน
  */
@@ -45,6 +48,15 @@ import {
   PdfPreviewFrame,
   type PdfPreviewStatus,
 } from './PdfPreviewFrame';
+
+/**
+ * 🔑 โหมดของ HTML Preview — เป็นเอกสารเสมอ
+ *
+ * Preview render field เป็น "ป้ายกำกับ + ค่า" เหมือน PDF
+ * ไม่มีฟอร์ม (input / textarea / select / checkbox / radio) อยู่ใน preview
+ * → จึงไม่ต้องมีตัวสลับโหมด Form ↔ Document ใน toolbar อีกต่อไป
+ */
+const PREVIEW_MODE: PreviewMode = 'document';
 
 export interface PreviewModalProps {
   open: boolean;
@@ -77,9 +89,6 @@ export function PreviewModal({
   templateVersionId,
   descriptor,
 }: PreviewModalProps) {
-  // ── mode state (default = 'form' ตามที่ผู้ใช้คุ้นเคยจาก compact) ──
-  const [mode, setMode] = useState<PreviewMode>(currentPreview?.mode ?? 'form');
-
   // ── diagnostics ซ่อนโดย default (Req 10) ──
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
@@ -137,12 +146,10 @@ export function PreviewModal({
     }
 
     let cancelled = false;
-    // initial fetch (mode default = form, header = true)
-    const initialMode: PreviewMode = currentPreview?.mode ?? 'form';
-    setMode(initialMode);
+    // 🔑 Preview เป็นเอกสารเสมอ → ขอ mode: 'document' (ไม่มี form control)
     (async () => {
       const ok = await fetchPreviewRef.current(
-        { mode: initialMode, includeHeader: true },
+        { mode: PREVIEW_MODE, includeHeader: true },
         applicationId
       );
       if (cancelled) return;
@@ -157,33 +164,13 @@ export function PreviewModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, applicationId]);
 
-  // ── เมื่อ mode เปลี่ยน → refetch (option: header) ─────────────────
-  // ⚠️ ต้อง reset scroll ของ stage ก่อน/หลังเปลี่ยนโหมด
-  //    ไม่งั้น preview จะ "เปิดค้าง" ที่ตำแหน่งกลางเอกสาร
-  const handleModeChange = useCallback(
-    async (next: PreviewMode) => {
-      setMode(next);
-      resetStageScroll();
-      await fetchPreviewRef.current(
-        { mode: next, includeHeader: true },
-        applicationId
-      );
-      resetStageScroll();
-    },
-    [applicationId]
-  );
-
   // ── sync modalPreview กับ currentPreview ที่ hook refresh แล้ว ────
   useEffect(() => {
     if (!open) return;
-    if (
-      currentPreview &&
-      currentPreview.mode === mode &&
-      currentPreview.header.length > 0
-    ) {
+    if (currentPreview && currentPreview.header.length > 0) {
       setModalPreview(currentPreview);
     }
-  }, [currentPreview, mode, open]);
+  }, [currentPreview, open]);
 
   /**
    * ── Scroll reset เมื่อเนื้อหา preview เปลี่ยน ────────────────────────────
@@ -198,7 +185,7 @@ export function PreviewModal({
   useEffect(() => {
     if (!open) return;
     resetStageScroll();
-  }, [open, modalPreview?.body, mode, resetStageScroll]);
+  }, [open, modalPreview?.body, resetStageScroll]);
 
   // ── ESC key (Req 11) ────────────────────────────────────────────
   useEffect(() => {
@@ -266,8 +253,6 @@ const tokensByMode: PreviewTokenInfo[] = useMemo(
       >
         {/* ── Toolbar ───────────────────────────────────────────── */}
         <Toolbar
-          mode={mode}
-          onModeChange={handleModeChange}
           stageView={stageView}
           onStageViewChange={setStageView}
           showDiagnostics={showDiagnostics}
@@ -321,8 +306,6 @@ const tokensByMode: PreviewTokenInfo[] = useMemo(
 // =============================================================================
 
 interface ToolbarProps {
-  mode: PreviewMode;
-  onModeChange: (m: PreviewMode) => void | Promise<void>;
   /** โหมด stage: 'html' = continuous HTML | 'pdf' = PDF จริง */
   stageView: 'html' | 'pdf';
   onStageViewChange: (v: 'html' | 'pdf') => void;
@@ -337,8 +320,6 @@ interface ToolbarProps {
 }
 
 function Toolbar({
-  mode,
-  onModeChange,
   stageView,
   onStageViewChange,
   showDiagnostics,
@@ -390,23 +371,8 @@ function Toolbar({
           />
         </div>
 
-        {/* Mode toggle (HTML preview เท่านั้น — PDF ไม่มี Form mode) */}
-        <div className="inline-flex rounded-md border border-slate-300 bg-slate-50 p-0.5">
-          <ModeButton
-            label="Form"
-            icon="📝"
-            active={mode === 'form'}
-            disabled={loading || stageView === 'pdf'}
-            onClick={() => onModeChange('form')}
-          />
-          <ModeButton
-            label="Document / PDF"
-            icon="📄"
-            active={mode === 'document'}
-            disabled={loading || stageView === 'pdf'}
-            onClick={() => onModeChange('document')}
-          />
-        </div>
+        {/* 🔑 ไม่มี Form/Document toggle แล้ว — HTML Preview เป็นเอกสารเสมอ
+            (ไม่มี form control) ส่วนการแบ่งหน้าจริงดูจาก PDF จริง ด้านบน */}
 
         {/* Diagnostics toggle */}
         <button

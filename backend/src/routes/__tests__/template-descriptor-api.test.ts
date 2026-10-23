@@ -782,9 +782,10 @@ await test('generateDescriptorFromTemplate produces valid descriptor', async () 
     sqlite.close();
   });
 
-  // ── [3.1] Live Preview: field → real form control ─────────────────
-  // Requirement 6: render field เป็น form control จริง (ไม่ใช่ div ข้อความ)
-  await test('TEXT field renders as <input> control, not plain text div', async () => {
+  // ── [3.1] Preview = เอกสาร ไม่ใช่ฟอร์ม ────────────────────────────
+  // 🔑 ห้ามมี form control ใน preview (input/textarea/select/checkbox/radio)
+  //    เพื่อให้ HTML Preview กับ PDF Preview มีหน้าตาใกล้เคียงกันที่สุด
+  await test('TEXT field renders as document text, not <input> control', async () => {
     const { sqlite, db } = makeInMemorySchema();
     setTemplateDb(db);
     setPreviewDb(db);
@@ -797,19 +798,59 @@ await test('generateDescriptorFromTemplate produces valid descriptor', async () 
       { version: 1, blocks: [{ id: 'f-1', type: 'field', fieldId: 'fm-name' }] },
       ctx
     );
-    assertTrue(
+    assertFalse(
+      preview.body.includes('<input'),
+      'preview must NOT contain any <input> element'
+    );
+    assertFalse(
       preview.body.includes('class="dc-control"'),
-      'field block must emit a .dc-control element'
+      'preview must NOT emit a .dc-control element'
     );
     assertTrue(
-      preview.body.includes('type="text"'),
-      'TEXT field must render as text input'
+      preview.body.includes('dc-field__value'),
+      'field block must render value as document text'
     );
-    // label ยังต้องอยู่ (ใช้ <label> เพื่อ semantically ผูกกับ control)
+    assertTrue(
+      preview.body.includes('ตัวอย่าง'),
+      'resolved value must be shown as plain document text'
+    );
+    // label ยังต้องอยู่ (ป้ายกำกับเอกสาร ไม่ใช่ <label> ของฟอร์ม)
     assertTrue(
       preview.body.includes('ชื่อ-นามสกุล'),
       'field label must still be present'
     );
+    sqlite.close();
+  });
+
+  // 🔑 กัน regression: ทุก field type ต้องไม่หลุดเป็น form control
+  await test('no field type leaks a form control into preview', async () => {
+    const { sqlite, db } = makeInMemorySchema();
+    setTemplateDb(db);
+    setPreviewDb(db);
+    seedBasicData(db);
+    const ctx = await buildPreviewContext(db as any, 'tv-1');
+    assertTrue(ctx !== null);
+    if (!ctx) return;
+
+    // ทุก field ของ template version นี้ (TEXT / MASTER_DATA / ฯลฯ)
+    const preview = renderDescriptorToPreview(
+      {
+        version: 1,
+        blocks: ctx.fields.map((f, i) => ({
+          id: `f-${i}`,
+          type: 'field' as const,
+          fieldId: f.fieldId,
+        })),
+      },
+      ctx
+    );
+
+    for (const tag of ['<input', '<textarea', '<select', '<option', 'type="radio"', 'type="checkbox"']) {
+      assertFalse(
+        preview.body.includes(tag),
+        `preview must NOT contain ${tag}`
+      );
+    }
     sqlite.close();
   });
 
@@ -1011,7 +1052,8 @@ await test('generateDescriptorFromTemplate produces valid descriptor', async () 
     sqlite.close();
   });
 
-  await test('[UX] mode="form" renders field as control (regression)', async () => {
+  // 🔑 Preview เป็นเอกสารเสมอ → mode ที่ client ส่งมาไม่เปลี่ยนผลลัพธ์
+  await test('[UX] mode ใดก็ตาม → render เป็น document (ไม่มี form control)', async () => {
     const { sqlite, db } = makeInMemorySchema();
     setTemplateDb(db);
     setPreviewDb(db);
@@ -1025,18 +1067,28 @@ await test('generateDescriptorFromTemplate produces valid descriptor', async () 
       blocks: [{ id: 'f-1', type: 'field', fieldId: 'fm-name' } as const],
     };
 
-    const preview = renderDescriptorToPreview(descriptor as any, ctx, {
+    const fromDocument = renderDescriptorToPreview(descriptor as any, ctx, {
+      mode: 'document',
+    });
+    const fromLegacyForm = renderDescriptorToPreview(descriptor as any, ctx, {
       mode: 'form',
     });
-    assertEqual(preview.mode, 'form');
-    assertTrue(
-      preview.body.includes('class="dc-control"'),
-      'form mode must emit .dc-control'
+
+    // ทั้งสองทางต้องได้เอกสารชุดเดียวกัน (legacy 'form' ถูก normalize แล้ว)
+    assertEqual(fromLegacyForm.mode, 'document', 'mode ถูก normalize เป็น document');
+    assertEqual(
+      fromLegacyForm.body,
+      fromDocument.body,
+      'legacy mode="form" ต้องให้ผลลัพธ์เดียวกับ document'
+    );
+    assertFalse(
+      fromLegacyForm.body.includes('class="dc-control"'),
+      'ไม่มี mode ไหนที่ emit .dc-control'
     );
     sqlite.close();
   });
 
-  await test('[UX] document header includes logo placeholder + title + tokens', async () => {
+  await test('[UX] document header includes real logo + title + tokens', async () => {
     const { sqlite, db } = makeInMemorySchema();
     setTemplateDb(db);
     setPreviewDb(db);
@@ -1063,10 +1115,37 @@ await test('generateDescriptorFromTemplate produces valid descriptor', async () 
     // Header must exist as separate field
     assertTrue(preview.header.length > 0, 'header html must be present');
 
-    // Logo placeholder
+    // ── Logo ──────────────────────────────────────────────────────────────
+    // ⚠️ เปลี่ยนจาก "placeholder" → "โลโก้จริง" (ตามแผน Logo rendering path)
+    //
+    // เดิม: organizations ไม่มี column logo → header แสดง "ยังไม่มีโลโก้"
+    // แต่ PDF ใช้ SAO logo จริงจาก assets/sao-logo.data.ts อยู่แล้ว
+    //   → HTML Preview ต้องตรงกับ PDF (single source of truth)
+    //
+    // โลโก้ถูกส่งผ่าน CSS var (--dc-logo-src) ครั้งเดียวต่อ response
+    // ไม่ใช่ inline base64 ใน src="" (HTML attribute ไม่รองรับ var())
     assertTrue(
-      preview.header.includes('ยังไม่มีโลโก้'),
-      'header must show "ยังไม่มีโลโก้" placeholder when no logo'
+      preview.header.includes('dc-logo__image'),
+      'header must render the real logo element'
+    );
+    assertTrue(
+      !preview.header.includes('ยังไม่มีโลโก้'),
+      'header must NOT show "ยังไม่มีโลโก้" placeholder now that a real logo exists'
+    );
+    assertTrue(
+      preview.styles.includes('--dc-logo-src'),
+      'styles must expose the inline logo CSS variable'
+    );
+    // payload ต้องถูกส่งครั้งเดียว ไม่ขึ้นกับจำนวน logo block
+    assertEqual(
+      (preview.styles.match(/data:image\/png;base64,/g) ?? []).length,
+      1,
+      'logo payload must be embedded exactly once per response'
+    );
+    // payload ไม่ควรถูก copy ลง body
+    assertTrue(
+      !preview.body.includes('base64,'),
+      'body must reference the logo via CSS var, not inline base64'
     );
 
     // Title (ไม่มี token → ใช้ title text ดิบ)

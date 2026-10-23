@@ -288,8 +288,13 @@ export interface PreviewMeta {
 
 /**
  * โหมดของ Live Preview
- * - `form`     → body field เป็น form control จริง (input/textarea/select/…)
- * - `document` → body field เป็น label + value เหมือน PDF
+ *
+ * 🔑 **Preview = เอกสารเสมอ** (ไม่ใช่ฟอร์ม)
+ *    - ทุก field render เป็น "ป้ายกำกับ + ค่า" เหมือน PDF
+ *    - ไม่มี form control (input / textarea / select / checkbox / radio)
+ *
+ * ⚠️ ค่าทั้งสองยังมีอยู่เพื่อ backward compatibility กับ API เดิม
+ *    (`form` เป็น legacy — backend normalize เป็น `document` เสมอ)
  */
 export type PreviewMode = 'form' | 'document';
 

@@ -100,10 +100,14 @@ export interface RenderedBlockSummary {
 /**
  * โหมดของ Live Preview
  *
- * - `form`     → body field เรนเดอร์เป็น form control จริง (input/textarea/select/…)
- *                ตาม field type — ใช้ดู "form UX" ที่ผู้สมัครจะเจอ
- * - `document` → body field เรนเดอร์เป็นข้อความ read-only (label + value)
- *                ใกล้กับ PDF มากที่สุด — ใช้ดู "document layout" จริง
+ * 🔑 **Preview = เอกสารเสมอ** (ไม่ใช่ฟอร์ม)
+ *    - ทุก field render เป็น "ป้ายกำกับ + ค่า" เหมือน PDF
+ *    - ไม่มี form control (input / textarea / select / checkbox / radio)
+ *
+ * ⚠️ ค่าทั้งสองยังมีอยู่เพื่อ backward compatibility กับ client เดิม
+ *    (renderer จะ normalize เป็น `document` เสมอ)
+ *    - `document` → label + value เหมือน PDF (พฤติกรรมจริง)
+ *    - `form`     → legacy ค่า ไม่มีผลกับ output แล้ว
  */
 export type PreviewMode = "form" | "document";
 

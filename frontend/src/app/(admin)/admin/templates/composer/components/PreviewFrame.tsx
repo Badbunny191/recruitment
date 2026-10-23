@@ -49,13 +49,23 @@ const PREVIEW_PAGE_WIDTH_PT = 595.28;
  * แก้ backend แล้ว preview จะไม่เปลี่ยน
  */
 const PREVIEW_FRAME_CSS = `
+/*
+ * ⚠️ font-family ต้องเป็นชุดเดียวกับ PDF Renderer
+ *
+ * PDF ใช้ TH Sarabun (backend/src/lib/fonts/font-loader.ts)
+ * ถ้า iframe ใช้ system font อื่น (เช่น -apple-system)
+ * → ตัวอักษรไทยกว้าง/แคบต่างกัน → Preview กับ PDF ดูไม่เหมือนกัน
+ *
+ * เรียง fallback: Sarabun (ถ้ามี) → Tahoma → sans-serif
+ * (Tahoma เป็น fallback เดียวกับที่ backend .dc-preview ใช้)
+ */
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Sarabun", "Tahoma", sans-serif;
   padding: 0;
   margin: 0;
-  color: #1e293b;
+  color: #0d4572;
   background: white;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 /*
@@ -83,40 +93,23 @@ body {
 .dc-flow {
   display: flow-root;
 }
-.dc-heading { font-weight: 600; margin: 0; }
-.dc-heading.size-small { font-size: 14px; }
-.dc-heading.size-medium { font-size: 18px; }
-.dc-heading.size-large { font-size: 24px; }
-.dc-field-label { font-weight: 500; color: #475569; font-size: 12px; margin-bottom: 2px; }
-.dc-field-value { font-size: 14px; }
-.dc-field-block, .dc-table-block, .dc-logo-block, .dc-heading-block { margin-bottom: 3px; }
-.dc-table-block table { border-collapse: collapse; width: 100%; font-size: 12px; }
-.dc-table-block th, .dc-table-block td { border: 1px solid #cbd5e1; padding: 4px 8px; text-align: left; }
-.dc-table-block th { background: #f1f5f9; font-weight: 600; }
-.dc-logo { width: 100%; box-sizing: border-box; }
+/*
+ * ⚠️ ขนาด/สีของ block ทั้งหมด (heading, field, table, systemData, signature)
+ *    มาจาก backend (preview.styles) ตามค่าเดียวกับ PDF renderer
+ *    → ห้าม hardcode font-size / line-height ซ้ำที่นี่
+ *    (ถ้า hardcode จะ override CSS ของ backend แล้ว Preview เพี้ยนจาก PDF)
+ *
+ * ที่เหลือด้านล่างคือเพียง alignment ของระดับ container เท่านั้น
+ */
 .dc-logo.dc-align--left   { text-align: left; }
 .dc-logo.dc-align--center { text-align: center; }
 .dc-logo.dc-align--right  { text-align: right; }
-.dc-logo img { display: inline-block; width: 70px; height: auto; }
-.dc-logo-block { display: flex; }
 .dc-heading.dc-align--left   { text-align: left;   margin-right: auto; }
 .dc-heading.dc-align--center { text-align: center; margin-left: auto; margin-right: auto; }
 .dc-heading.dc-align--right  { text-align: right;  margin-left: auto; }
 .dc-field.dc-align--left   { text-align: left; }
 .dc-field.dc-align--center { text-align: center; }
 .dc-field.dc-align--right  { text-align: right; }
-.dc-field.dc-align--center .dc-control,
-.dc-field.dc-align--center .dc-control-group,
-.dc-field.dc-align--right  .dc-control,
-.dc-field.dc-align--right  .dc-control-group { margin-left: 0; }
-.dc-control,
-.dc-control--inline {
-  font-family: inherit;
-}
-.dc-control--inline {
-  display: inline-flex;
-  width: auto;
-}
 .dc-table-wrap.dc-align--left   { text-align: left; }
 .dc-table-wrap.dc-align--center { text-align: center; }
 .dc-table-wrap.dc-align--right  { text-align: right; }

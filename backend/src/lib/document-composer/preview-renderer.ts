@@ -6,6 +6,10 @@
  *
  * Design Goals:
  *   - ใช้ DocumentDescriptor ตัวเดียวกับ PDF Renderer (single source of truth)
+ *   - 🔑 **Preview = เอกสาร ไม่ใช่ฟอร์ม**
+ *     ทุก field render เป็น "ป้ายกำกับ + ค่า" เหมือน PDF ทุกประการ
+ *     → ห้าม emit form control (input / textarea / select / checkbox / radio)
+ *     → field ที่ว่างแสดง placeholder สีเทา (parity กับ PDF)
  *   - ใช้ Layout Rules เดิม (align, size, bold, marginTop, marginBottom)
  *   - เป็น Pure Function — ไม่มี side effect, ไม่อ่าน DB, ไม่เรียก API
  *   - ไม่แตะ PDF Renderer (descriptor-renderer.ts)
@@ -25,6 +29,7 @@
  */
 
 import type { ApplicationContext, FieldData } from "../pdf-types";
+import { SAO_LOGO_BASE64 } from "../assets/sao-logo.data";
 import type {
   DocumentDescriptor,
   DocumentBlock,
@@ -85,15 +90,14 @@ import { resolvePageGeometry } from "./page-settings";
  * ต้องตรงกับ SYSTEMDATA_SIZE_TO_FONT_SIZE ใน descriptor-renderer.ts เสมอ
  * (PDF ↔ Preview parity)
  *
- * Typography Phase 2: ขยับขึ้นจาก 11/13/16 → 13/15/18
- *   - small  (label) = 13pt → เท่ากับ Field label
- *   - medium (value) = 15pt → ใหญ่กว่า Field value (เลขทะเบียน/วันที่ เด่นขึ้น)
- *   - large  = 18pt → สูงกว่า value แต่ยังต่ำกว่าชื่อเอกสาร 22pt
+ *   - small  (label) = 12pt
+ *   - medium (value) = 14pt
+ *   - large  = 18pt (สูงกว่า value แต่ยังต่ำกว่าชื่อเอกสาร 22pt)
  */
 const SYSTEMDATA_SIZE_TO_PT: Record<Size, number> = {
   large: 18,
-  medium: 15,
-  small: 13,
+  medium: 14,
+  small: 12,
 };
 
 /**
@@ -115,16 +119,40 @@ const HEADING_SIZE_TO_PT: Record<Size, number> = {
 };
 
 /**
- * ── Field typography (Typography Phase 2) ───────────────────────────────
+ * ── Field typography ─────────────────────────────────────────────
  *
- * ต้องตรงกับ FONT_SIZE_FIELD_LABEL / FONT_SIZE_FIELD_VALUE
+ * ต้องตรงกับ FIELD_LABEL_SIZE_TO_FONT_SIZE / FIELD_VALUE_SIZE_TO_FONT_SIZE
  * ใน descriptor-renderer.ts เสมอ (PDF ↔ Preview parity)
  *
- *   - Field label = 13pt
- *   - Field value = 14pt (ใหญ่กว่า label → ข้อมูลเด่นกว่าป้ายกำกับ)
+ *   - small  = label 12pt / value 11pt
+ *   - medium = label 14pt / value 13pt  ← ค่า default (block ที่ไม่ระบุ style)
+ *   - large  = label 18pt / value 16pt
  */
-const FIELD_LABEL_PT = 13;
-const FIELD_VALUE_PT = 14;
+const FIELD_LABEL_SIZE_TO_PT: Record<Size, number> = {
+  small: 12,
+  medium: 14,
+  large: 18,
+};
+
+const FIELD_VALUE_SIZE_TO_PT: Record<Size, number> = {
+  small: 11,
+  medium: 13,
+  large: 16,
+};
+
+/**
+ * ── Signature font size mapping ────────────────────────────────────
+ *
+ * ต้องตรงกับ SIGNATURE_SIZE_TO_FONT_SIZE ใน descriptor-renderer.ts เสมอ
+ *   - small  = 14pt
+ *   - medium = 16pt (ค่าเริ่มต้น)
+ *   - large  = 20pt
+ */
+const SIGNATURE_SIZE_TO_PT: Record<Size, number> = {
+  small: 14,
+  medium: 16,
+  large: 20,
+};
 
 const SIZE_TO_CLASS: Record<Size, string> = {
   large: "dc-heading--large",
@@ -285,22 +313,21 @@ const PREVIEW_STYLES = `
 .dc-field--inline.dc-align--right .dc-field__body {
   justify-content: flex-end;
 }
-.dc-field--inline .dc-field__value,
-.dc-field--inline .dc-control {
+.dc-field--inline .dc-field__value {
   margin-top: 0;
   padding-left: 0;
 }
 .dc-field__label {
-  font-size: 13pt;
+  font-size: 12pt;
   color: #666666;
   font-weight: 700;
   margin: 0 0 0 0;
-  /* line-height คงที่ (13.75pt) → ตัวอักษรใหญ่ขึ้นแต่พื้นที่แนวตั้งเท่าเดิม
+  /* line-height คงที่ (13.75pt) → ตัวอักษรเล็กลงแต่พื้นที่แนวตั้งเท่าเดิม
      → parity กับ PDF renderer (FIELD_LABEL_LINE_ADVANCE) */
   line-height: 13.75pt;
 }
 .dc-field__value {
-  font-size: 14pt;
+  font-size: 13pt;
   color: #000000;
   margin: 2px 0 0 12px;
   /* line-height คงที่ (15pt) → parity กับ PDF renderer (FIELD_VALUE_LINE_ADVANCE) */
@@ -310,83 +337,13 @@ const PREVIEW_STYLES = `
   overflow-wrap: break-word;
 }
 .dc-field--empty .dc-field__value {
-  color: #999999;
-}
-
-/* ── Form control (Live Preview — render field เป็น control จริง) ─────────
-   Preview แสดง document layout + form UX พร้อมกัน
-   → field ต้องเป็น control จริงตาม field type (input/textarea/select/…)
-   → ใช้ :read-only + pointer-events:none เพื่อกันไม่ให้ user แก้ค่า
-      (preview เป็น read-only view เสมอ)
-   ────────────────────────────────────────────────────────────────────── */
-.dc-control {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  font-family: inherit;
-  font-size: 14pt;
-  color: #000000;
-  background: #fbfdff;
-  border: 1px solid #c9d4de;
-  border-radius: 3px;
-  padding: 3px 6px;
-  margin: 2px 0 0 12px;
-  line-height: 15pt;
-  pointer-events: none;
-  -webkit-user-select: text;
-  user-select: text;
-}
-.dc-control:focus {
-  outline: none;
-}
-.dc-control[readonly] {
-  background: #fbfdff;
-}
-textarea.dc-control {
-  resize: none;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-}
-select.dc-control {
-  appearance: none;
-  -webkit-appearance: none;
-}
-
-/* checkbox / radio — inline ไม่ใช่ full width */
-.dc-control--inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  width: auto;
-  margin: 4px 0 0 12px;
-  padding: 2px 0;
-  border: 0;
-  background: transparent;
-  font-size: 12pt;
-}
-.dc-control--inline input {
-  pointer-events: none;
-  margin: 0;
-}
-
-/* file — แสดงเป็นกล่อง placeholder แบบ read-only */
-.dc-control--file {
-  background: #f6f8fa;
-  border-style: dashed;
-  color: #55636f;
-  font-size: 12pt;
+  color: #999aa6;
+  font-weight: 400;
 }
 
 /* required marker */
 .dc-field__required {
   color: #c0392b;
-}
-
-/* disabled/unavailable state — field ที่ไม่มีข้อมูล */
-.dc-control:disabled,
-.dc-control--empty {
-  color: #999999;
-  background: #f7f8f9;
 }
 
 /* ── Table ─────────────────────────────────────────────────── */
@@ -433,6 +390,51 @@ select.dc-control {
   display: block;
   width: 70px;
   height: auto;
+}
+/*
+ * โลโก้ฝังของระบบ (SAO logo) — ไม่ใช้ img tag กับ src
+ *
+ * ⚠️ ทำไมไม่ inline base64 ใน src ของ img
+ *   1) payload 238KB จะถูก copy ซ้ำในทุก logo block ที่ Admin ใส่
+ *   2) HTML attribute ไม่รองรับ var() → ย้ายไปฝังใน CSS ที่รันครั้งเดียว
+ *
+ * ⚠️⚠️ ทำไมใช้ background-image แทน content property
+ *   content url() บน span ว่าง **ไม่สร้าง intrinsic size**
+ *   → เมื่อ inline style เป็น height:auto (ค่า default ของ block)
+ *      กล่องจะยุบสูง 0 และโลโก้**ไม่เห็นเลย** (พบจากการ screenshot
+ *      ตรวจด้วย Chromium จริง — ไม่ใช่แค่เดาจากโค้ด)
+ *
+ *   background-image + background-size:contain รักษาพื้นที่ให้เสมอ
+ *   และยังคง width/height จาก block ได้เหมือนเดิม
+ */
+.dc-logo__image {
+  display: block;
+  background-image: var(--dc-logo-src);
+  background-repeat: no-repeat;
+  background-position: left center;
+  background-size: contain;
+}
+/*
+ * align ของโลโก้ — mirror descriptor-renderer.ts (alignX)
+ *
+ * ⚠️ text-align มีผลกับ inline-level content เท่านั้น
+ *    ส่วนโลโก้เป็น display:block (ข้อบังคับเพื่อไม่ให้กล่องยุบ เพราะ span ว่าง
+ *    + background-image ไม่มี intrinsic size)
+ *    → .dc-align--center / .dc-align--right ไม่มีผลกับโลโก้เลย
+ *    → ต้องใช้ auto margin จัดตำแหน่งแทน (ชิดซ้าย/กึ่งกลาง/ชิดขวาของ content box)
+ *
+ *   คง display:block ไว้ เพราะเปลี่ยนเป็น inline-block แล้วโลโก้จะเกาะ baseline
+ *   → เกิดช่องว่างด้านล่าง (~4px) แล้ว preview จะเลื่อนกว่า PDF อีก
+ */
+.dc-logo.dc-align--center > .dc-logo__image,
+.dc-logo.dc-align--center > img {
+  margin-left: auto;
+  margin-right: auto;
+}
+.dc-logo.dc-align--right > .dc-logo__image,
+.dc-logo.dc-align--right > img {
+  margin-left: auto;
+  margin-right: 0;
 }
 /* ไม่มีโลโก้ → ข้อความสีเทา (ห้ามแสดงกรอบรูปว่าง — Requirement D) */
 .dc-logo__placeholder {
@@ -508,11 +510,6 @@ select.dc-control {
   background: #f8fafc;
 }
 
-/* ── Radio group wrapper ──────────────────────────────────── */
-.dc-control-group {
-  margin: 4px 0 0 12px;
-}
-
 /* ── Document info strip (Live Preview debug) ────────────────
    แสดงค่าจริงของ token (เลขที่ใบสมัคร/ตำแหน่ง) ที่ resolve ได้
    เพื่อให้ผู้ใช้ตรวจสอบได้ว่าข้อมูลมาจากแหล่งไหน
@@ -575,6 +572,15 @@ select.dc-control {
   max-width: 120px;
   height: auto;
 }
+/* โลโก้ฝังของระบบใน document header — ใช้ class เดียวกับ body
+   ⚠️ ต้องกำหนด width/height ชัดเจน เพราะ span ว่างไม่มี intrinsic size
+      (max-* อย่างเดียว + auto = กล่องยุบเป็น 0 → โลโก้ไม่เห็น)
+      ขนาดตรงนี้ตั้งใจให้เท่ากรอบ placeholder เดิม (120x56) */
+.dc-doc-header__logo .dc-logo__image {
+  width: 120px;
+  height: 56px;
+  background-position: left center;
+}
 .dc-doc-header__logo-placeholder {
   display: inline-flex;
   align-items: center;
@@ -629,6 +635,32 @@ select.dc-control {
 }
 `;
 
+/**
+ * ประกอบ CSS ที่ส่งให้ consumer (รวมตัวโลโก้ฝัง)
+ *
+ * ⚠️ ส่งโลโก้ผ่านทางนี้ ไม่ใช่ inline ใน `src=""` ของ <img> เพราะ:
+ *   - HTML attribute ไม่รองรับ var()
+ *   - ถ้า inline base64 ลงทุก <img> จะ copy payload 238KB ซ้ำตามจำนวน block
+ *
+ * payload จึงปรากฏ "ครั้งเดียวต่อ response" เสมอ ไม่ว่า descriptor จะมี
+ * logo block กี่อัน (หรือแม้แต่ไม่มี — ถ้าไม่มีก็ไม่ต้องแนบไปเลย)
+ *
+ * ⚠️ memoized: string 238KB ถูกสร้างครั้งเดียวต่อ isolate แล้วนำมา reuse
+ *    ทุก request → ไม่มีการ copy ซ้ำแม้แต่ครั้งเดียวต่อ render
+ */
+let builtStylesCache: string | null = null;
+
+function buildStyles(): string {
+  if (builtStylesCache !== null) return builtStylesCache;
+
+  const logoUri = resolveInlineLogoDataUri();
+  builtStylesCache = logoUri
+    ? `${PREVIEW_STYLES}\n:root { ${INLINE_LOGO_VAR}: url("${logoUri}"); }`
+    : PREVIEW_STYLES;
+
+  return builtStylesCache;
+}
+
 // =============================================================================
 // Public API
 // =============================================================================
@@ -636,14 +668,18 @@ select.dc-control {
 /**
  * Pure renderer: DocumentDescriptor + ApplicationContext → HTML Preview
  *
+ * 🔑 Preview เป็น **เอกสาร** ไม่ใช่ฟอร์ม
+ *    ทุก field render เป็น "ป้ายกำกับ + ค่า" เหมือน PDF เสมอ
+ *    → ไม่มี form control (input / textarea / select / checkbox / radio)
+ *
  * @param descriptor - DocumentDescriptor (validated input)
  * @param ctx - ApplicationContext (data ที่ใช้ resolve field values)
  * @param options - render options
- * @param options.mode - โหมดการ render body fields:
- *                       - `form`     → body field เป็น form control จริง (default)
- *                       - `document` → body field เป็น label + value (เหมือน PDF)
- *                       UI consumer (PreviewModal) toggle ระหว่างสองโหมดได้
- *                       โดยเรียก renderer คนละ mode — token logic ชุดเดียวกัน
+ * @param options.mode - โหมดการ render (คงไว้เพื่อ backward compatibility
+ *                       กับ client เดิมที่ยังส่งค่ามา)
+ *
+ *                       ⚠️ ทุกโหมดให้ผลลัพธ์**เหมือนกัน** (document เท่านั้น)
+ *                          ไม่มี form control ในทุกกรณี
  * @param options.title - ชื่อเอกสารที่จะแสดงใน document header
  *                       (default: ใช้ descriptor.blocks ตัวแรกที่เป็น heading large
  *                        ถ้าไม่เจอ → "Document")
@@ -671,7 +707,10 @@ export function renderDescriptorToPreview(
   ctx: ApplicationContext,
   options: RenderPreviewOptions = {}
 ): PreviewModel {
-  const mode: PreviewMode = options.mode ?? "form";
+  // ⚠️ โหมดถูก normalize เป็น "document" เสมอ
+  //   (Preview = เอกสาร → ไม่มี form control ไม่ว่า client จะส่งโหมดอะไรมา)
+  const mode: PreviewMode = "document";
+  void options.mode;
   const includeHeader = options.includeHeader ?? true;
   // ── 1) Build field lookup index ────────────────────────────────
   // (pattern reuse จาก descriptor-renderer.ts:buildRenderPlan)
@@ -759,7 +798,7 @@ export function renderDescriptorToPreview(
   //  descriptor เก่าที่ไม่มี pageSettings → fallback 40pt ทุกด้าน
   const page = resolvePageGeometry(descriptor.pageSettings);
 
-  return { html, body, header, styles: PREVIEW_STYLES, meta, mode, tokens: tokensInfo, page };
+  return { html, body, header, styles: buildStyles(), meta, mode, tokens: tokensInfo, page };
 }
 
 /**
@@ -1034,15 +1073,15 @@ function renderTokensWithPlaceholders(
 /**
  * Render FieldBlock → HTML
  *
- * mirror descriptor-renderer.ts:drawField ในส่วนข้อมูล (label + value)
- * แต่ [Live Preview] เปลี่ยน value ให้เป็น form control จริงตาม field.type
+ * mirror descriptor-renderer.ts:drawField (label + value) — **ไม่มี form control**
  *
- * เหตุผล: preview ต้องสะท้อนทั้ง document layout (หัว/ท้าย/จัดหน้า)
- * และ form UX (ผู้สมัครเจอช่องกรอกแบบไหน) → ต้องเป็น control จริง
+ * 🔑 Preview = เอกสาร (ไม่ใช่ฟอร์ม)
+ *   - field ทุกชนิด render เป็น "ป้ายกำกับ + ค่า" เหมือน PDF ทุกประการ
+ *   - ห้าม emit <input> / <textarea> / <select> / checkbox / radio
+ *     (preview เป็น read-only view เสมอ — ไม่มีช่องให้กรอก)
  *
  * Safety:
- *   - ทุกค่าถูก escape ก่อนใส่ attribute (XSS)
- *   - control ทั้งหมดเป็น read-only ใช้ pointer-events:none
+ *   - ทุกค่าถูก escape ก่อนใส่ HTML (XSS)
  *   - ไม่ inject event handler / script ใด ๆ
  */
 function renderFieldBlock(
@@ -1051,6 +1090,9 @@ function renderFieldBlock(
   ctx: ApplicationContext,
   mode: PreviewMode
 ): string {
+  // `mode` เก็บไว้เพื่อ symmetry กับ renderBlock / renderTableBlock
+  // และให้ signature ของ renderer ทั้งชุดตรงกัน (ไม่มีผลกับ output แล้ว)
+  void mode;
   const rawValue = resolveAnswerValue(field, ctx);
   const label = block.label ?? field.label;
   // ── Requirement E: required marker เป็น optional toggle ────────────
@@ -1070,16 +1112,13 @@ function renderFieldBlock(
   if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
   const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
 
-  const labelPt = SYSTEMDATA_SIZE_TO_PT[block.labelStyle ?? "small"];
-  const valuePt = SYSTEMDATA_SIZE_TO_PT[block.valueStyle ?? "medium"];
+  const labelPt = FIELD_LABEL_SIZE_TO_PT[block.labelStyle ?? "small"];
+  const valuePt = FIELD_VALUE_SIZE_TO_PT[block.valueStyle ?? "medium"];
 
-  // ── mode = "form"     → render เป็น form control จริง (input/textarea/…)
-  //    mode = "document" → render เป็น label + value (เหมือน PDF)
-  // ใช้ renderer function เดียวกัน (no token logic duplicated)
-  const controlHtml =
-    mode === "form"
-      ? renderFormControl(field, rawValue)
-      : renderDocumentValue(field, rawValue, valuePt);
+  // ── Preview = เอกสารเสมอ (ไม่มี form control) ──────────────────────
+  //   value render เป็นข้อความ label + value ชุดเดียวกับ PDF renderer
+  //   → ไม่มี <input> / <textarea> / <select> / checkbox / radio ใน output
+  const valueHtml = renderDocumentValue(field, rawValue, valuePt);
 
   const emptyClass = !isNonEmptyValue(rawValue) ? " dc-field--empty" : "";
 
@@ -1087,11 +1126,11 @@ function renderFieldBlock(
   //  - ซ่อน label แล้ว → ไม่ emit <label> เลย (read-only mode ไม่ต้องมี label tag)
   const showLabel = block.showLabel ?? true;
   const labelHtml = showLabel
-    ? `<label class="dc-field__label" style="font-size: ${labelPt}pt">${escapeHtml(label)}<span class="dc-field__required">${requiredMarker}</span></label>`
+    ? `<span class="dc-field__label" style="font-size: ${labelPt}pt">${escapeHtml(label)}<span class="dc-field__required">${requiredMarker}</span></span>`
     : "";
 
-  // layout inline → ห่อ label + control ไว้ใน wrapper เดียวกัน
-  const bodyInner = `${labelHtml}\n    ${controlHtml}`;
+  // layout inline → ห่อ label + value ไว้ใน wrapper เดียวกัน
+  const bodyInner = `${labelHtml}\n    ${valueHtml}`;
   const bodyHtml =
     layout === "inline" ? `<div class="dc-field__body">${bodyInner}</div>` : bodyInner;
 
@@ -1101,177 +1140,29 @@ function renderFieldBlock(
 }
 
 /**
- * Render field value เป็นข้อความ read-only (Document/PDF Preview mode)
+ * Render field value เป็นข้อความ read-only (เหมือน PDF ทุกประการ)
  *
- * - ใกล้เคียง PDF: บรรทัด label แล้วตามด้วย value
- * - ค่าว่าง → "(ว่าง)" placeholder สีเทา
- * - MASTER_DATA / array → format เดียวกับ display
- * - ไม่ใช้ control HTML ใด ๆ
+ * 🔑 Preview เป็น "เอกสาร" ไม่ใช่ "ฟอร์ม"
+ *   - ห้าม emit form control ใด ๆ (input/textarea/select/checkbox/radio)
+ *   - ค่าว่าง → placeholder สีเทา (parity กับ PDF COLOR_PLACEHOLDER)
+ *   - MASTER_DATA / array → format เดียวกับ PDF renderer
+ *
+ * หมายเหตุ: โครงสร้างนี้ตรงกับ `descriptor-renderer.ts:drawField`
+ *   ซึ่งใช้ `formatAnswerValueForDisplay()` ชุดเดียวกัน
  */
-function renderDocumentValue(field: FieldData, rawValue: unknown, valuePt?: number): string {
+function renderDocumentValue(
+  field: FieldData,
+  rawValue: unknown,
+  valuePt?: number
+): string {
   const fontStyle = valuePt ? ` style="font-size: ${valuePt}pt"` : "";
   if (!isNonEmptyValue(rawValue)) {
     return `<div class="dc-field__value dc-field__value--empty"${fontStyle}>(ว่าง)</div>`;
   }
+  // CHECKBOX / RADIO → แสดงค่าเป็นข้อความ (ไม่ใช่กล่องติ๊ก)
+  //   boolean → "ใช่"/"ไม่ใช่" ผ่าน formatAnswerValueForDisplay เดียวกับ PDF
   const display = formatAnswerValueForDisplay(rawValue);
   return `<div class="dc-field__value"${fontStyle}>${escapeHtml(display)}</div>`;
-}
-
-/**
- * Render form control ตาม field.type
- *
- * Mapping (mirror TemplatePreviewModal.tsx + apply/page.tsx):
- *   TEXT            → <input type="text">
- *   NUMBER          → <input type="number">
- *   DATE            → <input type="text"> (เก็บเป็น พ.ศ. ตาม sample data)
- *   TEXTAREA        → <textarea rows=N>
- *   DROPDOWN        → <select> + <option>
- *   RADIO           → radio group (label เป็น helpText/placeholder/label)
- *   CHECKBOX        → single checkbox (label เป็น helpText/placeholder/label)
- *   FILE            → read-only file placeholder box
- *   MASTER_DATA     → <select> แบบ searchable (options จาก field options)
- *
- * @param field - FieldData (มี type/options/overrideOptions/rows/helpText)
- * @param rawValue - ค่าจริงจาก formData (อาจเป็น string/number/bool/array/object/null)
- * @returns HTML string ของ control
- */
-function renderFormControl(field: FieldData, rawValue: unknown): string {
-  const hasValue = isNonEmptyValue(rawValue);
-
-  switch (field.type) {
-    case "NUMBER": {
-      const v = hasValue ? escapeHtml(String(rawValue)) : "";
-      return `<input class="dc-control" type="number" value="${v}" readonly />`;
-    }
-
-    case "TEXTAREA": {
-      const rows = clampRows(field.rows);
-      const v = hasValue ? escapeHtml(formatAnswerValueForDisplay(rawValue)) : "";
-      return `<textarea class="dc-control" rows="${rows}" readonly>${v}</textarea>`;
-    }
-
-    case "DROPDOWN":
-    case "MASTER_DATA": {
-      const options = effectiveOptions(field);
-      const current = hasValue
-        ? escapeHtml(formatAnswerValueForDisplay(rawValue))
-        : "";
-      const placeholder = field.placeholder ?? "— เลือก —";
-
-      const optionsHtml = options
-        .map((o) => {
-          const safeOpt = escapeHtml(o);
-          // select ที่มีค่าเดียว → mark selected ให้เห็นค่าจริง
-          const isSelected =
-            current.length > 0 &&
-            safeOpt.toLowerCase() === current.toLowerCase();
-          return `<option value="${safeOpt}"${isSelected ? " selected" : ""}>${safeOpt}</option>`;
-        })
-        .join("");
-
-      // ถ้าไม่มี options → ยังแสดงค่าที่ resolve ได้เป็น option เดียว
-      const fallbackOption =
-        optionsHtml.length === 0 && current.length > 0
-          ? `<option value="${current}" selected>${current}</option>`
-          : "";
-
-      const head =
-        current.length > 0 && !hasSelectedOption(options, current)
-          ? `<option value="${current}" selected>${current}</option>`
-          : `<option value="">${escapeHtml(placeholder)}</option>`;
-
-      return `<select class="dc-control" disabled>${head}${optionsHtml}${fallbackOption}</select>`;
-    }
-
-    case "RADIO": {
-      const options = effectiveOptions(field);
-      if (options.length === 0) {
-        return renderEmptyControl(field, "ไม่มีตัวเลือก");
-      }
-      const current = hasValue ? String(rawValue).trim() : "";
-      const items = options
-        .map((o) => {
-          const safeOpt = escapeHtml(o);
-          const checked =
-            current.length > 0 &&
-            safeOpt.toLowerCase() === current.toLowerCase();
-          return `<label class="dc-control--inline"><input type="radio" disabled${checked ? " checked" : ""} /><span>${safeOpt}</span></label>`;
-        })
-        .join("");
-      return `<div class="dc-control-group">${items}</div>`;
-    }
-
-    case "CHECKBOX": {
-      const checked = rawValue === true || rawValue === "true";
-      const caption = field.helpText ?? field.placeholder ?? field.label;
-      return `<label class="dc-control--inline"><input type="checkbox" disabled${checked ? " checked" : ""} /><span>${escapeHtml(caption)}</span></label>`;
-    }
-
-    case "FILE": {
-      const v = hasValue ? escapeHtml(formatAnswerValueForDisplay(rawValue)) : "— ยังไม่มีไฟล์ —";
-      return `<div class="dc-control dc-control--file">📎 ${v}</div>`;
-    }
-
-    case "DATE": {
-      // sample data เก็บเป็น "2566-01-15" (พ.ศ. text) → ไม่ใช่ ISO
-      // จึงใช้ type="text" แทน type="date" เพื่อไม่ให้ browser ตีความผิด
-      const v = hasValue ? escapeHtml(formatAnswerValueForDisplay(rawValue)) : "";
-      return `<input class="dc-control" type="text" value="${v}" readonly placeholder="ว/ด/ป พ.ศ." />`;
-    }
-
-    case "TEXT":
-    default: {
-      const v = hasValue ? escapeHtml(formatAnswerValueForDisplay(rawValue)) : "";
-      const placeholder = field.placeholder
-        ? escapeHtml(field.placeholder)
-        : "";
-      return `<input class="dc-control" type="text" value="${v}" readonly placeholder="${placeholder}" />`;
-    }
-  }
-}
-
-/**
- * Placeholder เมื่อ field ไม่มี control ที่เหมาะสม (เช่น RADIO ที่ไม่มี options)
- */
-function renderEmptyControl(field: FieldData, message: string): string {
-  const placeholder = field.placeholder
-    ? escapeHtml(field.placeholder)
-    : escapeHtml(message);
-  return `<input class="dc-control dc-control--empty" type="text" value="" readonly placeholder="${placeholder}" />`;
-}
-
-/**
- * ตัวเลือกที่ใช้ได้จริง — overrideOptions มีค่าใช้ override เสมอ (mirror TemplateBuilder)
- */
-function effectiveOptions(field: FieldData): string[] {
-  if (field.overrideOptions && field.overrideOptions.length > 0) {
-    return field.overrideOptions;
-  }
-  return field.options ?? [];
-}
-
-/**
- * ตรวจว่า options มีค่าที่ตรงกับ current อยู่แล้วหรือไม่
- * (กัน render selected ซ้ำสอง option)
- */
-function hasSelectedOption(
-  options: string[],
-  current: string
-): boolean {
-  const target = current.toLowerCase();
-  return options.some((o) => o.toLowerCase() === target);
-}
-
-/**
- * Clamp rows ของ textarea ให้อยู่ในช่วงที่อ่านสบาย
- * (field.rows มาจาก template_fields.rows — อาจเป็น null/0/ใหญ่เกิน)
- */
-function clampRows(rows: number | null): number {
-  if (rows === null || !Number.isFinite(rows)) return 3;
-  const n = Math.floor(rows);
-  if (n < 1) return 1;
-  if (n > 12) return 12;
-  return n;
 }
 
 /**
@@ -1387,21 +1278,28 @@ const DEFAULT_LOGO_WIDTH = 70;
  * ── Requirement D ────────────────────────────────────────────────────────
  *   source:
  *     - "none"         → ไม่แสดงอะไรเลย (ว่าง)
- *     - "organization" → โลโก้หน่วยงาน
+ *     - "organization" → โลโก้หน่วยงาน (SAO logo — ใช้ asset ชุดเดียวกับ PDF)
  *     - "upload"       → รูปที่อัปโหลดเอง (ยังไม่มี asset storage)
  *
- *   ถ้าไม่มีโลโก้หรือโหลดไม่ได้ → แสดง "ยังไม่มีโลโก้"
+ *   ถ้าไม่มีโลโก้ → แสดง "ยังไม่มีโลโก้"
  *   ห้ามแสดงกรอบรูปว่าง / <img src=""> (เคยเป็นบั๊ก — src="" โหลด page เดิม)
  *
- *   ── ข้อจำกัดที่ตรวจพบจริง (รายงานตาม Requirement D) ──────────────────
- *   ตาราง `organizations` ไม่มี column logo
- *   และไม่มี admin asset storage (R2 route ที่มีรับเฉพาะ PDF เอกสารสมัคร)
- *   → renderer นี้รับ imageUrl จาก ctx.logoUrl (ถ้ามีในอนาคต)
- *   → ถ้าไม่มี URL → แสดงข้อความ "ยังไม่มีโลโก้" เสมอ ไม่ทำให้ Preview ล้ม
+ *   ── ทำไมใช้ data URI แทน http URL (สำคัญต่อ performance) ────────────────
+ *   ตาราง `organizations` ไม่มี column logo และไม่มี admin asset storage
+ *   → ระบบไม่มี URL สาธารณะที่ browser โหลดโลโก้ได้โดยตรง
+ *
+ *   แต่ PDF มี asset จริงอยู่แล้ว (`assets/logo-loader.ts`)
+ *   และ `sanitizeImageUrl()` ปฏิเสธ data URI ที่ยาวเกิน 4096 ตัวอักษร
+ *   (มีไว้กัน base64 ขนาดใหญ่) → โลโก้จริง 238KB จะถูกกรองทิ้งเสมอ
+ *
+ *   ✅ ทางแก้: ฝัง base64 **ครั้งเดียวต่อ document** เป็น CSS custom property
+ *   บน `.dc-preview` แล้วให้ทุก <img> อ้างผ่าน `var(--dc-logo-src)`
+ *   → payload ไม่โตตามจำนวน logo block
+ *   → ไม่มี request แยก / ไม่มี risk จาก cross-origin (sandbox="allow-same-origin")
  *
  *   ── Safety (Requirement K.5) ────────────────────────────────────────────
- *   URL ถูก validate ก่อนใส่ใน src="" (http/https/data:image เท่านั้น)
- *   และ escape attribute เสมอ → ไม่มีทางเกิด script injection
+ *   URL ที่มาจาก descriptor (upload) ถูก validate ก่อนใส่ใน src=""
+ *   (http/https/data:image เท่านั้น) และ escape attribute เสมอ
  */
 function renderLogoBlock(block: LogoBlock): string {
   const align = (block.align ?? DEFAULT_ALIGN) as Align;
@@ -1426,7 +1324,7 @@ function renderLogoBlock(block: LogoBlock): string {
   const sizeStyle = `width: ${width}px; ${height}`;
 
   // ── เลือก URL ตาม source ───────────────────────────────────────────
-  //  organization → ctx.logoUrl (ยังไม่มีในระบบ → null)
+  //  organization → LOGO_SOURCE_URLS (มีค่า = inline SAO logo แล้ว)
   //  upload       → block.imageUrl (forward-compatible)
   //  ไม่มี source  (descriptor เก่า) → organization (คงพฤติกรรมเดิม)
   const source = block.source ?? "organization";
@@ -1434,6 +1332,26 @@ function renderLogoBlock(block: LogoBlock): string {
     source === "upload"
       ? block.imageUrl
       : LOGO_SOURCE_URLS.get("organization") ?? null;
+
+  // ── โลโก้ฝัง (organization) → ยิงผ่าน CSS var (ประหยัด payload) ─────────
+  //  ⚠️ HTML attribute (src="var(...)") **ไม่รองรับ** var() เพราะ attribute
+  //     ไม่ใช่ CSS declaration → ใช้ element ที่ไม่มี src แล้วให้ CSS
+  //     `background-image: var(--dc-logo-src)` เป็นตัวแสดงผลแทน
+  //
+  //  ⚠️ ต้องส่ง height เป็นตัวเลขเสมอ (ไม่ใช่ auto) สำหรับโลโก้ฝัง
+  //     เพราะ span ว่าง + background-image ไม่มี intrinsic size
+  //     → height:auto จะยุบเป็น 0 และโลโก้ไม่เห็น (ยืนยันด้วย screenshot)
+  //     แก้โดยคำนวณจาก aspect ratio ของ PNG จริง (ดู getInlineLogoAspectRatio)
+  if (rawUrl !== null && rawUrl !== "" && rawUrl === INLINE_LOGO_SRC) {
+    const alt = escapeHtml(block.alt ?? "โลโก้หน่วยงาน");
+    const ratio = getInlineLogoAspectRatio();
+    const resolvedHeight = block.height
+      ? clampSize(block.height, DEFAULT_LOGO_WIDTH)
+      : Math.max(1, Math.round(width * ratio));
+    return `<section class="dc-block dc-logo ${alignClass}"${styleAttr}>
+      <span class="dc-logo__image" role="img" aria-label="${alt}" style="width: ${width}px; height: ${resolvedHeight}px;"></span>
+    </section>`;
+  }
 
   const safeUrl = sanitizeImageUrl(rawUrl);
 
@@ -1451,15 +1369,116 @@ function renderLogoBlock(block: LogoBlock): string {
 }
 
 /**
+ * sentinel เทียบว่า URL ที่ resolve ได้เป็นโลโก้ฝังของระบบหรือไม่
+ *
+ * ใช้ค่า identity (สั้น) แทนการเทียบ data URI ยาว 238KB ทุกครั้งที่ render
+ */
+const INLINE_LOGO_SRC = "\u0000inline-sao-logo";
+
+/**
+ * ชื่อ CSS custom property ที่เก็บ data URI ของโลโก้
+ *
+ * ใช้กับ CSS `background-image: var(--dc-logo-src)` เท่านั้น
+ */
+const INLINE_LOGO_VAR = "--dc-logo-src";
+
+/** PNG signature (8 bytes) สำหรับตรวจว่า base64 นี้เป็น PNG จริง */
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/** fallback aspect ratio (h/w) = 1 เมื่ออ่าน header ไม่ได้ */
+const DEFAULT_LOGO_ASPECT_RATIO = 1;
+
+/**
+ * อ่าน aspect ratio (height / width) ของโลโก้ฝังจาก PNG header
+ *
+ * ── ทำไมต้องรู้ ratio ──────────────────────────────────────────────────────
+ *   PDF renderer ใช้ `logo.height / logo.width` เพื่อรักษาสัดส่วนรูป
+ *   (ดู descriptor-renderer.ts drawLogo)
+ *   ส่วน HTML ฝั่งนี้ใช้ background-image → span ว่างไม่มี intrinsic size
+ *   จึงต้องคำนวณ height เองจาก ratio เดียวกัน ไม่งั้นโลโก้จะยุบ/บิดเบี้ยว
+ *
+ * IHDR ของ PNG อยู่ที่ byte 16..24 (big-endian uint32):
+ *   16..20 = width, 20..24 = height
+ *
+ * @returns height/width (memoized — อ่านครั้งเดียวต่อ isolate)
+ */
+let inlineLogoAspectRatio: number | null = null;
+
+function getInlineLogoAspectRatio(): number {
+  if (inlineLogoAspectRatio !== null) return inlineLogoAspectRatio;
+  inlineLogoAspectRatio = DEFAULT_LOGO_ASPECT_RATIO;
+
+  try {
+    // decode เฉพาะ header (base64 4 ตัวอักษรแรก = ~3 bytes) ไม่ต้อง decode ทั้งไฟล์
+    const headerB64 = SAO_LOGO_BASE64.slice(0, 32);
+    const binary = atob(headerB64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+    const isPng = PNG_SIGNATURE.every((b, i) => bytes[i] === b);
+    if (!isPng || bytes.length < 24) return inlineLogoAspectRatio;
+
+    const view = new DataView(bytes.buffer);
+    const w = view.getUint32(16);
+    const h = view.getUint32(20);
+    if (w > 0 && h > 0) {
+      inlineLogoAspectRatio = h / w;
+    }
+  } catch {
+    // อ่านไม่ได้ → ใช้ค่า fallback (1) ไม่ทำให้ preview ล้ม
+  }
+
+  return inlineLogoAspectRatio;
+}
+
+/**
+ * data URI ของโลโก้หน่วยงาน (SAO logo)
+ *
+ * ⚠️ lazy (memoized) — ไม่ inline ค่าไว้ที่ top-level เพื่อไม่ให้
+ *    ทุก module ที่ import renderer ต้องแบก payload 238KB (และ test ที่ไม่ได้
+ *    เรียก logo path ด้วย)
+ *
+ *    resolveInlineLogoDataUri() ถูกเรียกครั้งเดียวตอน render จริง
+ *    แล้วแทรกลง <head> เป็น style ที่ผูกกับ token ตัวเดียว
+ *
+ * memoized: string 238KB เป็น immutable → สร้างครั้งเดียวต่อ isolate
+ * แล้ว reuse ทุก request (ไม่ leak เพราะไม่มีข้อมูลต่อ user/tenant)
+ */
+let inlineLogoDataUri: string | null | undefined;
+
+function resolveInlineLogoDataUri(): string | null {
+  if (inlineLogoDataUri !== undefined) return inlineLogoDataUri;
+  try {
+    const png = SAO_LOGO_BASE64;
+    inlineLogoDataUri =
+      typeof png === "string" && png.length > 0 ? `data:image/png;base64,${png}` : null;
+  } catch {
+    // ไม่มี asset (เช่น CI ที่ไม่ได้รัน build:assets) → ไม่ทำให้ preview ล้ม
+    inlineLogoDataUri = null;
+  }
+  return inlineLogoDataUri;
+}
+
+/**
  * URL ของโลโก้หน่วยงานที่ resolve ได้จริง
  *
- * ปัจจุบันระบบไม่มีแหล่งโลโก้จริง (ไม่มี column ใน organizations,
- * ไม่มี admin asset storage) → Map ว่าง = ยังไม่มี source
- *
- * เมื่อมี source จริงในอนาคต ให้เติม key "organization" ที่นี่ที่เดียว
- * (renderer อื่นไม่ต้องแก้ — เป็น single source of truth)
+ * ปัจจุบัน resolve ได้จาก asset เดียวกับ PDF (`assets/sao-logo.data.ts`)
+ * เมื่อมี column `logo` ใน `organizations` หรือ admin upload ในอนาคต
+ * ให้เติม key "organization" ที่นี่ที่เดียว (renderer อื่นไม่ต้องแก้)
  */
 const LOGO_SOURCE_URLS = new Map<string, string>();
+
+/**
+ * Register โลโก้ฝังในเป็น "organization source" (single source of truth)
+ *
+ * ⚠️ เรียกครั้งเดียวตอน module init — ทำให้ทั้ง `renderLogoBlock()` (body)
+ * และ `renderDocumentHeader()` (header) เห็นค่าเดียวกันโดยไม่ต้องแก้ renderer
+* ส่วนอื่น และทำให้โลโก้ใน HTML Preview ตรงกับ PDF (ใช้ asset ชุดเดียวกัน)
+ *
+ * ค่า sentinel (ไม่ใช่ data URI จริง) → payload 238KB ไม่ถูก copy ลง Map
+ * ซ้ำ ๆ; data URI จริงถูกส่งผ่าน CSS var ครั้งเดียวต่อ response
+ */
+LOGO_SOURCE_URLS.set("organization", resolveInlineLogoDataUri() ? INLINE_LOGO_SRC : "");
 
 /**
  * Validate URL รูปภาพก่อนใส่ใน src="" (Requirement K.5)
@@ -1660,7 +1679,7 @@ function renderSignatureBlock(
   const marginTop = block.marginTop ?? 0;
   const marginBottom = block.marginBottom ?? 0;
   const size: Size = block.size ?? "medium";
-  const fontSize = size === "large" ? 20 : size === "medium" ? 16 : 14;
+  const fontSize = SIGNATURE_SIZE_TO_PT[size] ?? SIGNATURE_SIZE_TO_PT.medium;
 
   const styleParts: string[] = [];
   if (marginTop > 0) styleParts.push(`margin-top: ${marginTop}pt`);
@@ -1870,7 +1889,7 @@ function wrapDocument(body: string, header: string, tokens: Record<DocumentToken
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Document Preview</title>
-<style>${PREVIEW_STYLES}</style>
+<style>${buildStyles()}</style>
 </head>
 <body>
 <div class="dc-preview">
@@ -1932,9 +1951,16 @@ function renderDocumentHeader(
     })
     .join("\n      ");
 
+  // ── โลโก้ใน header: ใช้โลโก้จริงชุดเดียวกับ body + PDF ───────────────
+  //  ถ้าไม่มี asset → placeholder "ยังไม่มีโลโก้" (พฤติกรรมเดิม)
+  const hasInlineLogo = LOGO_SOURCE_URLS.get("organization") === INLINE_LOGO_SRC;
+  const headerLogo = hasInlineLogo
+    ? `<span class="dc-logo__image" role="img" aria-label="โลโก้หน่วยงาน"></span>`
+    : `<span class="dc-doc-header__logo-placeholder">${NO_LOGO_TEXT}</span>`;
+
   return `<header class="dc-doc-header">
   <div class="dc-doc-header__logo">
-    <span class="dc-doc-header__logo-placeholder">${NO_LOGO_TEXT}</span>
+    ${headerLogo}
   </div>
   <h1 class="dc-doc-header__title">${resolvedTitle}</h1>
   <dl class="dc-doc-header__meta">
