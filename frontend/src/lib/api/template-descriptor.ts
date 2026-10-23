@@ -495,7 +495,7 @@ export function createSignatureBlock(
   return {
     id: makeId('s'),
     type: 'signature',
-    size: 'small',
+    size: 'medium',
     roleLabel: 'ผู้สมัคร',
     lineLabel: 'ลงลายมือชื่อ',
     lineStyle: '........................................',

@@ -1659,10 +1659,13 @@ function renderSignatureBlock(
   const alignClass = ALIGN_TO_CLASS[(block.align ?? DEFAULT_ALIGN) as Align];
   const marginTop = block.marginTop ?? 0;
   const marginBottom = block.marginBottom ?? 0;
+  const size: Size = block.size ?? "medium";
+  const fontSize = size === "large" ? 20 : size === "medium" ? 16 : 14;
 
   const styleParts: string[] = [];
   if (marginTop > 0) styleParts.push(`margin-top: ${marginTop}pt`);
   if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
+  styleParts.push(`font-size: ${fontSize}pt`);
   const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
 
   // ── ข้อความที่ตั้งค่าได้ (Requirement C.1/C.2/C.3/C.10) ─────────────

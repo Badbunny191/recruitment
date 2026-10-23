@@ -81,7 +81,7 @@ export function SignatureEditor({
                 disabled={disabled}
                 onClick={() => onChange({ size: opt.value })}
                 className={`flex-1 h-7 text-xs rounded border transition-colors disabled:opacity-50 ${
-                  (block.size ?? 'small') === opt.value
+                  (block.size ?? 'medium') === opt.value
                     ? 'bg-rose-600 text-white border-rose-600 font-medium'
                     : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
                 }`}

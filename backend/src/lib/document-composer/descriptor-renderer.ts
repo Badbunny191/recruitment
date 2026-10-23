@@ -171,6 +171,8 @@ export interface LogoRenderCommand {
 export interface SignatureRenderCommand {
   type: "signature";
   blockId: string;
+  size: Size;
+  fontSize: number;
   roleLabel: string;
   lineLabel: string;
   lineStyle: string;
@@ -510,9 +512,24 @@ const COLOR_HEADER_BG = rgb(TABLE_HEADER_BG_THRESHOLD, TABLE_HEADER_BG_THRESHOLD
 // - showDate: true   (default: เปิด)
 // - showTime: false  (default: ปิด — เอกสารราชการส่วนใหญ่ไม่แสดงเวลา)
 const DEFAULT_SHOW_TIME_INNER = DEFAULT_SHOW_TIME;
-const FONT_SIZE_SIGNATURE_LABEL = 12;
-const FONT_SIZE_SIGNATURE_NAME = 12;
-const FONT_SIZE_SIGNATURE_META = 12;
+
+/**
+ * ── Signature font size mapping ──────────────────────────────────────────
+ *
+ * สเกลสำหรับ Signature Block โดยเฉพาะ (ไม่ใช้ scale เดิมของ Label):
+ *   - small  = 14pt
+ *   - medium = 16pt (ค่าเริ่มต้น / default — มาตรฐานเอกสารราชการไทย)
+ *   - large  = 20pt
+ */
+const SIGNATURE_SIZE_TO_FONT_SIZE: Record<Size, number> = {
+  small: 14,
+  medium: 16,
+  large: 20,
+};
+
+const FONT_SIZE_SIGNATURE_LABEL = 16;
+const FONT_SIZE_SIGNATURE_NAME = 16;
+const FONT_SIZE_SIGNATURE_META = 16;
 const SIGNATURE_LINE_MIN_WIDTH = 200; // pt
 
 // =============================================================================
@@ -920,9 +937,15 @@ function buildSignatureCommand(
     (showDate && dateText === "______________") ||
     (showTime && timeText === "______________");
 
+  const size: Size = block.size ?? "medium";
+  const fontSize =
+    SIGNATURE_SIZE_TO_FONT_SIZE[size] ?? SIGNATURE_SIZE_TO_FONT_SIZE.medium;
+
   return {
     type: "signature",
     blockId: block.id,
+    size,
+    fontSize,
     roleLabel,
     lineLabel,
     lineStyle,
@@ -2075,7 +2098,8 @@ function computeSignatureHeight(
   state: ExecState,
   cmd: SignatureRenderCommand
 ): number {
-  let height = FONT_SIZE_SIGNATURE_LABEL * SIGNATURE_LINE_HEIGHT;
+  const fontSize = cmd.fontSize;
+  let height = fontSize * SIGNATURE_LINE_HEIGHT;
   const box = state.box;
 
   if (cmd.showName) {
@@ -2094,9 +2118,9 @@ function computeSignatureHeight(
       displayText,
       box.contentWidth,
       state.fonts.regular,
-      FONT_SIZE_SIGNATURE_META
+      fontSize
     );
-    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * SIGNATURE_LINE_HEIGHT);
+    height += Math.max(1, lines.length) * (fontSize * SIGNATURE_LINE_HEIGHT);
   }
 
   if (cmd.showDate) {
@@ -2104,9 +2128,9 @@ function computeSignatureHeight(
       `${cmd.dateLabel} ${cmd.dateText}`,
       box.contentWidth,
       state.fonts.regular,
-      FONT_SIZE_SIGNATURE_META
+      fontSize
     );
-    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * SIGNATURE_LINE_HEIGHT);
+    height += Math.max(1, lines.length) * (fontSize * SIGNATURE_LINE_HEIGHT);
   }
 
   if (cmd.showTime) {
@@ -2114,9 +2138,9 @@ function computeSignatureHeight(
       `เวลา ${cmd.timeText} น.`,
       box.contentWidth,
       state.fonts.regular,
-      FONT_SIZE_SIGNATURE_META
+      fontSize
     );
-    height += Math.max(1, lines.length) * (FONT_SIZE_SIGNATURE_META * SIGNATURE_LINE_HEIGHT);
+    height += Math.max(1, lines.length) * (fontSize * SIGNATURE_LINE_HEIGHT);
   }
 
   height += POST_BLOCK_SPACING;
@@ -2133,7 +2157,7 @@ function drawSignature(state: ExecState, cmd: SignatureRenderCommand): void {
   const lineText = cmd.lineStyle;
   const roleText = cmd.roleLabel.trim().length > 0 ? cmd.roleLabel : "";
   // (space ระหว่าง elements: 1 space)
-  drawSignatureLine1(state, labelText, lineText, roleText, cmd.align);
+  drawSignatureLine1(state, labelText, lineText, roleText, cmd.align, cmd.fontSize);
 
   // ── Line 2: signerName (ถ้า showName) ──────────────────────────────
   if (cmd.showName) {
@@ -2152,7 +2176,7 @@ function drawSignature(state: ExecState, cmd: SignatureRenderCommand): void {
     } else {
       displayText = text;
     }
-    drawSignatureText(state, displayText, cmd.align, nameColor);
+    drawSignatureText(state, displayText, cmd.align, nameColor, cmd.fontSize);
   }
 
   // ── Line 3: roleLabel (already in line 1; ตาม Requirement C signature layout) ──
@@ -2165,7 +2189,8 @@ function drawSignature(state: ExecState, cmd: SignatureRenderCommand): void {
       state,
       `${cmd.dateLabel} ${cmd.dateText}`,
       cmd.align,
-      dateColor
+      dateColor,
+      cmd.fontSize
     );
   }
 
@@ -2177,7 +2202,8 @@ function drawSignature(state: ExecState, cmd: SignatureRenderCommand): void {
       state,
       `เวลา ${cmd.timeText} น.`,
       cmd.align,
-      timeColor
+      timeColor,
+      cmd.fontSize
     );
   }
 
@@ -2196,9 +2222,9 @@ function drawSignatureLine1(
   label: string,
   lineStyle: string,
   roleLabel: string,
-  align: Align
+  align: Align,
+  fontSize: number
 ): void {
-  const fontSize = FONT_SIZE_SIGNATURE_LABEL;
   const box = state.box;
   const labelW = state.fonts.regular.widthOfTextAtSize(label, fontSize);
   const lineW = state.fonts.regular.widthOfTextAtSize(lineStyle, fontSize);
@@ -2265,9 +2291,9 @@ function drawSignatureText(
   state: ExecState,
   text: string,
   align: Align,
-  color: ReturnType<typeof rgb>
+  color: ReturnType<typeof rgb>,
+  fontSize: number
 ): void {
-  const fontSize = FONT_SIZE_SIGNATURE_META;
   const box = state.box;
   const lines = wrapText(text, box.contentWidth, state.fonts.regular, fontSize);
   for (const line of lines) {
