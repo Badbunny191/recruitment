@@ -172,6 +172,7 @@ const FieldBlockSchema = z.object({
   label: z.string().min(1).max(255).optional(),
   showLabel: z.boolean().optional(),
   showRequired: z.boolean().optional(),
+  labelStyle: SizeSchema.optional(),
   valueStyle: SizeSchema.optional(),
   layout: z.enum(["stacked", "inline"]).optional(),
 });

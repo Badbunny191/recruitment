@@ -189,6 +189,8 @@ export interface FieldBlock extends BaseBlock {
   showLabel?: boolean;
   /** แสดง required marker " *" หรือไม่ (default: true) */
   showRequired?: boolean;
+  /** รูปแบบตัวอักษรของ label (default: small) */
+  labelStyle?: Size;
   /** รูปแบบตัวอักษรของ value (default: medium) */
   valueStyle?: Size;
   /**

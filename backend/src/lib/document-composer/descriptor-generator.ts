@@ -427,6 +427,7 @@ function buildFieldBlock(
     // Requirement E: ค่า default
     showLabel: true,
     showRequired: true,
+    labelStyle: "small",
     valueStyle: "medium",
     layout: "stacked",
   };

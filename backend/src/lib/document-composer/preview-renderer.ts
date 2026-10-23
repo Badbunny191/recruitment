@@ -77,28 +77,32 @@ import { resolvePageGeometry } from "./page-settings";
 // =============================================================================
 
 /**
- * Map size → CSS font size (pt) — **ใช้กับ System Data เท่านั้น**
- * (labelStyle / valueStyle) — ห้ามขยับค่านี้
+ * ── System Data font size mapping (labelStyle / valueStyle) ──────────────
  *
- * ตัวเลขตรงกับ SIZE_TO_FONT_SIZE ใน descriptor-renderer.ts:
- *   - large  → 16pt
- *   - medium → 13pt
- *   - small  → 11pt
+ * ⚠️ แยกจาก `HEADING_SIZE_TO_PT` โดยเฉพาะ
+ *    (Heading ใช้ 14/18/22 — System Data ต้องไม่ชนกับชั้นหัวเอกสาร)
+ *
+ * ต้องตรงกับ SYSTEMDATA_SIZE_TO_FONT_SIZE ใน descriptor-renderer.ts เสมอ
+ * (PDF ↔ Preview parity)
+ *
+ * Typography Phase 2: ขยับขึ้นจาก 11/13/16 → 13/15/18
+ *   - small  (label) = 13pt → เท่ากับ Field label
+ *   - medium (value) = 15pt → ใหญ่กว่า Field value (เลขทะเบียน/วันที่ เด่นขึ้น)
+ *   - large  = 18pt → สูงกว่า value แต่ยังต่ำกว่าชื่อเอกสาร 22pt
  */
-const SIZE_TO_PT: Record<Size, number> = {
-  large: 16,
-  medium: 13,
-  small: 11,
+const SYSTEMDATA_SIZE_TO_PT: Record<Size, number> = {
+  large: 18,
+  medium: 15,
+  small: 13,
 };
 
 /**
- * ── Heading / Text Block font size mapping (Typography revision) ──────────
+ * ── Heading / Text Block font size mapping (Typography Phase 1) ──────────
  *
- * ⚠️ แยกจาก `SIZE_TO_PT` โดยเฉพาะ — ค่าเดิมถูกใช้ร่วมกับ
- *    System Data (labelStyle / valueStyle) ซึ่ง **ห้ามขยับ**
+ * ⚠️ แยกจาก `SYSTEMDATA_SIZE_TO_PT` โดยเฉพาะ
  *
  * ต้องตรงกับ HEADING_SIZE_TO_FONT_SIZE ใน descriptor-renderer.ts เสมอ
- *   (PDF ↔ Preview parity)
+ * (PDF ↔ Preview parity)
  *
  *   - small  → 14pt
  *   - medium → 18pt
@@ -109,6 +113,18 @@ const HEADING_SIZE_TO_PT: Record<Size, number> = {
   medium: 18,
   small: 14,
 };
+
+/**
+ * ── Field typography (Typography Phase 2) ───────────────────────────────
+ *
+ * ต้องตรงกับ FONT_SIZE_FIELD_LABEL / FONT_SIZE_FIELD_VALUE
+ * ใน descriptor-renderer.ts เสมอ (PDF ↔ Preview parity)
+ *
+ *   - Field label = 13pt
+ *   - Field value = 14pt (ใหญ่กว่า label → ข้อมูลเด่นกว่าป้ายกำกับ)
+ */
+const FIELD_LABEL_PT = 13;
+const FIELD_VALUE_PT = 14;
 
 const SIZE_TO_CLASS: Record<Size, string> = {
   large: "dc-heading--large",
@@ -201,10 +217,14 @@ const PREVIEW_STYLES = `
 .dc-systemdata__label {
   color: #666666;
   font-weight: 700;
+  /* คงที่ 15.4pt → parity กับ PDF (SYSTEMDATA_LABEL_LINE_ADVANCE) */
+  line-height: 15.4pt;
 }
 .dc-systemdata__value {
   color: #000000;
   font-weight: 600;
+  /* คงที่ 18.2pt → parity กับ PDF (SYSTEMDATA_VALUE_LINE_ADVANCE) */
+  line-height: 18.2pt;
 }
 /* stacked: indent 12px เฉพาะเมื่อ align=left
    center/right → ไม่ indent เพื่อให้ text-align ทำงานถูกต้อง */
@@ -271,17 +291,20 @@ const PREVIEW_STYLES = `
   padding-left: 0;
 }
 .dc-field__label {
-  font-size: 11pt;
+  font-size: 13pt;
   color: #666666;
   font-weight: 700;
   margin: 0 0 0 0;
-  line-height: 1.25;
+  /* line-height คงที่ (13.75pt) → ตัวอักษรใหญ่ขึ้นแต่พื้นที่แนวตั้งเท่าเดิม
+     → parity กับ PDF renderer (FIELD_LABEL_LINE_ADVANCE) */
+  line-height: 13.75pt;
 }
 .dc-field__value {
-  font-size: 12pt;
+  font-size: 14pt;
   color: #000000;
   margin: 2px 0 0 12px;
-  line-height: 1.25;
+  /* line-height คงที่ (15pt) → parity กับ PDF renderer (FIELD_VALUE_LINE_ADVANCE) */
+  line-height: 15pt;
   white-space: pre-wrap;
   word-wrap: break-word;
   overflow-wrap: break-word;
@@ -301,14 +324,14 @@ const PREVIEW_STYLES = `
   width: 100%;
   box-sizing: border-box;
   font-family: inherit;
-  font-size: 12pt;
+  font-size: 14pt;
   color: #000000;
   background: #fbfdff;
   border: 1px solid #c9d4de;
   border-radius: 3px;
   padding: 3px 6px;
   margin: 2px 0 0 12px;
-  line-height: 1.25;
+  line-height: 15pt;
   pointer-events: none;
   -webkit-user-select: text;
   user-select: text;
@@ -339,7 +362,7 @@ select.dc-control {
   padding: 2px 0;
   border: 0;
   background: transparent;
-  font-size: 11pt;
+  font-size: 12pt;
 }
 .dc-control--inline input {
   pointer-events: none;
@@ -351,7 +374,7 @@ select.dc-control {
   background: #f6f8fa;
   border-style: dashed;
   color: #55636f;
-  font-size: 11pt;
+  font-size: 12pt;
 }
 
 /* required marker */
@@ -1047,13 +1070,16 @@ function renderFieldBlock(
   if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
   const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
 
+  const labelPt = SYSTEMDATA_SIZE_TO_PT[block.labelStyle ?? "small"];
+  const valuePt = SYSTEMDATA_SIZE_TO_PT[block.valueStyle ?? "medium"];
+
   // ── mode = "form"     → render เป็น form control จริง (input/textarea/…)
   //    mode = "document" → render เป็น label + value (เหมือน PDF)
   // ใช้ renderer function เดียวกัน (no token logic duplicated)
   const controlHtml =
     mode === "form"
       ? renderFormControl(field, rawValue)
-      : renderDocumentValue(field, rawValue);
+      : renderDocumentValue(field, rawValue, valuePt);
 
   const emptyClass = !isNonEmptyValue(rawValue) ? " dc-field--empty" : "";
 
@@ -1061,7 +1087,7 @@ function renderFieldBlock(
   //  - ซ่อน label แล้ว → ไม่ emit <label> เลย (read-only mode ไม่ต้องมี label tag)
   const showLabel = block.showLabel ?? true;
   const labelHtml = showLabel
-    ? `<label class="dc-field__label">${escapeHtml(label)}<span class="dc-field__required">${requiredMarker}</span></label>`
+    ? `<label class="dc-field__label" style="font-size: ${labelPt}pt">${escapeHtml(label)}<span class="dc-field__required">${requiredMarker}</span></label>`
     : "";
 
   // layout inline → ห่อ label + control ไว้ใน wrapper เดียวกัน
@@ -1082,12 +1108,13 @@ function renderFieldBlock(
  * - MASTER_DATA / array → format เดียวกับ display
  * - ไม่ใช้ control HTML ใด ๆ
  */
-function renderDocumentValue(field: FieldData, rawValue: unknown): string {
+function renderDocumentValue(field: FieldData, rawValue: unknown, valuePt?: number): string {
+  const fontStyle = valuePt ? ` style="font-size: ${valuePt}pt"` : "";
   if (!isNonEmptyValue(rawValue)) {
-    return `<div class="dc-field__value dc-field__value--empty">(ว่าง)</div>`;
+    return `<div class="dc-field__value dc-field__value--empty"${fontStyle}>(ว่าง)</div>`;
   }
   const display = formatAnswerValueForDisplay(rawValue);
-  return `<div class="dc-field__value">${escapeHtml(display)}</div>`;
+  return `<div class="dc-field__value"${fontStyle}>${escapeHtml(display)}</div>`;
 }
 
 /**
@@ -1510,8 +1537,8 @@ function renderSystemDataBlock(
   const showLabel = block.showLabel ?? true;
   const layout = block.layout ?? "stacked";
 
-  const labelPt = SIZE_TO_PT[block.labelStyle ?? "small"];
-  const valuePt = SIZE_TO_PT[block.valueStyle ?? "medium"];
+  const labelPt = SYSTEMDATA_SIZE_TO_PT[block.labelStyle ?? "small"];
+  const valuePt = SYSTEMDATA_SIZE_TO_PT[block.valueStyle ?? "medium"];
 
   const labelHtml = showLabel
     ? `<div class="dc-systemdata__label" style="font-size: ${labelPt}pt">${escapeHtml(label)}</div>`

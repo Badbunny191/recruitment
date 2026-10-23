@@ -160,21 +160,39 @@ export function FieldEditor({
         </p>
       </div>
 
-      {/* ── valueStyle ──────────────────────────────────────────── */}
-      <div className="space-y-1">
-        <Label className="text-[10px] text-slate-600">ขนาดตัวอักษรของค่า</Label>
-        <select
-          value={block.valueStyle ?? 'medium'}
-          disabled={disabled}
-          onChange={(e) => onChange({ valueStyle: e.target.value as Size })}
-          className="flex h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
-        >
-          {SIZE_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
+      {/* ── labelStyle / valueStyle ─────────────────────────────── */}
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1">
+          <Label className="text-[10px] text-slate-600">ขนาดป้ายกำกับ</Label>
+          <select
+            value={block.labelStyle ?? 'small'}
+            disabled={disabled}
+            onChange={(e) => onChange({ labelStyle: e.target.value as Size })}
+            className="flex h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          >
+            {SIZE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="space-y-1">
+          <Label className="text-[10px] text-slate-600">ขนาดตัวอักษรของค่า</Label>
+          <select
+            value={block.valueStyle ?? 'medium'}
+            disabled={disabled}
+            onChange={(e) => onChange({ valueStyle: e.target.value as Size })}
+            className="flex h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          >
+            {SIZE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {/* ── alignment ───────────────────────────────────────────── */}

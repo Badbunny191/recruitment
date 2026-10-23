@@ -128,7 +128,10 @@ export interface FieldRenderCommand {
   overrideLabel?: string;
   showLabel: boolean;
   showRequired: boolean;
+  labelStyle: Size;
   valueStyle: Size;
+  labelFontSize: number;
+  valueFontSize: number;
   layout: "stacked" | "inline";
   align: Align;
   margins: { top: number; bottom: number };
@@ -353,30 +356,90 @@ export function buildPageBox(geometry: PageGeometry): PageBox {
   };
 }
 
-const FONT_SIZE_LARGE = 16;
-const FONT_SIZE_MEDIUM = 13;
-const FONT_SIZE_SMALL = 11;
-const FONT_SIZE_LABEL = 11;
-const FONT_SIZE_BODY = 12;
+/**
+ * Table label / empty-state text (pt)
+ *
+ * ⚠️ ไม่เกี่ยวข้องกับ Field label/value (ใช้ FONT_SIZE_FIELD_*)
+ *    และ Heading (ใช้ HEADING_SIZE_TO_FONT_SIZE)
+ */
+const FONT_SIZE_TABLE_LABEL = 11;
+const FONT_SIZE_TABLE_EMPTY = 12;
 const FONT_SIZE_TABLE_HEADER = 11;
 const FONT_SIZE_TABLE_CELL = 11;
+
+/**
+ * ── Field typography (Typography Phase 2) ────────────────────────────────
+ *
+ * เป้าหมาย: เอกสารสมัครงานราชการ "อ่านได้สบายบน A4 จริง"
+ *   TH Sarabun ออกแบบมาให้ใช้ที่ 16pt (มาตรฐานเอกสารราชการไทย)
+ *   → 11/12pt เดิมเล็กเกินไปจนอ่านยากบนกระดาษจริง
+ *
+ * ⚠️ ข้อจำกัดสำคัญ (วัดจริงแล้ว): จำนวนหน้าขึ้นกับ "ความสูงรวมของ line box"
+ *    ไม่ใช่ขนาดตัวอักษรรายตัว → stacked layout จ่าย (labelPt + valuePt) × advance
+ *    ต่อ 1 field โดย advance ถูกตรึงไว้ที่ 13.75 / 15pt
+ *    → ขยับขนาดตัวอักษรขึ้นโดยไม่ทำให้จำนวนหน้าเพิ่ม
+ *
+ * ❌ ไม่เกี่ยวข้อง: Heading (ใช้ HEADING_SIZE_TO_FONT_SIZE),
+ *    Signature, Table cell, Logo placeholder
+ */
+const FONT_SIZE_FIELD_LABEL = 12;
+const FONT_SIZE_FIELD_VALUE = 13;
+
+/**
+ * ── Field value: "พื้นที่แนวตั้ง" ที่ใช้จริงต่อ 1 บรรทัด ─────────────────
+ *
+ * ⚠️ ปัญหา: ถ้าขยับ FONT_SIZE_FIELD_VALUE แล้วใช้มันเป็นทั้งขนาดตัวอักษร
+ *    และระยะบรรทัด (advance) พื้นที่แนวตั้งจะโตตาม → เอกสารยาวขึ้นหน้า
+ *
+ * แนวทาง: แยก "ขนาดตัวอักษร" (อ่านสบาย) ออกจาก "ความสูงบรรทัด" (พื้นที่)
+ *    → ตัวอักษรใหญ่ขึ้น แต่กินพื้นที่แนวตั้งเท่าเดิม → ไม่เพิ่มหน้า
+ *
+ * ค่าความสูงบรรทัดค้างไว้ที่ 15pt (= พื้นที่แนวตั้งเดิมตั้งแต่ Phase 1)
+ * → ตัวอักษรใหญ่ขึ้นแต่ไม่ทำให้จำนวนหน้าเพิ่ม
+ */
+const FIELD_VALUE_LINE_ADVANCE = 15;
+
+/**
+ * ── Field label: ความสูงบรรทัดคงเดิมเช่นกัน ───────────────────────────
+ *
+ * label เดิม 11pt × 1.25 = 13.75pt → คงที่ 13.75pt
+ * (label ใหญ่ขึ้นเป็น 13pt แต่ไม่กินพื้นที่แนวตั้งเพิ่ม)
+ */
+const FIELD_LABEL_LINE_ADVANCE = 13.75;
+
+/**
+ * ── System Data scale (labelStyle / valueStyle = small | medium | large) ─
+ *
+ * ต้องสอดคล้องกับ Field: small = label, medium = value
+ * → ค่า default ของ System Data (labelStyle=small, valueStyle=medium)
+ *   จึงใหญ่กว่า Field label / Field value พอดี
+ *
+ * large = 18pt (สูงกว่า value แต่ยังต่ำกว่าชั้นหัวเอกสาร 22pt)
+ */
+const FONT_SIZE_SYSTEMDATA_SMALL = 12;
+const FONT_SIZE_SYSTEMDATA_MEDIUM = 14;
+const FONT_SIZE_SYSTEMDATA_LARGE = 18;
+
+/**
+ * ── System Data: ความสูงบรรทัดคงเดิม (ยึด baseline เดิม 11/13/16) ────────
+ *
+ *   inline   : max(11, 13) × 1.4 = 18.2pt
+ *   stacked  : label 11 × 1.4 = 15.4pt / value 13 × 1.4 = 18.2pt
+ *
+ * → ตัวอักษรใหญ่ขึ้น (12/14/18) แต่พื้นที่แนวตั้งเท่าเดิมทุกกรณี
+ */
+const SYSTEMDATA_LABEL_LINE_ADVANCE = 15.4;
+const SYSTEMDATA_VALUE_LINE_ADVANCE = 18.2;
 
 const TABLE_ROW_PADDING_X = 6; // horizontal padding inside cell
 const TABLE_ROW_PADDING_Y = 4; // vertical padding inside row
 const TABLE_BORDER = 0.5;
 const TABLE_HEADER_BG_THRESHOLD = 0.92;
 
-const SIZE_TO_FONT_SIZE: Record<Size, number> = {
-  large: FONT_SIZE_LARGE,
-  medium: FONT_SIZE_MEDIUM,
-  small: FONT_SIZE_SMALL,
-};
-
 /**
- * ── Heading / Text Block font size mapping (Typography revision) ──────────
+ * ── Heading / Text Block font size mapping (Typography Phase 1) ──────────
  *
- * ⚠️ แยกจาก `SIZE_TO_FONT_SIZE` โดยเฉพาะ — ค่าเดิมถูกใช้ร่วมกับ
- *    System Data (labelStyle / valueStyle) ซึ่ง **ห้ามขยับ**
+ * ⚠️ แยกจาก `SYSTEMDATA_SIZE_TO_FONT_SIZE` โดยเฉพาะ
  *
  * เหตุผลที่เพิ่ม:
  *   TH Sarabun ออกแบบมาให้ใช้ที่ 16pt (ตัวอักษรจริงเล็กกว่า Times ~25%)
@@ -385,13 +448,53 @@ const SIZE_TO_FONT_SIZE: Record<Size, number> = {
  *     (หัวข้อย่อย 18pt / ชื่อเอกสาร 22pt)
  *
  * ผลกระทท: เฉพาะ Heading / Text Block เท่านั้น
- *   - System Data (label/value) → ใช้ SIZE_TO_FONT_SIZE เดิม
- *   - Field label/value, body, table, signature → ไม่เกี่ยวข้อง (ค่าคงที่แยก)
  */
 const HEADING_SIZE_TO_FONT_SIZE: Record<Size, number> = {
   small: 14,
   medium: 18,
   large: 22,
+};
+
+/**
+ * ── System Data font size mapping (labelStyle / valueStyle) ──────────────
+ *
+ * ⚠️ แยกจาก `HEADING_SIZE_TO_FONT_SIZE` โดยเฉพาะ
+ *    (Heading ใช้ 14/18/22 — System Data ต้องไม่ชนกับชั้นหัวเอกสาร)
+ *
+ * Typography Phase 2: ขยับขึ้นจาก 11/13/16 → 13/15/18
+ *   - small  (label) = 13pt → เท่ากับ Field label
+ *   - medium (value) = 15pt → ใหญ่กว่า Field value (เลขทะเบียน/วันที่ เด่นขึ้น)
+ *   - large  = 18pt → สูงกว่า value แต่ยังต่ำกว่าชื่อเอกสาร 22pt
+ */
+const SYSTEMDATA_SIZE_TO_FONT_SIZE: Record<Size, number> = {
+  small: FONT_SIZE_SYSTEMDATA_SMALL,
+  medium: FONT_SIZE_SYSTEMDATA_MEDIUM,
+  large: FONT_SIZE_SYSTEMDATA_LARGE,
+};
+
+/**
+ * ── Field font size mapping (labelStyle / valueStyle) ───────────────────
+ *
+ * label:
+ *   - small  = 12pt (ค่าเริ่มต้นเดิม = FONT_SIZE_FIELD_LABEL)
+ *   - medium = 14pt (ขนาดกลาง)
+ *   - large  = 18pt (ขนาดใหญ่)
+ *
+ * value:
+ *   - small  = 11pt (ขนาดเล็ก)
+ *   - medium = 13pt (ค่าเริ่มต้นเดิม = FONT_SIZE_FIELD_VALUE — คงขนาดตัวอักษรเดิมไว้)
+ *   - large  = 16pt (ขนาดใหญ่)
+ */
+const FIELD_LABEL_SIZE_TO_FONT_SIZE: Record<Size, number> = {
+  small: 12,
+  medium: 14,
+  large: 18,
+};
+
+const FIELD_VALUE_SIZE_TO_FONT_SIZE: Record<Size, number> = {
+  small: 11,
+  medium: 13,
+  large: 16,
 };
 
 const COLOR_PRIMARY = rgb(0.05, 0.27, 0.51);
@@ -609,8 +712,8 @@ function buildSystemDataCommand(
     valueStyle: block.valueStyle ?? "medium",
     valueText,
     isEmpty,
-    labelFontSize: SIZE_TO_FONT_SIZE[block.labelStyle ?? "small"],
-    valueFontSize: SIZE_TO_FONT_SIZE[block.valueStyle ?? "medium"],
+    labelFontSize: SYSTEMDATA_SIZE_TO_FONT_SIZE[block.labelStyle ?? "small"],
+    valueFontSize: SYSTEMDATA_SIZE_TO_FONT_SIZE[block.valueStyle ?? "medium"],
     align,
     margins,
   };
@@ -671,6 +774,8 @@ function buildFieldCommand(
   align: Align,
   margins: { top: number; bottom: number }
 ): FieldRenderCommand {
+  const labelStyle = block.labelStyle ?? "small";
+  const valueStyle = block.valueStyle ?? "medium";
   return {
     type: "field",
     blockId: block.id,
@@ -678,7 +783,10 @@ function buildFieldCommand(
     overrideLabel: block.label,
     showLabel: block.showLabel ?? true,
     showRequired: block.showRequired ?? true,
-    valueStyle: block.valueStyle ?? "medium",
+    labelStyle,
+    valueStyle,
+    labelFontSize: FIELD_LABEL_SIZE_TO_FONT_SIZE[labelStyle],
+    valueFontSize: FIELD_VALUE_SIZE_TO_FONT_SIZE[valueStyle],
     layout: block.layout ?? "stacked",
     align,
     margins,
@@ -1090,7 +1198,8 @@ function drawSystemData(state: ExecState, cmd: SystemDataRenderCommand): void {
 
     const startX = alignX(box, cmd.align, compoundW);
     const maxFontSize = Math.max(cmd.labelFontSize, cmd.valueFontSize);
-    const lineHeight = maxFontSize * LINE_HEIGHT;
+    // inline: label + value บรรทัดเดียว → ยึด advance เดิม (18.2pt) ไม่ให้โตตามขนาดตัวอักษร
+    const lineHeight = SYSTEMDATA_VALUE_LINE_ADVANCE;
     ensureLineSpace(state, lineHeight);
 
     // Draw label
@@ -1127,7 +1236,7 @@ function drawSystemData(state: ExecState, cmd: SystemDataRenderCommand): void {
     );
     for (const line of labelLines) {
       const lw = state.fonts.bold.widthOfTextAtSize(line, cmd.labelFontSize);
-      ensureLineSpace(state, cmd.labelFontSize * LINE_HEIGHT);
+      ensureLineSpace(state, SYSTEMDATA_LABEL_LINE_ADVANCE);
       state.page.drawText(line, {
         x: alignX(box, cmd.align, lw),
         y: state.y - cmd.labelFontSize,
@@ -1135,7 +1244,7 @@ function drawSystemData(state: ExecState, cmd: SystemDataRenderCommand): void {
         size: cmd.labelFontSize,
         color: labelColor,
       });
-      state.y -= cmd.labelFontSize * LINE_HEIGHT;
+      state.y -= SYSTEMDATA_LABEL_LINE_ADVANCE;
     }
   }
 
@@ -1181,7 +1290,7 @@ function drawValueBlock(
   for (const line of lines) {
     const w = state.fonts.regular.widthOfTextAtSize(line, cmd.valueFontSize);
     // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
-    ensureLineSpace(state, cmd.valueFontSize * LINE_HEIGHT);
+    ensureLineSpace(state, SYSTEMDATA_VALUE_LINE_ADVANCE);
     const x =
       cmd.align === "center"
         ? alignX(box, "center", w)
@@ -1195,7 +1304,7 @@ function drawValueBlock(
       size: cmd.valueFontSize,
       color,
     });
-    state.y -= cmd.valueFontSize * LINE_HEIGHT;
+    state.y -= SYSTEMDATA_VALUE_LINE_ADVANCE;
   }
 }
 
@@ -1220,36 +1329,38 @@ function drawField(
 
   if (cmd.layout === "inline" && cmd.showLabel) {
     // ── Inline Compound Layout: Label + Space + Value เป็นก้อนเดียว ──
-    const spaceW = state.fonts.regular.widthOfTextAtSize("  ", FONT_SIZE_BODY);
-    const labelW = state.fonts.bold.widthOfTextAtSize(labelText, FONT_SIZE_LABEL);
+    const spaceW = state.fonts.regular.widthOfTextAtSize("  ", cmd.valueFontSize);
+    const labelW = state.fonts.bold.widthOfTextAtSize(labelText, cmd.labelFontSize);
     const rawLines = displayValue.split(/\r?\n/);
     const availableValW = box.contentWidth - labelW - spaceW;
     const valueLines: string[] = [];
     if (availableValW > 30) {
-      const firstLineWrapped = wrapText(rawLines[0] || "", availableValW, state.fonts.regular, FONT_SIZE_BODY);
+      const firstLineWrapped = wrapText(rawLines[0] || "", availableValW, state.fonts.regular, cmd.valueFontSize);
       valueLines.push(firstLineWrapped[0] || "");
       const remainingFirst = firstLineWrapped.slice(1);
       for (const rem of remainingFirst) {
         valueLines.push(rem);
       }
       for (let i = 1; i < rawLines.length; i++) {
-        const wrapped = wrapText(rawLines[i], box.contentWidth, state.fonts.regular, FONT_SIZE_BODY);
+        const wrapped = wrapText(rawLines[i], box.contentWidth, state.fonts.regular, cmd.valueFontSize);
         valueLines.push(...(wrapped.length > 0 ? wrapped : [""]));
       }
     } else {
       for (const raw of rawLines) {
-        const wrapped = wrapText(raw, box.contentWidth, state.fonts.regular, FONT_SIZE_BODY);
+        const wrapped = wrapText(raw, box.contentWidth, state.fonts.regular, cmd.valueFontSize);
         valueLines.push(...(wrapped.length > 0 ? wrapped : [""]));
       }
     }
 
     const valLine0 = valueLines[0] ?? "";
-    const valLine0W = state.fonts.regular.widthOfTextAtSize(valLine0, FONT_SIZE_BODY);
+    const valLine0W = state.fonts.regular.widthOfTextAtSize(valLine0, cmd.valueFontSize);
     const compoundW = labelW + spaceW + valLine0W;
     const startX = alignX(box, cmd.align, compoundW);
 
-    const maxFontSize = Math.max(FONT_SIZE_LABEL, FONT_SIZE_BODY);
-    const lineHeight = maxFontSize * FIELD_LINE_HEIGHT;
+    const maxFontSize = Math.max(cmd.labelFontSize, cmd.valueFontSize);
+    // inline: label + value อยู่บรรทัดเดียวกัน → ใช้ความสูงบรรทัดของ value
+    // ค่า advance คงเดิม (เท่า stacked ของ value) → ไม่เพิ่มพื้นที่แนวตั้ง
+    const lineHeight = FIELD_VALUE_LINE_ADVANCE;
     ensureLineSpace(state, lineHeight);
 
     // Draw label
@@ -1257,7 +1368,7 @@ function drawField(
       x: startX,
       y: state.y - maxFontSize,
       font: state.fonts.bold,
-      size: FONT_SIZE_LABEL,
+      size: cmd.labelFontSize,
       color: COLOR_GRAY,
     });
 
@@ -1266,7 +1377,7 @@ function drawField(
       x: startX + labelW + spaceW,
       y: state.y - maxFontSize,
       font: state.fonts.regular,
-      size: FONT_SIZE_BODY,
+      size: cmd.valueFontSize,
       color: valueColor,
     });
     state.y -= lineHeight;
@@ -1274,8 +1385,8 @@ function drawField(
     // Subsequent value lines if any
     for (let i = 1; i < valueLines.length; i++) {
       const line = valueLines[i];
-      const lw = state.fonts.regular.widthOfTextAtSize(line, FONT_SIZE_BODY);
-      ensureLineSpace(state, FONT_SIZE_BODY * FIELD_LINE_HEIGHT);
+      const lw = state.fonts.regular.widthOfTextAtSize(line, cmd.valueFontSize);
+      ensureLineSpace(state, FIELD_VALUE_LINE_ADVANCE);
       const x = cmd.align === "center"
         ? alignX(box, "center", lw)
         : cmd.align === "right"
@@ -1283,12 +1394,12 @@ function drawField(
           : startX + labelW + spaceW;
       state.page.drawText(line, {
         x,
-        y: state.y - FONT_SIZE_BODY,
+        y: state.y - cmd.valueFontSize,
         font: state.fonts.regular,
-        size: FONT_SIZE_BODY,
+        size: cmd.valueFontSize,
         color: valueColor,
       });
-      state.y -= FONT_SIZE_BODY * FIELD_LINE_HEIGHT;
+      state.y -= FIELD_VALUE_LINE_ADVANCE;
     }
 
     state.y -= POST_BLOCK_SPACING;
@@ -1297,18 +1408,18 @@ function drawField(
 
   // Stacked layout (or showLabel = false)
   if (cmd.showLabel) {
-    const labelLines = wrapText(labelText, box.contentWidth, state.fonts.bold, FONT_SIZE_LABEL);
+    const labelLines = wrapText(labelText, box.contentWidth, state.fonts.bold, cmd.labelFontSize);
     for (const line of labelLines) {
-      const lw = state.fonts.bold.widthOfTextAtSize(line, FONT_SIZE_LABEL);
-      ensureLineSpace(state, FONT_SIZE_LABEL * FIELD_LINE_HEIGHT);
+      const lw = state.fonts.bold.widthOfTextAtSize(line, cmd.labelFontSize);
+      ensureLineSpace(state, FIELD_LABEL_LINE_ADVANCE);
       state.page.drawText(line, {
         x: alignX(box, cmd.align, lw),
-        y: state.y - FONT_SIZE_LABEL,
+        y: state.y - cmd.labelFontSize,
         font: state.fonts.bold,
-        size: FONT_SIZE_LABEL,
+        size: cmd.labelFontSize,
         color: COLOR_GRAY,
       });
-      state.y -= FONT_SIZE_LABEL * FIELD_LINE_HEIGHT;
+      state.y -= FIELD_LABEL_LINE_ADVANCE;
     }
   }
 
@@ -1322,7 +1433,8 @@ function drawField(
     displayValue,
     valueX,
     rawValue,
-    cmd.align
+    cmd.align,
+    cmd.valueFontSize
   );
 
   state.y -= POST_BLOCK_SPACING;
@@ -1338,7 +1450,8 @@ function drawFieldValue(
   displayValue: string,
   xHint: number,
   rawValue: unknown,
-  align: Align = "left"
+  align: Align = "left",
+  fontSize: number = FONT_SIZE_FIELD_VALUE
 ): void {
   const box = state.box;
   const rawLines = displayValue.split(/\r?\n/);
@@ -1348,7 +1461,7 @@ function drawFieldValue(
       raw,
       box.contentWidth,
       state.fonts.regular,
-      FONT_SIZE_BODY
+      fontSize
     );
     if (wrapped.length === 0) {
       lines.push("");
@@ -1362,9 +1475,9 @@ function drawFieldValue(
   const color = isEmpty ? COLOR_PLACEHOLDER : COLOR_BLACK;
 
   for (const line of lines) {
-    const w = state.fonts.regular.widthOfTextAtSize(line, FONT_SIZE_BODY);
+    const w = state.fonts.regular.widthOfTextAtSize(line, fontSize);
     // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
-    ensureLineSpace(state, FONT_SIZE_BODY * FIELD_LINE_HEIGHT);
+    ensureLineSpace(state, FIELD_VALUE_LINE_ADVANCE);
     const x =
       align === "center"
         ? alignX(box, "center", w)
@@ -1373,12 +1486,12 @@ function drawFieldValue(
           : xHint;
     state.page.drawText(line || "", {
       x,
-      y: state.y - FONT_SIZE_BODY,
+      y: state.y - fontSize,
       font: state.fonts.regular,
-      size: FONT_SIZE_BODY,
+      size: fontSize,
       color,
     });
-    state.y -= FONT_SIZE_BODY * FIELD_LINE_HEIGHT;
+    state.y -= FIELD_VALUE_LINE_ADVANCE;
   }
 }
 
@@ -1422,20 +1535,20 @@ function drawTable(
       cmd.label,
       state.box.contentWidth,
       state.fonts.bold,
-      FONT_SIZE_LABEL
+      FONT_SIZE_TABLE_LABEL
     );
     for (const line of labelLines) {
-      const lw = state.fonts.bold.widthOfTextAtSize(line, FONT_SIZE_LABEL);
+      const lw = state.fonts.bold.widthOfTextAtSize(line, FONT_SIZE_TABLE_LABEL);
       // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
-      ensureLineSpace(state, FONT_SIZE_LABEL * LINE_HEIGHT);
+      ensureLineSpace(state, FONT_SIZE_TABLE_LABEL * LINE_HEIGHT);
       state.page.drawText(line, {
         x: alignX(state.box, cmd.align, lw),
-        y: state.y - FONT_SIZE_LABEL,
+        y: state.y - FONT_SIZE_TABLE_LABEL,
         font: state.fonts.bold,
-        size: FONT_SIZE_LABEL,
+        size: FONT_SIZE_TABLE_LABEL,
         color: COLOR_BLACK,
       });
-      state.y -= FONT_SIZE_LABEL * LINE_HEIGHT;
+      state.y -= FONT_SIZE_TABLE_LABEL * LINE_HEIGHT;
     }
   }
 
@@ -1445,20 +1558,20 @@ function drawTable(
       cmd.emptyText,
       state.box.contentWidth,
       state.fonts.regular,
-      FONT_SIZE_BODY
+      FONT_SIZE_TABLE_EMPTY
     );
     for (const line of emptyLines) {
-      const lw = state.fonts.regular.widthOfTextAtSize(line, FONT_SIZE_BODY);
+      const lw = state.fonts.regular.widthOfTextAtSize(line, FONT_SIZE_TABLE_EMPTY);
       // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
-      ensureLineSpace(state, FONT_SIZE_BODY * LINE_HEIGHT);
+      ensureLineSpace(state, FONT_SIZE_TABLE_EMPTY * LINE_HEIGHT);
       state.page.drawText(line, {
         x: alignX(state.box, cmd.align, lw),
-        y: state.y - FONT_SIZE_BODY,
+        y: state.y - FONT_SIZE_TABLE_EMPTY,
         font: state.fonts.regular,
-        size: FONT_SIZE_BODY,
+        size: FONT_SIZE_TABLE_EMPTY,
         color: COLOR_GRAY,
       });
-      state.y -= FONT_SIZE_BODY * LINE_HEIGHT;
+      state.y -= FONT_SIZE_TABLE_EMPTY * LINE_HEIGHT;
     }
     state.y -= POST_BLOCK_SPACING;
     return;

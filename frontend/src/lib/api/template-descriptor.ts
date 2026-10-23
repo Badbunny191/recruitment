@@ -110,6 +110,7 @@ export interface FieldBlock extends BaseBlock {
   showLabel?: boolean;
   showRequired?: boolean;
   layout?: 'stacked' | 'inline';
+  labelStyle?: Size;
   valueStyle?: Size;
 }
 
@@ -453,6 +454,7 @@ export function createFieldBlock(
     showLabel: true,
     showRequired: true,
     layout: 'stacked',
+    labelStyle: 'small',
     valueStyle: 'medium',
     align: 'left',
     ...overrides,
