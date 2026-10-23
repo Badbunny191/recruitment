@@ -274,8 +274,8 @@ async function main() {
     assertEqual(doc.getPageCount(), 2);
 
     const box = buildPageBox(plan.page ?? resolvePageGeometry(undefined));
-    // heading fontSize = 13 → วาดที่ contentTop - fontSize เสมอ
-    const expectedFirstY = box.contentTop - 13;
+    // heading fontSize = 18 (size=medium) → วาดที่ contentTop - fontSize เสมอ
+    const expectedFirstY = box.contentTop - 18;
 
     // หน้า 2 ต้องมี heading ที่ยอดเขียงเดียวกัน (ไม่ขึ้นจากกลางหน้า)
     const page2 = doc.getPage(1);
@@ -295,7 +295,7 @@ async function main() {
       "ทุกหน้าต้องสูงเท่ากัน"
     );
     assertTrue(
-      Math.abs(box.contentTop - expectedFirstY - 13) < 0.01,
+      Math.abs(box.contentTop - expectedFirstY - 18) < 0.01,
       "contentTop คงเดิม (ไม่ถูกย่อ)"
     );
   });

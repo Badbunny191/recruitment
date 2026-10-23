@@ -333,10 +333,10 @@ async function main() {
     const res = await renderPlanToPdf(plan, ctx);
     const probe = await probePdf(res.bytes);
     const box = expectedBox(undefined);
-    // บรรทัดแรกอยู่ที่ contentTop - fontSize
+    // บรรทัดแรกอยู่ที่ contentTop - fontSize (size=medium → 18pt)
     assertTrue(
-      Math.abs(probe.maxY - (box.contentTop - 13)) < 0.01,
-      `maxY ${probe.maxY} ต้องเท่ากับ ${box.contentTop - 13}`
+      Math.abs(probe.maxY - (box.contentTop - 18)) < 0.01,
+      `maxY ${probe.maxY} ต้องเท่ากับ ${box.contentTop - 18}`
     );
   });
 

@@ -372,6 +372,28 @@ const SIZE_TO_FONT_SIZE: Record<Size, number> = {
   small: FONT_SIZE_SMALL,
 };
 
+/**
+ * ── Heading / Text Block font size mapping (Typography revision) ──────────
+ *
+ * ⚠️ แยกจาก `SIZE_TO_FONT_SIZE` โดยเฉพาะ — ค่าเดิมถูกใช้ร่วมกับ
+ *    System Data (labelStyle / valueStyle) ซึ่ง **ห้ามขยับ**
+ *
+ * เหตุผลที่เพิ่ม:
+ *   TH Sarabun ออกแบบมาให้ใช้ที่ 16pt (ตัวอักษรจริงเล็กกว่า Times ~25%)
+ *   → ค่าเดิม 11/13/16pt จึงดูเล็กจนแยกหัวข้อไม่ออกบน A4 จริง
+ *   → ปรับเป็น 14/18/22pt ตามมาตรฐานเอกสารราชการไทย
+ *     (หัวข้อย่อย 18pt / ชื่อเอกสาร 22pt)
+ *
+ * ผลกระทท: เฉพาะ Heading / Text Block เท่านั้น
+ *   - System Data (label/value) → ใช้ SIZE_TO_FONT_SIZE เดิม
+ *   - Field label/value, body, table, signature → ไม่เกี่ยวข้อง (ค่าคงที่แยก)
+ */
+const HEADING_SIZE_TO_FONT_SIZE: Record<Size, number> = {
+  small: 14,
+  medium: 18,
+  large: 22,
+};
+
 const COLOR_PRIMARY = rgb(0.05, 0.27, 0.51);
 const COLOR_BLACK = rgb(0, 0, 0);
 const COLOR_GRAY = rgb(0.4, 0.4, 0.4);
@@ -554,7 +576,7 @@ function buildHeadingCommand(
     bold: block.bold ?? true,
     italic: block.italic ?? false,
     align,
-    fontSize: SIZE_TO_FONT_SIZE[block.size],
+    fontSize: HEADING_SIZE_TO_FONT_SIZE[block.size],
     margins,
   };
 }

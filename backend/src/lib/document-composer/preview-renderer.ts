@@ -77,10 +77,10 @@ import { resolvePageGeometry } from "./page-settings";
 // =============================================================================
 
 /**
- * Map heading size → CSS font size (pt)
+ * Map size → CSS font size (pt) — **ใช้กับ System Data เท่านั้น**
+ * (labelStyle / valueStyle) — ห้ามขยับค่านี้
  *
- * ใช้ class แทน inline style เพื่อให้ consumer ปรับ theme ได้
- * ตัวเลขตรงกับ descriptor-renderer.ts:
+ * ตัวเลขตรงกับ SIZE_TO_FONT_SIZE ใน descriptor-renderer.ts:
  *   - large  → 16pt
  *   - medium → 13pt
  *   - small  → 11pt
@@ -89,6 +89,25 @@ const SIZE_TO_PT: Record<Size, number> = {
   large: 16,
   medium: 13,
   small: 11,
+};
+
+/**
+ * ── Heading / Text Block font size mapping (Typography revision) ──────────
+ *
+ * ⚠️ แยกจาก `SIZE_TO_PT` โดยเฉพาะ — ค่าเดิมถูกใช้ร่วมกับ
+ *    System Data (labelStyle / valueStyle) ซึ่ง **ห้ามขยับ**
+ *
+ * ต้องตรงกับ HEADING_SIZE_TO_FONT_SIZE ใน descriptor-renderer.ts เสมอ
+ *   (PDF ↔ Preview parity)
+ *
+ *   - small  → 14pt
+ *   - medium → 18pt
+ *   - large  → 22pt
+ */
+const HEADING_SIZE_TO_PT: Record<Size, number> = {
+  large: 22,
+  medium: 18,
+  small: 14,
 };
 
 const SIZE_TO_CLASS: Record<Size, string> = {
@@ -153,9 +172,9 @@ const PREVIEW_STYLES = `
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
-.dc-heading--large  { font-size: 16pt; line-height: 1.4; }
-.dc-heading--medium { font-size: 13pt; line-height: 1.4; }
-.dc-heading--small  { font-size: 11pt; line-height: 1.4; }
+.dc-heading--large  { font-size: 22pt; line-height: 1.4; }
+.dc-heading--medium { font-size: 18pt; line-height: 1.4; }
+.dc-heading--small  { font-size: 14pt; line-height: 1.4; }
 .dc-heading--bold   { font-weight: 700; }
 /* italic (Requirement A — ตัวเอียง) */
 .dc-heading--italic { font-style: italic; }
@@ -898,7 +917,7 @@ function renderHeadingBlock(
   const sizeClass = SIZE_TO_CLASS[block.size];
   const boldClass = bold ? " dc-heading--bold" : "";
   const italicClass = block.italic ? " dc-heading--italic" : "";
-  const pt = SIZE_TO_PT[block.size];
+  const pt = HEADING_SIZE_TO_PT[block.size];
   const alignClass = ALIGN_TO_CLASS[(block.align ?? DEFAULT_ALIGN) as Align];
   const marginTop = block.marginTop ?? 0;
   const marginBottom = block.marginBottom ?? 0;
