@@ -124,7 +124,13 @@ async function runTests() {
       ('app-1', 'APP-2026-0001', 'round-001', 'somchai@example.com', 'สมชาย สายลม', 'SUBMITTED', '{"field-phone":"0812345678","field-fullname":"สมชาย สายลม"}', 1705000000),
       ('app-2', 'APP-2026-0002', 'round-001', 'somying@example.com', 'สมหญิง จริงใจ', 'QUALIFIED', '{"field-phone":"089-876-5432"}', 1705100000),
       ('app-3', 'APP-2026-0003', 'round-002', 'closed_user@example.com', 'ผู้สมัคร รอบปิด', 'SUBMITTED', '{"phone":"029998888"}', 1620000000),
-      ('app-4', 'APP-2026-0004', 'round-001', 'phone_test@example.com', 'ทดสอบ เบอร์โทร', 'SUBMITTED', '{"field-phone":"0987766777"}', 1705200000);
+      ('app-4', 'APP-2026-0004', 'round-001', 'phone_test@example.com', 'ทดสอบ เบอร์โทร', 'SUBMITTED', '{"field-phone":"0987766777"}', 1705200000),
+      ('app-cancel-only', 'APP-2026-0010', 'round-001', 'canceled_only@example.com', 'ผู้สมัคร ยกเลิกเดี่ยว', 'CANCELED', '{"field-phone":"0811111111"}', 1705300000),
+      ('app-multi-old', 'APP-2026-0020', 'round-001', 'multi_apps@example.com', 'ผู้สมัคร ยื่นซ้ำ', 'CANCELED', '{"field-phone":"0822222222"}', 1705400000),
+      ('app-multi-new', 'APP-2026-0021', 'round-001', 'multi_apps@example.com', 'ผู้สมัคร ยื่นซ้ำ', 'SUBMITTED', '{"field-phone":"0833333333"}', 1705500000),
+      ('app-archived-only', 'APP-2026-0030', 'round-001', 'archived_only@example.com', 'ผู้สมัคร เก็บเข้าคลัง', 'ARCHIVED', '{"field-phone":"0844444444"}', 1705600000),
+      ('app-cancel-then-archived-old', 'APP-2026-0040', 'round-001', 'cancel_then_archive@example.com', 'ผู้สมัคร ยกเลิกแล้วคลัง', 'CANCELED', '{"field-phone":"0855555555"}', 1705700000),
+      ('app-cancel-then-archived-new', 'APP-2026-0041', 'round-001', 'cancel_then_archive@example.com', 'ผู้สมัคร ยกเลิกแล้วคลัง', 'ARCHIVED', '{"field-phone":"0866666666"}', 1705800000);
   `);
 
   // Test 3.1: Successful lookup with exact match
@@ -214,6 +220,62 @@ async function runTests() {
   assert(resValidPhoneTest.ok === true, 'correct phone matches');
   assert(resValidPhoneTest.data.applicationNo === 'APP-2026-0004', 'returns correct application');
   console.log('✓ exact valid phone 0987766777 finds application');
+  passed++;
+
+  // Test 3.9: CANCELED application with no newer application can be found
+  const resCanceledOnly = await lookupApplication(db, {
+    roundId: 'round-001',
+    email: 'canceled_only@example.com',
+    phone: '0811111111',
+  });
+  assert(resCanceledOnly.ok === true, 'CANCELED application with no newer application is findable');
+  assert(resCanceledOnly.data.applicationNo === 'APP-2026-0010', 'returns CANCELED applicationNo');
+  assert(resCanceledOnly.data.status === 'CANCELED', 'returns CANCELED status');
+  console.log('✓ CANCELED application with no newer application can be looked up and downloaded');
+  passed++;
+
+  // Test 3.10: When a newer application exists in the same round, only the new application is shown
+  // 10a. Lookup with new application phone succeeds and returns the new application
+  const resMultiNew = await lookupApplication(db, {
+    roundId: 'round-001',
+    email: 'multi_apps@example.com',
+    phone: '0833333333',
+  });
+  assert(resMultiNew.ok === true, 'returns new application');
+  assert(resMultiNew.data.applicationNo === 'APP-2026-0021', 'returns only APP-002, not APP-001');
+  assert(resMultiNew.data.status === 'SUBMITTED', 'status is SUBMITTED');
+
+  // 10b. Searching with old CANCELED application phone strictly returns NOT_FOUND
+  const resMultiOld = await lookupApplication(db, {
+    roundId: 'round-001',
+    email: 'multi_apps@example.com',
+    phone: '0822222222',
+  });
+  assert(resMultiOld.ok === false, 'cannot find old CANCELED application when a newer one exists');
+  assert(resMultiOld.error === 'NOT_FOUND', 'returns NOT_FOUND');
+  console.log('✓ when newer application exists in same round, only the new application is shown; old CANCELED app cannot be found or downloaded');
+  passed++;
+
+  // Test 3.11: ARCHIVED application cannot be found
+  const resArchivedOnly = await lookupApplication(db, {
+    roundId: 'round-001',
+    email: 'archived_only@example.com',
+    phone: '0844444444',
+  });
+  assert(resArchivedOnly.ok === false, 'ARCHIVED application is not findable');
+  assert(resArchivedOnly.error === 'NOT_FOUND', 'ARCHIVED returns NOT_FOUND');
+  console.log('✓ ARCHIVED application cannot be found or downloaded');
+  passed++;
+
+  // Test 3.12: When latest application is ARCHIVED, older CANCELED application is NOT resurrected
+  const resCancelThenArchived = await lookupApplication(db, {
+    roundId: 'round-001',
+    email: 'cancel_then_archive@example.com',
+    phone: '0855555555',
+  });
+  assert(resCancelThenArchived.ok === false, 'does not fall back to old CANCELED app when current app is ARCHIVED');
+  assert(resCancelThenArchived.error === 'NOT_FOUND', 'returns NOT_FOUND');
+  console.log('✓ older CANCELED app is not exposed when current application is ARCHIVED');
   passed++;
 
   // Test 4: getLookupRoundOptions
