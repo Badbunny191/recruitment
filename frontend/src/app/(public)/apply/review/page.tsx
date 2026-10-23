@@ -357,10 +357,75 @@ function ReviewContent() {
       }
 
       if (result && result.success && result.data?.applicationNo) {
-        // Success: clear draft + token, redirect.
+        // Resolve applicant email and phone from draft formData / schema
+        const fd = (draft.formData || {}) as Record<string, unknown>;
+
+        let applicantEmail = '';
+        if (typeof fd['field-email'] === 'string' && fd['field-email'].trim()) {
+          applicantEmail = fd['field-email'].trim();
+        } else if (typeof fd['email'] === 'string' && fd['email'].trim()) {
+          applicantEmail = fd['email'].trim();
+        } else {
+          const emailField = schema.find(
+            (f) => f.validationType === 'EMAIL' || f.fieldId.toLowerCase().includes('email')
+          );
+          if (emailField && typeof fd[emailField.fieldId] === 'string') {
+            applicantEmail = (fd[emailField.fieldId] as string).trim();
+          }
+        }
+
+        let applicantPhone = '';
+        const directPhoneKeys = ['field-phone', 'phone', 'tel', 'mobile'];
+        for (const k of directPhoneKeys) {
+          if (typeof fd[k] === 'string' && (fd[k] as string).trim()) {
+            applicantPhone = (fd[k] as string).trim();
+            break;
+          }
+        }
+        if (!applicantPhone) {
+          const phoneField = schema.find(
+            (f) =>
+              f.validationType === 'PHONE' ||
+              f.fieldId.toLowerCase().includes('phone') ||
+              f.fieldId.toLowerCase().includes('tel')
+          );
+          if (phoneField && typeof fd[phoneField.fieldId] === 'string') {
+            applicantPhone = (fd[phoneField.fieldId] as string).trim();
+          }
+        }
+        if (!applicantPhone) {
+          for (const [k, v] of Object.entries(fd)) {
+            const lk = k.toLowerCase();
+            if (
+              (lk.includes('phone') || lk.includes('tel') || lk.includes('โทร')) &&
+              typeof v === 'string' &&
+              v.trim()
+            ) {
+              applicantPhone = v.trim();
+              break;
+            }
+          }
+        }
+
+        // Save last submitted application to sessionStorage as primary source
+        try {
+          sessionStorage.setItem(
+            'lastSubmittedApplication',
+            JSON.stringify({
+              appNo: result.data.applicationNo,
+              email: applicantEmail,
+              phone: applicantPhone,
+            })
+          );
+        } catch {
+          // ignore
+        }
+
+        // Success: clear draft + token, redirect without query string.
         clearApplyDraft(draft.roundId);
         clearSubmissionToken();
-        router.push(`/apply/success?appNo=${encodeURIComponent(result.data.applicationNo)}`);
+
+        router.push('/apply/success');
         return;
       }
       setSubmitError(result?.error ?? 'ไม่สามารถส่งใบสมัครได้');
