@@ -367,7 +367,7 @@ function ReviewContent() {
           applicantEmail = fd['email'].trim();
         } else {
           const emailField = schema.find(
-            (f) => f.validationType === 'EMAIL' || f.fieldId.toLowerCase().includes('email')
+            (f) => f.fieldId.toLowerCase().includes('email')
           );
           if (emailField && typeof fd[emailField.fieldId] === 'string') {
             applicantEmail = (fd[emailField.fieldId] as string).trim();
@@ -385,7 +385,6 @@ function ReviewContent() {
         if (!applicantPhone) {
           const phoneField = schema.find(
             (f) =>
-              f.validationType === 'PHONE' ||
               f.fieldId.toLowerCase().includes('phone') ||
               f.fieldId.toLowerCase().includes('tel')
           );
