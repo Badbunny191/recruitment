@@ -485,7 +485,13 @@ descriptorRouter.post(
     // (zod output ยังรองรับ legacy `dateSource: 'application'` ที่ type ไม่ระบุ)
     const descriptor = validated.value as DocumentDescriptor;
     try {
+      if (c.req.raw.signal?.aborted) {
+        return new Response(null, { status: 499 });
+      }
       const plan = buildRenderPlan(descriptor, ctx);
+      if (c.req.raw.signal?.aborted) {
+        return new Response(null, { status: 499 });
+      }
       const rendered = await renderPlanToPdf(plan, ctx);
 
       // 5. Return PDF bytes

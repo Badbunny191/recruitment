@@ -51,6 +51,30 @@ export interface PdfPreviewFrameProps {
   debounceMs?: number;
 }
 
+function isTransientError(error: string, status?: number): boolean {
+  if (
+    status === 499 ||
+    status === 1101 ||
+    status === 1102 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  ) {
+    return true;
+  }
+  const lower = error.toLowerCase();
+  return (
+    lower.includes('networkerror') ||
+    lower.includes('failed to fetch') ||
+    lower.includes('network error') ||
+    lower.includes('request aborted') ||
+    lower.includes('load failed') ||
+    lower.includes('connection') ||
+    lower.includes('1101') ||
+    lower.includes('1102')
+  );
+}
+
 export function PdfPreviewFrame({
   templateVersionId,
   descriptor,
@@ -58,16 +82,18 @@ export function PdfPreviewFrame({
   className,
   descriptorReady = false,
   onStatusChange,
-  debounceMs = 1000,
+  debounceMs = 1200,
 }: PdfPreviewFrameProps) {
   const [status, setStatus] = useState<PdfPreviewStatus>({ state: 'idle' });
   const [pdf, setPdf] = useState<PdfPreviewResponse | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   /** object URL ปัจจุบัน — ต้อง revoke เมื่อเปลี่ยน/ปิด */
   const urlRef = useRef<string | null>(null);
 
   /** AbortController สำหรับยกเลิก request เก่าที่ยัง in-flight */
   const abortControllerRef = useRef<AbortController | null>(null);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const ready = !!templateVersionId && (!!descriptor || descriptorReady);
 
@@ -86,6 +112,10 @@ export function PdfPreviewFrame({
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
+    }
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
     }
 
     const timer = setTimeout(async () => {
@@ -110,7 +140,26 @@ export function PdfPreviewFrame({
 
         if (!res.ok) {
           // ถ้าถูกยกเลิก ไม่ต้องแสดง error ใน UI
-          if (res.error.error === 'Request aborted') return;
+          if (res.error.error === 'Request aborted' || controller.signal.aborted) return;
+
+          // Transient network error / worker CPU overload during continuous edits:
+          // รักษา preview เดิมไว้เสมอ และไม่แสดง NetworkError ใน UI
+          if (isTransientError(res.error.error, res.error.status)) {
+            if (urlRef.current) {
+              setStatus((prev) => (prev.state === 'ready' ? prev : { state: 'idle' }));
+              return;
+            }
+            if (!retryTimeoutRef.current) {
+              retryTimeoutRef.current = setTimeout(() => {
+                retryTimeoutRef.current = null;
+                if (!cancelled && !controller.signal.aborted) {
+                  setRetryCount((c) => c + 1);
+                }
+              }, 1000);
+            }
+            return;
+          }
+
           setStatus({ state: 'error', message: res.error.error });
           setPdf(null);
           return;
@@ -123,9 +172,16 @@ export function PdfPreviewFrame({
         setStatus({ state: 'ready', pageCount: res.data.pageCount });
       } catch (err) {
         if (cancelled || controller.signal.aborted) return;
+        const msg = err instanceof Error ? err.message : 'Render failed';
+        if (isTransientError(msg)) {
+          if (urlRef.current) {
+            setStatus((prev) => (prev.state === 'ready' ? prev : { state: 'idle' }));
+            return;
+          }
+        }
         setStatus({
           state: 'error',
-          message: err instanceof Error ? err.message : 'Render failed',
+          message: msg,
         });
       }
     }, debounceMs);
@@ -133,16 +189,24 @@ export function PdfPreviewFrame({
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
         abortControllerRef.current = null;
       }
     };
-  }, [ready, templateVersionId, descriptor, applicationId, debounceMs]);
+  }, [ready, templateVersionId, descriptor, applicationId, debounceMs, retryCount]);
 
   // ── cleanup เมื่อ unmount ────────────────────────────────────────────────
   useEffect(() => {
     return () => {
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
         abortControllerRef.current = null;

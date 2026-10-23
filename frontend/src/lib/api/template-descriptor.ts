@@ -161,6 +161,8 @@ export type SignatureDateSource = 'APPLICATION_DATE' | 'PRINT_DATE' | 'none';
 
 export interface SignatureBlock extends BaseBlock {
   type: 'signature';
+  /** ขนาดตัวอักษร: small | medium | large */
+  size?: Size;
   /** ป้ายกำกับบทบาท (default: "ผู้สมัคร") */
   roleLabel?: string;
   /** label ก่อนเส้นลงลายมือชื่อ (default: "ลงลายมือชื่อ") */
@@ -493,6 +495,7 @@ export function createSignatureBlock(
   return {
     id: makeId('s'),
     type: 'signature',
+    size: 'small',
     roleLabel: 'ผู้สมัคร',
     lineLabel: 'ลงลายมือชื่อ',
     lineStyle: '........................................',
@@ -743,11 +746,21 @@ export async function previewTemplateDescriptor(
     const body = await res.json();
     return { ok: true, data: body.data as PreviewResponse };
   } catch (err) {
+    const isAborted =
+      Boolean(signal?.aborted) ||
+      (typeof DOMException !== 'undefined' &&
+        err instanceof DOMException &&
+        err.name === 'AbortError') ||
+      (err instanceof Error && err.name === 'AbortError');
     return {
       ok: false,
       error: {
         status: 0,
-        error: err instanceof Error ? err.message : 'Network error',
+        error: isAborted
+          ? 'Request aborted'
+          : err instanceof Error
+            ? err.message
+            : 'Network error',
       },
     };
   }
@@ -867,6 +880,7 @@ export async function previewTemplateDescriptorPdf(
   } catch (err) {
     if (objectUrl) URL.revokeObjectURL(objectUrl);
     const isAborted =
+      Boolean(signal?.aborted) ||
       (typeof DOMException !== 'undefined' &&
         err instanceof DOMException &&
         err.name === 'AbortError') ||

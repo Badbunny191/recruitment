@@ -718,6 +718,7 @@ function ComposerInner() {
 
   useEffect(() => {
     if (!isTextValid || !descriptor) return;
+    if (previewView !== 'html') return;
     const timer = setTimeout(() => {
       const { selectedApplication } = previewDataSourceRef.current;
       const applicationId = selectedApplication?.id ?? undefined;
@@ -725,7 +726,7 @@ function ComposerInner() {
     }, 1500);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewTrigger]);
+  }, [previewTrigger, previewView]);
 
   // -------------------------------------------------------------------------
   // Auto-refresh preview (debounced) — เมื่อเปลี่ยน "ตั้งค่าหน้ากระดาษ"
@@ -743,6 +744,7 @@ function ComposerInner() {
   const lastPageSettingsRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isTextValid || !descriptor) return;
+    if (previewView !== 'html') return;
     if (lastPageSettingsRef.current === null) {
       // ครั้งแรก → บันทึกค่า แล้วปล่อยให้ effect ของ debounce จัดการ
       lastPageSettingsRef.current = pageSettingsSignature;
@@ -759,7 +761,20 @@ function ComposerInner() {
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageSettingsSignature]);
+  }, [pageSettingsSignature, previewView]);
+
+  // -------------------------------------------------------------------------
+  // Auto-refresh เมื่อสลับกลับมาโหมด HTML preview
+  // -------------------------------------------------------------------------
+  const prevPreviewViewRef = useRef(previewView);
+  useEffect(() => {
+    if (prevPreviewViewRef.current === 'pdf' && previewView === 'html') {
+      const { selectedApplication } = previewDataSourceRef.current;
+      const applicationId = selectedApplication?.id ?? undefined;
+      runPreviewRef.current(undefined, applicationId);
+    }
+    prevPreviewViewRef.current = previewView;
+  }, [previewView]);
 
   // -------------------------------------------------------------------------
   // Render — no versionId yet

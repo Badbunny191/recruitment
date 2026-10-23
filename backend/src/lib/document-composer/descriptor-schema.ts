@@ -233,6 +233,7 @@ const LogoBlockSchema = z.object({
 const SignatureBlockSchema = z.object({
   id: BlockIdSchema,
   type: z.literal("signature"),
+  size: SizeSchema.optional(),
   align: AlignSchema.optional(),
   marginTop: MarginSchema,
   marginBottom: MarginSchema,

@@ -308,6 +308,8 @@ export type SignatureDateSource = "APPLICATION_DATE" | "PRINT_DATE" | "none";
  */
 export interface SignatureBlock extends BaseBlock {
   type: "signature";
+  /** ขนาดตัวอักษร (default: "small") */
+  size?: Size;
 
   // ── ข้อความ ──────────────────────────────────────────────────────────
   /** ป้ายกำกับบทบาท เช่น "ผู้สมัคร", "ผู้รับรอง" (default: "ผู้สมัคร") */
