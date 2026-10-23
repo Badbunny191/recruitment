@@ -66,6 +66,18 @@ const STATUS_LABELS: Record<string, string> = {
   UPDATE: 'แก้ไขสถานะ',
 };
 
+const getErrorMessage = (data: any, fallback = 'เกิดข้อผิดพลาด'): string => {
+  if (!data) return fallback;
+  if (Array.isArray(data.error?.issues)) {
+    return data.error.issues.map((i: any) => i.message).filter(Boolean).join('\n') || fallback;
+  }
+  if (typeof data.error?.message === 'string') return data.error.message;
+  if (typeof data.message === 'string') return data.message;
+  if (typeof data.error === 'string') return data.error;
+  if (typeof data.details === 'string') return data.details;
+  return fallback;
+};
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
 export default function ApplicationDetailClient() {
@@ -143,7 +155,7 @@ export default function ApplicationDetailClient() {
       .then(([appData, historyData]) => {
         if (appData.data) {
           setApp(appData.data);
-          setNewStatus(appData.data.status);
+          setNewStatus(appData.data.status === 'SUBMITTED' ? 'UNDER_REVIEW' : appData.data.status);
         }
         if (historyData.data) {
           setHistory(historyData.data);
@@ -181,7 +193,7 @@ export default function ApplicationDetailClient() {
 
   const openStatusModal = () => {
     if (!app) return;
-    setNewStatus(app.status);
+    setNewStatus(app.status === 'SUBMITTED' ? 'UNDER_REVIEW' : app.status);
     setRejectReason(app.statusReason || '');
     setShowStatusModal(true);
   };
@@ -227,10 +239,11 @@ export default function ApplicationDetailClient() {
         if (appData.data) setApp(appData.data);
         if (historyData.data) setHistory(historyData.data);
         
-        setNewStatus(appData.data?.status || newStatus);
+        const nextStatus = appData.data?.status || newStatus;
+        setNewStatus(nextStatus === 'SUBMITTED' ? 'UNDER_REVIEW' : nextStatus);
       } else {
         const error = await res.json();
-        alert(error.error || 'เกิดข้อผิดพลาด');
+        alert(getErrorMessage(error, 'เกิดข้อผิดพลาด'));
       }
     } catch (error) {
       alert('เกิดข้อผิดพลาดในการอัปเดตสถานะ');
@@ -695,7 +708,6 @@ export default function ApplicationDetailClient() {
                   onChange={(e) => setNewStatus(e.target.value)}
                   className="w-full mt-1"
                 >
-                  <option value="SUBMITTED">รอตรวจ</option>
                   <option value="UNDER_REVIEW">กำลังตรวจ</option>
                   <option value="QUALIFIED">ผ่าน</option>
                   <option value="REJECTED">ไม่ผ่าน</option>

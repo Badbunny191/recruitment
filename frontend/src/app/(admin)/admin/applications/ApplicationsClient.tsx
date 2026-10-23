@@ -71,6 +71,18 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
 
 const BULK_STATUS_OPTIONS = ['UNDER_REVIEW', 'QUALIFIED', 'REJECTED', 'ARCHIVED'];
 
+const getErrorMessage = (data: any, fallback = 'เกิดข้อผิดพลาด'): string => {
+  if (!data) return fallback;
+  if (Array.isArray(data.error?.issues)) {
+    return data.error.issues.map((i: any) => i.message).filter(Boolean).join('\n') || fallback;
+  }
+  if (typeof data.error?.message === 'string') return data.error.message;
+  if (typeof data.message === 'string') return data.message;
+  if (typeof data.error === 'string') return data.error;
+  if (typeof data.details === 'string') return data.details;
+  return fallback;
+};
+
 // ============================================
 // DESIGN SYSTEM - Smart Family Style (คัดลอกจาก Recruitment Rounds)
 // ============================================
@@ -378,7 +390,7 @@ export default function ApplicationsClient() {
         setShowStatusModal(false);
         fetchData();
       } else {
-        alert(data.error || data.details || 'เกิดข้อผิดพลาด');
+        alert(getErrorMessage(data, 'เกิดข้อผิดพลาด'));
       }
     } catch (error) {
       console.error('Status update error:', error);
@@ -421,7 +433,7 @@ export default function ApplicationsClient() {
         fetchData();
         alert(`อัปเดตสถานะสำเร็จ ${data.updated} รายการ`);
       } else {
-        alert(data.error || 'เกิดข้อผิดพลาด');
+        alert(getErrorMessage(data, 'เกิดข้อผิดพลาด'));
       }
     } catch (error) {
       console.error('Bulk status update error:', error);
