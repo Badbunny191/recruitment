@@ -122,7 +122,7 @@ export function ComposerWorkspace(props: ComposerWorkspaceProps) {
   return (
     <div
       ref={heightRef}
-      className="flex flex-col min-h-0"
+      className="flex flex-col min-h-0 flex-1 h-full"
       data-testid="composer-workspace"
       data-layout-mode={layoutMode}
       style={isMobile ? heightStyle : undefined}
@@ -168,7 +168,7 @@ export function ComposerWorkspace(props: ComposerWorkspaceProps) {
 
       {/* ===== โหมดจอกว้าง: 3 คอลัมน์ + Divider ===== */}
       {!isMobile && (
-        <div className="flex items-stretch min-h-0" style={heightStyle}>
+        <div className="flex items-stretch min-h-0 flex-1 h-full" style={heightStyle}>
           {/* LEFT: Actions */}
           <div className="flex shrink-0 min-h-0 pr-2">
             <ActionsSidebar
@@ -188,11 +188,11 @@ export function ComposerWorkspace(props: ComposerWorkspaceProps) {
           {/* ===== พื้นที่ composer + preview (ใช้วัดสัดส่วน) ===== */}
           <div
             ref={containerRef}
-            className="flex items-stretch min-w-0 min-h-0 flex-1"
+            className="flex items-stretch min-w-0 min-h-0 flex-1 h-full"
           >
             {/* MIDDLE: Visual Composer */}
             <div
-              className="min-w-0 min-h-0 flex flex-col pr-1"
+              className="min-w-0 min-h-0 flex flex-col pr-1 h-full"
               style={{ width: `${splitRatio * 100}%` }}
             >
               {composerContent}

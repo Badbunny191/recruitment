@@ -854,9 +854,9 @@ function ComposerInner() {
   // -------------------------------------------------------------------------
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="h-[calc(100vh-3.5rem)] flex flex-col p-4 md:p-6 space-y-3 overflow-hidden">
       {/* ===== HEADER ===== */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex items-center justify-between gap-3 flex-wrap shrink-0">
         <div className="flex items-center gap-3 min-w-0 flex-1">
           <Button variant="ghost" size="sm" onClick={handleBack} className="shrink-0">
             ← กลับ
@@ -893,7 +893,7 @@ function ComposerInner() {
 
       {/* VERSION_MISMATCH → Warning + Regenerate ปุ่ม (ไม่ auto-generate) */}
       {isVersionMismatch && (
-        <Alert className="bg-amber-50 border-amber-400 border-2">
+        <Alert className="bg-amber-50 border-amber-400 border-2 shrink-0">
           <AlertDescription className="text-amber-900 text-sm space-y-2">
             <div className="flex items-start gap-2">
               <span className="text-lg shrink-0">⚠️</span>
@@ -923,7 +923,7 @@ function ComposerInner() {
 
       {/* Error alert (จาก lastError) */}
       {lastError && (
-        <Alert className="bg-red-50 border-red-300 border">
+        <Alert className="bg-red-50 border-red-300 border shrink-0">
           <AlertDescription className="text-red-900 text-sm">
             <div className="flex items-start justify-between gap-2">
               <div className="flex-1 min-w-0">
