@@ -1381,9 +1381,13 @@ function drawField(
     const startX = alignX(box, cmd.align, compoundW);
 
     const maxFontSize = Math.max(cmd.labelFontSize, cmd.valueFontSize);
-    // inline: label + value อยู่บรรทัดเดียวกัน → ใช้ความสูงบรรทัดของ value
-    // ค่า advance คงเดิม (เท่า stacked ของ value) → ไม่เพิ่มพื้นที่แนวตั้ง
-    const lineHeight = FIELD_VALUE_LINE_ADVANCE;
+    const isMultiLine = valueLines.length > 1;
+    // inline: label + value อยู่บรรทัดเดียวกัน
+    // บรรทัดเดียว: ค่า advance คงเดิม (15pt) เพื่อไม่เพิ่มพื้นที่แนวตั้ง
+    // หลายบรรทัด: ขยาย advance เป็น fontSize * LINE_HEIGHT เพื่อให้อ่านสบายตาและวรรณยุกต์ไม่ชนกัน
+    const lineHeight = isMultiLine
+      ? cmd.valueFontSize * LINE_HEIGHT
+      : FIELD_VALUE_LINE_ADVANCE;
     ensureLineSpace(state, lineHeight);
 
     // Draw label
@@ -1409,7 +1413,7 @@ function drawField(
     for (let i = 1; i < valueLines.length; i++) {
       const line = valueLines[i];
       const lw = state.fonts.regular.widthOfTextAtSize(line, cmd.valueFontSize);
-      ensureLineSpace(state, FIELD_VALUE_LINE_ADVANCE);
+      ensureLineSpace(state, lineHeight);
       const x = cmd.align === "center"
         ? alignX(box, "center", lw)
         : cmd.align === "right"
@@ -1422,7 +1426,7 @@ function drawField(
         size: cmd.valueFontSize,
         color: valueColor,
       });
-      state.y -= FIELD_VALUE_LINE_ADVANCE;
+      state.y -= lineHeight;
     }
 
     state.y -= POST_BLOCK_SPACING;
@@ -1497,10 +1501,15 @@ function drawFieldValue(
   const isEmpty = !isNonEmptyValue(rawValue);
   const color = isEmpty ? COLOR_PLACEHOLDER : COLOR_BLACK;
 
+  // บรรทัดเดียว: ค่า advance คงเดิม (15pt) เพื่อรักษา layout ความกะทัดรัดเดิม
+  // หลายบรรทัด: ขยาย advance เป็น fontSize * LINE_HEIGHT เพื่อให้อ่านสบายตาและวรรณยุกต์ไม่ชนกัน
+  const lineAdvance =
+    lines.length > 1 ? fontSize * LINE_HEIGHT : FIELD_VALUE_LINE_ADVANCE;
+
   for (const line of lines) {
     const w = state.fonts.regular.widthOfTextAtSize(line, fontSize);
     // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
-    ensureLineSpace(state, FIELD_VALUE_LINE_ADVANCE);
+    ensureLineSpace(state, lineAdvance);
     const x =
       align === "center"
         ? alignX(box, "center", w)
@@ -1514,7 +1523,7 @@ function drawFieldValue(
       size: fontSize,
       color,
     });
-    state.y -= FIELD_VALUE_LINE_ADVANCE;
+    state.y -= lineAdvance;
   }
 }
 
