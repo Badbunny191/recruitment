@@ -56,6 +56,7 @@ bucket_name = "sao-storage"
 #                            Default: "website_url" if unset.
 #  RATE_LIMIT_ENABLED        Per-IP rate limiter master switch. Default: true.
 #  RATE_LIMIT_PER_MINUTE     Max requests per minute per IP. Default: 5.
+#  RATE_LIMIT_LOOKUP_PER_MINUTE Max lookup requests per minute per IP. Default: 30.
 #  IDEMPOTENCY_ENABLED       Idempotency-token master switch. Default: true.
 #  IDEMPOTENCY_TTL_SECONDS   Token TTL in seconds. Default: 900 (15 min).
 #  TURNSTILE_ENABLED         Cloudflare Turnstile widget switch. Default: false.
@@ -66,6 +67,7 @@ bucket_name = "sao-storage"
 HONEYPOT_FIELD_NAME = "website_url"
 RATE_LIMIT_ENABLED = "true"
 RATE_LIMIT_PER_MINUTE = "5"
+RATE_LIMIT_LOOKUP_PER_MINUTE = "30"
 IDEMPOTENCY_ENABLED = "true"
 IDEMPOTENCY_TTL_SECONDS = "900"
 

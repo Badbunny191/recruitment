@@ -80,8 +80,13 @@ export default function LookupPage() {
       setErrorMessage('กรุณากรอกอีเมล');
       return;
     }
-    if (!phone.trim()) {
+    const cleanPhone = phone.trim();
+    if (!cleanPhone) {
       setErrorMessage('กรุณากรอกเบอร์โทรศัพท์');
+      return;
+    }
+    if (/[^0-9+\s\-().]/.test(cleanPhone)) {
+      setErrorMessage('รูปแบบเบอร์โทรศัพท์ไม่ถูกต้อง (ตัวอย่าง: 0812345678 หรือ 081-234-5678)');
       return;
     }
 
@@ -97,7 +102,7 @@ export default function LookupPage() {
         body: JSON.stringify({
           roundId,
           email: email.trim(),
-          phone: phone.trim(),
+          phone: cleanPhone,
         }),
       });
 
@@ -106,10 +111,12 @@ export default function LookupPage() {
       if (response.ok && json.success && json.data) {
         setResult(json.data);
       } else {
-        setErrorMessage(
-          json.error ||
-            'ไม่พบข้อมูลใบสมัครที่ตรงกับข้อมูลที่ระบุ กรุณาตรวจสอบรอบรับสมัคร อีเมล และเบอร์โทรศัพท์อีกครั้ง'
-        );
+        const errorText =
+          typeof json.error === 'string'
+            ? json.error
+            : json.error?.issues?.[0]?.message ||
+              'ไม่พบข้อมูลใบสมัครที่ตรงกับข้อมูลที่ระบุ กรุณาตรวจสอบรอบรับสมัคร อีเมล และเบอร์โทรศัพท์อีกครั้ง';
+        setErrorMessage(errorText);
       }
     } catch {
       setErrorMessage('ไม่สามารถเชื่อมต่อกับระบบได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง');

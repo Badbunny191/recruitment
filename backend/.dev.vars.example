@@ -26,6 +26,7 @@ JWT_SECRET=change_me_to_a_random_secret_string_at_least_32_chars
 #  HONEYPOT_FIELD_NAME       Hidden form field checked by honeypot middleware.
 #  RATE_LIMIT_ENABLED        Per-IP rate limiter master switch.
 #  RATE_LIMIT_PER_MINUTE     Max requests per minute per IP.
+#  RATE_LIMIT_LOOKUP_PER_MINUTE Max lookup requests per minute per IP.
 #  IDEMPOTENCY_ENABLED       Idempotency-token master switch.
 #  IDEMPOTENCY_TTL_SECONDS   Token TTL in seconds (15 min default).
 #  TURNSTILE_ENABLED         Cloudflare Turnstile widget switch.
@@ -35,6 +36,7 @@ JWT_SECRET=change_me_to_a_random_secret_string_at_least_32_chars
 HONEYPOT_FIELD_NAME=website_url
 RATE_LIMIT_ENABLED=true
 RATE_LIMIT_PER_MINUTE=5
+RATE_LIMIT_LOOKUP_PER_MINUTE=30
 IDEMPOTENCY_ENABLED=true
 IDEMPOTENCY_TTL_SECONDS=900
 TURNSTILE_ENABLED=false

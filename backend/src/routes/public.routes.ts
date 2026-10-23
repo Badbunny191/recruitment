@@ -696,8 +696,18 @@ publicRoutes.get('/rounds/lookup-options', async (c) => {
  */
 publicRoutes.post(
   '/applications/lookup',
-  rateLimitMiddleware(),
-  zValidator('json', ApplicationLookupSchema),
+  rateLimitMiddleware({ keyPrefix: 'lookup', perMinute: 30 }),
+  zValidator('json', ApplicationLookupSchema, (result, c) => {
+    if (!result.success) {
+      return c.json(
+        {
+          success: false,
+          error: result.error.issues?.[0]?.message || 'ข้อมูลที่ระบุไม่ถูกต้อง',
+        },
+        400
+      );
+    }
+  }),
   async (c) => {
     const db = drizzle(c.env.DB);
     const data = c.req.valid('json');

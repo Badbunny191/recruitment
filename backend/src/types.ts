@@ -29,6 +29,8 @@ export type Bindings = {
   RATE_LIMIT_ENABLED?: string;
   /** Max requests per window per IP. Default: 5. */
   RATE_LIMIT_PER_MINUTE?: string;
+  /** Max lookup requests per window per IP. Default: 30. */
+  RATE_LIMIT_LOOKUP_PER_MINUTE?: string;
 
   /** Master switch for the idempotency layer. Default: "true". */
   IDEMPOTENCY_ENABLED?: string;

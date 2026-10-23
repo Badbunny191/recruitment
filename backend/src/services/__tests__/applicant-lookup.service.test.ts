@@ -10,6 +10,11 @@ import {
   lookupApplication,
   getLookupRoundOptions,
 } from '../applicant-lookup.service';
+import { ApplicationLookupSchema } from '../../schemas/validators';
+import {
+  rateLimitMiddleware,
+  __resetRateLimitStoreForTests,
+} from '../../middlewares/rate-limit.middleware';
 
 function createTestDb() {
   const sqlite = new Database(':memory:');
@@ -76,7 +81,14 @@ async function runTests() {
   assert(normalizePhone('+66 87 543 3363') === '0875433363', 'converts +66 to 0');
   assert(normalizePhone('66875433363') === '0875433363', 'converts 66 prefix to 0');
   assert(normalizePhone('02-123-4567') === '021234567', 'supports landline');
-  console.log('✓ normalizePhone works for various formats');
+  assert(normalizePhone('(02) 123-4567') === '021234567', 'supports parentheses');
+  assert(normalizePhone('0987766777dd') === '', 'rejects phone with trailing letters (0987766777dd)');
+  assert(normalizePhone('abc0987766777') === '', 'rejects phone with leading letters');
+  assert(normalizePhone('0987766777@#') === '', 'rejects phone with special characters');
+  assert(normalizePhone('123') === '', 'rejects too short phone');
+  assert(isPhoneMatch('0987766777', '0987766777dd') === false, 'isPhoneMatch rejects 0987766777dd');
+  assert(isPhoneMatch('098-776-6777', '0987766777dd') === false, 'isPhoneMatch rejects 0987766777dd against formatted stored phone');
+  console.log('✓ normalizePhone works for various formats and strictly rejects invalid inputs like 0987766777dd');
   passed++;
 
   // 2. Phone Extraction tests
@@ -111,7 +123,8 @@ async function runTests() {
     VALUES
       ('app-1', 'APP-2026-0001', 'round-001', 'somchai@example.com', 'สมชาย สายลม', 'SUBMITTED', '{"field-phone":"0812345678","field-fullname":"สมชาย สายลม"}', 1705000000),
       ('app-2', 'APP-2026-0002', 'round-001', 'somying@example.com', 'สมหญิง จริงใจ', 'QUALIFIED', '{"field-phone":"089-876-5432"}', 1705100000),
-      ('app-3', 'APP-2026-0003', 'round-002', 'closed_user@example.com', 'ผู้สมัคร รอบปิด', 'UNDER_REVIEW', '{"phone":"029998888"}', 1620000000);
+      ('app-3', 'APP-2026-0003', 'round-002', 'closed_user@example.com', 'ผู้สมัคร รอบปิด', 'UNDER_REVIEW', '{"phone":"029998888"}', 1620000000),
+      ('app-4', 'APP-2026-0004', 'round-001', 'phone_test@example.com', 'ทดสอบ เบอร์โทร', 'SUBMITTED', '{"field-phone":"0987766777"}', 1705200000);
   `);
 
   // Test 3.1: Successful lookup with exact match
@@ -182,6 +195,27 @@ async function runTests() {
   console.log('✓ invalid input rejected');
   passed++;
 
+  // Test 3.7: Rejects phone with letters like 0987766777dd
+  const resLettersPhone = await lookupApplication(db, {
+    roundId: 'round-001',
+    email: 'phone_test@example.com',
+    phone: '0987766777dd',
+  });
+  assert(resLettersPhone.ok === false, 'phone with dd should not match');
+  console.log('✓ phone with 0987766777dd does not find application');
+  passed++;
+
+  // Test 3.8: Succeeds with correct phone 0987766777
+  const resValidPhoneTest = await lookupApplication(db, {
+    roundId: 'round-001',
+    email: 'phone_test@example.com',
+    phone: '0987766777',
+  });
+  assert(resValidPhoneTest.ok === true, 'correct phone matches');
+  assert(resValidPhoneTest.data.applicationNo === 'APP-2026-0004', 'returns correct application');
+  console.log('✓ exact valid phone 0987766777 finds application');
+  passed++;
+
   // Test 4: getLookupRoundOptions
   const roundOptions = await getLookupRoundOptions(db);
   assert(roundOptions.length === 2, 'returns ACTIVE and CLOSED rounds (excludes DRAFT)');
@@ -189,6 +223,72 @@ async function runTests() {
   assert(roundOptions.some(r => r.id === 'round-002'), 'includes closed round');
   assert(!roundOptions.some(r => r.id === 'round-draft'), 'excludes draft round');
   console.log('✓ getLookupRoundOptions returns active + closed rounds');
+  passed++;
+
+  // Test 5: ApplicationLookupSchema validation
+  console.log('[4] ApplicationLookupSchema validation tests');
+  const validSchema1 = ApplicationLookupSchema.safeParse({
+    roundId: 'round-001',
+    email: 'test@example.com',
+    phone: '0987766777',
+  });
+  assert(validSchema1.success === true, 'valid standard phone passes schema');
+
+  const validSchema2 = ApplicationLookupSchema.safeParse({
+    roundId: 'round-001',
+    email: 'test@example.com',
+    phone: '081-234-5678',
+  });
+  assert(validSchema2.success === true, 'formatted phone with hyphens passes schema');
+
+  const invalidSchemaLetters = ApplicationLookupSchema.safeParse({
+    roundId: 'round-001',
+    email: 'test@example.com',
+    phone: '0987766777dd',
+  });
+  assert(invalidSchemaLetters.success === false, 'phone with letters (0987766777dd) rejected by schema');
+
+  const invalidSchemaSpecial = ApplicationLookupSchema.safeParse({
+    roundId: 'round-001',
+    email: 'test@example.com',
+    phone: '0987766777@#$',
+  });
+  assert(invalidSchemaSpecial.success === false, 'phone with special chars rejected by schema');
+
+  const invalidSchemaShort = ApplicationLookupSchema.safeParse({
+    roundId: 'round-001',
+    email: 'test@example.com',
+    phone: '123',
+  });
+  assert(invalidSchemaShort.success === false, 'too short phone rejected by schema');
+  console.log('✓ ApplicationLookupSchema validates phone properly and rejects 0987766777dd');
+  passed++;
+
+  // Test 6: Rate limit middleware with lookup isolation
+  console.log('[5] Rate limit middleware lookup tests');
+  __resetRateLimitStoreForTests();
+
+  const middleware = rateLimitMiddleware({ keyPrefix: 'lookup', perMinute: 30 });
+  let nextCalled = 0;
+  const dummyNext = async () => { nextCalled++; };
+  const mockContext = (ip = '1.2.3.4') => ({
+    req: { header: (name: string) => (name === 'cf-connecting-ip' ? ip : undefined) },
+    env: { RATE_LIMIT_ENABLED: 'true' },
+    header: () => {},
+    json: (body: any, status: number) => ({ body, status }),
+  });
+
+  // 30 requests should all pass
+  for (let i = 0; i < 30; i++) {
+    const res = await middleware(mockContext() as any, dummyNext);
+    assert(res === undefined, `request ${i + 1} should pass`);
+  }
+  assert(nextCalled === 30, 'all 30 requests called next');
+
+  // 31st request should be rate limited (429)
+  const blockedRes = await middleware(mockContext() as any, dummyNext);
+  assert(blockedRes && (blockedRes as any).status === 429, '31st request is rate limited with 429');
+  console.log('✓ rateLimitMiddleware with keyPrefix lookup allows 30 req/min and blocks on 31st');
   passed++;
 
   console.log(`\n=== Summary ===\nPassed: ${passed}\nFailed: 0\n`);

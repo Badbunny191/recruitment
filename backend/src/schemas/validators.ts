@@ -373,5 +373,15 @@ export const FileUploadRequestSchema = z.object({
 export const ApplicationLookupSchema = z.object({
   roundId: z.string().min(1, 'กรุณาเลือกรอบรับสมัคร'),
   email: z.string().email('กรุณากรอกอีเมลให้ถูกต้อง'),
-  phone: z.string().min(1, 'กรุณากรอกเบอร์โทรศัพท์'),
+  phone: z
+    .string()
+    .min(1, 'กรุณากรอกเบอร์โทรศัพท์')
+    .regex(/^[0-9+\s\-().]+$/, 'รูปแบบเบอร์โทรศัพท์ไม่ถูกต้อง')
+    .refine(
+      (val) => {
+        const digits = val.replace(/\D/g, '');
+        return digits.length >= 8 && digits.length <= 12;
+      },
+      { message: 'รูปแบบเบอร์โทรศัพท์ไม่ถูกต้อง (ต้องมีตัวเลข 8-12 หลัก)' }
+    ),
 });

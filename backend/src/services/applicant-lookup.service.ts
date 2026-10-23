@@ -20,14 +20,30 @@ export type LookupServiceResponse =
   | { ok: false; error: 'NOT_FOUND' | 'INVALID_INPUT'; message: string };
 
 /**
- * Normalize phone number by extracting only digits.
+ * Normalize phone number by validating format and extracting only digits.
  * Converts Thai country code +66... to 0...
+ * Rejects input containing letters, special characters, or invalid length.
  */
 export function normalizePhone(raw: string): string {
-  let digits = raw.replace(/\D/g, '');
+  if (!raw || typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+
+  // Rejects invalid characters (letters like 'dd', special characters like '@#$')
+  // Allowed: digits, whitespace, hyphens, plus, parentheses, dots
+  if (/[^0-9+\s\-().]/.test(trimmed)) {
+    return '';
+  }
+
+  let digits = trimmed.replace(/\D/g, '');
   if (digits.startsWith('66') && digits.length >= 10) {
     digits = '0' + digits.slice(2);
   }
+
+  // Must be a plausible phone number length (8-12 digits)
+  if (digits.length < 8 || digits.length > 12) {
+    return '';
+  }
+
   return digits;
 }
 
@@ -66,7 +82,7 @@ export function extractPhoneCandidates(formData: Record<string, unknown> | null 
 export function isPhoneMatch(rawStoredPhone: string, rawInputPhone: string): boolean {
   const normStored = normalizePhone(rawStoredPhone);
   const normInput = normalizePhone(rawInputPhone);
-  return normStored.length >= 8 && normStored === normInput;
+  return normStored.length >= 8 && normInput.length >= 8 && normStored === normInput;
 }
 
 /**

@@ -86,6 +86,8 @@ export type RateLimitOptions = {
   perMinute?: number;
   /** Optional override for the env flag. */
   enabled?: boolean;
+  /** Optional key prefix for per-route bucket isolation (e.g. 'lookup', 'submit'). */
+  keyPrefix?: string;
 };
 
 /**
@@ -103,16 +105,20 @@ export const rateLimitMiddleware = (options: RateLimitOptions = {}) =>
       return;
     }
 
-    const limit = options.perMinute ?? envInt(c.env.RATE_LIMIT_PER_MINUTE, DEFAULT_LIMIT);
+    const defaultLimit = options.keyPrefix === 'lookup'
+      ? envInt(c.env.RATE_LIMIT_LOOKUP_PER_MINUTE, 30)
+      : envInt(c.env.RATE_LIMIT_PER_MINUTE, DEFAULT_LIMIT);
+    const limit = options.perMinute ?? defaultLimit;
     const now = Date.now();
 
     sweepExpiredBuckets(now);
 
     const ip = getClientIp(c);
-    const bucket = buckets.get(ip);
+    const bucketKey = options.keyPrefix ? `${options.keyPrefix}:${ip}` : ip;
+    const bucket = buckets.get(bucketKey);
 
     if (!bucket || now - bucket.windowStart >= WINDOW_MS) {
-      buckets.set(ip, { count: 1, windowStart: now });
+      buckets.set(bucketKey, { count: 1, windowStart: now });
       await next();
       return;
     }
