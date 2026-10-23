@@ -183,7 +183,7 @@ export const applications = sqliteTable('applications', {
   yearIdx: index('idx_apps_year').on(table.year),
   roundCodeIdx: index('idx_apps_round_code').on(table.roundCode),
   yearRoundCodeIdx: index('idx_apps_year_round_code').on(table.year, table.roundCode),
-  checkStatus: check('chk_app_status', sql`${table.status} IN ('DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED')`)
+  checkStatus: check('chk_app_status', sql`${table.status} IN ('DRAFT', 'SUBMITTED', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED')`)
 }));
 
 export const applicationAttachments = sqliteTable('application_attachments', {

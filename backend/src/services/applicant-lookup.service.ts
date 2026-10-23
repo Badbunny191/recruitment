@@ -8,11 +8,14 @@ export interface ApplicantLookupInput {
 }
 
 export interface ApplicantLookupResult {
+  applicationId: string;
   applicationNo: string;
+  fullname: string;
   positionTitle: string;
   roundTitle: string;
   submittedAt: Date | number | null;
   status: string;
+  statusReason?: string | null;
 }
 
 export type LookupServiceResponse =
@@ -116,6 +119,7 @@ export async function lookupApplication(
     .where(
       and(
         eq(recruitmentRounds.id, input.roundId),
+        inArray(recruitmentRounds.status, ['ACTIVE', 'CLOSED']),
         isNull(recruitmentRounds.deletedAt)
       )
     )
@@ -129,12 +133,14 @@ export async function lookupApplication(
     };
   }
 
-  // 2. Fetch applications for this round and email
+  // 2. Fetch applications for this round and email (excluding ARCHIVED)
   const apps = await db
     .select({
       id: applications.id,
       applicationNo: applications.applicationNo,
+      fullname: applications.fullname,
       status: applications.status,
+      statusReason: applications.statusReason,
       submittedAt: applications.submittedAt,
       formData: applications.formData,
     })
@@ -143,7 +149,8 @@ export async function lookupApplication(
       and(
         eq(applications.roundId, input.roundId),
         eq(sql`lower(${applications.email})`, cleanEmail),
-        isNull(applications.deletedAt)
+        isNull(applications.deletedAt),
+        inArray(applications.status, ['SUBMITTED', 'QUALIFIED', 'REJECTED', 'CANCELED'])
       )
     )
     .orderBy(desc(applications.submittedAt))
@@ -182,11 +189,14 @@ export async function lookupApplication(
   return {
     ok: true,
     data: {
+      applicationId: matchedApp.id,
       applicationNo: matchedApp.applicationNo || '-',
+      fullname: matchedApp.fullname || '-',
       positionTitle: round.positionLevel || round.title,
       roundTitle: round.title,
       submittedAt: matchedApp.submittedAt,
       status: matchedApp.status || 'SUBMITTED',
+      statusReason: matchedApp.statusReason || null,
     },
   };
 }

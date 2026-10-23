@@ -51,25 +51,23 @@ interface Summary {
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  SUBMITTED: 'รอตรวจ',
-  UNDER_REVIEW: 'กำลังตรวจ',
-  QUALIFIED: 'ผ่าน',
-  REJECTED: 'ไม่ผ่าน',
-  CANCELED: 'ยกเลิก',
+  SUBMITTED: 'รอการตรวจสอบ',
+  QUALIFIED: 'ผ่านการตรวจสอบ',
+  REJECTED: 'ข้อมูลไม่ครบถ้วน',
+  CANCELED: 'ยกเลิกใบสมัคร',
   ARCHIVED: 'เก็บเข้าคลัง',
 };
 
 // Status Badge Style (คัดลอกจาก Recruitment Rounds: pill badge with border)
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
-  SUBMITTED: { label: 'รอตรวจ', className: 'bg-blue-100 text-blue-700 border-blue-200' },
-  UNDER_REVIEW: { label: 'กำลังตรวจ', className: 'bg-amber-100 text-amber-700 border-amber-200' },
-  QUALIFIED: { label: 'ผ่าน', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
-  REJECTED: { label: 'ไม่ผ่าน', className: 'bg-red-100 text-red-700 border-red-200' },
-  CANCELED: { label: 'ยกเลิก', className: 'bg-slate-100 text-slate-600 border-slate-200' },
+  SUBMITTED: { label: 'รอการตรวจสอบ', className: 'bg-blue-100 text-blue-700 border-blue-200' },
+  QUALIFIED: { label: 'ผ่านการตรวจสอบ', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  REJECTED: { label: 'ข้อมูลไม่ครบถ้วน', className: 'bg-red-100 text-red-700 border-red-200' },
+  CANCELED: { label: 'ยกเลิกใบสมัคร', className: 'bg-slate-100 text-slate-600 border-slate-200' },
   ARCHIVED: { label: 'เก็บเข้าคลัง', className: 'bg-purple-100 text-purple-700 border-purple-200' },
 };
 
-const BULK_STATUS_OPTIONS = ['UNDER_REVIEW', 'QUALIFIED', 'REJECTED', 'ARCHIVED'];
+const BULK_STATUS_OPTIONS = ['SUBMITTED', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED'];
 
 const getErrorMessage = (data: any, fallback = 'เกิดข้อผิดพลาด'): string => {
   if (!data) return fallback;
@@ -356,7 +354,7 @@ export default function ApplicationsClient() {
   const openStatusModal = (app: Application, e: React.MouseEvent) => {
     e.stopPropagation();
     setSelectedApp(app);
-    setNewStatus(app.status === 'SUBMITTED' ? 'UNDER_REVIEW' : app.status);
+    setNewStatus(app.status || 'SUBMITTED');
     setRejectReason('');
     setShowStatusModal(true);
   };
@@ -365,8 +363,8 @@ export default function ApplicationsClient() {
   const handleStatusUpdate = async () => {
     if (!selectedApp || !newStatus) return;
 
-    if (newStatus === 'REJECTED' && !rejectReason.trim()) {
-      alert('กรุณาระบุเหตุผลการปฏิเสธ');
+    if ((newStatus === 'REJECTED' || newStatus === 'CANCELED') && !rejectReason.trim()) {
+      alert('กรุณาระบุเหตุผล');
       return;
     }
 
@@ -380,7 +378,7 @@ export default function ApplicationsClient() {
         },
         body: JSON.stringify({
           status: newStatus,
-          reason: newStatus === 'REJECTED' ? rejectReason : undefined
+          reason: (newStatus === 'REJECTED' || newStatus === 'CANCELED') ? rejectReason.trim() : undefined
         })
       });
 
@@ -404,8 +402,8 @@ export default function ApplicationsClient() {
   const handleBulkStatusUpdate = async () => {
     if (!bulkStatus || selectedIds.size === 0) return;
 
-    if (bulkStatus === 'REJECTED' && !bulkReason.trim()) {
-      alert('กรุณาระบุเหตุผลการปฏิเสธ');
+    if ((bulkStatus === 'REJECTED' || bulkStatus === 'CANCELED') && !bulkReason.trim()) {
+      alert('กรุณาระบุเหตุผล');
       return;
     }
 
@@ -420,7 +418,7 @@ export default function ApplicationsClient() {
         body: JSON.stringify({
           ids: Array.from(selectedIds),
           status: bulkStatus,
-          reason: bulkStatus === 'REJECTED' ? bulkReason : undefined
+          reason: (bulkStatus === 'REJECTED' || bulkStatus === 'CANCELED') ? bulkReason.trim() : undefined
         })
       });
 
@@ -706,13 +704,12 @@ export default function ApplicationsClient() {
       {/* ============================================ */}
       {/* 2. KPI CARDS - Status Summary */}
       {/* ============================================ */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
         <KpiCard icon="📊" value={summary.total} label="ทั้งหมด" />
-        <KpiCard icon="📥" value={summary.byStatus.SUBMITTED || 0} label="รอตรวจ" variant="info" />
-        <KpiCard icon="🔍" value={summary.byStatus.UNDER_REVIEW || 0} label="กำลังตรวจ" variant="warning" />
-        <KpiCard icon="✅" value={summary.byStatus.QUALIFIED || 0} label="ผ่าน" variant="success" />
-        <KpiCard icon="❌" value={summary.byStatus.REJECTED || 0} label="ไม่ผ่าน" variant="danger" />
-        <KpiCard icon="🚫" value={summary.byStatus.CANCELED || 0} label="ยกเลิก" variant="muted" />
+        <KpiCard icon="📥" value={summary.byStatus.SUBMITTED || 0} label="รอการตรวจสอบ" variant="info" />
+        <KpiCard icon="✅" value={summary.byStatus.QUALIFIED || 0} label="ผ่านการตรวจสอบ" variant="success" />
+        <KpiCard icon="⚠️" value={summary.byStatus.REJECTED || 0} label="ข้อมูลไม่ครบถ้วน" variant="danger" />
+        <KpiCard icon="🚫" value={summary.byStatus.CANCELED || 0} label="ยกเลิกใบสมัคร" variant="muted" />
         <KpiCard icon="📦" value={summary.byStatus.ARCHIVED || 0} label="เก็บเข้าคลัง" variant="muted" />
       </div>
 
@@ -962,17 +959,17 @@ export default function ApplicationsClient() {
                   onChange={(e) => setNewStatus(e.target.value)}
                   className="w-full mt-1"
                 >
-                  <option value="UNDER_REVIEW">กำลังตรวจ</option>
-                  <option value="QUALIFIED">ผ่าน</option>
-                  <option value="REJECTED">ไม่ผ่าน</option>
-                  <option value="CANCELED">ยกเลิก</option>
+                  <option value="SUBMITTED">รอการตรวจสอบ</option>
+                  <option value="QUALIFIED">ผ่านการตรวจสอบ</option>
+                  <option value="REJECTED">ข้อมูลไม่ครบถ้วน</option>
+                  <option value="CANCELED">ยกเลิกใบสมัคร</option>
                   <option value="ARCHIVED">เก็บเข้าคลัง</option>
                 </Select>
               </div>
 
-              {newStatus === 'REJECTED' && (
+              {(newStatus === 'REJECTED' || newStatus === 'CANCELED') && (
                 <div>
-                  <Label>เหตุผลการปฏิเสธ *</Label>
+                  <Label>เหตุผล *</Label>
                   <Textarea
                     value={rejectReason}
                     onChange={(e) => setRejectReason(e.target.value)}
@@ -1028,9 +1025,9 @@ export default function ApplicationsClient() {
                 </Select>
               </div>
 
-              {bulkStatus === 'REJECTED' && (
+              {(bulkStatus === 'REJECTED' || bulkStatus === 'CANCELED') && (
                 <div>
-                  <Label>เหตุผลการปฏิเสธ *</Label>
+                  <Label>เหตุผล *</Label>
                   <Textarea
                     value={bulkReason}
                     onChange={(e) => setBulkReason(e.target.value)}

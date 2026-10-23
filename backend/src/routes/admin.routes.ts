@@ -1946,7 +1946,6 @@ adminRoutes.get('/applications/summary', async (c) => {
 
   const byStatus: Record<string, number> = {
     SUBMITTED: 0,
-    UNDER_REVIEW: 0,
     QUALIFIED: 0,
     REJECTED: 0,
     CANCELED: 0,
@@ -1980,9 +1979,9 @@ adminRoutes.patch('/applications/:id/status', adminOnlyMiddleware, auditMiddlewa
     return c.json({ error: 'Application not found' }, 404);
   }
 
-  // Require reason for REJECTED status
-  if (status === 'REJECTED' && !reason) {
-    return c.json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' }, 400);
+  // Require reason for REJECTED (ข้อมูลไม่ครบถ้วน) or CANCELED (ยกเลิกใบสมัคร) status
+  if ((status === 'REJECTED' || status === 'CANCELED') && (!reason || !reason.trim())) {
+    return c.json({ error: 'กรุณาระบุเหตุผล' }, 400);
   }
   
   // Generate change tracking data
@@ -2219,9 +2218,9 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
     return c.json({ error: 'กรุณาเลือกสถานะ' }, 400);
   }
 
-  // Require reason for REJECTED status
-  if (status === 'REJECTED' && !reason) {
-    return c.json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' }, 400);
+  // Require reason for REJECTED (ข้อมูลไม่ครบถ้วน) or CANCELED (ยกเลิกใบสมัคร) status
+  if ((status === 'REJECTED' || status === 'CANCELED') && (!reason || !reason.trim())) {
+    return c.json({ error: 'กรุณาระบุเหตุผล' }, 400);
   }
 
   // Drizzle expects Date object for timestamp fields

@@ -64,12 +64,11 @@ export type FieldValueShape = "scalar" | "array" | "object";
 
 export const APPLICATION_STATUS_LABELS: Record<string, string> = {
   DRAFT: 'ฉบับร่าง',
-  SUBMITTED: 'ยื่นแล้ว',
-  UNDER_REVIEW: 'กำลังตรวจสอบ',
-  QUALIFIED: 'ผ่านคุณสมบัติ',
-  REJECTED: 'ไม่ผ่าน',
-  CANCELED: 'ยกเลิก',
-  ARCHIVED: 'เก็บถาวร',
+  SUBMITTED: 'รอการตรวจสอบ',
+  QUALIFIED: 'ผ่านการตรวจสอบ',
+  REJECTED: 'ข้อมูลไม่ครบถ้วน',
+  CANCELED: 'ยกเลิกใบสมัคร',
+  ARCHIVED: 'เก็บเข้าคลัง',
 };
 
 // =============================================================================

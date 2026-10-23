@@ -4,7 +4,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import { Bindings } from '../types';
 import { ApplicationSubmitSchema, ApplicationLookupSchema, CORE_FIELD_IDS } from '../schemas/validators';
 import { recruitmentRounds, templateFields, templateSections, fieldMaster, applications, applicationAttachments, organizations } from '../db/schema';
-import { eq, and, isNull, asc, sql, like, desc } from 'drizzle-orm';
+import { eq, and, isNull, asc, sql, like, desc, ne } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { getCurrentBangkokYear, buildApplicationNo, parseApplicationNo } from '../utils/application-no';
 import { buildApplicationNumber } from '../services/application-number.service';
@@ -13,6 +13,7 @@ import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { honeypotMiddleware } from '../middlewares/honeypot.middleware';
 import { turnstileMiddleware } from '../middlewares/turnstile.middleware';
 import { lookupApplication, getLookupRoundOptions } from '../services/applicant-lookup.service';
+import { getApplicationPdf } from '../lib/pdf.service';
 
 const publicRoutes = new Hono<{ Bindings: Bindings }>();
 
@@ -575,7 +576,7 @@ publicRoutes.post('/applications/submit',
     }
   }
 
-  // Check for duplicate application (same email + same round, not deleted)
+  // Check for duplicate application (same email + same round, not deleted, not CANCELED)
   const existingApp = await db
     .select({
       id: applications.id,
@@ -587,7 +588,8 @@ publicRoutes.post('/applications/submit',
       and(
         eq(applications.roundId, data.roundId),
         eq(applications.email, email),
-        isNull(applications.deletedAt)
+        isNull(applications.deletedAt),
+        ne(applications.status, 'CANCELED')
       )
     )
     .get();
@@ -727,6 +729,73 @@ publicRoutes.post(
       success: true,
       data: result.data,
     });
+  }
+);
+
+/**
+ * POST /api/v1/public/applications/download-pdf
+ * -----------------------------------------------------------------------------
+ * Public PDF download endpoint for applicant lookup.
+ * Verifies roundId + email + phone to strictly ensure authorized download.
+ * Returns the application PDF binary stream.
+ */
+publicRoutes.post(
+  '/applications/download-pdf',
+  rateLimitMiddleware({ keyPrefix: 'lookup-pdf', perMinute: 20 }),
+  zValidator('json', ApplicationLookupSchema, (result, c) => {
+    if (!result.success) {
+      return c.json(
+        {
+          success: false,
+          error: result.error.issues?.[0]?.message || 'ข้อมูลที่ระบุไม่ถูกต้อง',
+        },
+        400
+      );
+    }
+  }),
+  async (c) => {
+    const db = drizzle(c.env.DB);
+    const data = c.req.valid('json');
+    const lookupResult = await lookupApplication(db, data);
+
+    if (!lookupResult.ok) {
+      return c.json(
+        {
+          success: false,
+          error: lookupResult.message,
+        },
+        404
+      );
+    }
+
+    try {
+      const pdfResult = await getApplicationPdf(db, c.env.R2_BUCKET, lookupResult.data.applicationId);
+
+      if (!pdfResult) {
+        return c.json({ success: false, error: 'ไม่พบไฟล์ใบสมัครหรือเกิดข้อผิดพลาดในการสร้าง PDF' }, 500);
+      }
+
+      const filename = `application-${lookupResult.data.applicationNo || lookupResult.data.applicationId}.pdf`;
+
+      return new Response(pdfResult.bytes, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+          'Content-Length': String(pdfResult.bytes.length),
+          'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+        },
+      });
+    } catch (err: any) {
+      console.error('[Public PDF Download] Failed to generate PDF:', err);
+      return c.json(
+        {
+          success: false,
+          error: 'เกิดข้อผิดพลาดในการสร้างใบสมัคร PDF กรุณาลองใหม่อีกครั้ง',
+        },
+        500
+      );
+    }
   }
 );
 

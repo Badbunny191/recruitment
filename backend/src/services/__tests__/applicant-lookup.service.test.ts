@@ -123,7 +123,7 @@ async function runTests() {
     VALUES
       ('app-1', 'APP-2026-0001', 'round-001', 'somchai@example.com', 'สมชาย สายลม', 'SUBMITTED', '{"field-phone":"0812345678","field-fullname":"สมชาย สายลม"}', 1705000000),
       ('app-2', 'APP-2026-0002', 'round-001', 'somying@example.com', 'สมหญิง จริงใจ', 'QUALIFIED', '{"field-phone":"089-876-5432"}', 1705100000),
-      ('app-3', 'APP-2026-0003', 'round-002', 'closed_user@example.com', 'ผู้สมัคร รอบปิด', 'UNDER_REVIEW', '{"phone":"029998888"}', 1620000000),
+      ('app-3', 'APP-2026-0003', 'round-002', 'closed_user@example.com', 'ผู้สมัคร รอบปิด', 'SUBMITTED', '{"phone":"029998888"}', 1620000000),
       ('app-4', 'APP-2026-0004', 'round-001', 'phone_test@example.com', 'ทดสอบ เบอร์โทร', 'SUBMITTED', '{"field-phone":"0987766777"}', 1705200000);
   `);
 

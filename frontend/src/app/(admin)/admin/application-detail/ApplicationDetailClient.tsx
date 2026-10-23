@@ -56,11 +56,10 @@ interface Application {
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  SUBMITTED: 'รอตรวจ',
-  UNDER_REVIEW: 'กำลังตรวจ',
-  QUALIFIED: 'ผ่าน',
-  REJECTED: 'ไม่ผ่าน',
-  CANCELED: 'ยกเลิก',
+  SUBMITTED: 'รอการตรวจสอบ',
+  QUALIFIED: 'ผ่านการตรวจสอบ',
+  REJECTED: 'ข้อมูลไม่ครบถ้วน',
+  CANCELED: 'ยกเลิกใบสมัคร',
   ARCHIVED: 'เก็บเข้าคลัง',
   CREATE: 'สร้างใบสมัคร',
   UPDATE: 'แก้ไขสถานะ',
@@ -155,7 +154,7 @@ export default function ApplicationDetailClient() {
       .then(([appData, historyData]) => {
         if (appData.data) {
           setApp(appData.data);
-          setNewStatus(appData.data.status === 'SUBMITTED' ? 'UNDER_REVIEW' : appData.data.status);
+          setNewStatus(appData.data.status || 'SUBMITTED');
         }
         if (historyData.data) {
           setHistory(historyData.data);
@@ -193,7 +192,7 @@ export default function ApplicationDetailClient() {
 
   const openStatusModal = () => {
     if (!app) return;
-    setNewStatus(app.status === 'SUBMITTED' ? 'UNDER_REVIEW' : app.status);
+    setNewStatus(app.status || 'SUBMITTED');
     setRejectReason(app.statusReason || '');
     setShowStatusModal(true);
   };
@@ -201,8 +200,8 @@ export default function ApplicationDetailClient() {
   const handleStatusUpdate = async () => {
     if (!app) return;
     
-    if (newStatus === 'REJECTED' && !rejectReason.trim()) {
-      alert('กรุณาระบุเหตุผลการปฏิเสธ');
+    if ((newStatus === 'REJECTED' || newStatus === 'CANCELED') && !rejectReason.trim()) {
+      alert('กรุณาระบุเหตุผล');
       return;
     }
     
@@ -216,7 +215,7 @@ export default function ApplicationDetailClient() {
         },
         body: JSON.stringify({
           status: newStatus,
-          reason: newStatus === 'REJECTED' ? rejectReason : undefined
+          reason: (newStatus === 'REJECTED' || newStatus === 'CANCELED') ? rejectReason.trim() : undefined
         })
       });
       
@@ -240,7 +239,7 @@ export default function ApplicationDetailClient() {
         if (historyData.data) setHistory(historyData.data);
         
         const nextStatus = appData.data?.status || newStatus;
-        setNewStatus(nextStatus === 'SUBMITTED' ? 'UNDER_REVIEW' : nextStatus);
+        setNewStatus(nextStatus || 'SUBMITTED');
       } else {
         const error = await res.json();
         alert(getErrorMessage(error, 'เกิดข้อผิดพลาด'));
@@ -708,21 +707,21 @@ export default function ApplicationDetailClient() {
                   onChange={(e) => setNewStatus(e.target.value)}
                   className="w-full mt-1"
                 >
-                  <option value="UNDER_REVIEW">กำลังตรวจ</option>
-                  <option value="QUALIFIED">ผ่าน</option>
-                  <option value="REJECTED">ไม่ผ่าน</option>
-                  <option value="CANCELED">ยกเลิก</option>
+                  <option value="SUBMITTED">รอการตรวจสอบ</option>
+                  <option value="QUALIFIED">ผ่านการตรวจสอบ</option>
+                  <option value="REJECTED">ข้อมูลไม่ครบถ้วน</option>
+                  <option value="CANCELED">ยกเลิกใบสมัคร</option>
                   <option value="ARCHIVED">เก็บเข้าคลัง</option>
                 </Select>
               </div>
               
-              {newStatus === 'REJECTED' && (
+              {(newStatus === 'REJECTED' || newStatus === 'CANCELED') && (
                 <div>
-                  <Label className="text-sm font-medium text-gray-700">เหตุผลการปฏิเสธ *</Label>
+                  <Label className="text-sm font-medium text-gray-700">เหตุผล *</Label>
                   <Textarea
                     value={rejectReason}
                     onChange={(e) => setRejectReason(e.target.value)}
-                    placeholder="ระบุเหตุผลที่ปฏิเสธ..."
+                    placeholder="ระบุเหตุผล..."
                     className="w-full mt-1"
                     rows={3}
                   />

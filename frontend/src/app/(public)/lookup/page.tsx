@@ -19,10 +19,12 @@ interface RoundOption {
 
 interface LookupResult {
   applicationNo: string;
+  fullname?: string;
   positionTitle: string;
   roundTitle?: string;
   submittedAt: string | number | Date | null;
   status: string;
+  statusReason?: string | null;
 }
 
 export default function LookupPage() {
@@ -36,6 +38,9 @@ export default function LookupPage() {
   const [isSearching, setIsSearching] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [result, setResult] = useState<LookupResult | null>(null);
+
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   // Load rounds on mount
   useEffect(() => {
@@ -71,6 +76,7 @@ export default function LookupPage() {
     e.preventDefault();
     setErrorMessage(null);
     setResult(null);
+    setDownloadError(null);
 
     if (!roundId) {
       setErrorMessage('กรุณาเลือกรอบรับสมัคร');
@@ -122,6 +128,46 @@ export default function LookupPage() {
       setErrorMessage('ไม่สามารถเชื่อมต่อกับระบบได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง');
     } finally {
       setIsSearching(false);
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!result) return;
+    setIsDownloadingPdf(true);
+    setDownloadError(null);
+
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
+      const response = await fetch(`${apiUrl}/public/applications/download-pdf`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          roundId,
+          email: email.trim(),
+          phone: phone.trim(),
+        }),
+      });
+
+      if (!response.ok) {
+        const errorJson = await response.json().catch(() => null);
+        throw new Error(errorJson?.error || 'ไม่สามารถดาวน์โหลดใบสมัครได้');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `application-${result.applicationNo || 'document'}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(link);
+    } catch (err: any) {
+      setDownloadError(err?.message || 'เกิดข้อผิดพลาดในการดาวน์โหลด กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsDownloadingPdf(false);
     }
   };
 
@@ -254,10 +300,20 @@ export default function LookupPage() {
                       </span>
                     </div>
 
-                    {/* ชื่อตำแหน่ง */}
+                    {/* ชื่อ-นามสกุล */}
                     <div className="space-y-1">
                       <span className="text-xs text-slate-500 font-medium block">
-                        ชื่อตำแหน่ง
+                        ชื่อ-นามสกุล
+                      </span>
+                      <span className="text-base font-semibold text-slate-800 block">
+                        {result.fullname || '-'}
+                      </span>
+                    </div>
+
+                    {/* ตำแหน่งที่สมัคร */}
+                    <div className="space-y-1">
+                      <span className="text-xs text-slate-500 font-medium block">
+                        ตำแหน่งที่สมัคร
                       </span>
                       <span className="text-base font-semibold text-slate-800 block">
                         {result.positionTitle || '-'}
@@ -281,7 +337,7 @@ export default function LookupPage() {
                     </div>
 
                     {/* สถานะปัจจุบัน */}
-                    <div className="space-y-1">
+                    <div className="space-y-1 sm:col-span-2">
                       <span className="text-xs text-slate-500 font-medium block">
                         สถานะปัจจุบัน
                       </span>
@@ -289,6 +345,38 @@ export default function LookupPage() {
                         <StatusBadge status={(result.status || 'SUBMITTED') as ApplicationStatus} />
                       </div>
                     </div>
+
+                    {/* เหตุผล (หากสถานะเป็น ข้อมูลไม่ครบถ้วน หรือ ยกเลิกใบสมัคร) */}
+                    {(result.status === 'REJECTED' || result.status === 'CANCELED') && (
+                      <div className="space-y-1 sm:col-span-2 bg-amber-50/70 border border-amber-200 rounded-md p-3.5">
+                        <span className="text-xs text-amber-800 font-semibold block">
+                          เหตุผล
+                        </span>
+                        <span className="text-sm font-medium text-slate-800 block whitespace-pre-wrap">
+                          {result.statusReason || '-'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ปุ่มดาวน์โหลด PDF ใต้ผลลัพธ์การค้นหา */}
+                  <div className="pt-4 border-t border-slate-200 flex flex-col gap-2">
+                    <Button
+                      type="button"
+                      onClick={handleDownloadPdf}
+                      disabled={isDownloadingPdf}
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 shadow-sm inline-flex items-center justify-center gap-2"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      {isDownloadingPdf ? 'กำลังดาวน์โหลด...' : 'ดาวน์โหลดใบสมัคร PDF'}
+                    </Button>
+                    {downloadError && (
+                      <p className="text-sm text-red-600 font-medium text-center">
+                        {downloadError}
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>

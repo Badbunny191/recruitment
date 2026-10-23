@@ -6,7 +6,7 @@ import { USER_ROLES } from '../types';
 export const FieldTypeEnum = z.enum(['TEXT', 'TEXTAREA', 'DROPDOWN', 'RADIO', 'FILE', 'NUMBER', 'CHECKBOX', 'DATE', 'MASTER_DATA']);
 export const TemplateVersionStatusEnum = z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']);
 export const RoundStatusEnum = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
-export const ApplicationStatusEnum = z.enum(['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED']);
+export const ApplicationStatusEnum = z.enum(['DRAFT', 'SUBMITTED', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED']);
 
 // =============================================================================
 // Authentication Schemas
@@ -276,7 +276,7 @@ export const RecruitmentRoundUpdateSchema = z.object({
 }, { message: "closeDate must be after openDate", path: ["closeDate"] });
 
 export const ApplicationStatusUpdateSchema = z.object({
-  status: z.enum(['UNDER_REVIEW', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED']),
+  status: z.enum(['SUBMITTED', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED']),
   reason: z.string().optional(),
 });
 
