@@ -369,3 +369,9 @@ export const FileUploadRequestSchema = z.object({
   contentType: z.literal('application/pdf'),
   fileSize: z.number().positive().max(10 * 1024 * 1024), // Max 10MB
 });
+
+export const ApplicationLookupSchema = z.object({
+  roundId: z.string().min(1, 'กรุณาเลือกรอบรับสมัคร'),
+  email: z.string().email('กรุณากรอกอีเมลให้ถูกต้อง'),
+  phone: z.string().min(1, 'กรุณากรอกเบอร์โทรศัพท์'),
+});

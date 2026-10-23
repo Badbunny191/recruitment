@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
 import { Bindings } from '../types';
-import { ApplicationSubmitSchema, CORE_FIELD_IDS } from '../schemas/validators';
+import { ApplicationSubmitSchema, ApplicationLookupSchema, CORE_FIELD_IDS } from '../schemas/validators';
 import { recruitmentRounds, templateFields, templateSections, fieldMaster, applications, applicationAttachments, organizations } from '../db/schema';
 import { eq, and, isNull, asc, sql, like, desc } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
@@ -12,6 +12,7 @@ import { idempotencyMiddleware } from '../middlewares/idempotency.middleware';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { honeypotMiddleware } from '../middlewares/honeypot.middleware';
 import { turnstileMiddleware } from '../middlewares/turnstile.middleware';
+import { lookupApplication, getLookupRoundOptions } from '../services/applicant-lookup.service';
 
 const publicRoutes = new Hono<{ Bindings: Bindings }>();
 
@@ -674,5 +675,49 @@ publicRoutes.get('/config', (c) => {
     },
   });
 });
+
+/**
+ * GET /api/v1/public/rounds/lookup-options
+ * -----------------------------------------------------------------------------
+ * Returns active and closed recruitment rounds for applicant lookup dropdown.
+ */
+publicRoutes.get('/rounds/lookup-options', async (c) => {
+  const db = drizzle(c.env.DB);
+  const rounds = await getLookupRoundOptions(db);
+  return c.json({ data: rounds });
+});
+
+/**
+ * POST /api/v1/public/applications/lookup
+ * -----------------------------------------------------------------------------
+ * Applicant Lookup (Phase 1):
+ * Finds an application by Round + Email + Phone only.
+ * Returns applicationNo, positionTitle, roundTitle, submittedAt, status.
+ */
+publicRoutes.post(
+  '/applications/lookup',
+  rateLimitMiddleware(),
+  zValidator('json', ApplicationLookupSchema),
+  async (c) => {
+    const db = drizzle(c.env.DB);
+    const data = c.req.valid('json');
+    const result = await lookupApplication(db, data);
+
+    if (!result.ok) {
+      return c.json(
+        {
+          success: false,
+          error: result.message,
+        },
+        404
+      );
+    }
+
+    return c.json({
+      success: true,
+      data: result.data,
+    });
+  }
+);
 
 export { publicRoutes };

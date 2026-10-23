@@ -128,6 +128,32 @@ export default function HomePage() {
   // list of currently open rounds.
   return (
     <div className="max-w-5xl mx-auto p-8 space-y-6">
+      {/* กล่องค้นหาใบสมัคร */}
+      <Card className="border-blue-100 bg-gradient-to-r from-blue-50/80 via-sky-50/40 to-white shadow-sm">
+        <CardContent className="p-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="space-y-1">
+              <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                <span aria-hidden="true">🔍</span> ค้นหาใบสมัคร
+              </h2>
+              <p className="text-slate-700 font-medium text-sm">
+                สมัครแล้วและต้องการกลับมาดูข้อมูล?
+              </p>
+              <p className="text-slate-500 text-sm">
+                ตรวจสอบสถานะการสมัครย้อนหลังได้ที่นี่
+              </p>
+            </div>
+            <div>
+              <Link href="/lookup">
+                <Button className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-5 shadow-sm">
+                  ค้นหาใบสมัคร
+                </Button>
+              </Link>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">รอบรับสมัครที่เปิดอยู่</h1>
         <p className="text-slate-500 mt-1 text-sm">เลือกรอบที่ต้องการสมัครเพื่อเข้าสู่ระบบรับสมัครออนไลน์</p>
