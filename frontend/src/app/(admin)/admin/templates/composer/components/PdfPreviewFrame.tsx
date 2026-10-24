@@ -95,6 +95,15 @@ export function PdfPreviewFrame({
   const abortControllerRef = useRef<AbortController | null>(null);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /**
+   * Retry backoff หลัง transient error (503/1102 ฯลฯ)
+   * เดิม: ยิงซ้ำทุก 1s ไม่จำกัด → request storm ตอน Worker กำลัง overload
+   * เป็นสาเหตุที่ทำให้แก้ Field แล้วเจอ 503 รัว ๆ
+   * ใหม่: 1s → 2s → 4s หยุดหลัง 3 ครั้ง (แสดง error จริง)
+   */
+  const MAX_RETRIES = 3;
+  const retryDelayMs = (count: number) => Math.min(1000 * 2 ** count, 4000);
+
   const ready = !!templateVersionId && (!!descriptor || descriptorReady);
 
   // ── ยิง PDF renderer เมื่อ descriptor เปลี่ยน (debounced + abort controller) ──
@@ -149,14 +158,17 @@ export function PdfPreviewFrame({
               setStatus((prev) => (prev.state === 'ready' ? prev : { state: 'idle' }));
               return;
             }
-            if (!retryTimeoutRef.current) {
+            if (retryCount < MAX_RETRIES && !retryTimeoutRef.current) {
               retryTimeoutRef.current = setTimeout(() => {
                 retryTimeoutRef.current = null;
                 if (!cancelled && !controller.signal.aborted) {
                   setRetryCount((c) => c + 1);
                 }
-              }, 1000);
+              }, retryDelayMs(retryCount));
+              return;
             }
+            // หมดโควต้า retry — แสดง error ให้ผู้ใช้เห็นแทนการยิงซ้ำเงียบ ๆ
+            setStatus({ state: 'error', message: 'ระบบยุ่ง ลองแตะ/แก้ descriptor อีกครั้ง' });
             return;
           }
 

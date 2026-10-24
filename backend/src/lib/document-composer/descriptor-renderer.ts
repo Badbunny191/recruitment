@@ -995,7 +995,13 @@ export interface RenderedBytes {
  */
 export async function renderPlanToPdf(
   plan: RenderPlan,
-  ctx: ApplicationContext
+  ctx: ApplicationContext,
+  /**
+   * Optional cooperative cancellation — เช็คเป็นระยะระหว่าง command loop
+   * เพื่อหยุดงาน render ของ request ที่ client abort ไปแล้ว (ประหยัด CPU
+   * ของ isolate ที่ต้องแชร์กันหลาย request)
+   */
+  signal?: AbortSignal
 ): Promise<RenderedBytes> {
   // Lazy load assets — logo เฉพาะเมื่อ plan มี logo block
   // เพื่อลด PDF size สำหรับ table/field-only documents
@@ -1025,6 +1031,11 @@ export async function renderPlanToPdf(
   const generatedAt = Math.floor(Date.now() / 1000);
 
   for (const cmd of plan.commands) {
+    // Cooperative abort — client ยกเลิกไปแล้ว (เช่น แก้ descriptor ถัดไป)
+    // ให้หยุดเร็วก่อนจะกิน CPU ของ isolate ต่อ
+    if (signal?.aborted) {
+      throw new DOMException("PDF render aborted", "AbortError");
+    }
     try {
       executeCommand(state, ctx, cmd);
     } catch (err) {

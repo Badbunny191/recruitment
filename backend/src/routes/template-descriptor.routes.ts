@@ -55,6 +55,11 @@ import { PageSettingsSchema } from '../lib/document-composer/page-settings';
 import { renderDescriptorToPreview } from '../lib/document-composer';
 import { buildRenderPlan, renderPlanToPdf } from '../lib/document-composer';
 import { validateDescriptor } from '../lib/document-composer';
+import {
+  makePreviewCacheKey,
+  getCachedPreview,
+  setCachedPreview,
+} from '../lib/document-composer/pdf-preview-cache';
 import type { DocumentDescriptor } from '../lib/document-composer/types';
 
 const descriptorRouter = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
@@ -433,7 +438,29 @@ descriptorRouter.post(
 // → ฝั่ง browser เปิดใน <iframe> / <embed> ได้ทันที
 //
 // ไม่บันทึก — แค่ preview
+//
+// ⚙️ Resource guards (Error 1102 / 503 ตอนแก้ Field ใน Composer):
+//   1. In-isolate LRU cache ตามเนื้อหา descriptor → request ซ้ำ (retry /
+//      panel+modal พร้อมกัน / descriptor เดิม) ไม่ render ใหม่
+//   2. ส่ง AbortSignal เข้า renderer → client ยกเลิกแล้ว (แก้ไขถัดไป)
+//      หยุด render กลางทาง ไม่กิน CPU ของ isolate ต่อ
+//   3. Instrumentation บรรทัดเดียว ไม่มี PII (ไม่มี formData / ชื่อ /
+//      อีเมล / เบอร์โทร / ข้อความคำตอบจริง)
 // =============================================================================
+
+/** นับเฉพาะ text ที่ฝังใน render plan (config ของ Admin) — ไม่ใช่คำตอบจริง */
+function planTextLength(commands: { type: string }[]): number {
+  let total = 0;
+  for (const cmd of commands as any[]) {
+    if (typeof cmd?.text === "string") total += cmd.text.length;
+    if (typeof cmd?.label === "string") total += cmd.label.length;
+    if (typeof cmd?.valueText === "string") total += cmd.valueText.length;
+    if (typeof cmd?.signerName === "string") total += cmd.signerName.length;
+    if (typeof cmd?.dateText === "string") total += cmd.dateText.length;
+    if (typeof cmd?.emptyText === "string") total += cmd.emptyText.length;
+  }
+  return total;
+}
 
 descriptorRouter.post(
   '/:id/descriptor/pdf-preview',
@@ -442,6 +469,8 @@ descriptorRouter.post(
     const db = drizzle(c.env.DB);
     const id = c.req.param('id');
     const payload = c.req.valid('json');
+    const tStart = Date.now();
+    const requestId = crypto.randomUUID();
 
     // 1. Verify template version exists
     const found = await findTemplateVersion(db, id);
@@ -483,9 +512,41 @@ descriptorRouter.post(
       }
     }
 
-    // 4. ⚙️ PDF Renderer ตัวเดียวกับ export
+    // 4. ⚙️ Cache by content — descriptor + data source เดิมเป๊ะ = คืน bytes เดิม
+    //    (retry / component ซ้อนกัน / preview ซ้ำ → CPU ~0)
+    const cacheKey = makePreviewCacheKey(payload.descriptor, payload.applicationId);
+    const cached = getCachedPreview(cacheKey);
+    if (cached) {
+      // eslint-disable-next-line no-console
+      console.info(
+        JSON.stringify({
+          msg: 'pdf-preview',
+          requestId,
+          templateVersionId: id,
+          cache: 'hit',
+          pageCount: cached.pageCount,
+          totalMs: Date.now() - tStart,
+          outputBytes: cached.bytes.byteLength,
+        })
+      );
+      return new Response(cached.bytes as unknown as BodyInit, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': 'inline; filename="descriptor-preview.pdf"',
+          'Content-Length': String(cached.bytes.byteLength),
+          'X-Pdf-Page-Count': String(cached.pageCount),
+          'X-Pdf-Preview-Cache': 'hit',
+          'Access-Control-Expose-Headers': 'X-Pdf-Page-Count, Content-Length, Content-Disposition',
+          'Cache-Control': 'no-store',
+        },
+      });
+    }
+
+    // 5. ⚙️ PDF Renderer ตัวเดียวกับ export
     //    - pageBreak → ขึ้นหน้าใหม่ทันที (addNewPage)
     //    - ไม่มี height estimation
+    //    - signal จาก client → หยุด render กลางทางได้ (cooperative)
     //
     // Cast เป็น DocumentDescriptor เหมือน preview route
     // (zod output ยังรองรับ legacy `dateSource: 'application'` ที่ type ไม่ระบุ)
@@ -494,13 +555,43 @@ descriptorRouter.post(
       if (c.req.raw.signal?.aborted) {
         return new Response(null, { status: 499 });
       }
+      const tPlan0 = Date.now();
       const plan = buildRenderPlan(descriptor, ctx);
+      const buildRenderPlanMs = Date.now() - tPlan0;
       if (c.req.raw.signal?.aborted) {
         return new Response(null, { status: 499 });
       }
-      const rendered = await renderPlanToPdf(plan, ctx);
+      const tRender0 = Date.now();
+      const rendered = await renderPlanToPdf(plan, ctx, c.req.raw.signal);
+      const renderPlanToPdfMs = Date.now() - tRender0;
 
-      // 5. Return PDF bytes
+      // 6. Cache ผลลัพธ์ (บุคคลทั่วไปที่ preview descriptor เดิมซ้ำ)
+      setCachedPreview(cacheKey, rendered.bytes, rendered.pageCount);
+
+      // 7. Instrumentation — ตัวเลขสถิติเท่านั้น ไม่มีเนื้อหา/PII
+      const fieldBlockCount = plan.commands.filter((cmd) => cmd.type === 'field').length;
+      const tableCount = plan.commands.filter((cmd) => cmd.type === 'table').length;
+      // eslint-disable-next-line no-console
+      console.info(
+        JSON.stringify({
+          msg: 'pdf-preview',
+          requestId,
+          templateVersionId: id,
+          cache: 'miss',
+          blockCount: plan.meta.blockCount,
+          fieldBlockCount,
+          tableCount,
+          renderCommandCount: plan.commands.length,
+          pageCount: rendered.pageCount,
+          totalTextLength: planTextLength(plan.commands),
+          buildRenderPlanMs,
+          renderPlanToPdfMs,
+          totalMs: Date.now() - tStart,
+          outputBytes: rendered.bytes.byteLength,
+        })
+      );
+
+      // 8. Return PDF bytes
       return new Response(rendered.bytes as unknown as BodyInit, {
         status: 200,
         headers: {
@@ -508,13 +599,18 @@ descriptorRouter.post(
           'Content-Disposition': 'inline; filename="descriptor-preview.pdf"',
           'Content-Length': String(rendered.bytes.byteLength),
           'X-Pdf-Page-Count': String(rendered.pageCount),
+          'X-Pdf-Preview-Cache': 'miss',
           'Access-Control-Expose-Headers': 'X-Pdf-Page-Count, Content-Length, Content-Disposition',
           'Cache-Control': 'no-store',
         },
       });
     } catch (err) {
+      // client abort ระหว่าง render → ไม่ใช่ error ของระบบ
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return new Response(null, { status: 499 });
+      }
       // eslint-disable-next-line no-console
-      console.error('[descriptor/pdf-preview] render failed:', err);
+      console.error('[descriptor/pdf-preview] render failed:', requestId, err);
       return c.json({ error: 'Failed to render PDF preview' }, 500);
     }
   }
