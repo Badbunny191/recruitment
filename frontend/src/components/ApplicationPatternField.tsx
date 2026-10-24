@@ -323,12 +323,16 @@ export function ApplicationPatternField({
   };
 
   // ===== Locked state (round has applications) =====
+  // แสดงเป็นข้อมูล Read Only ไม่ใช่ฟอร์ม (ไม่มี input / helper text /
+  // เครื่องหมาย *) เพื่อให้สื่อว่าไม่ต้องแก้ไขอีก
   if (locked) {
     return (
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <Label>รูปแบบเลขที่ใบสมัคร</Label>
         <div className="p-3 bg-slate-100 rounded-lg space-y-1">
-          <div className="text-sm font-mono">{value ?? 'APP-YYYY-NNNN (format เดิม)'}</div>
+          <div className="text-sm font-mono text-slate-900 break-all">
+            {value ?? 'APP-YYYY-NNNN (format เดิม)'}
+          </div>
           {lockedReason && (
             <p className="text-xs text-amber-700 flex items-center gap-1">
               <span>🔒</span>

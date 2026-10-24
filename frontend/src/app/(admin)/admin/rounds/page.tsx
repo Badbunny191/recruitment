@@ -295,6 +295,11 @@ export default function RoundsPage() {
     }
   };
 
+  // ===== Derived: รอบถูกล็อก (มีผู้สมัครแล้ว) =====
+  // ใช้ทั้งกับรหัสรอบ (round_code) และรูปแบบเลขที่ใบสมัคร
+  // ค่ายังถูกส่งไป backend ตามปกติ แต่ UI แสดงเป็น Read Only
+  const isRoundLocked = editingAppCount !== null && editingAppCount > 0;
+
   const loadRounds = async () => {
     setLoading(true);
     // ดึงข้อมูลทั้งหมดเสมอ เพื่อให้ KPI เป็น System Summary (ไม่ใช่ Filter Summary)
@@ -941,27 +946,47 @@ export default function RoundsPage() {
                   </div>
 
                   <div className="space-y-1.5">
-                    <Label htmlFor="roundCode">
-                      รหัสรอบ (round_code) <span className="text-red-500">*</span>
-                    </Label>
-                    <Input
-                      id="roundCode"
-                      value={form.roundCode}
-                      onChange={(e) => {
-                        // Auto uppercase + filter invalid chars
-                        const cleaned = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-                        setForm({ ...form, roundCode: cleaned });
-                      }}
-                      placeholder="CHM01"
-                      className="font-mono"
-                      maxLength={20}
-                      minLength={3}
-                      required
-                      disabled={editingAppCount !== null && editingAppCount > 0}
-                    />
-                    <p className="text-[11px] text-slate-500">
-                      A-Z และ 0-9 เท่านั้น (3-20 ตัว)
-                    </p>
+                    {/* เมื่อรอบมีผู้สมัครแล้ว → รหัสรอบถูกล็อก (immutable)
+                        แสดงเป็นข้อมูล Read Only แทนช่องกรอก เพื่อไม่ให้ผู้ใช้
+                        สับสนว่ายังต้องกรอก/แก้ไขอยู่หรือไม่
+                        ค่าเดิมยังถูกเก็บไว้ใน form.roundCode ตามปกติ */}
+                    {isRoundLocked ? (
+                      <>
+                        <Label>รหัสรอบ (round_code)</Label>
+                        <div className="p-3 bg-slate-100 rounded-lg space-y-1">
+                          <div className="text-sm font-mono text-slate-900">
+                            {form.roundCode || '—'}
+                          </div>
+                          <p className="text-xs text-amber-700 flex items-center gap-1">
+                            <span>🔒</span>
+                            <span>ล็อกเนื่องจากมีผู้สมัครแล้ว</span>
+                          </p>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <Label htmlFor="roundCode">
+                          รหัสรอบ (round_code) <span className="text-red-500">*</span>
+                        </Label>
+                        <Input
+                          id="roundCode"
+                          value={form.roundCode}
+                          onChange={(e) => {
+                            // Auto uppercase + filter invalid chars
+                            const cleaned = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                            setForm({ ...form, roundCode: cleaned });
+                          }}
+                          placeholder="CHM01"
+                          className="font-mono"
+                          maxLength={20}
+                          minLength={3}
+                          required
+                        />
+                        <p className="text-[11px] text-slate-500">
+                          A-Z และ 0-9 เท่านั้น (3-20 ตัว)
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -985,10 +1010,10 @@ export default function RoundsPage() {
                     : new Date().getFullYear(),
                   roundCode: form.roundCode || '?',
                 }}
-                locked={editingAppCount !== null && editingAppCount > 0}
+                locked={isRoundLocked}
                 lockedReason={
-                  editingAppCount
-                    ? `ล็อก — มีผู้สมัครแล้ว ${editingAppCount} คน (หากต้องการรูปแบบใหม่ กรุณา Clone Round)`
+                  isRoundLocked
+                    ? `ล็อกเนื่องจากมีผู้สมัครแล้ว ${editingAppCount} คน (หากต้องการรูปแบบใหม่ กรุณา Clone Round)`
                     : undefined
                 }
               />
