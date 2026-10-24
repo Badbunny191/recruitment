@@ -2,7 +2,7 @@
 
 > **กฎกลางสำหรับการจัดการ Database Migration ของโปรเจกต์ Recruitment**
 > มีผลบังคับใช้กับทุกคนในทีม Backend, Frontend, DevOps
-> อัปเดตล่าสุด: 14 ตุลาคม 2569
+> อัปเดตล่าสุด: 25 ตุลาคม 2569 (ปรับ Naming Convention ตาม Business Decision เรื่องเลขสามหลัก)
 
 ---
 
@@ -27,30 +27,28 @@ backend/
 
 ---
 
-## 1.1 Legacy Migrations Exception Policy
+## 1.1 Legacy Migrations Exception Policy (อัปเดต 25 ต.ค. 2569)
 
-> **Migration ทั้ง 18 ไฟล์ที่มีอยู่ในปัจจุบัน (ณ วันที่ 14 ตุลาคม 2569) ถือเป็น "Legacy Baseline" และได้รับการยกเว้นจากกฎ Naming Convention**
+> **Migration ที่สร้าง/apply ก่อนวันที่ 25 ตุลาคม 2569 ถือเป็น "Legacy Baseline" และได้รับการยกเว้นจากกฎ Naming Convention**
 
-### ไฟล์ที่อยู่ใน Legacy Baseline (18 ไฟล์)
+### ไฟล์ที่อยู่ใน Legacy Baseline (26 ไฟล์ — ตรงกับ `LEGACY_BASELINE` ใน `scripts/check-migrations.js`)
 
-**3-digit prefix (15 ไฟล์) — ผิด naming convention แต่ห้าม rename:**
+**3-digit prefix (23 ไฟล์) — ผิด naming convention แต่ห้าม rename (production ledger อ้างอิงชื่อเดิม):**
 
 ```
-002_field_master_enhancement.sql
-003_validation_required_fix.sql
-004_field_master_enhancement_phase0.sql
-005_organizations.sql
-006_sprint1_announcement_metadata.sql
-007_organizations_display_order.sql
-008_position_masters.sql
-009_template_sections.sql
-010_recover_negative_display_order.sql
-011_field_type_master_data.sql
-015_fix_template_fields_fk_target.sql
-015_rollback.sql
-016_templates_deleted_at.sql
-017_audit_logs_performance_indexes.sql
-018_add_template_field_validation_message.sql
+002_field_master_enhancement.sql          015_fix_template_fields_fk_target.sql
+003_validation_required_fix.sql           015_rollback.sql          ← duplicate prefix (documented exception)
+004_field_master_enhancement_phase0.sql   016_templates_deleted_at.sql
+005_organizations.sql                     017_audit_logs_performance_indexes.sql
+006_sprint1_announcement_metadata.sql     018_add_template_field_validation_message.sql
+007_organizations_display_order.sql       019_application_number_pattern.sql
+008_position_masters.sql                  020_auth_hardening.sql    ← duplicate prefix (documented exception)
+009_template_sections.sql                 020_role_model_v1.sql     ← duplicate prefix (documented exception)
+010_recover_negative_display_order.sql    022_template_versions_descriptor.sql
+011_field_type_master_data.sql            023_admin_users_last_login_at.sql
+                                         024_role_migration.sql
+                                         025_user_management_reconciliation.sql
+                                         026_other_option_support.sql
 ```
 
 **4-digit prefix (3 ไฟล์) — apply production แล้วก่อน governance adoption:**
@@ -72,7 +70,7 @@ backend/
 
 | Rule | Legacy Files | New Files (หลัง 14 ต.ค. 2569) |
 |---|---|---|
-| **Filename format** (`NNNN_description.sql`) | ⚠️ Exempt | ✅ Required |
+| **Filename format** (`NNN_description.sql` — สามหลักต่อจากเลขสูงสุดจริง) | ⚠️ Exempt | ✅ Required |
 | **Duplicate prefix check** | ⚠️ Exempt | ✅ Required |
 | **Forbidden keywords** (rollback/down/revert/fix/drop) | ⚠️ Exempt | ✅ Required |
 | **Immutability** (ห้าม rename/delete/modify) | ✅ Enforced | ✅ Enforced |
@@ -98,46 +96,55 @@ backend/
 
 ## 2. Naming Convention
 
+> **Business Decision (25 ตุลาคม 2569): ระบบเลขของ Repository คือ "เลขสามหลัก" สืบต่อจากเลขสูงสุดจริง**
+> ประวัติ: repo เริ่มด้วย 0000–0002 (สี่หลัก, drizzle สร้าง) แล้วสลับเป็นสามหลักตั้งแต่ 002 ต่อเนื่องถึง
+> 026_other_option_support.sql — ทุกไฟล์หลังจากนั้น (เริ่มจาก 027) **ใช้เลขสามหลักต่อจากเลขสูงสุดจริงเสมอ**
+> ห้ามเปลี่ยนระบบเลขกลางทาง และห้าม rename migration ที่ apply แล้วเพื่อ "ทำให้เลขสวย"
+
 ### Format บังคับ
 
 ```
-NNNN_description.sql
+NNN_description.sql
 ```
 
 ### กฎทั้งหมด
 
 | # | กฎ | ✅ ตัวอย่างที่ถูก | ❌ ตัวอย่างที่ผิด |
 |---|---|---|---|
-| 1 | ใช้ตัวเลข 4 หลัก zero-padded | `0001` | `1`, `01`, `001`, `00001` |
-| 2 | ตัวเลขต่อเนื่อง ไม่ข้าม ไม่ซ้ำ | `0001` → `0002` → `0003` | `0001` → `0003` (ข้าม 0002) |
-| 3 | Underscore 1 ตัวคั่น prefix กับ description | `0001_applications.sql` | `0001-applications.sql` |
+| 1 | ใช้เลขสามหลัก zero-padded **ต่อจากเลขสูงสุดจริงใน repo** (ปัจจุบันล่าสุด = 027) | `028` | `027_2_xxx.sql` (เลขล้น), `28` (ขาด zero-pad) |
+| 2 | ตัวเลขต่อเนื่องจากไฟล์สูงสุด ไม่ข้าม ไม่ซ้ำ | 027 → 028 | 027 → 030 (ข้าม), 027 → 027 (ซ้ำ) |
+| 3 | Underscore 1 ตัวคั่น prefix กับ description | `028_applications.sql` | `028-applications.sql` |
 | 4 | lowercase ทั้งหมด | `audit_trail.sql` | `Audit_Trail.sql`, `AUDIT_TRAIL.sql` |
 | 5 | ใช้ snake_case สำหรับ description | `add_template_field_validation_message.sql` | `addTemplateFieldMessage.sql` |
-| 6 | ห้ามมีคำว่า `rollback`, `down`, `revert`, `fix`, `drop` ในชื่อ | — | `015_rollback.sql`, `015_fix_xxx.sql` |
-| 7 | ห้าม duplicate prefix ใน folder เดียวกัน | — | `015_a.sql`, `015_b.sql` |
-| 8 | ไม่มี random word หรือ random hash ในชื่อ | `field_master_enhancement.sql` | `0001_demonic_whistler.sql` |
+| 6 | ห้ามมีคำว่า `rollback`, `down`, `revert`, `fix`, `drop` ในชื่อ | — | `028_rollback.sql`, `028_fix_xxx.sql` |
+| 7 | ห้าม duplicate numeric prefix ใน folder เดียวกัน เว้นแต่เป็น Legacy Exception ที่บันทึกใน `LEGACY_BASELINE` แล้ว (ปัจจุบัน: 015×2, 020×2) | — | `028_a.sql`, `028_b.sql` |
+| 8 | ไม่มี random word หรือ random hash ในชื่อ | `field_master_enhancement.sql` | `028_demonic_whistler.sql` |
 
 ### ตัวอย่างชื่อที่ถูกต้อง
 
 ```
-0000_normal_alex_wilder.sql
-0001_applications_management.sql
-0002_audit_trail.sql
-0019_nullable_national_id.sql
-0020_add_template_snapshot_system.sql
+027_application_attachments_original_filename.sql
+028_<description>.sql   (ไฟล์ถัดไปหลัง 027)
 ```
 
 ### ตัวอย่างชื่อที่ผิด (จะถูก CI block)
 
 ```
-1_applications.sql             ← ขาด zero-pad
-0001Applications.sql            ← camelCase
-0001-applications.sql          ← ใช้ hyphen
-0001_applications              ← ขาด .sql
-015_rollback.sql               ← มีคำว่า rollback
-015_fix_template_fields.sql    ← มีคำว่า fix
-0001_Applications_v2.sql       ← มีตัวพิมพ์ใหญ่
+28_applications.sql             ← ขาด zero-pad (สองหลัก)
+0028_applications.sql           ← สี่หลัก — เปลี่ยนระบบเลขกลางทาง (Business Decision ใช้สามหลัก)
+028-applications.sql            ← ใช้ hyphen
+028Applications.sql             ← camelCase
+028_applications                ← ขาด .sql
+028_rollback.sql                ← มีคำว่า rollback
+028_fix_template_fields.sql     ← มีคำว่า fix
+028_Applications_v2.sql         ← มีตัวพิมพ์ใหญ่
 ```
+
+### กฎเลขพิเศษ
+
+- **Migration ใหม่ทุกไฟล์ต้องตรวจก่อนสร้างว่าไม่มีเลขนั้นอยู่แล้ว** — หากพบเลขถัดไปถูกใช้แล้ว ให้หยุดและรายงานเจ้าของระบบ ห้ามเดาเลขถัดไปเอง
+- **ห้าม rename / แก้ / ย้าย migration ที่ apply แล้ว** (ดูมาตรา 3 Immutable Migration Policy)
+- **Legacy 0000–0002 (สี่หลัก) คงชื่อเดิมตลอดกาล** — อนุญาตให้มีอยู่ใน folder แต่ห้ามสร้างไฟล์สี่หลักใหม่
 
 ---
 
@@ -307,7 +314,7 @@ curl https://api.example.com/v1/healthz
 
 ### Pre-merge (ผู้เขียน migration)
 
-- [ ] **Number ถูกต้อง** — ใช้ 4 หลัก zero-padded, prefix = migration ล่าสุด + 1
+- [ ] **Number ถูกต้อง** — ใช้เลขสามหลัก zero-padded ต่อจาก migration ล่าสุดจริงใน repo (ล่าสุดปัจจุบัน = 027 → ไฟล์ถัดไป 028) และตรวจก่อนสร้างว่ายังไม่มีเลขนั้น
 - [ ] **ไม่ซ้ำ prefix** — `ls backend/migrations/` แล้วไม่มี prefix นี้
 - [ ] **ไม่ rename migration เดิม** — `git diff` แสดงเฉพาะ "new file"
 - [ ] **ชื่อเป็น lowercase + underscore** — ไม่มี camelCase, hyphen, ตัวพิมพ์ใหญ่
@@ -321,7 +328,7 @@ curl https://api.example.com/v1/healthz
 
 ### Schema Consistency (CI ตรวจอัตโนมัติ)
 
-- [ ] **Filename format** — `^[0-9]{4}_[a-z0-9_]+\.sql$`
+- [ ] **Filename format** — `^[0-9]{3,4}_[a-z0-9_]+\.sql$` (ไฟล์ใหม่ใช้สามหลัก; {3,4} เพื่อรองรับ legacy 0000–0002 ใน folder เดียวกัน)
 - [ ] **ไม่มี duplicate prefix**
 - [ ] **ไม่มี rollback/down/revert ในชื่อ**
 - [ ] **ไม่มี migration ใหม่ใน `backend/drizzle/`**
@@ -350,7 +357,7 @@ curl https://api.example.com/v1/healthz
 
 **ตรวจอัตโนมัติ:**
 
-1. **Filename format** — ต้อง match regex `^[0-9]{4}_[a-z0-9_]+\.sql$`
+1. **Filename format** — ต้อง match regex `^[0-9]{3,4}_[a-z0-9_]+\.sql$` (ไฟล์ใหม่ = สามหลักต่อเนื่องจากเลขสูงสุดจริง; สี่หลักยอมเฉพาะ legacy 0000–0002)
 2. **Duplicate prefix** — ตรวจว่าไม่มี prefix ซ้ำใน folder
 3. **No rollback file** — ตรวจว่าไม่มีไฟล์ที่มีคำว่า rollback/down/revert ในชื่อ
 4. **No new file in drizzle/** — ตรวจว่าไม่มี migration ใหม่ใน `backend/drizzle/`

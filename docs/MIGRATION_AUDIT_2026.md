@@ -89,6 +89,14 @@
 
 **ความเสี่ยง:** 🔴 CRITICAL
 
+> **อัปเดต 25 ตุลาคม 2569 — RESOLVED (เรื่องเลขสาม/สี่หลัก):**
+> Business Decision ยืนยันให้ระบบเลขของ repo เป็น "สามหลักต่อจากเลขสูงสุดจริง" (026 → 027)
+> พร้อมกันนั้น `scripts/check-migrations.js` ถูกปรับให้ตรวจ `^[0-9]{3,4}_` (สี่หลักยอมเฉพาะ
+> legacy 0000–0002) และ 019–026 ที่ apply จริงแล้วถูกบันทึกเป็น Legacy Baseline ครบถ้วน
+> (duplicate 020×2 เป็น documented exception เช่นเดียวกับ 015×2) —
+> รายละเอียดดู `docs/MIGRATION_GOVERNANCE.md` มาตรา 2 (ฉบับ 25 ต.ค. 2569)
+> ปัญหาคงเหลือจาก Finding นี้: ไฟล์ `015_rollback.sql` ยังอยู่ใน migrations/ (ตามห้าม rename) — ดู Finding #3
+
 ---
 
 ### 3. มี Rollback File ปะปนใน Migration Folder

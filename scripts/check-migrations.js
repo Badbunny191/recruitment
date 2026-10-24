@@ -32,8 +32,15 @@ const path = require('path');
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'backend', 'migrations');
 
-// Regex สำหรับ filename ที่ถูกต้อง: NNNN_description.sql
-const VALID_FILENAME_REGEX = /^[0-9]{4}_[a-z0-9_]+\.sql$/;
+// Regex สำหรับ filename ที่ถูกต้องของ "Migration ใหม่": NNN_description.sql
+//
+// นโยบายเลข (Business Decision 25 ต.ค. 2569 — Final Fix):
+//   - Migration ใหม่ใช้ "เลขสามหลัก" เท่านั้น ต่อจากเลขสูงสุดจริงใน repo (026 → 027 → 028 …)
+//   - เลขสี่หลัก (0000–0002) เป็น Legacy ที่ apply แล้ว — ผ่านได้ "เฉพาะ" เพราะชื่ออยู่ใน
+//     LEGACY_BASELINE (ถูก exempt จาก format check) ไม่ใช่เพราะ regex ยอมรับ
+//   - ดังนั้น regex นี้จึงเป็น {3} เท่านั้น — ไฟล์ใหม่สี่หลัก (เช่น 0028_xxx.sql) จะถูก
+//     FILENAME_FORMAT ปฏิเสธทันที
+const VALID_FILENAME_REGEX = /^[0-9]{3}_[a-z0-9_]+\.sql$/;
 
 // คำที่ห้ามอยู่ในชื่อไฟล์
 const FORBIDDEN_KEYWORDS = ['rollback', 'down', 'revert', 'fix', 'drop'];
@@ -68,6 +75,10 @@ const LEGACY_BASELINE = [
   '016_templates_deleted_at.sql',
   '017_audit_logs_performance_indexes.sql',
   '018_add_template_field_validation_message.sql',
+  // === duplicate prefix 020 (สร้างก่อน regex {3,4} ถูกปรับ — documented exception
+  //     ตามแบบเดียวกับ 015 สองไฟล์ข้างบน; ห้าม rename ตาม Immutable Migration Policy) ===
+  '020_auth_hardening.sql',
+  '020_role_model_v1.sql',
 
   // === 4-digit prefix (applied to production before governance adoption) ===
   '0000_normal_alex_wilder.sql',
@@ -123,17 +134,17 @@ function checkFilenameFormat(files) {
       errors.push({
         file,
         rule: 'FILENAME_FORMAT',
-        message: `ชื่อไฟล์ migration ใหม่ไม่ตรง format NNNN_description.sql`,
-        details: `ต้องเป็น: ^[0-9]{4}_[a-z0-9_]+\\.sql$`,
+        message: `ชื่อไฟล์ migration ใหม่ไม่ตรง format NNN_description.sql (เลขสามหลักเท่านั้น)`,
+        details: `ต้องเป็น: ^[0-9]{3}_[a-z0-9_]+\\.sql$ ต่อจากเลขสูงสุดจริงใน repo — ไฟล์สี่หลักผ่านได้เฉพาะ Legacy ใน LEGACY_BASELINE`,
         examples: {
-          correct: '0001_applications_management.sql',
+          correct: '028_description_snake_case.sql',
           wrong: [
-            '1_applications.sql (ขาด zero-pad)',
-            '001_applications.sql (3 หลัก)',
-            '0001-application.sql (ใช้ hyphen)',
-            '0001Applications.sql (camelCase)',
-            '0001_Applications.sql (ตัวพิมพ์ใหญ่)',
-            '0001_applications (ขาด .sql)',
+            '28_applications.sql (ขาด zero-pad — สองหลัก)',
+            '0028_applications.sql (สี่หลัก — ห้ามสำหรับ migration ใหม่)',
+            '028-applications.sql (ใช้ hyphen)',
+            '028Applications.sql (camelCase)',
+            '028_Applications.sql (ตัวพิมพ์ใหญ่)',
+            '028_applications (ขาด .sql)',
           ],
         },
       });
@@ -143,12 +154,72 @@ function checkFilenameFormat(files) {
   return errors;
 }
 
+/**
+ * ตรวจชื่อไฟล์ซ้ำเป๊ะ (defensive) — readdirSync ปกติไม่คืนชื่อซ้ำใน FS เดียวกัน
+ * แต่ case-insensitive FS / symlink / การ scan ซ้ำในอนาคตอาจทำให้เกิดได้
+ * Wrangler ใช้ filename เป็น unique identity ใน d1_migrations → ชื่อซ้ำ = ledger สับสน
+ */
+function checkDuplicateFilename(files) {
+  const errors = [];
+  const seen = new Set();
+  for (const file of files) {
+    if (seen.has(file)) {
+      errors.push({
+        file,
+        rule: 'DUPLICATE_FILENAME',
+        message: `พบชื่อไฟล์ migration ซ้ำ 2 ครั้ง: "${file}"`,
+        details: `Wrangler ใช้ filename เป็น unique identity ใน d1_migrations — ชื่อซ้ำทำให้ ledger สับสน`,
+      });
+    } else {
+      seen.add(file);
+    }
+  }
+  return errors;
+}
+
+/**
+ * ตรวจ prefix ของ migration ใหม่ "ต่อเนื่องจากเลขสูงสุดจริง" — ห้ามข้ามเลข
+ * (เช่น ล่าสุด 027 → ไฟล์ใหม่ต้องเป็น 028 การกระโดดไป 029 โดยไม่มี 028 คือข้ามเลข)
+ *
+ * วิธี: ไฟล์ใหม่แต่ละไฟล์ต้องมีเลข prefix ≤ (เลขสูงสุดของไฟล์อื่นทั้งหมด) + 1
+ * — ไฟล์ใหม่ตัวสูงสุดใน folder จึงต้อง = สูงสุดเดิม + 1 เป๊ะ
+ * — ไฟล์ new เก่าๆ ที่มีอยู่จริง (019, 022–026) ต่ำกว่าสูงสุดอยู่แล้วจึงผ่าน
+ *   หมายเหตุ: ช่องว่าง 021 ในประวัติศาสตร์ไม่ถูกฟ้องเพราะ rule นี้ดูแค่ "ห้ามเกิน +1"
+ */
+function checkPrefixContinuity(files) {
+  const errors = [];
+  const prefixOf = (f) => {
+    const m = f.match(/^([0-9]{3,4})_/); // grouping ครอบทั้ง legacy 4 หลักและ new 3 หลัก
+    return m ? parseInt(m[1], 10) : null;
+  };
+  const entries = files
+    .map((f) => ({ file: f, num: prefixOf(f) }))
+    .filter((e) => e.num !== null);
+
+  for (const entry of entries) {
+    if (LEGACY_BASELINE_SET.has(entry.file)) continue; // legacy สร้างก่อน rule นี้
+    const maxOther = Math.max(0, ...entries.filter((e) => e.file !== entry.file).map((e) => e.num));
+    if (entry.num > maxOther + 1) {
+      errors.push({
+        file: entry.file,
+        rule: 'NON_CONSECUTIVE_PREFIX',
+        message: `เลข prefix ${String(entry.num).padStart(3, '0')} ข้ามเลข — สูงสุดจริงใน repo คือ ${String(maxOther).padStart(3, '0')}`,
+        details: `Migration ใหม่ต้องใช้เลข "ต่อจากเลขสูงสุดจริง" เท่านั้น (Business Decision 25 ต.ค. 2569)`,
+        suggestion: `เปลี่ยนเป็น ${String(maxOther + 1).padStart(3, '0')}_${entry.file.split('_').slice(1).join('_')} — หากเห็นว่าเลขสูงสุดถูกใช้ไปแล้วจริง ให้หยุดและรายงานเจ้าของระบบ ห้ามเดาเลขเอง`,
+      });
+    }
+  }
+  return errors;
+}
+
 function checkDuplicatePrefix(files) {
   const errors = [];
   const prefixMap = new Map();
 
   for (const file of files) {
-    const match = file.match(/^([0-9]{4})_/);
+    // capture ใช้เพื่อ "จัดกลุ่ม" เท่านั้น (ครอบ legacy 4 หลัก 0000–0002 ด้วย)
+    // — ไม่ใช่การยอมรับ format ของไฟล์ใหม่ ไฟล์ใหม่สี่หลักถูก FILENAME_FORMAT ปฏิเสธแล้ว
+    const match = file.match(/^([0-9]{3,4})_/);
     if (!match) continue; // skip files with invalid format (already reported)
 
     const prefix = match[1];
@@ -157,7 +228,6 @@ function checkDuplicatePrefix(files) {
     }
     prefixMap.get(prefix).push(file);
   }
-
   for (const [prefix, fileList] of prefixMap.entries()) {
     if (fileList.length > 1) {
       // Separate legacy vs new files
@@ -173,7 +243,7 @@ function checkDuplicatePrefix(files) {
           rule: 'DUPLICATE_PREFIX',
           message: `มี migration ใหม่ที่ใช้ prefix ${prefix} ซ้ำกับ migration อื่น`,
           details: `Wrangler จะมองว่าเป็น 2 migration ที่ต้อง apply ตามลำดับตัวอักษร → อาจเกิดลำดับผิด`,
-          suggestion: `เปลี่ยน prefix ของ migration ใหม่ให้เป็น ${String(parseInt(prefix) + 1).padStart(4, '0')} หรือสูงกว่า`,
+          suggestion: `เปลี่ยน prefix ของ migration ใหม่ให้เป็น ${String(parseInt(prefix) + 1).padStart(prefix.length, '0')} หรือสูงกว่า`,
         });
       }
     }
@@ -315,7 +385,9 @@ function main() {
   // Run all checks (only on non-legacy files)
   const allErrors = [
     ...checkFilenameFormat(files),
+    ...checkDuplicateFilename(files),
     ...checkDuplicatePrefix(files),
+    ...checkPrefixContinuity(files),
     ...checkForbiddenKeywords(files),
   ];
 
