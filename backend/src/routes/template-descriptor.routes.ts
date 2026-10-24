@@ -43,6 +43,7 @@ import {
   loadApplicationContext,
   ApplicationContextError,
 } from '../services/application-context.service';
+import { invalidatePdfCacheForTemplateVersion } from '../lib/pdf-cache-invalidation';
 
 import {
   generateDescriptorFromTemplate,
@@ -328,6 +329,11 @@ descriptorRouter.put(
           );
       }
     }
+
+    // 3. Invalidate R2 PDF cache ของใบสมัครที่ render จาก template version นี้ (D1)
+    //    descriptor เปลี่ยน = เนื้อหา PDF ของทุกใบใน version นี้เปลี่ยน —
+    //    best-effort: ล้มเหลวก็ log ภายในแล้วส่ง error กลับไม่ได้ (ไม่กระทบการบันทึก)
+    await invalidatePdfCacheForTemplateVersion(db, c.env.R2_BUCKET, id);
 
     return c.json({
       success: true,
