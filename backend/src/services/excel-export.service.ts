@@ -50,6 +50,7 @@ import {
   replaceOtherInDisplay,
   OTHER_KEY_SUFFIX,
 } from '../lib/other-option';
+import { attachmentDisplayFileName, attachmentDisplayName } from '../utils/filename';
 import { toUnixTimestamp } from '../utils/timestamp';
 import type { Bindings } from '../types';
 
@@ -116,21 +117,12 @@ function bangkokStampNow(): string {
     .replace(' ', '-'); // YYYYMMDD-HHmm
 }
 
-// ── Filename from attachment URL ───────────────────────────────────────────
-// fileUrl รูปแบบ `.../files/<uuid>-<sanitizedName>` — ตัด uuid ทั้งก้อน
-// (uuid มี dash ภายใน 4 ตัว การตัดที่ dash แรกจะได้ชื่อไม่ครบ)
-const UUID_PREFIX_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(.+)$/i;
-function attachmentFileName(fileUrl: string): string {
-  try {
-    const clean = fileUrl.split('?')[0].split('#')[0];
-    const last = clean.split('/').pop() || '';
-    const uuidMatch = last.match(UUID_PREFIX_RE);
-    if (uuidMatch) return uuidMatch[1];
-    return last || fileUrl;
-  } catch {
-    return fileUrl;
-  }
-}
+// ── Filename display ────────────────────────────────────────────────────────
+// ลำดับการเลือกชื่อ: (1) original_filename จาก attachment record ถ้ามีค่า
+// (2) fallback ถอดจาก fileUrl/object key — logic ทั้งหมดอยู่ที่
+// src/utils/filename.ts (ใช้ร่วมกับ submit + admin detail)
+// re-export เพื่อให้ consumer เดิมที่ import จาก service ยังทำงาน
+export { attachmentDisplayFileName };
 
 // ── Column model ────────────────────────────────────────────────────────────
 type FieldType =
@@ -233,9 +225,12 @@ export function transformFieldValue(
   attachmentsByFieldId: Map<string, string[]> | null,
 ): CellValue {
   // ── FILE: ชื่อไฟล์จากตาราง attachments (ไม่อยู่ใน formData) ─────────────
+  // ค่าใน map เป็น display name แล้ว (original_filename ก่อน → fallback จาก
+  // fileUrl) เหลือเพียงกัน formula injection + fallback ชื่อว่าง
   if (type === 'FILE') {
-    const names = attachmentsByFieldId?.get(fieldId) ?? [];
-    return names.join('\n'); // หลายไฟล์ → บรรทัดใหม่ในเซลล์เดียว
+    const displays = attachmentsByFieldId?.get(fieldId) ?? [];
+    if (displays.length === 0) return '';
+    return displays.map((d) => sanitizeCell(d || 'ไฟล์แนบ')).join('\n'); // หลายไฟล์ → บรรทัดใหม่
   }
 
   const raw = formData ? formData[fieldId] : undefined;
@@ -486,6 +481,7 @@ export async function exportApplicationsExcel(
         applicationId: applicationAttachments.applicationId,
         fieldId: applicationAttachments.fieldId,
         fileUrl: applicationAttachments.fileUrl,
+        originalFilename: applicationAttachments.originalFilename,
       })
       .from(applicationAttachments)
       .where(inArray(applicationAttachments.applicationId, appRows.map((a: { id: string }) => a.id)));
@@ -497,7 +493,9 @@ export async function exportApplicationsExcel(
         attachmentsByApp.set(att.applicationId, byField);
       }
       const names = byField.get(att.fieldId) ?? [];
-      names.push(attachmentFileName(att.fileUrl));
+      // ลำดับชื่อ: original_filename ก่อน → fallback ถอดจาก fileUrl
+      // (การ sanitize formula injection + fallback "ไฟล์แนบ" ทำใน transformFieldValue)
+      names.push(attachmentDisplayName(att));
       byField.set(att.fieldId, names);
     }
   }
@@ -549,8 +547,11 @@ export async function exportApplicationsExcel(
 
     const row = ws.addRow(values);
     // wrapText สำหรับค่าหลายบรรทัด (TEXTAREA / FILE หลายไฟล์)
+    // และเซลล์ FILE ทุกช่อง (รวมไฟล์เดียว) ตาม spec
     values.forEach((v, idx) => {
-      if (typeof v === 'string' && v.includes('\n')) {
+      const col = columns[idx];
+      const isMultiLine = typeof v === 'string' && v.includes('\n');
+      if (isMultiLine || col?.type === 'FILE') {
         row.getCell(idx + 1).alignment = { wrapText: true, vertical: 'top' };
       }
     });

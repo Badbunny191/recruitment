@@ -1,0 +1,24 @@
+-- =============================================================================
+-- Migration: 027_application_attachments_original_filename.sql
+-- =============================================================================
+--
+-- Feature: เก็บชื่อไฟล์ต้นฉบับ (human-readable) แยกจาก R2 Object Key
+-- Ticket:  fix/excel-export-attachment-filenames (Excel Export UAT + filenames)
+--
+-- การเปลี่ยนแปลง:
+--   1. application_attachments.original_filename (TEXT, nullable)
+--      → ชื่อไฟล์ที่ผู้สมัครเลือก สำหรับ display เท่านั้น
+--
+-- ข้อกำหนดที่ยืนยันกับเจ้าของระบบ:
+--   - Nullable ทั้งหมด: ข้อมูลเก่า = NULL และยังทำงานได้ปกติ
+--     (ผู้อ่าน เช่น Excel export / Admin detail ใช้ค่านี้ก่อน ถ้า NULL
+--     จึง fallback ถอดชื่อจาก fileUrl / object key ฝั่งผู้อ่าน)
+--   - ห้าม NOT NULL / DEFAULT / backfill ชื่อที่ถอดจาก object key
+--   - R2 Object Key ยังใช้รูปแบบ uploads/documents/{year}/{uuid}-{name}
+--     เดิม — UUID นำหน้ายังเป็นตัวป้องกันชื่อชนกันของ object
+--   - Migration นี้ทำหน้าที่เดียวเท่านั้น (ไม่รวม schema change อื่น)
+--
+-- =============================================================================
+
+-- 1. application_attachments.original_filename
+ALTER TABLE `application_attachments` ADD COLUMN `original_filename` TEXT;

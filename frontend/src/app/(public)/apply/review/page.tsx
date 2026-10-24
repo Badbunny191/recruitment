@@ -17,6 +17,7 @@ import {
   replaceOtherInDisplay,
   formatOtherDisplay,
 } from '@/lib/otherOption';
+import { attachmentDisplayName } from '@/lib/filename';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 
@@ -274,7 +275,7 @@ function ReviewContent() {
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium text-slate-900 truncate">
-                {att.fileName || filenameFromUrl(att.fileUrl)}
+                {attachmentDisplayName({ originalFilename: null, fileName: att.fileName, fileUrl: att.fileUrl }) || 'ไฟล์แนบ'}
               </div>
               <div className="text-xs text-slate-500 truncate">{att.contentType || 'ไฟล์แนบ'}</div>
             </div>
@@ -306,14 +307,6 @@ function ReviewContent() {
     return 'FILE';
   };
 
-  const filenameFromUrl = (url: string): string => {
-    if (!url) return 'ไฟล์แนบ';
-    const cleaned = url.split('?')[0].split('#')[0];
-    const last = cleaned.split('/').pop() || '';
-    const dashIdx = last.indexOf('-');
-    return dashIdx >= 0 ? last.slice(dashIdx + 1) : last;
-  };
-
   // =========================================================================
   //  Actions
   // =========================================================================
@@ -342,7 +335,13 @@ function ReviewContent() {
       const body: Record<string, unknown> = {
         roundId: draft.roundId,
         formData: draft.formData,
-        attachments: draft.attachments.map((a) => ({ fieldId: a.fieldId, fileUrl: a.fileUrl })),
+        // Migration 027 — ส่งชื่อไฟล์ต้นฉบับไปด้วยเพื่อเก็บ original_filename
+        // (backend sanitize ซ้ำก่อน insert; ไม่มี fileName → undefined หลุดจาก JSON → NULL)
+        attachments: draft.attachments.map((a) => ({
+          fieldId: a.fieldId,
+          fileUrl: a.fileUrl,
+          filename: a.fileName || undefined,
+        })),
         submissionToken: token,
       };
       if (turnstileEnabled && turnstileToken) {

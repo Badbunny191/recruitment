@@ -200,6 +200,9 @@ export const applicationAttachments = sqliteTable('application_attachments', {
   applicationId: text('application_id').notNull().references(() => applications.id, { onDelete: 'cascade' }),
   fieldId: text('field_id').notNull(),
   fileUrl: text('file_url').notNull(),
+  // Migration 027 — ชื่อไฟล์ต้นฉบับสำหรับ display แยกจาก object key
+  // Nullable: ข้อมูลเก่าไม่มีค่า → ผู้อ่าน fallback ถอดจาก fileUrl
+  originalFilename: text('original_filename'),
   uploadedAt: integer('uploaded_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
 }, (table) => ({
   appIdx: index('idx_attachments_app').on(table.applicationId)

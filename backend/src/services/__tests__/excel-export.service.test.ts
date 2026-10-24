@@ -110,7 +110,7 @@ function makeTestDb() {
     );
     CREATE TABLE application_attachments (
       id TEXT PRIMARY KEY, application_id TEXT NOT NULL, field_id TEXT NOT NULL,
-      file_url TEXT NOT NULL, uploaded_at INTEGER
+      file_url TEXT NOT NULL, original_filename TEXT, uploaded_at INTEGER
     );
     CREATE TABLE audit_logs (
       id TEXT PRIMARY KEY, admin_id TEXT NOT NULL, action TEXT NOT NULL,
@@ -225,11 +225,12 @@ function seedApplications(db) {
     fullname: 'สมชาย ใจดี', email: 'somchai@example.com',
     formData: RICH_FORM_DATA, submittedAt: NOW,
   });
-  // attachments: resume เดียว + docs สามไฟล์
-  const att = (id, fieldId, name) => db.rawSqlite.prepare(
-    `INSERT INTO application_attachments (id, application_id, field_id, file_url) VALUES (?, 'app-1', ?, ?)`,
-  ).run(id, fieldId, `https://r2.example/files/11111111-2222-3333-4444-555555555556-${name}`);
-  att('at-1', FIELD_IDS.resume, 'resume.pdf');
+  // attachments: resume เดียว (มี original_filename ต่างจาก URL basename —
+  // ใช้พิสูจน์ลำดับ priority) + docs สามไฟล์ (ไม่มี original_filename → fallback)
+  const att = (id, fieldId, name, originalFilename = null) => db.rawSqlite.prepare(
+    `INSERT INTO application_attachments (id, application_id, field_id, file_url, original_filename) VALUES (?, 'app-1', ?, ?, ?)`,
+  ).run(id, fieldId, `https://r2.example/files/11111111-2222-3333-4444-555555555556-${name}`, originalFilename);
+  att('at-1', FIELD_IDS.resume, 'resume.pdf', 'เรซูเม่_ผู้สมัคร_2026.pdf');
   att('at-2', FIELD_IDS.docs, 'a.pdf');
   att('at-3', FIELD_IDS.docs, 'b.pdf');
   att('at-4', FIELD_IDS.docs, 'c.pdf');
@@ -275,6 +276,53 @@ function seedApplications(db) {
     formData: JSON.stringify(JSON.stringify({ [FIELD_IDS.phone]: '0876543211' })), // double-encoded
     submittedAt: NOW + 5500,
   });
+
+  // ── app-8: attachment fileUrl ทุกรูปแบบที่เจอจริง (filename display suite) ──
+  insertApp(db, {
+    id: 'app-8', no: 'APP-2026-0008', status: 'SUBMITTED',
+    fullname: 'ไฟล์แนบ ทุกรูปแบบ', email: 'files@example.com',
+    formData: {
+      [FIELD_IDS.fullname]: 'ไฟล์แนบ ทุกรูปแบบ',
+      [FIELD_IDS.email]: 'files@example.com',
+      [FIELD_IDS.phone]: '0899999999',
+    },
+    submittedAt: NOW + 6000,
+  });
+  {
+    const enc = encodeURIComponent;
+    const att8 = (id, fieldId, fileUrl, originalFilename = null) => db.rawSqlite.prepare(
+      `INSERT INTO application_attachments (id, application_id, field_id, file_url, original_filename) VALUES (?, 'app-8', ?, ?, ?)`,
+    ).run(id, fieldId, fileUrl, originalFilename);
+    // resume (ไฟล์เดียว): fileUrl รูปแบบที่ backend เก็บจริง (URL-encoded key) — ตัวอย่างจาก production
+    att8('at-8-1', FIELD_IDS.resume,
+      `/api/v1/public/uploads/files/${enc('uploads/documents/2026/cb189e11-64ab-4d46-a1d8-a495fe7fc846-media_6accd61b060ba_1791809051.pdf')}`);
+    // docs (หลายไฟล์ ครบทุกรูปแบบ):
+    att8('at-8-2', FIELD_IDS.docs,
+      `/api/v1/public/uploads/files/${enc('uploads/documents/2026/b2a11f73-bdb4-4837-b2bd-5f4a6a905b66-ใบสมัคร-ฉบับแก้ไข.pdf')}`); // H + ไทย
+    att8('at-8-3', FIELD_IDS.docs,
+      'uploads/documents/2026/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-raw-object-key.pdf'); // I raw key
+    att8('at-8-4', FIELD_IDS.docs,
+      'https://r2.example/files/ffffffff-1111-2222-3333-444444444444-full-url.pdf'); // J full URL
+    att8('at-8-5', FIELD_IDS.docs,
+      `/api/v1/public/uploads/files/${enc('uploads/documents/2026/99999999-8888-7777-6666-555555555555-100%.pdf')}`); // K malformed %
+    att8('at-8-6', FIELD_IDS.docs,
+      'uploads\\documents\\2026\\\\12345678-1234-1234-1234-123456789012-backslash.pdf'); // backslash separator
+    att8('at-8-7', FIELD_IDS.docs,
+      'https://r2.example/files/a1b2c3d4-report.pdf'); // G ชื่อไม่มี uuid prefix → ห้ามตัด
+    att8('at-8-8', FIELD_IDS.docs,
+      'uploads/documents/2026/44444444-4444-4444-4444-444444444444-=cmd.pdf'); // R formula injection
+    att8('at-8-9', FIELD_IDS.docs,
+      `/api/v1/public/uploads/files/${enc('uploads/documents/2026/77777777-7777-7777-7777-777777777777-________________.pdf')}`); // Q ข้อมูลเก่าถูก mangle แล้ว
+    att8('at-8-10', FIELD_IDS.docs,
+      '/api/v1/public/uploads/files/'); // ถอดไม่ได้ → fallback "ไฟล์แนบ"
+    // Migration 027 — original_filename variants:
+    att8('at-8-11', FIELD_IDS.docs,
+      `/api/v1/public/uploads/files/${enc('uploads/documents/2026/12121212-3434-5656-7878-909090909090-resume.pdf')}`,
+      ''); // ค่าว่าง → ต้อง fallback ถอดจาก fileUrl เป็น "resume.pdf"
+    att8('at-8-12', FIELD_IDS.docs,
+      `/api/v1/public/uploads/files/${enc('uploads/documents/2026/13131313-3434-5656-7878-909090909090-อะไรก็ได้.pdf')}`,
+      'เอกสาร\x01ไทย.pdf'); // control chars ใน record → ถูกตัดแบบ defensive
+  }
 }
 
 // ── Workbook reader helpers ─────────────────────────────────────────────────
@@ -339,7 +387,7 @@ async function runAllTests() {
   t('27: writeBuffer ผลลัพธ์เปิดอ่านกลับได้ด้วย ExcelJS', async () => {
     result = await runExport();
     assertTrue(result.ok, `export ควรสำเร็จ: ${JSON.stringify(result)}`);
-    assertEqual(result.rowCount, 6, 'ไม่รวม DRAFT → 6 แถว'); // app-1,2,3,5,6,7
+    assertEqual(result.rowCount, 7, 'ไม่รวม DRAFT → 7 แถว'); // app-1,2,3,5,6,7,8
     ws = await readWorkbook(result.buffer);
     assertTrue(!!ws, 'ต้องมี worksheet ใบสมัคร');
   });
@@ -519,13 +567,14 @@ async function runAllTests() {
   });
 
   // ── 12-13: files ──────────────────────────────────────────────────────
-  t('12: FILE เดียวแสดงชื่อไฟล์ (ตัด uuid prefix)', () => {
+  t('12/X: FILE เดียว — original_filename ชนะ URL basename (priority ถูกต้อง)', () => {
     let r1;
     for (let r = 2; r <= ws.rowCount; r++) {
       if (String(ws.getRow(r).getCell(2).value) === 'APP-2026-0001') { r1 = ws.getRow(r); break; }
     }
     const col = findHeaderCol(ws, 'ฉลาก-f-resume');
-    assertEqual(r1.getCell(col).value, 'resume.pdf');
+    assertEqual(r1.getCell(col).value, 'เรซูเม่_ผู้สมัคร_2026.pdf',
+      'ต้องใช้ original_filename ไม่ใช่ "resume.pdf" จาก URL');
   });
 
   t('13: FILE หลายไฟล์ ขึ้นบรรทัดใหม่ในเซลล์เดียว (ครบทุกไฟล์)', () => {
@@ -535,6 +584,120 @@ async function runAllTests() {
     }
     const col = findHeaderCol(ws, 'ฉลาก-f-docs');
     assertEqual(r1.getCell(col).value, 'a.pdf\nb.pdf\nc.pdf');
+  });
+
+  // ── 15/16 + A,B,D,F,G,H,I,J,K,L,O,P,Q,R: FILE filename display ────────
+  // app-8 มี attachment ครบทุกรูปแบบ (ดู seedApplications)
+  const findRowByNo = (no: string) => {
+    for (let r = 2; r <= ws.rowCount; r++) {
+      if (String(ws.getRow(r).getCell(2).value) === no) return ws.getRow(r);
+    }
+    throw new Error(`ไม่พบแถว ${no}`);
+  };
+
+  t('15/H: fileUrl แบบ URL-encoded key → แสดงเฉพาะชื่อไฟล์ (ตัวอย่าง production)', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-resume');
+    assertEqual(r8.getCell(col).value, 'media_6accd61b060ba_1791809051.pdf',
+      'ต้องตัด path/uuid เหลือชื่อเดียว');
+  });
+
+  t('15/A: URL-encoded key ชื่อไทย → แสดงชื่อไทยเต็ม', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-docs');
+    const lines = String(r8.getCell(col).value).split('\n');
+    assertTrue(lines.includes('ใบสมัคร-ฉบับแก้ไข.pdf'),
+      `ต้องมี "ใบสมัคร-ฉบับแก้ไข.pdf" ได้: ${JSON.stringify(lines)}`);
+  });
+
+  t('15/F+I+J: ตัด UUID 36 ตัว — ทั้ง raw key / full URL', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-docs');
+    const lines = String(r8.getCell(col).value).split('\n');
+    assertTrue(lines.includes('raw-object-key.pdf'), `raw key: ${JSON.stringify(lines)}`);
+    assertTrue(lines.includes('full-url.pdf'), `full URL: ${JSON.stringify(lines)}`);
+  });
+
+  t('15/G: ชื่อธรรมดาไม่มี UUID นำหน้า ไม่ถูกตัด', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-docs');
+    const lines = String(r8.getCell(col).value).split('\n');
+    assertTrue(lines.includes('a1b2c3d4-report.pdf'),
+      'ชื่อที่ขึ้นต้นคล้าย hex แต่ไม่ใช่ UUID เต็มต้องอยู่ครบ');
+  });
+
+  t('15/K: percent encoding เสีย (100%.pdf) ไม่ throw และถอด %2F ส่วนอื่นได้', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-docs');
+    const lines = String(r8.getCell(col).value).split('\n');
+    assertTrue(lines.includes('100%.pdf'), `ต้องได้ "100%.pdf": ${JSON.stringify(lines)}`);
+    for (const line of lines) {
+      assertTrue(!line.includes('%2F'), `ห้ามมี %2F ค้างในชื่อที่ถอดแล้ว: ${line}`);
+    }
+  });
+
+  t('15/L: object key คั่น backslash → ยังถอด basename ได้', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-docs');
+    const lines = String(r8.getCell(col).value).split('\n');
+    assertTrue(lines.includes('backslash.pdf'), `backslash: ${JSON.stringify(lines)}`);
+  });
+
+  t('15/R: ชื่อไฟล์ขึ้นต้น "=" ถูกป้องกัน formula injection', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-docs');
+    const lines = String(r8.getCell(col).value).split('\n');
+    assertTrue(lines.includes("'=cmd.pdf"), `ต้อง prefix single-quote: ${JSON.stringify(lines)}`);
+  });
+
+  t('15/Q: ข้อมูลเก่าที่ชื่อถูก mange เป็น _ แล้ว → แสดงตามที่ถอดได้ ไม่พัง', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-docs');
+    const lines = String(r8.getCell(col).value).split('\n');
+    assertTrue(lines.includes('________________.pdf'), `mangled: ${JSON.stringify(lines)}`);
+  });
+
+  t('15/9: ถอดชื่อไม่ได้ → "ไฟล์แนบ" ห้าม null/undefined/path เต็ม', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-docs');
+    const lines = String(r8.getCell(col).value).split('\n');
+    assertTrue(lines.includes('ไฟล์แนบ'), `fallback: ${JSON.stringify(lines)}`);
+    const v = String(r8.getCell(col).value);
+    assertTrue(!v.includes('undefined') && !v.includes('null') && !v.includes('[object'),
+      'ห้ามมี null/undefined/[object Object]');
+    assertTrue(!v.includes('uploads/documents/'), 'ห้ามเผย object key เต็ม');
+    assertTrue(!v.includes('uploads%2F'), 'ห้ามเผย encoded key');
+    assertTrue(!v.startsWith('http') && !v.includes('r2.example'), 'ห้ามเผย URL');
+  });
+
+  t('X: original_filename เป็นค่าว่าง → fallback ถอดจาก fileUrl', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-docs');
+    const lines = String(r8.getCell(col).value).split('\n');
+    assertTrue(lines.includes('resume.pdf'), `ต้อง fallback เป็น "resume.pdf": ${JSON.stringify(lines)}`);
+  });
+
+  t('X: original_filename มี control chars → ถูกตัดแบบ defensive', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-docs');
+    const lines = String(r8.getCell(col).value).split('\n');
+    assertTrue(lines.includes('เอกสารไทย.pdf'), `ต้องได้ "เอกสารไทย.pdf": ${JSON.stringify(lines)}`);
+  });
+
+  t('16/O: หลายไฟล์ 11 ไฟล์ แสดงครบคนละบรรทัด + wrapText เปิด', () => {
+    const r8 = findRowByNo('APP-2026-0008');
+    const col = findHeaderCol(ws, 'ฉลาก-f-docs');
+    const cell = r8.getCell(col);
+    const lines = String(cell.value).split('\n');
+    assertEqual(lines.length, 11, `docs ต้องมี 11 บรรทัด: ${JSON.stringify(lines)}`);
+    assertTrue(cell.alignment?.wrapText === true, 'FILE cell ต้องเปิด wrapText');
+    // ไฟล์เดียว (resume) ก็ต้อง wrapText ตาม spec
+    const resumeCol = findHeaderCol(ws, 'ฉลาก-f-resume');
+    assertTrue(r8.getCell(resumeCol).alignment?.wrapText === true, 'FILE ไฟล์เดียวต้อง wrapText ด้วย');
+    // คอลัมน์อื่น (TEXT) ไม่ถูกบังคับ wrapText
+    const cityCol = findHeaderCol(ws, 'เมืองที่พัก (override)');
+    const r2 = findRowByNo('APP-2026-0002');
+    assertTrue(r2.getCell(cityCol).alignment?.wrapText !== true, 'TEXT ธรรมดาไม่ต้อง wrapText');
   });
 
   // ── 14: missing data ──────────────────────────────────────────────────
@@ -580,7 +743,7 @@ async function runAllTests() {
 
   t('17: Status filter หลายค่า (SUBMITTED,ARCHIVED)', async () => {
     const r = await runExport({ status: 'SUBMITTED,ARCHIVED' });
-    assertEqual(r.rowCount, 4, 'app-2? REJECTED ไม่รวม → app-3,5,6,7');
+    assertEqual(r.rowCount, 5, 'app-2? REJECTED ไม่รวม → app-3,5,6,7,8');
   });
 
   t('20: Default ไม่รวม DRAFT', async () => {
@@ -607,8 +770,8 @@ async function runAllTests() {
 
   t('19: Date range กรอง submittedAt (Bangkok)', async () => {
     const r = await runExport({ dateFrom: '2026-10-20', dateTo: '2026-10-20' });
-    // app-1,2,3,6,7 = 2026-10-20 | app-5 = 2025 ออก
-    assertEqual(r.rowCount, 5);
+    // app-1,2,3,6,7,8 = 2026-10-20 | app-5 = 2025 ออก
+    assertEqual(r.rowCount, 6);
   });
 
   t('19: dateTo อย่างเดียวตัดรายการหลังวันที่', async () => {

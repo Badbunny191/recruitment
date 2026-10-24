@@ -3,8 +3,26 @@ import { zValidator } from '@hono/zod-validator';
 import { FileUploadRequestSchema } from '../schemas/validators';
 import { Bindings } from '../types';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
+import { sanitizeDisplayFilename } from '../utils/filename';
 
 const uploadRoutes = new Hono<{ Bindings: Bindings }>();
+
+// ── Filename policy ──────────────────────────────────────────────────────────
+// นโยบาย "display name ≠ object key" อยู่ที่ src/utils/filename.ts (ใช้ร่วมกับ
+// submit + Excel export): key นำหน้าด้วย UUID กันชื่อชน, display คงชื่อต้นฉบับ
+
+/** ตัวแปร ASCII ปลอดภัยสำหรับ HTTP header (ชื่อ non-ASCII → _) */
+function asciiSafeFilename(name: string): string {
+  return name.replace(/[^a-zA-Z0-9.-]/g, '_').replace(/_{2,}/g, '_') || 'document.pdf';
+}
+
+/**
+ * Content-Disposition ที่รองรับชื่อไทยโดยไม่ทำ header พัง:
+ * filename= เป็น ASCII fallback, filename*= เป็นค่าจริงตาม RFC 5987
+ */
+function contentDispositionInline(displayName: string): string {
+  return `inline; filename="${asciiSafeFilename(displayName)}"; filename*=UTF-8''${encodeURIComponent(displayName)}`;
+}
 
 /**
  * POST /api/v1/public/uploads/direct
@@ -55,25 +73,25 @@ uploadRoutes.post('/direct', rateLimitMiddleware(), async (c) => {
       }, 400);
     }
 
-    // Sanitize filename
-    const originalFilename = file.name || 'document.pdf';
-    const sanitizedFilename = originalFilename.replace(/[^a-zA-Z0-9.-]/g, '_');
-    
+    // Filename policy: คงชื่อต้นฉบับ (Unicode ไทย/ช่องว่าง/วงเล็บ) สำหรับ display
+    // แยกจาก object key — key ยังนำหน้าด้วย UUID เสมอ กันชื่อชนกัน
+    const displayFilename = sanitizeDisplayFilename(file.name || 'document.pdf');
+
     // Generate unique file key
     const year = new Date().getFullYear();
-    const fileKey = `uploads/documents/${year}/${crypto.randomUUID()}-${sanitizedFilename}`;
+    const fileKey = `uploads/documents/${year}/${crypto.randomUUID()}-${displayFilename}`;
 
     // Convert File to ArrayBuffer
     const arrayBuffer = await file.arrayBuffer();
-    
+
     // Upload to R2 using binding
     await c.env.R2_BUCKET.put(fileKey, arrayBuffer, {
       httpMetadata: {
         contentType: 'application/pdf',
-        contentDisposition: `inline; filename="${sanitizedFilename}"`,
+        contentDisposition: contentDispositionInline(displayFilename),
       },
       customMetadata: {
-        originalFilename: sanitizedFilename,
+        originalFilename: displayFilename,
         uploadedAt: new Date().toISOString(),
         size: file.size.toString(),
       }
@@ -89,7 +107,7 @@ uploadRoutes.post('/direct', rateLimitMiddleware(), async (c) => {
       data: { 
         fileKey,
         fileUrl,
-        filename: sanitizedFilename,
+        filename: displayFilename,
         size: file.size,
         contentType: 'application/pdf'
       } 
@@ -128,10 +146,13 @@ uploadRoutes.get('/files/:key{.+}', async (c) => {
     const customMeta = object.customMetadata || {};
 
     // ส่งไฟล์กลับ
+    // customMetadata.originalFilename ของ object ใหม่เป็นชื่อ Unicode (ไทยได้)
+    // → ต้องผ่าน contentDispositionInline เพื่อไม่ใส่ non-ASCII ลง header ตรงๆ
     return new Response(object.body, {
       headers: {
         'Content-Type': metadata.contentType || 'application/octet-stream',
-        'Content-Disposition': metadata.contentDisposition || `inline; filename="${customMeta.originalFilename || 'file.pdf'}"`,
+        'Content-Disposition': metadata.contentDisposition
+          || contentDispositionInline(customMeta.originalFilename || 'file.pdf'),
         'Content-Length': object.size.toString(),
         'Cache-Control': 'public, max-age=31536000', // Cache 1 year for uploaded files
         'ETag': object.httpEtag,
@@ -154,8 +175,8 @@ uploadRoutes.get('/files/:key{.+}', async (c) => {
  */
 uploadRoutes.post('/presigned-url', zValidator('json', FileUploadRequestSchema), async (c) => {
   const { filename } = c.req.valid('json');
-  const sanitizedFilename = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
-  const fileKey = `uploads/documents/${new Date().getFullYear()}/${crypto.randomUUID()}-${sanitizedFilename}`;
+  const displayFilename = sanitizeDisplayFilename(filename);
+  const fileKey = `uploads/documents/${new Date().getFullYear()}/${crypto.randomUUID()}-${displayFilename}`;
 
   // แนะนำให้ใช้ /direct endpoint แทน presigned URL
   // เนื่องจาก R2 Binding ไม่ต้องใช้ API Token

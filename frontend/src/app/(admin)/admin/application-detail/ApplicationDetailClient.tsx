@@ -13,11 +13,14 @@ import {
   OTHER_KEY_SUFFIX,
   replaceOtherInDisplay,
 } from '@/lib/otherOption';
+import { attachmentDisplayName } from '@/lib/filename';
 
 interface ApplicationAttachment {
   id: string;
   fieldId: string;
   fileUrl: string;
+  /** Migration 027 — ชื่อไฟล์ต้นฉบับ (NULL สำหรับข้อมูลเก่า → fallback จาก fileUrl) */
+  originalFilename?: string | null;
   uploadedAt: number;
 }
 
@@ -573,7 +576,9 @@ export default function ApplicationDetailClient() {
               {app.attachments.map((att) => {
                 const fieldInfo = app.schema?.find(f => f.fieldId === att.fieldId);
                 const fieldLabel = fieldInfo?.overrideLabel || fieldInfo?.label || att.fieldId;
-                const filename = att.fileUrl.split('/').pop() || 'ไฟล์';
+                // ลำดับชื่อเดียวกับ Excel export: original_filename ก่อน →
+                // fallback ถอดจาก fileUrl (helper ร่วม @/lib/filename)
+                const filename = attachmentDisplayName(att) || 'ไฟล์';
                 
                 return (
                   <div key={att.id} className="flex flex-col md:flex-row md:items-center justify-between p-4 border border-gray-200 rounded-lg hover:border-blue-300 hover:bg-blue-50/50 transition-colors">

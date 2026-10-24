@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { FileUpload, UploadedFileMeta } from '@/components/FileUpload';
+import { attachmentDisplayName } from '@/lib/filename';
 import { SearchableDropdown } from '@/components/SearchableDropdown';
 import {
   loadApplyDraft,
@@ -462,7 +463,7 @@ function FormInner() {
     draft.attachments.forEach((att) => {
       if (!meta[att.fieldId]) meta[att.fieldId] = [];
       meta[att.fieldId].push({
-        name: att.fileName || extractNameFromUrl(att.fileUrl),
+        name: attachmentDisplayName({ fileName: att.fileName, fileUrl: att.fileUrl }) || 'ไฟล์แนบ',
         url: att.fileUrl,
         contentType: att.contentType,
       });
@@ -470,22 +471,6 @@ function FormInner() {
     setAttachmentMeta(meta);
     setDraftRestored(true);
   }, [roundId, schema, reset, draftRestored]);
-
-  // Best-effort: extract a filename from a fileKey-shaped URL.
-  // The backend uses `<year>/<uuid>-<sanitizedName>` as the file key, so
-  // the last `-<name>` segment is a reasonable display fallback.
-  function extractNameFromUrl(url: string): string {
-    if (!url) return 'ไฟล์แนบ';
-    try {
-      const cleaned = url.split('?')[0].split('#')[0];
-      const last = cleaned.split('/').pop() || '';
-      // fileKey format: `<uuid>-<sanitizedName>`
-      const dashIdx = last.indexOf('-');
-      return dashIdx >= 0 ? last.slice(dashIdx + 1) : last;
-    } catch {
-      return 'ไฟล์แนบ';
-    }
-  }
 
   const onSubmit: SubmitHandler<FormValues> = async (data) => {
     setIsSubmitting(true);

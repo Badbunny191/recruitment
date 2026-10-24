@@ -295,6 +295,12 @@ export const RoundViewFilterSchema = z.enum(['all', 'active', 'archived']).defau
 export const ApplicationAttachmentSchema = z.object({
   fieldId: z.string(),
   fileUrl: z.string().min(1), // Accept relative or absolute URL
+  /**
+   * Optional original filename (Migration 027) — ชื่อจริงที่ผู้สมัครเลือก
+   * เพื่อเก็บลง application_attachments.original_filename หลัง sanitize ซ้ำ
+   * ที่ backend Payload เก่า (ไม่มี field นี้) ยังผ่านได้ตามเดิม
+   */
+  filename: z.string().max(255).optional(),
 });
 
 // Core field IDs - these map to legacy root columns (backward compatibility)

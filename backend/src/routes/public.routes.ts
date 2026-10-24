@@ -7,6 +7,7 @@ import { recruitmentRounds, templateFields, templateSections, fieldMaster, appli
 import { eq, and, isNull, asc, sql, like, desc, ne } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { getCurrentBangkokYear, buildApplicationNo, parseApplicationNo } from '../utils/application-no';
+import { sanitizeOriginalFilenameOrNull } from '../utils/filename';
 import {
   OTHER_OPTION_LABEL,
   extractOtherText,
@@ -344,7 +345,7 @@ async function insertApplicationWithRetry(
     fullname: string;
     nationalId: string | null;
     formData: Record<string, unknown>;
-    attachments?: Array<{ fieldId: string; fileUrl: string }>;
+    attachments?: Array<{ fieldId: string; fileUrl: string; filename?: string }>;
   },
 ): Promise<{ ok: true; applicationNo: string } | { ok: false; reason: 'UNIQUE_COLLISION' | 'DB_ERROR' | 'ROUND_ERROR' | 'INVALID_PATTERN' }> {
   // =========================================================================
@@ -403,6 +404,8 @@ async function insertApplicationWithRetry(
                 applicationId: args.id,
                 fieldId: att.fieldId,
                 fileUrl: att.fileUrl,
+                // Migration 027 — sanitize ซ้ำฝั่ง backend ก่อนเก็บ ไม่เชื่อ client ตรงๆ
+                originalFilename: sanitizeOriginalFilenameOrNull(att.filename),
               }),
             );
           }
@@ -456,6 +459,8 @@ async function insertApplicationWithRetry(
               applicationId: args.id,
               fieldId: att.fieldId,
               fileUrl: att.fileUrl,
+              // Migration 027 — sanitize ซ้ำฝั่ง backend ก่อนเก็บ ไม่เชื่อ client ตรงๆ
+              originalFilename: sanitizeOriginalFilenameOrNull(att.filename),
             }),
           );
         }

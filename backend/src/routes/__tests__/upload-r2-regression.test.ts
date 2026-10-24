@@ -251,6 +251,100 @@ async function runAllTests() {
   });
 
   // ---------------------------------------------------------------------------
+  console.log('\n[2b] Original filename preservation (display name คงชื่อต้นฉบับ)');
+  // ---------------------------------------------------------------------------
+
+  /** helper: upload ชื่อหนึ่ง → คืน { fileKey, filename, fileUrl } จาก response */
+  const uploadName = async (name: string) => {
+    __resetRateLimitStoreForTests();
+    const pdfBytes = new TextEncoder().encode('%PDF-1.4 mock');
+    const form = new FormData();
+    form.append('file', new File([pdfBytes], name, { type: 'application/pdf' }));
+    const res = await app.request(`${BASE}/direct`, { method: 'POST', body: form }, env);
+    assertEqual(res.status, 201, `upload "${name}" must be 201`);
+    const body = await res.json();
+    assertTrue(body.success === true, `upload "${name}" must succeed`);
+    return body.data;
+  };
+
+  await test('2b.A ชื่อภาษาไทยครบทั้ง key / response / metadata', async () => {
+    const data = await uploadName('ใบสมัคร-ฉบับแก้ไข.pdf');
+    assertEqual(data.filename, 'ใบสมัคร-ฉบับแก้ไข.pdf', 'response.filename ต้องเป็นชื่อไทยเต็ม');
+    assertTrue(
+      /^uploads\/documents\/\d{4}\/[0-9a-f-]{36}-ใบสมัคร-ฉบับแก้ไข\.pdf$/.test(data.fileKey),
+      `fileKey ต้องมี uuid + ชื่อไทย: ${data.fileKey}`,
+    );
+    const stored = objects.get(data.fileKey);
+    assertTrue(!!stored, 'object ต้องถูกเก็บที่ key ใหม่');
+    assertEqual(stored?.customMetadata?.originalFilename, 'ใบสมัคร-ฉบับแก้ไข.pdf', 'customMetadata ต้องเก็บชื่อไทยจริง');
+    assertTrue(
+      /^inline; filename="[a-zA-Z0-9._-]+"; filename\*=UTF-8''/.test(String(stored?.httpMetadata?.contentDisposition)),
+      `Content-Disposition ต้องเป็น RFC 5987 (ASCII fallback + filename*): ${stored?.httpMetadata?.contentDisposition}`,
+    );
+  });
+
+  await test('2b.B ชื่อมีช่องว่าง + 2b.C วงเล็บ + 2b.D ขีดหลายตัว ครบทุกตัวอักษร', async () => {
+    const data = await uploadName('my file (final) v2.1 -- แก้ไข.pdf');
+    assertEqual(data.filename, 'my file (final) v2.1 -- แก้ไข.pdf', 'ช่องว่าง/วงเล็บ/จุด/ขีดต้องครบ');
+    assertTrue(data.fileKey.endsWith('-my file (final) v2.1 -- แก้ไข.pdf'), `key suffix: ${data.fileKey}`);
+  });
+
+  await test('2b.E ไฟล์ชื่อเดียวกันสองไฟล์ → R2 Key คนละค่า (uuid) แต่ display ชื่อเดิม', async () => {
+    const first = await uploadName('เอกสารเดียวกัน.pdf');
+    const second = await uploadName('เอกสารเดียวกัน.pdf');
+    assertTrue(first.fileKey !== second.fileKey, 'key ต้องต่างกันเพราะ uuid');
+    assertTrue(objects.has(first.fileKey) && objects.has(second.fileKey), 'ทั้งสอง object ต้องอยู่ใน R2');
+    assertEqual(first.filename, 'เอกสารเดียวกัน.pdf');
+    assertEqual(second.filename, 'เอกสารเดียวกัน.pdf', 'display filename ยังเป็นชื่อเดิมทั้งสองไฟล์');
+  });
+
+  await test('2b.L ชื่อที่แทรก path separator → เอาเฉพาะ basename (กัน path traversal)', async () => {
+    const data = await uploadName('evil/../../เอกสารลับ.pdf');
+    assertEqual(data.filename, 'เอกสารลับ.pdf', 'ต้องตัดเหลือ basename');
+    assertTrue(!data.fileKey.includes('/evil'), `key ต้องไม่มี path ที่ผู้ส่งกำหนด: ${data.fileKey}`);
+    assertTrue(
+      data.fileKey.startsWith(`uploads/documents/${new Date().getFullYear()}/`),
+      'key ต้องอยู่ใต้ prefix ของระบบเท่านั้น',
+    );
+    const back = await uploadName('folder\\เอกสารวินโดวส์.pdf');
+    assertEqual(back.filename, 'เอกสารวินโดวส์.pdf', 'backslash ก็ต้องถูกตัดเหลือ basename');
+  });
+
+  await test('2b.M null byte + control characters ถูกตัดออกจากชื่อ', async () => {
+    const nasty = 'เอกสาร\x00\x01\x07ดี.pdf';
+    const data = await uploadName(nasty);
+    assertEqual(data.filename, 'เอกสารดี.pdf', 'control chars ต้องหาย');
+    assertTrue(!data.fileKey.includes('\x00'), 'key ต้องไม่มี null byte');
+  });
+
+  await test('2b.N ชื่อยาวเกิน 120 ตัวถูกตัด + ชื่อว่าง fallback document.pdf', async () => {
+    const longName = 'ก'.repeat(300) + '.pdf';
+    const data = await uploadName(longName);
+    assertTrue(data.filename.length <= 120, `ตัดเหลือ ≤120 (ได้ ${data.filename.length})`);
+    assertTrue(data.filename.endsWith('.pdf'), 'ยังคงนามสกุลไว้');
+    // ชื่อว่างหลังตัด separator/control → fallback
+    const blank = await uploadName('   ');
+    assertEqual(blank.filename, 'document.pdf', 'ชื่อว่าง → document.pdf');
+    const dots = await uploadName('..');
+    assertEqual(dots.filename, 'document.pdf', '".." → document.pdf');
+  });
+
+  await test('2b.U ดาวน์โหลดไฟล์ชื่อไทยกลับได้ (GET /files/:key roundtrip) + header ปลอดภัย', async () => {
+    const data = await uploadName('ใบสมัคร-ฉบับแก้ไข.pdf');
+    const res = await app.request(`${BASE}/files/${encodeURIComponent(data.fileKey)}`, {}, env);
+    assertEqual(res.status, 200, 'GET ต้อง 200');
+    assertEqual(res.headers.get('Content-Type'), 'application/pdf');
+    const disposition = res.headers.get('Content-Disposition') || '';
+    assertTrue(
+      disposition.includes(`filename*=UTF-8''${encodeURIComponent('ใบสมัคร-ฉบับแก้ไข.pdf')}`),
+      `Content-Disposition ต้องมีชื่อไทยแบบ RFC 5987: ${disposition}`,
+    );
+    assertTrue(!/[^\x00-\x7f]/.test(disposition), 'header ต้องเป็น ASCII ล้วน (ไทยอยู่ใน filename* เท่านั้น)');
+    const text = await res.text();
+    assertTrue(text.startsWith('%PDF-1.4'), 'เนื้อไฟล์ตรงต้นฉบับ');
+  });
+
+  // ---------------------------------------------------------------------------
   console.log('\n[3] การอ่านไฟล์แนบยังทำงาน (GET /files/:key)');
   // ---------------------------------------------------------------------------
 
