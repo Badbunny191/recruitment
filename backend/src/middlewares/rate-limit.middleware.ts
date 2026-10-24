@@ -107,7 +107,9 @@ export const rateLimitMiddleware = (options: RateLimitOptions = {}) =>
 
     const defaultLimit = options.keyPrefix === 'lookup'
       ? envInt(c.env.RATE_LIMIT_LOOKUP_PER_MINUTE, 30)
-      : envInt(c.env.RATE_LIMIT_PER_MINUTE, DEFAULT_LIMIT);
+      : options.keyPrefix === 'admin-login'
+        ? envInt(c.env.RATE_LIMIT_ADMIN_LOGIN_PER_MINUTE, 10)
+        : envInt(c.env.RATE_LIMIT_PER_MINUTE, DEFAULT_LIMIT);
     const limit = options.perMinute ?? defaultLimit;
     const now = Date.now();
 

@@ -7,6 +7,7 @@ import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc } from 'd
 import { Bindings, AppVariables } from '../types';
 import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware, setAuditPayload } from '../middlewares/audit.middleware';
+import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { handleApplicationStatusChange, buildAuditPayload } from '../lib/change-tracking';
 import { getApplicationPdf } from '../lib/pdf.service';
 import {
@@ -32,7 +33,29 @@ import { validatePassword, isCommonPassword } from '../utils/password';
 import { ChangePasswordSchema } from '../schemas/validators';
 const adminRoutes = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
 
-adminRoutes.post('/auth/login', zValidator('json', LoginRequestSchema), async (c) => {
+// =============================================================================
+// S2: Admin Login Lockout Policy
+// =============================================================================
+// - นับความพยายาม login ที่รหัสผ่านผิดต่อบัญชี (failed_login_attempts)
+// - ครบ LOGIN_MAX_FAILED_ATTEMPTS ครั้งติดต่อกัน → ล็อกบัญชี LOGIN_LOCK_DURATION_MS
+//   (ล็อกตาม OWASP recommendation: 5 ครั้ง / ล็อก ≥ 15 นาที)
+// - พ้นช่วงล็อก → นับใหม่แบบ clean slate (ครั้งผิดถัดไป = 1, ไม่ล็อกซ้ำทันที)
+//   login สำเร็จ → รีเซ็ต counter + ล้าง lockedUntil เสมอ
+// - การนับ/ตั้งค่าล็อกทั้งหมดอยู่ใน UPDATE statement เดียว (D1 รัน write แบบ
+//   serialize) ดังนั้น concurrent attempts เพิ่ม counter ได้ถูกต้องและหลุด
+//   threshold ไม่ได้ — เป็นวิธีป้องกัน race ที่ดีที่สุดที่ D1 รองรับโดยไม่ต้อง
+//   ใช้ Durable Object
+// =============================================================================
+const LOGIN_MAX_FAILED_ATTEMPTS = 5;
+const LOGIN_LOCK_DURATION_MS = 15 * 60 * 1000;
+
+// bcrypt hash (cost 10 เท่ากับ production) ของรหัสผ่านสุ่มที่ไม่มีใครรู้
+// ใช้เฉพาะกรณี "email ไม่มีในระบบ" เพื่อให้เสียเวลา bcrypt.compare เท่ากับ
+// กรณี email มีจริง — response จึงต่างกันแค่ body ที่เหมือนกันเป๊ะ ไม่ต่างที่ timing
+// (กัน account enumeration ผ่าน timing side channel)
+const DUMMY_PASSWORD_HASH = '$2b$10$2N.GR9ZL.grgCLWcCB2TtuJie6kXPuKsBHtWTHjpv7TeYbV8gk9x6';
+
+adminRoutes.post('/auth/login', rateLimitMiddleware({ keyPrefix: 'admin-login' }), zValidator('json', LoginRequestSchema), async (c) => {
   const { email, password } = c.req.valid('json');
   const db = drizzle(c.env.DB);
   
@@ -52,10 +75,13 @@ adminRoutes.post('/auth/login', zValidator('json', LoginRequestSchema), async (c
     .get();
   
   if (!user) {
+    // เปลือกเวลา bcrypt เท่า path จริงเพื่อไม่เปิดเผยว่าอีเมลมีในระบบหรือไม่
+    await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
     return c.json({ error: 'Invalid credentials', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' }, 401);
   }
   
-  // Check if account is locked
+  // Check if account is locked — ต้องตอบ 423 ก่อนถึง bcrypt
+  // (ไม่เสีย CPU ตรวจรหัสผ่านตอนล็อก และไม่ขยายเวลาล็อกจากการพยายามซ้ำ)
   if (user.lockedUntil) {
     const now = Date.now();
     const lockedUntilMs = new Date(user.lockedUntil).getTime();
@@ -72,14 +98,34 @@ adminRoutes.post('/auth/login', zValidator('json', LoginRequestSchema), async (c
   // Verify password with bcrypt (only bcrypt hashes stored)
   const valid = await bcrypt.compare(password, user.passwordHash);
   if (!valid) {
+    // บันทึกความล้มเหลวแบบ atomic ใน UPDATE เดียว:
+    //   - expired lock → เริ่มนับใหม่ที่ 1 (clean slate)
+    //   - COALESCE กัน row เก่า (ก่อน migration 020) ที่เป็น NULL
+    //   - ครบ threshold → ตั้ง lockedUntil ใน statement เดียวกัน
+    // write ล้มเหลวไม่ควรเปลี่ยน 401 เป็น error อื่น (ทิศทาง fail ปลอดภัย:
+    // ปฏิเสธ login เสมอ แค่ไม่ได้นับครั้งนี้)
+    const nowSec = Math.floor(Date.now() / 1000);
+    const lockUntilSec = Math.floor((Date.now() + LOGIN_LOCK_DURATION_MS) / 1000);
+    const nextAttempts = sql`CASE
+      WHEN ${adminUsers.lockedUntil} IS NOT NULL AND ${adminUsers.lockedUntil} <= ${nowSec} THEN 1
+      ELSE COALESCE(${adminUsers.failedLoginAttempts}, 0) + 1
+    END`;
+    try {
+      await db.update(adminUsers).set({
+        failedLoginAttempts: nextAttempts,
+        lockedUntil: sql`CASE WHEN ${nextAttempts} >= ${LOGIN_MAX_FAILED_ATTEMPTS} THEN ${lockUntilSec} ELSE NULL END`,
+      }).where(eq(adminUsers.id, user.id));
+    } catch (error) {
+      console.error('[LOGIN_ATTEMPT_UPDATE_FAILED]', { userId: user.id });
+    }
     return c.json({ error: 'Invalid credentials', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' }, 401);
   }
 
-  // Update lastLoginAt on successful login (Migration 023) - best-effort
-  // lastLoginAt is informational, not a credential - login should succeed even if update fails
+  // Update lastLoginAt + reset lockout counters on successful login (Migration 023) - best-effort
+  // lastLoginAt / counters are informational, not credentials - login should succeed even if update fails
   try {
     await db.update(adminUsers)
-      .set({ lastLoginAt: new Date() })
+      .set({ lastLoginAt: new Date(), failedLoginAttempts: 0, lockedUntil: null })
       .where(eq(adminUsers.id, user.id));
   } catch (error) {
     // Log error without exposing details to client
