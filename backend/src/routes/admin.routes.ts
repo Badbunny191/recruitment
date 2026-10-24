@@ -22,6 +22,7 @@ import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, T
 import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
 import { ensureNotLastSuperAdmin } from '../services/rbac.service';
 import templateDescriptorRoutes from './template-descriptor.routes';
+import { handleExcelExport } from './excel-export.routes';
 import {
   validateApplicationPattern,
   validateRoundCode,
@@ -2070,6 +2071,10 @@ adminRoutes.get('/applications/summary', async (c) => {
     }
   });
 });
+
+// GET /admin/applications/export - Export ใบสมัครทั้งรอบเป็น Excel (.xlsx)
+// เฉพาะ ADMIN / SUPER_ADMIN — VIEWER ได้ 403; ต้อง register ก่อน /applications/:id
+adminRoutes.get('/applications/export', adminOnlyMiddleware, handleExcelExport);
 
 // PATCH /admin/applications/:id/status - Update application status
 adminRoutes.patch('/applications/:id/status', adminOnlyMiddleware, auditMiddleware('APPLICATION'), zValidator('json', ApplicationStatusUpdateSchema), async (c) => {

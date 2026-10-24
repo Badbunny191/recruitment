@@ -229,6 +229,52 @@ export default function ApplicationsClient() {
   const [bulkReason, setBulkReason] = useState('');
   const [bulkUpdating, setBulkUpdating] = useState(false);
 
+  // Excel export state (loading + กันกดซ้ำ)
+  const [exporting, setExporting] = useState(false);
+
+  // Export Excel — ส่งตัวกรองเดียวกับที่ผู้ใช้เลือกอยู่บนหน้าจอ
+  // view → status mapping ให้ผลลัพธ์ตรงกับ FilterPill ที่เห็น:
+  //   active = ไม่รวม ARCHIVED/DRAFT, archived = ARCHIVED, all = ทุกสถานะ (backend ตัด DRAFT ให้)
+  const handleExportExcel = async () => {
+    if (!selectedRoundId || exporting) return;
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      params.append('roundId', selectedRoundId);
+      if (search.trim()) params.append('search', search.trim());
+      if (view === 'active') params.append('status', 'SUBMITTED,QUALIFIED,REJECTED,CANCELED');
+      if (view === 'archived') params.append('status', 'ARCHIVED');
+
+      const res = await fetch(`${API_URL}/admin/applications/export?${params}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || err.error || 'ส่งออก Excel ไม่สำเร็จ');
+      }
+
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
+      const filename = filenameMatch?.[1] || 'applications.xlsx';
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Excel export error:', error);
+      alert(error instanceof Error ? error.message : 'ส่งออก Excel ไม่สำเร็จ');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // Fetch rounds
   useEffect(() => {
     const view = showArchived ? 'all' : 'active';
@@ -784,16 +830,30 @@ export default function ApplicationsClient() {
             />
           </div>
 
-          {/* Row 2: Filter Pills + Result Count */}
+          {/* Row 2: Filter Pills + Export + Result Count */}
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1">
               <FilterPill label="ทั้งหมด" isActive={view === 'all'} onClick={() => setView('all')} count={viewCounts.all} />
               <FilterPill label="กำลังดำเนินการ" isActive={view === 'active'} onClick={() => setView('active')} count={viewCounts.active} />
               <FilterPill label="เก็บเข้าคลัง" isActive={view === 'archived'} onClick={() => setView('archived')} count={viewCounts.archived} />
             </div>
-            <span className="text-[11px] text-slate-500 whitespace-nowrap">
-              {search.trim() ? `พบ ${totalItems}` : `ทั้งหมด ${totalItems}`}
-            </span>
+            <div className="flex items-center gap-2">
+              {canWrite && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleExportExcel}
+                  disabled={exporting || !selectedRoundId}
+                  title="ส่งออกใบสมัครทั้งรอบเป็นไฟล์ Excel (ตามตัวกรองที่เลือก)"
+                >
+                  <span aria-hidden>📊</span>
+                  {exporting ? 'กำลังสร้าง Excel...' : 'Export Excel'}
+                </Button>
+              )}
+              <span className="text-[11px] text-slate-500 whitespace-nowrap">
+                {search.trim() ? `พบ ${totalItems}` : `ทั้งหมด ${totalItems}`}
+              </span>
+            </div>
           </div>
         </div>
 
