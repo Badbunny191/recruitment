@@ -148,31 +148,6 @@ uploadRoutes.get('/files/:key{.+}', async (c) => {
 });
 
 /**
- * DELETE /api/v1/public/uploads/files/:key
- * Delete file จาก R2
- */
-uploadRoutes.delete('/files/:key{.+}', async (c) => {
-  try {
-    const key = c.req.param('key');
-    const decodedKey = decodeURIComponent(key);
-
-    await c.env.R2_BUCKET.delete(decodedKey);
-
-    return c.json({ 
-      success: true, 
-      message: 'File deleted successfully' 
-    });
-
-  } catch (error) {
-    console.error('Delete error:', error);
-    return c.json({ 
-      success: false, 
-      error: 'Failed to delete file' 
-    }, 500);
-  }
-});
-
-/**
  * POST /api/v1/public/uploads/presigned-url
  * ขอ presigned URL สำหรับ upload (ยังคงใช้ได้แต่แนะนำใช้ /direct แทน)
  * ปล่อยไว้เพื่อ backward compatibility
