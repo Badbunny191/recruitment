@@ -17,6 +17,7 @@ import { TemplatePreviewModal } from '@/components/TemplatePreviewModal';
 import { FieldSortableItem } from '@/components/FieldSortableItem';
 import { SectionFieldList } from '@/components/SectionFieldList';
 import { useRole } from '@/lib/useRole';
+import { OTHER_OPTION_LABEL, withOtherOption } from '@/lib/otherOption';
 
 interface MasterField {
   id: string;
@@ -30,6 +31,8 @@ interface MasterField {
   validationMessage?: string;
   fileConfig?: any;
   pdfMappingKey?: string | null;
+  // Other Option Support — Master field รองรับตัวเลือก "อื่นๆ (โปรดระบุ)" หรือไม่
+  allowOther?: boolean;
 }
 
 interface TemplateVersion {
@@ -54,6 +57,8 @@ interface VersionField {
   rows: number | null;
   minLength: number | null;
   maxLength: number | null;
+  // Other Option Support — effective value (override ?? master)
+  allowOther?: boolean | null;
 }
 
 interface BuilderField {
@@ -70,6 +75,8 @@ interface BuilderField {
   rows: string;
   minLength: string;
   maxLength: string;
+  // Other Option Support (per-template override)
+  allowOther: boolean;
   // metadata for UI
   fieldType?: string;
   label?: string;
@@ -301,7 +308,9 @@ function BuilderInner() {
             displayOrder: vf.displayOrder,
             isRequired: vf.isRequired,
             overrideLabelTh: vf.overrideLabelTh || '',
-            overrideOptionsText: opts.join('\n'),
+            // ✅ Other Option Support — ซ่อน label "อื่นๆ (โปรดระบุ)" ที่ระบบ
+            // เติมให้ออกจาก textarea (checkbox toggle เป็นตัวควบคุมเดียว)
+            overrideOptionsText: opts.filter((o) => o !== OTHER_OPTION_LABEL).join('\n'),
             // Effective value = override ?? master (เพื่อให้ HR เห็นค่าที่ใช้จริง)
             helpText: vf.helpText ?? mf?.helpText ?? '',
             placeholder: vf.placeholder ?? mf?.placeholder ?? '',
@@ -310,6 +319,8 @@ function BuilderInner() {
             rows: vf.rows?.toString() || '',
             minLength: vf.minLength?.toString() || '',
             maxLength: vf.maxLength?.toString() || '',
+            // ✅ Other Option Support — effective value (override ?? master)
+            allowOther: !!vf.allowOther || !!mf?.allowOther,
             fieldType: mf?.fieldType,
             label: vf.overrideLabelTh || mf?.labelTh || '',
             defaultOptions: parseOptions(mf?.defaultOptions),
@@ -378,6 +389,8 @@ function BuilderInner() {
       rows: '',
       minLength: '',
       maxLength: '',
+      // ✅ Other Option Support — inherit จาก Master field
+      allowOther: !!mf.allowOther,
       fieldType: mf.fieldType,
       label: mf.labelTh,
       defaultOptions: opts,
@@ -576,15 +589,31 @@ function BuilderInner() {
             displayOrder: s.displayOrder,
           })),
           fields: data.fields.map((f) => {
+          const isOtherCapable =
+            f.fieldType === 'RADIO' ||
+            f.fieldType === 'DROPDOWN' ||
+            f.fieldType === 'CHECKBOX';
+
+          // ✅ Other Option Support — ถ้า override options ถูกกำหนดเอง
+          // ต้องเติม "อื่นๆ (โปรดระบุ)" กลับเข้าไป (ไม่งั้นจะหาย)
+          const rawOverride = f.overrideOptionsText
+            ? f.overrideOptionsText.split('\n').map((s) => s.trim()).filter(Boolean)
+            : null;
+          const overrideOptions =
+            isOtherCapable && f.allowOther && rawOverride
+              ? withOtherOption(rawOverride, true)
+              : rawOverride;
+
           const fieldData: any = {
             fieldId: f.fieldId,
             displayOrder: f.displayOrder,
             isRequired: f.isRequired,
             overrideLabelTh: f.overrideLabelTh || null,
-            overrideOptions: f.overrideOptionsText
-              ? f.overrideOptionsText.split('\n').map((s) => s.trim()).filter(Boolean)
-              : null,
+            overrideOptions,
             sectionId: f.sectionId || null,
+            // ✅ Other Option Support — override ราย template
+            // (null = ใช้ค่าจาก Master) — เก็บเฉพาะเมื่อ field type รองรับ
+            allowOther: isOtherCapable ? !!f.allowOther : null,
           };
           // เก็บเฉพาะ "สิ่งที่แตกต่างจาก Master"
           // - ถ้าค่าที่ HR กรอก "เท่ากับค่า Master" → บันทึกเป็น null (ใช้ค่าเริ่มต้น)
@@ -1436,6 +1465,33 @@ function BuilderInner() {
                                         }
                                       />
                                     </div>
+                                  )}
+
+                                  {/* ✅ Other Option Support */}
+                                  {(field.fieldType === 'DROPDOWN' ||
+                                    field.fieldType === 'RADIO' ||
+                                    field.fieldType === 'CHECKBOX') && (
+                                    <Controller
+                                      control={control}
+                                      name={`fields.${globalIdx}.allowOther`}
+                                      render={({ field: f }) => (
+                                        <div className={`flex items-center space-x-2 col-span-2 p-3 rounded border ${
+                                          isEditMode ? 'bg-blue-50 border-blue-100' : 'bg-gray-50 border-gray-200'
+                                        }`}>
+                                          <Checkbox
+                                            id={`other-${globalIdx}`}
+                                            checked={!!f.value}
+                                            onChange={(e) => isEditMode && f.onChange(e.target.checked)}
+                                            disabled={!isEditMode}
+                                          />
+                                          <Label htmlFor={`other-${globalIdx}`} className={`cursor-pointer font-medium ${
+                                            isEditMode ? 'text-blue-800' : 'text-gray-600'
+                                          }`}>
+                                            เพิ่มตัวเลือก &quot;{OTHER_OPTION_LABEL}&quot;
+                                          </Label>
+                                        </div>
+                                      )}
+                                    />
                                   )}
 
                                   <Controller

@@ -11,6 +11,12 @@ import { loadApplyDraft, clearApplyDraft, listDraftRoundIds, type ApplyDraft, ty
 import { clearSubmissionToken, getOrCreateSubmissionToken } from '@/lib/submissionToken';
 import { usePublicConfig } from '@/lib/usePublicConfig';
 import { TurnstileWidget } from '@/components/TurnstileWidget';
+import {
+  otherKey,
+  isOtherValue,
+  replaceOtherInDisplay,
+  formatOtherDisplay,
+} from '@/lib/otherOption';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 
@@ -26,6 +32,8 @@ interface SchemaField {
   masterDataSource?: string | null;
   fileConfig?: { maxFiles?: number; maxSizeMB?: number };
   section?: string;
+  // ✅ Other Option Support — field รองรับตัวเลือก "อื่นๆ (โปรดระบุ)" หรือไม่
+  allowOther?: boolean;
 }
 
 interface TemplateSection {
@@ -221,11 +229,28 @@ function ReviewContent() {
       return { text: '', isEmpty: true };
     }
     if (field.type === 'CHECKBOX') {
+      // ✅ Other Option Support — checkbox แบบกลุ่มเก็บเป็น string[]
+      if (Array.isArray(raw)) {
+        const otherText = (draft.formData as Record<string, unknown>)[otherKey(field.fieldId)];
+        const joined = raw.map(String).join(', ');
+        return {
+          text: replaceOtherInDisplay(joined, typeof otherText === 'string' ? otherText : ''),
+          isEmpty: false,
+        };
+      }
       return { text: raw === true ? '☑ ยอมรับ' : '☐ ไม่ยอมรับ', isEmpty: false };
     }
     if (field.type === 'MASTER_DATA' && typeof raw === 'object') {
       const obj = raw as { id?: string; name?: string };
       return { text: obj.name || obj.id || '', isEmpty: !obj.name && !obj.id };
+    }
+    // ✅ Other Option Support — แสดง "อื่นๆ: xxx" แทน "อื่นๆ (โปรดระบุ)"
+    if (isOtherValue(raw)) {
+      const otherText = (draft.formData as Record<string, unknown>)[otherKey(field.fieldId)];
+      return {
+        text: formatOtherDisplay(typeof otherText === 'string' ? otherText : ''),
+        isEmpty: false,
+      };
     }
     return { text: String(raw), isEmpty: false };
   };
@@ -669,6 +694,8 @@ function normalizeField(raw: any): SchemaField {
     isRequired: !!raw.isRequired,
     masterDataSource: raw.masterDataSource ?? null,
     fileConfig: raw.fileConfig,
+    // ✅ Other Option Support
+    allowOther: !!raw.allowOther,
     section: raw.section,
   };
 }

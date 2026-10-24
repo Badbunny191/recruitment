@@ -30,6 +30,7 @@
 
 import type { ApplicationContext, FieldData } from "../pdf-types";
 import { SAO_LOGO_BASE64 } from "../assets/sao-logo.data";
+import { formatFieldValueWithOther } from "../other-option";
 import type {
   DocumentDescriptor,
   DocumentBlock,
@@ -1118,7 +1119,7 @@ function renderFieldBlock(
   // ── Preview = เอกสารเสมอ (ไม่มี form control) ──────────────────────
   //   value render เป็นข้อความ label + value ชุดเดียวกับ PDF renderer
   //   → ไม่มี <input> / <textarea> / <select> / checkbox / radio ใน output
-  const valueHtml = renderDocumentValue(field, rawValue, valuePt);
+  const valueHtml = renderDocumentValue(field, rawValue, ctx, valuePt);
 
   const emptyClass = !isNonEmptyValue(rawValue) ? " dc-field--empty" : "";
 
@@ -1153,6 +1154,7 @@ function renderFieldBlock(
 function renderDocumentValue(
   field: FieldData,
   rawValue: unknown,
+  ctx: ApplicationContext,
   valuePt?: number
 ): string {
   const fontStyle = valuePt ? ` style="font-size: ${valuePt}pt"` : "";
@@ -1161,7 +1163,12 @@ function renderDocumentValue(
   }
   // CHECKBOX / RADIO → แสดงค่าเป็นข้อความ (ไม่ใช่กล่องติ๊ก)
   //   boolean → "ใช่"/"ไม่ใช่" ผ่าน formatAnswerValueForDisplay เดียวกับ PDF
-  const display = formatAnswerValueForDisplay(rawValue);
+  //   "อื่นๆ (โปรดระบุ)" → "อื่นๆ: <ข้อความ>" (formatFieldValueWithOther)
+  const display = formatFieldValueWithOther(
+    field.fieldId,
+    formatAnswerValueForDisplay(rawValue),
+    ctx.application.formData
+  );
   return `<div class="dc-field__value"${fontStyle}>${escapeHtml(display)}</div>`;
 }
 

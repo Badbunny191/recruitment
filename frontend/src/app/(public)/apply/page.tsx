@@ -1,8 +1,8 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useForm, Controller, SubmitHandler } from 'react-hook-form';
+import { useForm, Controller, SubmitHandler, useWatch } from 'react-hook-form';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -19,6 +19,12 @@ import {
 import {
   getOrCreateSubmissionToken,
 } from '@/lib/submissionToken';
+import {
+  otherKey,
+  isOtherValue,
+  supportsOtherOption,
+  effectiveOptions,
+} from '@/lib/otherOption';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_ID' | 'REGEX';
@@ -57,6 +63,8 @@ interface SchemaField {
   validationMessage?: string;
   fileConfig?: FileConfig;
   section?: string; // Legacy: fieldMaster.section (for fallback)
+  // ✅ Other Option Support — field รองรับตัวเลือก "อื่นๆ (โปรดระบุ)" หรือไม่
+  allowOther?: boolean;
 }
 
 interface TemplateSection {
@@ -67,6 +75,26 @@ interface TemplateSection {
 
 interface FormValues {
   [key: string]: any;
+}
+
+/**
+ * Parse ค่า options ที่มาจาก API (อาจเป็น string[] | JSON string | null)
+ *
+ * ประกาศเป็น module-level function เพื่อให้เรียกใช้ก่อนถึงจุดที่
+ * component re-render (เช่น useMemo สำหรับ Other Option Support)
+ */
+function parseSchemaOptions(input: string[] | string | null | undefined): string[] {
+  if (!input) return [];
+  if (Array.isArray(input)) return input;
+  if (typeof input === 'string') {
+    try {
+      const parsed = JSON.parse(input);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
 
 // Validation patterns
@@ -160,6 +188,40 @@ function FormInner() {
   const [masterDataError, setMasterDataError] = useState<string | null>(null);
 
   const { register, handleSubmit, control, formState: { errors }, reset } = useForm<FormValues>();
+
+  // ✅ Other Option Support — ค่าที่เลือกของ field ที่รองรับ "อื่นๆ (โปรดระบุ)"
+  // ใช้สำหรับตัดสินว่าจะแสดงช่อง Text Input `[________________]` หรือไม่
+  //
+  // ดูเฉพาะ field ที่รองรับ "อื่นๆ" เท่านั้น (ไม่ watch ทั้งฟอร์ม)
+  // → ไม่ทำให้ฟอร์ม re-render ทุกครั้งที่พิมพ์
+  const otherCapableFieldIds = useMemo(
+    () =>
+      schema
+        .filter((f) => {
+          const options = effectiveOptions(
+            parseSchemaOptions(f.options),
+            parseSchemaOptions(f.overrideOptions),
+            f.allowOther
+          );
+          return f.allowOther || supportsOtherOption(options);
+        })
+        .map((f) => f.fieldId),
+    [schema]
+  );
+  const watchedOtherValues = useWatch({ control, name: otherCapableFieldIds });
+
+  const isOtherSelected = (field: SchemaField): boolean => {
+    const options = effectiveOptions(
+      parseSchemaOptions(field.options),
+      parseSchemaOptions(field.overrideOptions),
+      field.allowOther
+    );
+    // รองรับทั้งกรณีที่มี flag allowOther และกรณีที่ผู้ดูแลพิมพ์ label เอง
+    if (!field.allowOther && !supportsOtherOption(options)) return false;
+    const idx = otherCapableFieldIds.indexOf(field.fieldId);
+    const value = idx >= 0 ? watchedOtherValues?.[idx] : undefined;
+    return isOtherValue(value);
+  };
 
   const getApiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
 
@@ -281,6 +343,8 @@ function FormInner() {
           validationType: field.validationType,
           validationMessage: field.validationMessage,
           fileConfig,
+          // ✅ Other Option Support — flag จาก backend (effective: override ?? master)
+          allowOther: !!field.allowOther,
           // Legacy fallback - keep fieldMaster.section if backend still returns it
           section: field.section,
         };
@@ -459,7 +523,22 @@ function FormInner() {
           });
         }
       } else if (field.type === 'CHECKBOX') {
-        formData[field.fieldId] = data[field.fieldId] === true;
+        // ✅ Other Option Support — CHECKBOX แบบกลุ่มเก็บเป็น string[]
+        // (ฟิลด์เดิมไม่มี allowOther → ยังเป็น boolean แบบเดิม)
+        const isCheckboxGroup =
+          !!field.allowOther &&
+          effectiveOptions(
+            parseSchemaOptions(field.options),
+            parseSchemaOptions(field.overrideOptions),
+            field.allowOther
+          ).length > 0;
+        if (isCheckboxGroup) {
+          const raw = data[field.fieldId];
+          const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+          formData[field.fieldId] = list;
+        } else {
+          formData[field.fieldId] = data[field.fieldId] === true;
+        }
       } else if (field.type === 'MASTER_DATA') {
         // =================================================================
         //  PR #fix-masterdata-dual-rep: SINGLE REPRESENTATION (pass-through)
@@ -502,6 +581,15 @@ function FormInner() {
         }
       } else {
         formData[field.fieldId] = data[field.fieldId];
+      }
+
+      // ✅ Other Option Support — ข้อความเพิ่มเติมเก็บใน key พี่น้อง `${fieldId}__other`
+      // (เก็บเฉพาะเมื่อมีค่าจริง → แบบฟอร์มเดิมไม่มี key นี้เลย)
+      if (isOtherSelected(field)) {
+        const otherValue = data[otherKey(field.fieldId)];
+        if (typeof otherValue === 'string' && otherValue.trim()) {
+          formData[otherKey(field.fieldId)] = otherValue.trim();
+        }
       }
     });
 
@@ -558,10 +646,22 @@ function FormInner() {
   // Build validation rules for react-hook-form
   const getValidationRules = (field: SchemaField) => {
     const rules: any = {};
-    
+
+    // ✅ Other Option Support — CHECKBOX แบบกลุ่ม (เลือกได้หลายค่า)
+    const isCheckboxGroup =
+      field.type === 'CHECKBOX' && !!field.allowOther &&
+      effectiveOptions(
+        parseSchemaOptions(field.options),
+        parseSchemaOptions(field.overrideOptions),
+        field.allowOther
+      ).length > 0;
+
     if (field.isRequired) {
-      if (field.type === 'CHECKBOX') {
+      if (field.type === 'CHECKBOX' && !isCheckboxGroup) {
         rules.validate = (value: boolean) => value === true || 'กรุณายอมรับเงื่อนไข';
+      } else if (field.type === 'CHECKBOX' && isCheckboxGroup) {
+        // กลุ่ม checkbox: ต้องเลือกอย่างน้อย 1 รายการ
+        rules.required = 'กรุณาเลือกอย่างน้อย 1 รายการ';
       } else {
         rules.required = 'กรุณากรอกข้อมูล';
       }
@@ -591,7 +691,7 @@ function FormInner() {
 
   // Get file accept types
   const getFileAccept = (field: SchemaField) => {
-    const fileTypes = parseOptions(field.fileConfig?.allowedFileTypes as any);
+    const fileTypes = parseSchemaOptions(field.fileConfig?.allowedFileTypes as any);
     if (!fileTypes || fileTypes.length === 0) return 'application/pdf';
     return fileTypes.map(t => {
       switch(t.toLowerCase()) {
@@ -606,32 +706,56 @@ function FormInner() {
     }).join(',');
   };
 
-  // Parse options from API - could be array, JSON string, or null
-  const parseOptions = (input: string[] | string | null | undefined): string[] => {
-    if (!input) return [];
-    if (Array.isArray(input)) return input;
-    if (typeof input === 'string') {
-      try {
-        const parsed = JSON.parse(input);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-    return [];
-  };
-
   // Render a single field
   const renderField = (field: SchemaField) => {
     const label = field.overrideLabel || field.label;
-    const options = parseOptions(field.overrideOptions) || parseOptions(field.options);
+    const options = effectiveOptions(
+      parseSchemaOptions(field.options),
+      parseSchemaOptions(field.overrideOptions),
+      field.allowOther
+    );
     const validationRules = getValidationRules(field);
     const placeholder = getPlaceholder(field);
     const isCheckbox = field.type === 'CHECKBOX';
+    // ✅ Other Option Support — แสดงช่อง Text Input เพิ่มเติมเมื่อเลือก "อื่นๆ"
+    const showOtherInput = isOtherSelected(field);
+    const otherKeyName = otherKey(field.fieldId);
+    // CHECKBOX แบบกลุ่ม (เลือกได้หลายค่า) — เปิดใช้เฉพาะเมื่อมี allowOther
+    // (ฟิลด์เดิมที่ไม่มี flag นี้ยังเป็น boolean checkbox แบบเดิม)
+    const isCheckboxGroup =
+      field.type === 'CHECKBOX' && !!field.allowOther && options.length > 0;
+
+    const otherInput = showOtherInput ? (
+      <div className="space-y-1 pl-6">
+        <Input
+          id={otherKeyName}
+          {...register(otherKeyName, {
+            validate: (value: string) => {
+              // บังคับกรอกเฉพาะเมื่อ field เป็น Required และเลือก "อื่นๆ"
+              if (!field.isRequired) return true;
+              return (value || '').trim() !== '' || 'กรุณาระบุรายละเอียดเพิ่มเติม';
+            },
+          })}
+          placeholder="กรุณาระบุรายละเอียดเพิ่มเติม"
+          className={errors[otherKeyName] ? 'border-red-500' : ''}
+        />
+        {errors[otherKeyName] && (
+          <p className="text-xs text-red-500">
+            {(() => {
+              const err = errors[otherKeyName];
+              if (typeof err?.message === 'string') return err.message;
+              return 'กรุณาระบุรายละเอียดเพิ่มเติม';
+            })()}
+          </p>
+        )}
+      </div>
+    ) : null;
 
     return (
       <div key={field.fieldId} className="space-y-2">
-        {!isCheckbox && (
+        {/* ✅ Other Option Support — CHECKBOX แบบกลุ่มต้องแสดง label ของ field
+            (boolean checkbox แสดง label ติดกับตัว checkbox ตามเดิม) */}
+        {(!isCheckbox || isCheckboxGroup) && (
           <Label htmlFor={field.fieldId}>
             {label}
             {field.isRequired && <span className="text-red-500 ml-1">*</span>}
@@ -684,14 +808,17 @@ function FormInner() {
         )}
         
         {field.type === 'DROPDOWN' && (
-          <select 
-            id={field.fieldId}
-            {...register(field.fieldId, validationRules)}
-            className={`flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ${errors[field.fieldId] ? 'border-red-500' : ''}`}
-          >
-            <option value="">{placeholder || '-- กรุณาเลือก --'}</option>
-            {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-          </select>
+          <>
+            <select 
+              id={field.fieldId}
+              {...register(field.fieldId, validationRules)}
+              className={`flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ${errors[field.fieldId] ? 'border-red-500' : ''}`}
+            >
+              <option value="">{placeholder || '-- กรุณาเลือก --'}</option>
+              {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+            </select>
+            {otherInput}
+          </>
         )}
         
         {field.type === 'RADIO' && (
@@ -710,6 +837,7 @@ function FormInner() {
                 </Label>
               </div>
             ))}
+            {otherInput}
           </div>
         )}
         
@@ -779,7 +907,28 @@ function FormInner() {
           />
         )}
 
-        {field.type === 'CHECKBOX' && (
+        {field.type === 'CHECKBOX' && isCheckboxGroup && (
+          // ✅ Other Option Support — CHECKBOX แบบกลุ่ม (เลือกได้หลายค่า)
+          <div className="space-y-2">
+            {options.map(opt => (
+              <div key={opt} className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id={`${field.fieldId}-${opt}`}
+                  value={opt}
+                  {...register(field.fieldId, validationRules)}
+                  className="w-4 h-4"
+                />
+                <Label htmlFor={`${field.fieldId}-${opt}`} className="font-normal cursor-pointer">
+                  {opt}
+                </Label>
+              </div>
+            ))}
+            {otherInput}
+          </div>
+        )}
+
+        {field.type === 'CHECKBOX' && !isCheckboxGroup && (
           <div className="flex items-start space-x-2">
             <Checkbox
               id={field.fieldId}

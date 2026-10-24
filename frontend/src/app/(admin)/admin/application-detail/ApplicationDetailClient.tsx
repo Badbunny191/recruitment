@@ -9,6 +9,10 @@ import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { useRole } from '@/lib/useRole';
+import {
+  OTHER_KEY_SUFFIX,
+  replaceOtherInDisplay,
+} from '@/lib/otherOption';
 
 interface ApplicationAttachment {
   id: string;
@@ -305,6 +309,9 @@ export default function ApplicationDetailClient() {
   const formatFormDataValue = (value: unknown): string => {
     if (value === null || value === undefined || value === '') return '-';
     if (typeof value === 'boolean') return value ? 'ตกลง' : 'ไม่ตกลง';
+    if (Array.isArray(value)) {
+      return value.map((v) => formatFormDataValue(v)).join(', ');
+    }
     if (typeof value === 'object') {
       const rec = value as Record<string, unknown>;
       if (typeof rec.name === 'string' && rec.name) return rec.name;
@@ -506,17 +513,36 @@ export default function ApplicationDetailClient() {
               ([key]) => !key.includes('fileUrl') && !key.includes('file')
             );
 
-            if (entries.length === 0) {
+            // ✅ Other Option Support — key พี่น้อง `${fieldId}__other` เก็บข้อความ
+            // เพิ่มเติม → ดึงมาแทนที่ label "อื่นๆ (โปรดระบุ)" ในค่าที่แสดง แล้ว
+            // ซ่อน key นี้ออกจากรายการ (ไม่ให้แสดงเป็นแถวแยก)
+            const otherTextByFieldId: Record<string, string> = {};
+            Object.entries(parsedFormData).forEach(([key, value]) => {
+              if (key.endsWith(OTHER_KEY_SUFFIX) && typeof value === 'string') {
+                otherTextByFieldId[key.slice(0, -OTHER_KEY_SUFFIX.length)] = value;
+              }
+            });
+
+            const visibleEntries = entries.filter(
+              ([key]) => !key.endsWith(OTHER_KEY_SUFFIX)
+            );
+
+            if (visibleEntries.length === 0) {
               return <p className="text-gray-500 text-center py-8">ไม่มีข้อมูลที่กรอก</p>;
             }
 
             return (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {entries.map(([key, value]) => (
+                {visibleEntries.map(([key, value]) => (
                   <div key={key} className="bg-gray-50 rounded-lg p-4">
                     <p className="text-sm text-gray-500 mb-1">{getFieldLabel(key)}</p>
                     <p className="font-medium whitespace-pre-wrap">
-                      {formatFormDataValue(value)}
+                      {formatFormDataValue(
+                        replaceOtherInDisplay(
+                          formatFormDataValue(value),
+                          otherTextByFieldId[key]
+                        )
+                      )}
                     </p>
                   </div>
                 ))}

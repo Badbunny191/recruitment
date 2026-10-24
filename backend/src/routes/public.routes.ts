@@ -7,6 +7,13 @@ import { recruitmentRounds, templateFields, templateSections, fieldMaster, appli
 import { eq, and, isNull, asc, sql, like, desc, ne } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { getCurrentBangkokYear, buildApplicationNo, parseApplicationNo } from '../utils/application-no';
+import {
+  OTHER_OPTION_LABEL,
+  extractOtherText,
+  isOtherValue,
+  appendOtherOption,
+  parseOptionsArray,
+} from '../lib/other-option';
 import { buildApplicationNumber } from '../services/application-number.service';
 import { idempotencyMiddleware } from '../middlewares/idempotency.middleware';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
@@ -161,6 +168,8 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
     overrideLabel: templateFields.overrideLabelTh,
     options: fieldMaster.defaultOptions,
     overrideOptions: templateFields.overrideOptions,
+    // Other Option Support — effective value (override ?? master)
+    allowOther: sql`COALESCE(${templateFields.allowOther}, ${fieldMaster.allowOther})`,
     isRequired: templateFields.isRequired,
     helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
     placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
@@ -180,7 +189,34 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
   // Send it as a separate `masterDataSource` field so the frontend does not have
   // to guess, and drop the object from `options`.
   const normalized = schema.map((f) => {
-    if (f.type !== 'MASTER_DATA') return { ...f, masterDataSource: null };
+    // ✅ Other Option Support — เติม option "อื่นๆ (โปรดระบุ)" ให้ฟิลด์ที่เปิด
+    // allowOther (ผู้ดูแลไม่ต้องพิมพ์ label เอง) — idempotent
+    //
+    // ⚠️ Backward compatible: ถ้า field ไม่ได้เปิด allowOther → คืนค่าเดิม
+    //    (ไม่แตะ options / overrideOptions เลย → แบบฟอร์มเดิมเหมือนเดิม 100%)
+    const allowOtherEnabled = f.allowOther ? true : null;
+    const parsedMasterOptions = parseOptionsArray(f.options);
+    const parsedOverrideOptions = parseOptionsArray(f.overrideOptions);
+    const effectiveOptions = allowOtherEnabled
+      ? appendOtherOption(
+          parsedOverrideOptions ?? parsedMasterOptions,
+          allowOtherEnabled
+        )
+      : null;
+    const effectiveOverrideOptions =
+      allowOtherEnabled && f.overrideOptions
+        ? appendOtherOption(parsedOverrideOptions, allowOtherEnabled)
+        : null;
+
+    if (f.type !== 'MASTER_DATA') {
+      return {
+        ...f,
+        ...(allowOtherEnabled
+          ? { options: effectiveOptions, overrideOptions: effectiveOverrideOptions }
+          : {}),
+        masterDataSource: null,
+      };
+    }
 
     const raw: unknown = f.options;
     let source: string | null = null;
@@ -555,6 +591,7 @@ publicRoutes.post('/applications/submit',
     .select({
       fieldId: templateFields.fieldId,
       fieldType: fieldMaster.fieldType,
+      allowOther: sql`COALESCE(${templateFields.allowOther}, ${fieldMaster.allowOther})`,
     })
     .from(templateFields)
     .innerJoin(fieldMaster, eq(templateFields.fieldId, fieldMaster.id))
@@ -569,10 +606,22 @@ publicRoutes.post('/applications/submit',
   for (const requiredField of templateRequiredFields) {
     const fieldValue = data.formData?.[requiredField.fieldId];
     if (!fieldValue && fieldValue !== 0) { // Allow 0 as valid value
-      return c.json({ 
-        success: false, 
-        error: `กรุณากรอกข้อมูลที่จำเป็น: ${requiredField.fieldId}` 
+      return c.json({
+        success: false,
+        error: `กรุณากรอกข้อมูลที่จำเป็น: ${requiredField.fieldId}`
       }, 400);
+    }
+
+    // ✅ Other Option Support — ถ้าผู้สมัครเลือก "อื่นๆ (โปรดระบุ)"
+    // และ field เป็น Required → ต้องกรอกข้อความเพิ่มเติม
+    if (requiredField.allowOther && isOtherValue(fieldValue)) {
+      const otherText = extractOtherText(data.formData, requiredField.fieldId);
+      if (!otherText) {
+        return c.json({
+          success: false,
+          error: `กรุณาระบุรายละเอียดเพิ่มเติมสำหรับตัวเลือก "${OTHER_OPTION_LABEL}"`
+        }, 400);
+      }
     }
   }
 

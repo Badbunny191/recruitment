@@ -34,6 +34,7 @@ import {
   DOCUMENT_TOKEN_LABELS,
 } from "./document-tokens";
 import { getObjectDisplayLabel } from "./field-capabilities";
+import { formatFieldValueWithOther } from "../other-option";
 import {
   resolvePageGeometry,
   type PageGeometry,
@@ -1341,7 +1342,11 @@ function drawField(
   cmd: FieldRenderCommand
 ): void {
   const rawValue = resolveAnswerValue(cmd.field, ctx);
-  const displayValue = formatAnswerValueForDisplay(rawValue);
+  const displayValue = formatFieldValueWithOther(
+    cmd.field.fieldId,
+    formatAnswerValueForDisplay(rawValue),
+    ctx.application.formData
+  );
   const label = cmd.overrideLabel ?? cmd.field.label;
   const requiredMarker =
     cmd.field.isRequired && cmd.showRequired ? " *" : "";

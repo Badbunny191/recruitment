@@ -9,6 +9,11 @@ import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middlew
 import { auditMiddleware, setAuditPayload } from '../middlewares/audit.middleware';
 import { handleApplicationStatusChange, buildAuditPayload } from '../lib/change-tracking';
 import { getApplicationPdf } from '../lib/pdf.service';
+import {
+  OTHER_OPTION_FIELD_TYPES,
+  appendOtherOption,
+  parseOptionsArray,
+} from '../lib/other-option';
 
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
@@ -180,7 +185,15 @@ adminRoutes.post('/fields', adminOnlyMiddleware, auditMiddleware('FIELD_MASTER')
   const db = drizzle(c.env.DB);
   const data = c.req.valid('json') as any;
   const id = uuidv4();
-  
+
+  // ✅ Other Option Support — validate field type
+  // ตัวเลือก "อื่นๆ (โปรดระบุ)" รองรับเฉพาะ RADIO / DROPDOWN / CHECKBOX
+  if (data.allowOther && !OTHER_OPTION_FIELD_TYPES.includes(data.fieldType)) {
+    return c.json({
+      error: `ตัวเลือก "อื่นๆ (โปรดระบุ)" รองรับเฉพาะ field type: ${OTHER_OPTION_FIELD_TYPES.join(', ')}`,
+    }, 400);
+  }
+
   const insertValues: any = { id, ...data };
   // Parse defaultOptions to JSON string
   if (data.defaultOptions) {
@@ -190,7 +203,7 @@ adminRoutes.post('/fields', adminOnlyMiddleware, auditMiddleware('FIELD_MASTER')
   if (data.fileConfig) {
     insertValues.fileConfig = JSON.stringify(data.fileConfig);
   }
-  
+
   await db.insert(fieldMaster).values(insertValues);
   return c.json({ success: true, id }, 201);
 });
@@ -200,6 +213,17 @@ adminRoutes.patch('/fields/:id', adminOnlyMiddleware, auditMiddleware('FIELD_MAS
   const id = c.req.param('id');
   const data = c.req.valid('json') as any;
   const updateValues: any = { ...data };
+
+  // ✅ Other Option Support — validate field type (ใช้ค่าใหม่ถ้ามี ถ้าไม่มีใช้ค่าเดิม)
+  if (data.allowOther !== undefined) {
+    const current = await db.select({ fieldType: fieldMaster.fieldType }).from(fieldMaster).where(eq(fieldMaster.id, id)).get();
+    const effectiveType = data.fieldType ?? current?.fieldType;
+    if (data.allowOther && effectiveType && !OTHER_OPTION_FIELD_TYPES.includes(effectiveType)) {
+      return c.json({
+        error: `ตัวเลือก "อื่นๆ (โปรดระบุ)" รองรับเฉพาะ field type: ${OTHER_OPTION_FIELD_TYPES.join(', ')}`,
+      }, 400);
+    }
+  }
 
   // Parse defaultOptions to JSON string (or null to clear)
   if (data.defaultOptions !== undefined) {
@@ -646,6 +670,8 @@ adminRoutes.get('/templates/:templateId/preview-schema', async (c) => {
       overrideLabel: templateFields.overrideLabelTh,
       options: fieldMaster.defaultOptions,
       overrideOptions: templateFields.overrideOptions,
+      // Other Option Support — effective value (override ?? master)
+      allowOther: sql`COALESCE(${templateFields.allowOther}, ${fieldMaster.allowOther})`,
       isRequired: templateFields.isRequired,
       helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
       placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
@@ -665,8 +691,32 @@ adminRoutes.get('/templates/:templateId/preview-schema', async (c) => {
     .orderBy(templateFields.displayOrder);
 
   // 6. Normalize MASTER_DATA fields
+  // ✅ Other Option Support — เติม option "อื่นๆ (โปรดระบุ)" ให้ฟิลด์ที่เปิด allowOther
+  // (ถ้าไม่ได้เปิด → ไม่แตะ options เดิม → backward compatible 100%)
   const normalized = schema.map((f) => {
-    if (f.type !== 'MASTER_DATA') return { ...f, masterDataSource: null };
+    const allowOtherEnabled = f.allowOther ? true : null;
+    const parsedMasterOptions = parseOptionsArray(f.options);
+    const parsedOverrideOptions = parseOptionsArray(f.overrideOptions);
+    const effectiveOptions = allowOtherEnabled
+      ? appendOtherOption(
+          parsedOverrideOptions ?? parsedMasterOptions,
+          allowOtherEnabled
+        )
+      : null;
+    const effectiveOverrideOptions =
+      allowOtherEnabled && f.overrideOptions
+        ? appendOtherOption(parsedOverrideOptions, allowOtherEnabled)
+        : null;
+
+    if (f.type !== 'MASTER_DATA') {
+      return {
+        ...f,
+        ...(allowOtherEnabled
+          ? { options: effectiveOptions, overrideOptions: effectiveOverrideOptions }
+          : {}),
+        masterDataSource: null,
+      };
+    }
 
     const raw: unknown = f.options;
     let source: string | null = null;
@@ -729,6 +779,8 @@ adminRoutes.get('/template-fields/:versionId', async (c) => {
     isRequired: templateFields.isRequired,
     overrideLabelTh: templateFields.overrideLabelTh,
     overrideOptions: templateFields.overrideOptions,
+    // Other Option Support — effective value (override ?? master)
+    allowOther: sql`COALESCE(${templateFields.allowOther}, ${fieldMaster.allowOther})`,
     // Effective values (override ?? master) — used by Template Builder
     helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
     placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
@@ -834,6 +886,7 @@ adminRoutes.post('/templates/:id/versions', adminOnlyMiddleware, auditMiddleware
         rows: f.rows,
         minLength: f.minLength,
         maxLength: f.maxLength,
+        allowOther: f.allowOther,
       } as any);
     }
   } else if (payload.sections && payload.sections.length > 0) {
@@ -886,6 +939,8 @@ adminRoutes.post('/templates/:id/versions', adminOnlyMiddleware, auditMiddleware
         rows: Number.isFinite(f.rows) && f.rows !== null ? Number(f.rows) : null,
         minLength: Number.isFinite(f.minLength) && f.minLength !== null ? Number(f.minLength) : null,
         maxLength: Number.isFinite(f.maxLength) && f.maxLength !== null ? Number(f.maxLength) : null,
+        // Other Option Support — null = ใช้ค่าจาก Master
+        allowOther: typeof f.allowOther === 'boolean' ? f.allowOther : null,
       };
 
       await db.insert(templateFields).values(fieldValues as any);
@@ -936,6 +991,8 @@ adminRoutes.post('/templates/:id/versions', adminOnlyMiddleware, auditMiddleware
         rows: Number.isFinite(f.rows) && f.rows !== null ? Number(f.rows) : null,
         minLength: Number.isFinite(f.minLength) && f.minLength !== null ? Number(f.minLength) : null,
         maxLength: Number.isFinite(f.maxLength) && f.maxLength !== null ? Number(f.maxLength) : null,
+        // Other Option Support — null = ใช้ค่าจาก Master
+        allowOther: typeof f.allowOther === 'boolean' ? f.allowOther : null,
       };
 
       await db.insert(templateFields).values(fieldValues as any);
@@ -1039,6 +1096,8 @@ adminRoutes.put('/template-versions/:versionId', adminOnlyMiddleware,
           rows: Number.isFinite(f.rows) && f.rows !== null ? Number(f.rows) : null,
           minLength: Number.isFinite(f.minLength) && f.minLength !== null ? Number(f.minLength) : null,
           maxLength: Number.isFinite(f.maxLength) && f.maxLength !== null ? Number(f.maxLength) : null,
+          // Other Option Support — null = ใช้ค่าจาก Master
+          allowOther: typeof f.allowOther === 'boolean' ? f.allowOther : null,
         };
         return db.insert(templateFields).values(fieldValues as any);
       }),
@@ -3446,6 +3505,8 @@ adminRoutes.get('/rounds/:id/preview-schema', async (c) => {
       overrideLabel: templateFields.overrideLabelTh,
       options: fieldMaster.defaultOptions,
       overrideOptions: templateFields.overrideOptions,
+      // Other Option Support — effective value (override ?? master)
+      allowOther: sql`COALESCE(${templateFields.allowOther}, ${fieldMaster.allowOther})`,
       isRequired: templateFields.isRequired,
       helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
       placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
@@ -3461,8 +3522,32 @@ adminRoutes.get('/rounds/:id/preview-schema', async (c) => {
     .orderBy(templateFields.displayOrder);
 
   // 4. Normalize MASTER_DATA fields (same logic as public schema)
+  // ✅ Other Option Support — เติม option "อื่นๆ (โปรดระบุ)" ให้ฟิลด์ที่เปิด allowOther
+  // (ถ้าไม่ได้เปิด → ไม่แตะ options เดิม → backward compatible 100%)
   const normalized = schema.map((f) => {
-    if (f.type !== 'MASTER_DATA') return { ...f, masterDataSource: null };
+    const allowOtherEnabled = f.allowOther ? true : null;
+    const parsedMasterOptions = parseOptionsArray(f.options);
+    const parsedOverrideOptions = parseOptionsArray(f.overrideOptions);
+    const effectiveOptions = allowOtherEnabled
+      ? appendOtherOption(
+          parsedOverrideOptions ?? parsedMasterOptions,
+          allowOtherEnabled
+        )
+      : null;
+    const effectiveOverrideOptions =
+      allowOtherEnabled && f.overrideOptions
+        ? appendOtherOption(parsedOverrideOptions, allowOtherEnabled)
+        : null;
+
+    if (f.type !== 'MASTER_DATA') {
+      return {
+        ...f,
+        ...(allowOtherEnabled
+          ? { options: effectiveOptions, overrideOptions: effectiveOverrideOptions }
+          : {}),
+        masterDataSource: null,
+      };
+    }
 
     const raw: unknown = f.options;
     let source: string | null = null;

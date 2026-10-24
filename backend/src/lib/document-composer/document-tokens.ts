@@ -30,6 +30,7 @@
 
 import type { ApplicationContext, FieldData } from "../pdf-types";
 import type { DocumentBlock } from "./types";
+import { extractOtherText, replaceOtherInDisplay } from "../other-option";
 
 // =============================================================================
 // Token vocabulary
@@ -234,7 +235,15 @@ export function resolveFieldValue(
   if (text === null) {
     return { fieldId, text: `{FIELD:${fieldId}}`, empty: true };
   }
-  return { fieldId, text, empty: false };
+  // ✅ Other Option Support — "อื่นๆ (โปรดระบุ)" → "อื่นๆ: <ข้อความ>"
+  return {
+    fieldId,
+    text: replaceOtherInDisplay(
+      text,
+      extractOtherText(ctx.application.formData, field.fieldId)
+    ),
+    empty: false,
+  };
 }
 
 /**
@@ -534,7 +543,8 @@ function resolveFromFields(
 
     const text = normalizeTokenValue(raw, aliases);
     if (text !== null) {
-      resolvedText = text;
+      // ✅ Other Option Support — "อื่นๆ (โปรดระบุ)" → "อื่นๆ: <ข้อความ>"
+      resolvedText = replaceOtherInDisplay(text, extractOtherText(formData, fieldId));
     }
   });
 

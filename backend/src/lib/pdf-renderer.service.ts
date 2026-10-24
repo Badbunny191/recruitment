@@ -30,6 +30,7 @@ import {
   APPLICATION_STATUS_LABELS,
   RenderedPdf,
 } from './pdf-types';
+import { formatFieldValueWithOther } from './other-option';
 // =============================================================================
 // Layout Constants
 // =============================================================================
@@ -308,7 +309,11 @@ function renderField(
   ctx: ApplicationContext
 ): void {
   const rawValue = resolveAnswerValue(field, ctx);
-  const displayValue = formatAnswerValue(field, rawValue);
+  const displayValue = formatFieldValueWithOther(
+    field.fieldId,
+    formatAnswerValue(field, rawValue),
+    ctx.application.formData
+  );
 
   // Heights — derived from wrapped lines, never from fixed counts.
   const labelHeight = FONT_SIZE_LABEL * LINE_HEIGHT;
@@ -496,7 +501,21 @@ function formatAnswerValue(field: FieldData, value: unknown): string {
       if (typeof value === 'string') {
         return /^(true|1|yes|ใช่|on)$/i.test(value) ? '☑' : '☐';
       }
-      if (Array.isArray(value) && value.length > 0) return '☑';
+      // ✅ Other Option Support — CHECKBOX แบบกลุ่ม (string[]): แสดง label จริง
+      if (Array.isArray(value)) {
+        if (value.length === 0) return '☐';
+        const options = field.overrideOptions ?? field.options;
+        const labels = value
+          .map((v) => {
+            if (Array.isArray(options)) {
+              const resolved = resolveFromOptions(v, options);
+              if (resolved !== null) return resolved;
+            }
+            return extractDisplayKey(v);
+          })
+          .filter(Boolean);
+        return labels.length > 0 ? labels.join(', ') : '☑';
+      }
       return '☐';
 
     case 'DROPDOWN':

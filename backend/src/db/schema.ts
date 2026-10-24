@@ -35,6 +35,11 @@ export const fieldMaster = sqliteTable('field_master', {
   // Validation
   validationType: text('validation_type'),
   validationMessage: text('validation_message'),
+  // ── Other Option Support (Migration 026) ──────────────────────────────
+  // true = field นี้ (RADIO / DROPDOWN / CHECKBOX) รองรับตัวเลือก
+  // "อื่นๆ (โปรดระบุ)" — เมื่อผู้สมัครเลือก ต้องกรอกข้อความเพิ่มเติม
+  // null / false = ไม่รองรับ (ค่าเริ่มต้นของฟิลด์เดิมทั้งหมด → backward compatible)
+  allowOther: integer('allow_other', { mode: 'boolean' }).default(false),
 }, (table) => ({
   checkFieldType: check('chk_field_type', sql`${table.fieldType} IN ('TEXT', 'TEXTAREA', 'DROPDOWN', 'RADIO', 'FILE', 'NUMBER', 'CHECKBOX', 'DATE', 'MASTER_DATA')`)
 }));
@@ -105,6 +110,10 @@ export const templateFields = sqliteTable('template_fields', {
   maxLength: integer('max_length'),
   // Override Validation Message (null = use Master validation_message)
   validationMessage: text('validation_message'),
+  // ── Other Option Support (Migration 026) ──────────────────────────────
+  // true = field นี้ (RADIO / DROPDOWN / CHECKBOX) รองรับตัวเลือก
+  // "อื่นๆ (โปรดระบุ)" — override ราย template (null = ใช้ค่าจาก Master)
+  allowOther: integer('allow_other', { mode: 'boolean' }),
 }, (table) => ({
   tplVerIdx: index('idx_tpl_fields_version').on(table.templateVersionId),
   sectionIdx: index('idx_tpl_fields_section').on(table.sectionId),

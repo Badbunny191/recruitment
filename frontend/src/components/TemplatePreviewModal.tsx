@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { SearchableDropdown } from '@/components/SearchableDropdown';
+import { supportsOtherOption, effectiveOptions } from '@/lib/otherOption';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_ID' | 'REGEX';
@@ -45,6 +46,8 @@ interface SchemaField {
   rows?: number | null;
   minLength?: number | null;
   maxLength?: number | null;
+  // ✅ Other Option Support — field รองรับตัวเลือก "อื่นๆ (โปรดระบุ)" หรือไม่
+  allowOther?: boolean;
 }
 
 interface TemplateSection {
@@ -256,6 +259,8 @@ export function TemplatePreviewModal({
             rows: field.rows ?? null,
             minLength: field.minLength ?? null,
             maxLength: field.maxLength ?? null,
+            // ✅ Other Option Support
+            allowOther: !!field.allowOther,
           };
         };
 
@@ -334,14 +339,35 @@ export function TemplatePreviewModal({
   // Render a single field (disabled for preview)
   const renderField = (field: SchemaField) => {
     const label = field.overrideLabel || field.label;
-    const options = parseOptions(field.overrideOptions) || parseOptions(field.options);
+    const options = effectiveOptions(
+      parseOptions(field.options),
+      parseOptions(field.overrideOptions),
+      field.allowOther
+    );
     const placeholder = field.placeholder || '';
     const rows = field.rows || 4;
     const isCheckbox = field.type === 'CHECKBOX';
+    // ✅ Other Option Support — ถ้ามีตัวเลือก "อื่นๆ (โปรดระบุ)" ให้แสดงช่อง
+    // Text Input `[________________]` เพิ่มเติม (disabled ในโหมดตัวอย่าง)
+    const hasOther = supportsOtherOption(options);
+    const isCheckboxGroup =
+      field.type === 'CHECKBOX' && !!field.allowOther && options.length > 0;
+
+    const otherPreview = hasOther ? (
+      <div className="space-y-1 pl-6">
+        <Input
+          id={`${field.fieldId}__other`}
+          placeholder="กรุณาระบุรายละเอียดเพิ่มเติม"
+          disabled
+          className="bg-slate-50"
+        />
+      </div>
+    ) : null;
 
     return (
       <div key={field.fieldId} className="space-y-2">
-        {!isCheckbox && (
+        {/* ✅ Other Option Support — CHECKBOX แบบกลุ่มต้องแสดง label ของ field */}
+        {(!isCheckbox || isCheckboxGroup) && (
           <Label htmlFor={field.fieldId}>
             {label}
             {field.isRequired && <span className="text-red-500 ml-1">*</span>}
@@ -388,18 +414,21 @@ export function TemplatePreviewModal({
         )}
 
         {field.type === 'DROPDOWN' && (
-          <select
-            id={field.fieldId}
-            disabled
-            className="flex h-10 w-full rounded-md border border-input bg-slate-50 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            <option value="">{placeholder || '-- กรุณาเลือก --'}</option>
-            {options.map((opt) => (
-              <option key={opt} value={opt}>
-                {opt}
-              </option>
-            ))}
-          </select>
+          <>
+            <select
+              id={field.fieldId}
+              disabled
+              className="flex h-10 w-full rounded-md border border-input bg-slate-50 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <option value="">{placeholder || '-- กรุณาเลือก --'}</option>
+              {options.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
+            {otherPreview}
+          </>
         )}
 
         {field.type === 'RADIO' && (
@@ -418,6 +447,7 @@ export function TemplatePreviewModal({
                 </Label>
               </div>
             ))}
+            {otherPreview}
           </div>
         )}
 
@@ -441,7 +471,28 @@ export function TemplatePreviewModal({
           </>
         )}
 
-        {field.type === 'CHECKBOX' && (
+        {field.type === 'CHECKBOX' && isCheckboxGroup && (
+          // ✅ Other Option Support — CHECKBOX แบบกลุ่ม (เลือกได้หลายค่า)
+          <div className="space-y-2">
+            {options.map((opt) => (
+              <div key={opt} className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id={`${field.fieldId}-${opt}`}
+                  value={opt}
+                  disabled
+                  className="w-4 h-4"
+                />
+                <Label htmlFor={`${field.fieldId}-${opt}`} className="font-normal cursor-not-allowed text-slate-500">
+                  {opt}
+                </Label>
+              </div>
+            ))}
+            {otherPreview}
+          </div>
+        )}
+
+        {field.type === 'CHECKBOX' && !isCheckboxGroup && (
           <div className="flex items-start space-x-2">
             <Checkbox id={field.fieldId} disabled />
             <Label htmlFor={field.fieldId} className="font-normal cursor-not-allowed text-slate-500">

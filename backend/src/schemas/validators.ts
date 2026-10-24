@@ -125,6 +125,9 @@ export const FieldMasterCreateSchema = z.object({
   validationMessage: z.string().nullable().optional(),
   // File config (JSON)
   fileConfig: z.record(z.string(), z.any()).nullable().optional(),
+  // Other Option Support — field นี้รองรับตัวเลือก "อื่นๆ (โปรดระบุ)" หรือไม่
+  // ใช้ได้เฉพาะ RADIO / DROPDOWN / CHECKBOX (validate ใน route)
+  allowOther: z.boolean().optional(),
 });
 
 export const FieldMasterUpdateSchema = FieldMasterCreateSchema.partial();
@@ -147,6 +150,8 @@ export const TemplateFieldCreateSchema = z.object({
   // Validation Message override (null = ใช้ค่า master)
   validationMessage: z.string().nullable().optional(),
   validationRules: z.record(z.string(), z.any()).nullable().optional(),
+  // Other Option Support (null = ใช้ค่าจาก Master)
+  allowOther: z.boolean().nullable().optional(),
   // Rich Field Metadata
   rows: z.number().int().positive().nullable().optional(),
   minLength: z.number().int().min(0).nullable().optional(),

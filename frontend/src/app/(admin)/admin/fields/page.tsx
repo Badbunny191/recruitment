@@ -16,6 +16,8 @@ import { ActionMenu } from '@/components/ui/action-menu';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
 import { cn } from '@/lib/utils';
 import { useRole } from '@/lib/useRole';
+import { OtherOptionToggle } from '@/components/OtherOptionToggle';
+import { OTHER_OPTION_LABEL, withOtherOption } from '@/lib/otherOption';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_ID' | 'REGEX';
@@ -40,6 +42,8 @@ interface FieldMaster {
   fileConfig?: FileConfig;
   validationType?: ValidationType;
   validationMessage?: string;
+  // Other Option Support — field รองรับตัวเลือก "อื่นๆ (โปรดระบุ)" หรือไม่
+  allowOther?: boolean;
 }
 
 interface FormState {
@@ -55,6 +59,7 @@ interface FormState {
   fileConfig: FileConfig;
   validationType: ValidationType;
   validationMessage: string;
+  allowOther: boolean;
 }
 
 const EMPTY_FORM: FormState = {
@@ -70,6 +75,7 @@ const EMPTY_FORM: FormState = {
   fileConfig: { maxFiles: 1, maxSizeMB: 10 },
   validationType: 'NONE',
   validationMessage: '',
+  allowOther: false,
 };
 
 const FIELD_TYPE_OPTIONS: { value: FieldType; label: string }[] = [
@@ -376,7 +382,11 @@ export default function FieldMasterPage() {
     setForm({
       fieldType: f.fieldType,
       labelTh: f.labelTh,
-      defaultOptionsText: parsedOptions.join('\n'),
+      // ✅ Other Option Support — ซ่อน label "อื่นๆ (โปรดระบุ)" ที่ระบบเติมให้
+      // ออกจาก textarea (จะแสดงผ่าน checkbox toggle แทน)
+      defaultOptionsText: parsedOptions
+        .filter((o) => o !== OTHER_OPTION_LABEL)
+        .join('\n'),
       masterDataSource,
       pdfMappingKey: f.pdfMappingKey || '',
       isActive: f.isActive,
@@ -386,6 +396,8 @@ export default function FieldMasterPage() {
       fileConfig,
       validationType: (f.validationType as any) || 'NONE',
       validationMessage: f.validationMessage || '',
+      // Other Option Support — รองรับทั้งค่า flag และกรณีผู้ดูแลพิมพ์ label เอง
+      allowOther: !!f.allowOther || parsedOptions.includes(OTHER_OPTION_LABEL),
     });
     setPdfMappingKeyTouched(!!f.pdfMappingKey);
     setDialogOpen(true);
@@ -396,20 +408,38 @@ export default function FieldMasterPage() {
     return opts.length > 0 ? opts : null;
   };
 
+  // ✅ Other Option Support — รองรับเฉพาะ RADIO / DROPDOWN / CHECKBOX
+  const supportsOtherOption = (type: FieldType): boolean =>
+    type === 'RADIO' || type === 'DROPDOWN' || type === 'CHECKBOX';
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     try {
+      // ✅ Other Option Support — ตัวเลือก "อื่นๆ (โปรดระบุ)" ถูกเพิ่มเข้า options
+      // อัตโนมัติ (ไม่ต้องให้ผู้ดูแลพิมพ์เอง) — เก็บ flag แยกไว้เพื่อแสดง
+      // ช่อง Text Input ในแบบฟอร์มผู้สมัคร
+      const allowOther =
+        supportsOtherOption(form.fieldType) && form.allowOther;
+
+      const parsedOpts = parseOptions(form.defaultOptionsText);
+      const defaultOptions =
+        form.fieldType === 'MASTER_DATA'
+          ? { source: form.masterDataSource }
+          : allowOther
+            ? withOtherOption(parsedOpts ?? [], true)
+            : parsedOpts;
+
       const payload: any = {
         fieldType: form.fieldType,
         labelTh: form.labelTh,
-        defaultOptions:
-          form.fieldType === 'MASTER_DATA'
-            ? { source: form.masterDataSource }
-            : parseOptions(form.defaultOptionsText),
+        defaultOptions,
         pdfMappingKey: form.pdfMappingKey || null,
         isActive: form.isActive,
       };
+
+      // Other Option Support flag
+      payload.allowOther = supportsOtherOption(form.fieldType) ? allowOther : false;
 
       // UI fields - always send (null if empty to clear DB)
       payload.section = form.section || null;
@@ -814,7 +844,21 @@ export default function FieldMasterPage() {
                 <Select
                   id="fieldType"
                   value={form.fieldType}
-                  onChange={(e) => setForm({ ...form, fieldType: e.target.value as FieldType })}
+                  onChange={(e) => {
+                    const nextType = e.target.value as FieldType;
+                    setForm({
+                      ...form,
+                      fieldType: nextType,
+                      // ✅ Other Option Support — ปิด flag อัตโนมัติเมื่อเปลี่ยนเป็น
+                      // field type ที่ไม่รองรับ
+                      allowOther:
+                        nextType === 'RADIO' ||
+                        nextType === 'DROPDOWN' ||
+                        nextType === 'CHECKBOX'
+                          ? form.allowOther
+                          : false,
+                    });
+                  }}
                   required
                 >
                   {FIELD_TYPE_OPTIONS.map((opt) => (
@@ -873,6 +917,37 @@ export default function FieldMasterPage() {
                     placeholder={'ตัวเลือก 1\nตัวเลือก 2\nตัวเลือก 3'}
                   />
                 </div>
+
+                {/* ✅ Other Option Support */}
+                <OtherOptionToggle
+                  checked={form.allowOther}
+                  onChange={(v) => setForm({ ...form, allowOther: v })}
+                />
+              </div>
+            )}
+
+            {/* ✅ Other Option Support — CHECKBOX (แบบเลือกได้หลายรายการ) */}
+            {form.fieldType === 'CHECKBOX' && (
+              <div className="space-y-4">
+                <h3 className="font-medium text-gray-800 border-b pb-2">ตัวเลือก</h3>
+                <div className="space-y-2">
+                  <Label htmlFor="checkboxOptions">รายการตัวเลือก (หนึ่งบรรทัดต่อหนึ่งตัวเลือก)</Label>
+                  <Textarea
+                    id="checkboxOptions"
+                    rows={4}
+                    value={form.defaultOptionsText}
+                    onChange={(e) => setForm({ ...form, defaultOptionsText: e.target.value })}
+                    placeholder={'ตัวเลือก 1\nตัวเลือก 2\nตัวเลือก 3'}
+                  />
+                  <p className="text-xs text-gray-500">
+                    หากไม่ระบุตัวเลือก ระบบจะแสดงช่องติ๊กถูกตามคำถาม (พฤติกรรมเดิม)
+                  </p>
+                </div>
+
+                <OtherOptionToggle
+                  checked={form.allowOther}
+                  onChange={(v) => setForm({ ...form, allowOther: v })}
+                />
               </div>
             )}
 
