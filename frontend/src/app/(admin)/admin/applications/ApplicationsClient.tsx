@@ -33,6 +33,14 @@ import {
   type BulkDownloadMode,
   type PdfBulkTarget,
 } from '@/lib/pdf-bulk-download';
+import {
+  STATUS_FILTER_OPTIONS,
+  filterByStatus,
+  parseStatusFilter,
+  statusFilterToExportStatusParam,
+  statusFilterToParam,
+  type StatusFilterValue,
+} from '@/lib/applications-status-filter';
 
 interface Round {
   id: string;
@@ -216,15 +224,18 @@ export default function ApplicationsClient() {
   const { canWrite } = useRole();
 
   // URL State
-  // ── List state (page/search/view/sort) อยู่ใน URL ทั้งหมด ──────────────────
+  // ── List state (page/search/status/sort) อยู่ใน URL ทั้งหมด ────────────────
   // เปิดรายละเอียดแล้วกด Back (router.back) → component remount
   // → อ่านค่ากลับจาก URL จึงกลับมาตำแหน่งเดิมได้ (หน้าที่จากไป, search, filter, sort, view)
   const urlRoundId = searchParams.get('round') || '';
   const showArchived = searchParams.get('archived') === '1';
   const urlSearch = searchParams.get('q') || '';
-  const urlViewParam = searchParams.get('view');
-  const urlView: 'all' | 'active' | 'archived' =
-    urlViewParam === 'all' || urlViewParam === 'archived' ? urlViewParam : 'active';
+  // Status filter: ?status=pending|approved|incomplete|cancelled|archived
+  // ค่า default "ทั้งหมด" ไม่เขียนลง URL + ยังอ่าน legacy ?view= (all|active|archived) เดิม
+  const urlStatusFilter = parseStatusFilter(
+    searchParams.get('status'),
+    searchParams.get('view'),
+  );
   const urlSortId = searchParams.get('sort') || 'submittedAt-desc';
   const urlPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
   const urlPageSizeRaw = parseInt(searchParams.get('pageSize') || '10', 10) || 10;
@@ -264,9 +275,11 @@ export default function ApplicationsClient() {
     updateUrl({ q: value.trim() ? value : null });
   }, [updateUrl]);
 
-  const handleViewChange = useCallback((next: 'all' | 'active' | 'archived') => {
-    setView(next);
-    updateUrl({ view: next === 'active' ? null : next });
+  const handleStatusFilterChange = useCallback((next: StatusFilterValue) => {
+    setStatusFilter(next);
+    // ALL = ค่า default → ลบ param ทิ้ง + เคลียร์ legacy ?view= ทิ้งด้วยกันทีเดียว
+    // (reset กลับหน้า 1 ดูแลโดย effect เดียวกับ search/sort เมื่อ filter เปลี่ยน)
+    updateUrl({ status: statusFilterToParam(next), view: null });
   }, [updateUrl]);
 
   const handleSortChange = useCallback((id: string, field: string, direction?: 'asc' | 'desc' | null) => {
@@ -295,8 +308,8 @@ export default function ApplicationsClient() {
   const [summary, setSummary] = useState<Summary>({ total: 0, byStatus: {} });
   const [loading, setLoading] = useState(true);
 
-  // View filter: all | active (excl. archived) | archived — hydrate จาก URL
-  const [view, setView] = useState<'all' | 'active' | 'archived'>(urlView);
+  // Status filter: ALL | SUBMITTED | QUALIFIED | REJECTED | CANCELED | ARCHIVED — hydrate จาก URL
+  const [statusFilter, setStatusFilter] = useState<StatusFilterValue>(urlStatusFilter);
 
   // Search & Sort state — hydrate จาก URL (sortId format: "<field>-<direction>")
   const [search, setSearch] = useState(urlSearch);
@@ -360,8 +373,8 @@ export default function ApplicationsClient() {
   };
 
   // Export Excel (โหมดตามตัวกรอง) — ส่งตัวกรองเดียวกับที่ผู้ใช้เลือกอยู่บนหน้าจอ
-  // view → status mapping ให้ผลลัพธ์ตรงกับ FilterPill ที่เห็น:
-  //   active = ไม่รวม ARCHIVED/DRAFT, archived = ARCHIVED, all = ทุกสถานะ (backend ตัด DRAFT ให้)
+  // statusFilter → status param ให้ผลลัพธ์ตรงกับ chip ที่เห็น:
+  //   สถานะเดี่ยว = enum ตรง ๆ, ทั้งหมด = ไม่ส่ง status (backend คืนทุกสถานะ ตัด DRAFT ให้)
   const handleExportExcel = async () => {
     if (!selectedRoundId || exporting || exportingSelected) return;
     setExporting(true);
@@ -369,8 +382,8 @@ export default function ApplicationsClient() {
       const params = new URLSearchParams();
       params.append('roundId', selectedRoundId);
       if (search.trim()) params.append('search', search.trim());
-      if (view === 'active') params.append('status', 'SUBMITTED,QUALIFIED,REJECTED,CANCELED');
-      if (view === 'archived') params.append('status', 'ARCHIVED');
+      const exportStatus = statusFilterToExportStatusParam(statusFilter);
+      if (exportStatus) params.append('status', exportStatus);
 
       const res = await fetch(`${API_URL}/admin/applications/export?${params}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
@@ -570,12 +583,8 @@ export default function ApplicationsClient() {
 
       let appsList = appsData.data || [];
 
-      // Filter by view
-      if (view === 'active') {
-        appsList = appsList.filter((app: Application) => app.status !== 'ARCHIVED');
-      } else if (view === 'archived') {
-        appsList = appsList.filter((app: Application) => app.status === 'ARCHIVED');
-      }
+      // Filter by status (client-side เหมือนเดิม — ALL = ทุกสถานะ)
+      appsList = filterByStatus(appsList, statusFilter);
 
       setApps(appsList);
       setSummary(summaryData.data || { total: 0, byStatus: {} });
@@ -584,7 +593,7 @@ export default function ApplicationsClient() {
     } finally {
       setLoading(false);
     }
-  }, [selectedRoundId, search, view, API_URL]);
+  }, [selectedRoundId, search, statusFilter, API_URL]);
 
   // Reset กลับหน้า 1 เมื่อตัวกรอง/รอบ/การเรียงเปลี่ยน
   // ⚠️ mount แรก (prev === null) ต้อง "ไม่ reset" — หน้าปัจจุบันเพิ่ง restore จาก URL
@@ -595,32 +604,32 @@ export default function ApplicationsClient() {
     roundId: string;
     search: string;
     sortId: string;
-    view: string;
+    statusFilter: string;
   } | null>(null);
   useEffect(() => {
     const prev = prevListStateRef.current;
-    prevListStateRef.current = { roundId: selectedRoundId, search, sortId, view };
+    prevListStateRef.current = { roundId: selectedRoundId, search, sortId, statusFilter };
     if (!prev) return;
     const roundInitialized = prev.roundId === '';
     const roundChanged = !roundInitialized && prev.roundId !== selectedRoundId;
     const filterChanged =
-      prev.search !== search || prev.sortId !== sortId || prev.view !== view;
+      prev.search !== search || prev.sortId !== sortId || prev.statusFilter !== statusFilter;
     if (roundInitialized && !filterChanged) return;
     if (!roundChanged && !filterChanged) return;
     setCurrentPage(1);
     updateUrl({ page: null });
-  }, [selectedRoundId, search, sortId, view, updateUrl]);
+  }, [selectedRoundId, search, sortId, statusFilter, updateUrl]);
 
   // Policy การเลือก: selection คงอยู่ข้ามหน้า/การเรียงลำดับ แต่ถูกล้างเมื่อ
-  // เปลี่ยนรอบรับสมัคร (เสมอ) หรือเปลี่ยนตัวกรอง search/view — พร้อมแจ้งเหตุผล
+  // เปลี่ยนรอบรับสมัคร (เสมอ) หรือเปลี่ยนตัวกรอง search/สถานะ — พร้อมแจ้งเหตุผล
   // (ต้องประกาศก่อน effect เรียก fetchData เพื่อให้ล้าง+แจ้งก่อน reset ใน fetch)
-  const prevFilterStateRef = useRef<{ roundId: string; search: string; view: string } | null>(null);
+  const prevFilterStateRef = useRef<{ roundId: string; search: string; statusFilter: string } | null>(null);
   useEffect(() => {
     const prev = prevFilterStateRef.current;
-    prevFilterStateRef.current = { roundId: selectedRoundId, search, view };
+    prevFilterStateRef.current = { roundId: selectedRoundId, search, statusFilter };
     if (!prev) return; // render แรกหลัง mount ยังไม่มีตัวกรองเดิมให้เทียบ
     const roundChanged = prev.roundId !== selectedRoundId;
-    const filterChanged = prev.search !== search || prev.view !== view;
+    const filterChanged = prev.search !== search || prev.statusFilter !== statusFilter;
     if (!roundChanged && !filterChanged) return;
     const size = selectedIdsRef.current.size;
     if (size === 0) return;
@@ -629,7 +638,7 @@ export default function ApplicationsClient() {
       `ล้างการเลือก ${size} รายการ เนื่องจาก${roundChanged ? 'เปลี่ยนรอบรับสมัคร' : 'ตัวกรอง (ค้นหา/สถานะ) เปลี่ยน'}`,
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRoundId, search, view]);
+  }, [selectedRoundId, search, statusFilter]);
 
   // Fetch on mount and when dependencies change
   useEffect(() => {
@@ -840,15 +849,14 @@ export default function ApplicationsClient() {
     setSelectedIds(newSet);
   };
 
-  // Count by view (จาก summary ทั้งหมด)
-  const totalAll = summary.total;
-  const totalActive = summary.total - (summary.byStatus.ARCHIVED || 0);
-  const totalArchived = summary.byStatus.ARCHIVED || 0;
-
-  const viewCounts = {
-    all: totalAll,
-    active: totalActive,
-    archived: totalArchived,
+  // จำนวนต่อ chip ตามสถานะ (จาก summary ของรอบปัจจุบัน — ไม่ขึ้นกับ search)
+  const statusCounts: Record<StatusFilterValue, number> = {
+    ALL: summary.total,
+    SUBMITTED: summary.byStatus.SUBMITTED || 0,
+    QUALIFIED: summary.byStatus.QUALIFIED || 0,
+    REJECTED: summary.byStatus.REJECTED || 0,
+    CANCELED: summary.byStatus.CANCELED || 0,
+    ARCHIVED: summary.byStatus.ARCHIVED || 0,
   };
 
   // =====================
@@ -1122,10 +1130,16 @@ export default function ApplicationsClient() {
 
           {/* Row 2: Filter Pills + Export + Result Count */}
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1">
-              <FilterPill label="ทั้งหมด" isActive={view === 'all'} onClick={() => handleViewChange('all')} count={viewCounts.all} />
-              <FilterPill label="กำลังดำเนินการ" isActive={view === 'active'} onClick={() => handleViewChange('active')} count={viewCounts.active} />
-              <FilterPill label="เก็บเข้าคลัง" isActive={view === 'archived'} onClick={() => handleViewChange('archived')} count={viewCounts.archived} />
+            <div className="flex items-center gap-1 flex-wrap">
+              {STATUS_FILTER_OPTIONS.map((option) => (
+                <FilterPill
+                  key={option.value}
+                  label={option.label}
+                  isActive={statusFilter === option.value}
+                  onClick={() => handleStatusFilterChange(option.value)}
+                  count={statusCounts[option.value]}
+                />
+              ))}
             </div>
             <div className="flex items-center gap-2">
               {canWrite && (
@@ -1225,7 +1239,9 @@ export default function ApplicationsClient() {
                     ) : (
                       <NoDataEmptyState
                         title="ไม่พบใบสมัคร"
-                        description="ยังไม่มีใบสมัครในรอบนี้"
+                        description={statusFilter !== 'ALL'
+                          ? 'ไม่มีใบสมัครสถานะนี้ในรอบที่เลือก'
+                          : 'ยังไม่มีใบสมัครในรอบนี้'}
                       />
                     )}
                   </TableCell>
