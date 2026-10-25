@@ -72,6 +72,14 @@ function createMockR2Bucket() {
 // ── D1-compatible adapter (แบบเดียวกับ submit-attachment-filename.test.ts) ─
 function createD1Adapter(sqlite) {
   const makeStatement = (sqlText) => {
+    // D1 fidelity: D1 จำกัด 100 bound parameters ต่อ statement — เกินให้ fail
+    // ทันที (better-sqlite3 ยอมรับได้ไม่จำกัด จึงต้องจำลอง limit เอง)
+    const bindCount = (String(sqlText).match(/\?/g) || []).length;
+    if (bindCount > 100) {
+      throw new Error(
+        `D1_LIMIT: statement ใช้ bound parameters ${bindCount} ตัว (เกิน limit 100): ${String(sqlText).slice(0, 200)}`,
+      );
+    }
     const stmt = sqlite.prepare(sqlText);
     let bound = [];
     const api = {

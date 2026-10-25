@@ -11,6 +11,8 @@
  *   - ไม่ hardcode field ตามประเภทตำแหน่ง — โครงสร้างมาจาก template เท่านั้น
  *   - Generate ใหม่ทุกครั้ง ไม่เก็บไฟล์ใน D1 / R2
  *   - Cap 1,000 แถวต่อครั้ง (เกิน → TOO_MANY_ROWS → HTTP 422)
+ *   - D1 limit: ทุก query ที่รับ array (IN (...)) แบ่ง chunk ≤ 90 bind
+ *     ต่อ statement (D1 จำกัด 100 bound parameters ต่อ statement)
  *   - ไม่รวมสถานะ DRAFT โดยค่าเริ่มต้น
  *   - Audit log 1 รายการต่อการ export (ไม่รวม PII ใน payload)
  *
@@ -50,7 +52,12 @@ import {
   replaceOtherInDisplay,
   OTHER_KEY_SUFFIX,
 } from '../lib/other-option';
-import { attachmentDisplayFileName, attachmentDisplayName } from '../utils/filename';
+import {
+  attachmentDisplayFileName,
+  attachmentDisplayName,
+  buildExportFilename,
+  buildExportFilenameAscii,
+} from '../utils/filename';
 import { toUnixTimestamp } from '../utils/timestamp';
 import type { Bindings } from '../types';
 
@@ -67,6 +74,28 @@ function getDb(env: Bindings) {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 export const MAX_EXPORT_ROWS = 1000;
+
+/**
+ * Cloudflare D1 จำกัด bound parameters 100 ตัวต่อ statement
+ * (https://developers.cloudflare.com/d1/platform/limits/) — ทุก query ที่รับ
+ * array (IN (...)) ต้องแบ่งเป็น chunk ก่อน
+ *
+ * Chunk size 90 (ไม่ใช้ 100 ตรง ๆ):
+ *   - selected application query มี bind อื่นอีก 6 ตัวใน WHERE เดียวกัน
+ *     (roundId 1 + status IN 5) → ชุดละ 90 = 96/100 เหลือ safety margin
+ *   - attachment query ไม่มี bind อื่น (90/100) — ใช้ค่าเดียวกันทั้งสองจุด
+ */
+export const D1_MAX_BIND_PARAMS = 100;
+export const IN_CLAUSE_CHUNK_SIZE = 90;
+
+/** แบ่ง array เป็น chunk ขนาดเท่า ๆ กัน (ตัวสุดท้ายอาจสั้นกว่า) */
+export function chunkArray<T>(items: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
 
 /** Timezone source of truth: Asia/Bangkok (UTC+7) — เดียวกับ public.routes.ts */
 const BANGKOK_OFFSET_SECONDS = 7 * 60 * 60;
@@ -334,7 +363,17 @@ export function buildExportWhere(filters: ExportFilters) {
 
   const statusList = parseStatusList(filters.status);
   if (statusList) {
-    conditions.push(inArray(applications.status, statusList));
+    // D1 guard: กรองเฉพาะ status ที่รู้จัก (≤ 5 bind) — status จาก query string
+    // ยาวเท่าไรก็ได้และไม่มี cap ที่ไหน จะกลายเป็น bind ตามจำนวนค่า
+    // semantics เดิม: ค่าที่ไม่รู้จักไม่ match แถวไหน (เหลือแต่ค่าไม่รู้จัก → 0 แถว)
+    const known = statusList.filter((s) =>
+      (ALL_APPLICATION_STATUSES as readonly string[]).includes(s as any),
+    );
+    if (known.length === 0) {
+      conditions.push(sql`1 = 0`);
+    } else {
+      conditions.push(inArray(applications.status, known));
+    }
   } else {
     // ✅ Default: ไม่รวม DRAFT (spec) — ครอบทุก status ที่หน้ารายชื่อใช้
     conditions.push(inArray(applications.status, [...ALL_APPLICATION_STATUSES]));
@@ -392,7 +431,10 @@ async function loadFieldRows(db: DB, templateVersionId: string): Promise<FieldRo
 export interface ExcelExportSuccess {
   ok: true;
   buffer: Uint8Array;
+  /** ชื่อไฟล์ Unicode ที่ผู้ใช้เห็น (จาก filename*) */
   filename: string;
+  /** ASCII fallback สำหรับ filename= ใน Content-Disposition */
+  filenameAscii: string;
   rowCount: number;
   columnCount: number;
   bytes: number;
@@ -404,25 +446,18 @@ export interface ExcelExportSuccess {
 
 export interface ExcelExportFailure {
   ok: false;
-  code: 'ROUND_NOT_FOUND' | 'TOO_MANY_ROWS';
+  code: 'ROUND_NOT_FOUND' | 'TOO_MANY_ROWS' | 'APPLICATIONS_NOT_EXPORTABLE';
   message: string;
   httpStatus: number;
+  /** เฉพาะ APPLICATIONS_NOT_EXPORTABLE: จำนวน ID ที่ export ไม่ได้ */
+  missingCount?: number;
 }
 
 export type ExcelExportResult = ExcelExportSuccess | ExcelExportFailure;
 
-// ── Main entry ──────────────────────────────────────────────────────────────
-export async function exportApplicationsExcel(
-  env: Bindings,
-  filters: ExportFilters,
-  adminId: string,
-  ipAddress: string | null,
-): Promise<ExcelExportResult> {
-  const startedAt = Date.now();
-  const db = getDb(env);
-
-  // ── 1) Round + template version ───────────────────────────────────────
-  const round = await db
+// ── Round loader (ใช้ร่วมทุกโหมด export) ─────────────────────────────────────
+async function loadExportRound(db: DB, roundId: string) {
+  return db
     .select({
       id: recruitmentRounds.id,
       title: recruitmentRounds.title,
@@ -430,61 +465,71 @@ export async function exportApplicationsExcel(
       templateVersionId: recruitmentRounds.templateVersionId,
     })
     .from(recruitmentRounds)
-    .where(and(eq(recruitmentRounds.id, filters.roundId), isNull(recruitmentRounds.deletedAt)))
+    .where(and(eq(recruitmentRounds.id, roundId), isNull(recruitmentRounds.deletedAt)))
     .get();
+}
 
-  if (!round) {
-    return {
-      ok: false,
-      code: 'ROUND_NOT_FOUND',
-      message: 'ไม่พบรอบรับสมัครที่ระบุ',
-      httpStatus: 404,
-    };
-  }
+/** Columns ที่ทุกโหมด export เลือกจากตาราง applications */
+const EXPORT_APP_COLUMNS = {
+  id: applications.id,
+  applicationNo: applications.applicationNo,
+  fullname: applications.fullname,
+  email: applications.email,
+  status: applications.status,
+  statusReason: applications.statusReason,
+  formData: applications.formData,
+  submittedAt: applications.submittedAt,
+};
 
-  // ── 2) Template fields → dynamic columns ──────────────────────────────
-  const fieldRows = await loadFieldRows(db, round.templateVersionId);
-  const fieldColumns = buildFieldColumns(fieldRows);
-  const columns: ExportColumn[] = [...SYSTEM_COLUMNS, ...fieldColumns];
+/** แถวใบสมัครที่เข้า workbook builder (filtered / selected ใช้ type เดียวกัน) */
+interface ExportAppRow {
+  id: string;
+  applicationNo: string | null;
+  fullname: string | null;
+  email: string | null;
+  status: string | null;
+  statusReason: string | null;
+  formData: unknown;
+  submittedAt: number | Date | null;
+}
 
-  // ── 3) Applications ตาม filters (ไม่มี DRAFT โดย default) ─────────────
-  const appRows = await db
-    .select({
-      id: applications.id,
-      applicationNo: applications.applicationNo,
-      fullname: applications.fullname,
-      email: applications.email,
-      status: applications.status,
-      statusReason: applications.statusReason,
-      formData: applications.formData,
-      submittedAt: applications.submittedAt,
-    })
-    .from(applications)
-    .where(buildExportWhere(filters))
-    .orderBy(desc(applications.submittedAt));
+/**
+ * Shared Workbook Builder — Filtered / Selected export ใช้ตัวเดียวกัน
+ * (ห้ามสร้าง logic แปลง field ซ้ำอีกชุดสำหรับโหมดใดโหมดหนึ่ง)
+ */
+async function buildWorkbookBuffer(
+  db: DB,
+  templateVersionId: string,
+  appRows: ExportAppRow[],
+): Promise<{ buffer: Uint8Array; columnCount: number }> {
+  // ── Template fields → dynamic columns ──────────────────────────────────
+  const fieldRows = await loadFieldRows(db, templateVersionId);
+  const columns: ExportColumn[] = [...SYSTEM_COLUMNS, ...buildFieldColumns(fieldRows)];
 
-  // ── 4) Cap 1,000 แถว ─────────────────────────────────────────────────
-  if (appRows.length > MAX_EXPORT_ROWS) {
-    return {
-      ok: false,
-      code: 'TOO_MANY_ROWS',
-      message: `จำนวนใบสมัคร ${appRows.length} รายการ เกินขีดจำกัด ${MAX_EXPORT_ROWS} รายการต่อการ export หนึ่งครั้ง กรุณากรองสถานะ ช่วงวันที่ หรือคำค้นเพื่อลดจำนวนก่อน export`,
-      httpStatus: 422,
-    };
-  }
-
-  // ── 5) Attachments ทั้ง round ใน query เดียว (ไม่ loop N+1) ───────────
+  // ── Attachments ทั้งชุด (ไม่ loop N+1) — แบ่ง chunk ตาม D1 limit ────────
+  // applicationId IN (...) bind ตามจำนวนแถว export (สูงสุด 1,000) → ต้อง
+  // แบ่ง chunk ≤ IN_CLAUSE_CHUNK_SIZE; 1,000 แถว = 12 query (bounded ไม่ใช่ N+1)
   const attachmentsByApp = new Map<string, Map<string, string[]>>();
   if (appRows.length > 0) {
-    const attRows = await db
-      .select({
-        applicationId: applicationAttachments.applicationId,
-        fieldId: applicationAttachments.fieldId,
-        fileUrl: applicationAttachments.fileUrl,
-        originalFilename: applicationAttachments.originalFilename,
-      })
-      .from(applicationAttachments)
-      .where(inArray(applicationAttachments.applicationId, appRows.map((a: { id: string }) => a.id)));
+    const appIds = appRows.map((a) => a.id);
+    const attRows: Array<{
+      applicationId: string;
+      fieldId: string;
+      fileUrl: string;
+      originalFilename: string | null;
+    }> = [];
+    for (const chunk of chunkArray(appIds, IN_CLAUSE_CHUNK_SIZE)) {
+      const rows = await db
+        .select({
+          applicationId: applicationAttachments.applicationId,
+          fieldId: applicationAttachments.fieldId,
+          fileUrl: applicationAttachments.fileUrl,
+          originalFilename: applicationAttachments.originalFilename,
+        })
+        .from(applicationAttachments)
+        .where(inArray(applicationAttachments.applicationId, chunk));
+      attRows.push(...rows);
+    }
 
     for (const att of attRows) {
       let byField = attachmentsByApp.get(att.applicationId);
@@ -500,7 +545,7 @@ export async function exportApplicationsExcel(
     }
   }
 
-  // ── 6) Build workbook ────────────────────────────────────────────────
+  // ── Build workbook ────────────────────────────────────────────────────
   const wb = new ExcelJS.Workbook();
   wb.creator = 'SAO Recruitment — Excel Export';
   wb.created = new Date();
@@ -559,19 +604,90 @@ export async function exportApplicationsExcel(
 
   ws.views = [{ state: 'frozen', ySplit: 1 }];
 
-  // ── 7) writeBuffer ───────────────────────────────────────────────────
+  // ── writeBuffer ───────────────────────────────────────────────────────
   const rawBuffer = await wb.xlsx.writeBuffer();
   const buffer = rawBuffer instanceof Uint8Array
     ? rawBuffer
     : new Uint8Array(rawBuffer as ArrayBuffer);
 
+  return { buffer, columnCount: columns.length };
+}
+
+/** Audit 1 รายการต่อการ export สำเร็จ — ล้มไม่ block response */
+async function writeExportAudit(
+  db: DB,
+  adminId: string,
+  ipAddress: string | null,
+  auditPayload: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await db.insert(auditLogs).values({
+      id: uuidv4(),
+      adminId,
+      action: 'EXPORT_EXCEL',
+      entityType: 'APPLICATION',
+      entityId: auditPayload.roundId as string,
+      payload: JSON.stringify(auditPayload),
+      ipAddress: ipAddress ?? 'unknown',
+    });
+  } catch (auditErr) {
+    // Audit ล้มไม่ block response — ตาม pattern PDF_DOWNLOAD
+    console.error('[EXCEL_EXPORT] Failed to log audit:', auditErr);
+  }
+}
+
+// ── Main entry: Filtered export (GET) ──────────────────────────────────────
+export async function exportApplicationsExcel(
+  env: Bindings,
+  filters: ExportFilters,
+  adminId: string,
+  ipAddress: string | null,
+): Promise<ExcelExportResult> {
+  const startedAt = Date.now();
+  const db = getDb(env);
+
+  // ── 1) Round + template version ───────────────────────────────────────
+  const round = await loadExportRound(db, filters.roundId);
+  if (!round) {
+    return {
+      ok: false,
+      code: 'ROUND_NOT_FOUND',
+      message: 'ไม่พบรอบรับสมัครที่ระบุ',
+      httpStatus: 404,
+    };
+  }
+
+  // ── 2) Applications ตาม filters (ไม่มี DRAFT โดย default) ─────────────
+  // orderBy แบบ deterministic: submittedAt desc แล้ว id desc เป็น tie-breaker
+  const appRows = await db
+    .select(EXPORT_APP_COLUMNS)
+    .from(applications)
+    .where(buildExportWhere(filters))
+    .orderBy(desc(applications.submittedAt), desc(applications.id));
+
+  // ── 3) Cap 1,000 แถว ─────────────────────────────────────────────────
+  if (appRows.length > MAX_EXPORT_ROWS) {
+    return {
+      ok: false,
+      code: 'TOO_MANY_ROWS',
+      message: `จำนวนใบสมัคร ${appRows.length} รายการ เกินขีดจำกัด ${MAX_EXPORT_ROWS} รายการต่อการ export หนึ่งครั้ง กรุณากรองสถานะ ช่วงวันที่ หรือคำค้นเพื่อลดจำนวนก่อน export`,
+      httpStatus: 422,
+    };
+  }
+
+  // ── 4) Build workbook (shared builder) ────────────────────────────────
+  const { buffer, columnCount } = await buildWorkbookBuffer(db, round.templateVersionId, appRows);
+
   const durationMs = Date.now() - startedAt;
   const generatedAt = new Date().toISOString();
-  const filename = `applications-${round.roundCode || round.id.slice(0, 8)}-${bangkokStampNow()}.xlsx`;
+  const stamp = bangkokStampNow();
+  const filename = buildExportFilename(round, stamp);
+  const filenameAscii = buildExportFilenameAscii(round, stamp);
 
-  // ── 8) Audit log 1 รายการ (ไม่มี PII — search redact เป็นความยาว) ────
+  // ── 5) Audit log 1 รายการ (ไม่มี PII — search redact เป็นความยาว) ────
   const auditPayload = {
     roundId: filters.roundId,
+    exportMode: 'FILTERED' as const,
     filters: {
       status: parseStatusList(filters.status),
       search: filters.search?.trim()
@@ -581,34 +697,159 @@ export async function exportApplicationsExcel(
       dateTo: filters.dateTo ?? null,
     },
     rowCount: appRows.length,
-    columnCount: columns.length,
+    columnCount,
     bytes: buffer.byteLength,
     filename,
     durationMs,
     generatedAt,
   };
-
-  try {
-    await db.insert(auditLogs).values({
-      id: uuidv4(),
-      adminId,
-      action: 'EXPORT_EXCEL',
-      entityType: 'APPLICATION',
-      entityId: filters.roundId,
-      payload: JSON.stringify(auditPayload),
-      ipAddress: ipAddress ?? 'unknown',
-    });
-  } catch (auditErr) {
-    // Audit ล้มไม่ блок response — ตาม pattern PDF_DOWNLOAD
-    console.error('[EXCEL_EXPORT] Failed to log audit:', auditErr);
-  }
+  await writeExportAudit(db, adminId, ipAddress, auditPayload);
 
   return {
     ok: true,
     buffer,
     filename,
+    filenameAscii,
     rowCount: appRows.length,
-    columnCount: columns.length,
+    columnCount,
+    bytes: buffer.byteLength,
+    durationMs,
+    generatedAt,
+    auditPayload,
+  };
+}
+
+// ── Main entry: Selected export (POST) ─────────────────────────────────────
+export interface SelectedExportRequest {
+  roundId: string;
+  applicationIds: string[];
+}
+
+/**
+ * Export เฉพาะใบสมัครที่เลือก:
+ *   - ทุก ID ต้องอยู่ใน roundId ที่ระบุ (ห้ามข้ามรอบ) + ไม่ถูกลบ + ไม่ใช่ DRAFT
+ *   - ID ซ้ำถูก deduplicate (contract: รวบเป็นรายการเดียว ไม่ reject)
+ *   - มี ID ใด export ไม่ได้ → reject ทั้งชุด (422) ไม่ export บางส่วน
+ *   - ลำดับแถว deterministic เหมือน filtered: submittedAt desc, id desc
+ */
+export async function exportSelectedApplicationsExcel(
+  env: Bindings,
+  request: SelectedExportRequest,
+  adminId: string,
+  ipAddress: string | null,
+): Promise<ExcelExportResult> {
+  const startedAt = Date.now();
+  const db = getDb(env);
+
+  const uniqueIds = Array.from(new Set(request.applicationIds));
+  if (uniqueIds.length === 0) {
+    return {
+      ok: false,
+      code: 'APPLICATIONS_NOT_EXPORTABLE',
+      message: 'ต้องเลือกใบสมัครอย่างน้อย 1 รายการ',
+      httpStatus: 422,
+      missingCount: 0,
+    };
+  }
+  if (uniqueIds.length > MAX_EXPORT_ROWS) {
+    return {
+      ok: false,
+      code: 'TOO_MANY_ROWS',
+      message: `จำนวนใบสมัคร ${uniqueIds.length} รายการ เกินขีดจำกัด ${MAX_EXPORT_ROWS} รายการต่อการ export หนึ่งครั้ง`,
+      httpStatus: 422,
+    };
+  }
+
+  // ── 1) Round (roundId บังคับ — filename สร้างจากข้อมูลรอบใน D1) ────────
+  const round = await loadExportRound(db, request.roundId);
+  if (!round) {
+    return {
+      ok: false,
+      code: 'ROUND_NOT_FOUND',
+      message: 'ไม่พบรอบรับสมัครที่ระบุ',
+      httpStatus: 404,
+    };
+  }
+
+  // ── 2) เฉพาะ ID ที่เลือก ในรอบที่ระบุเท่านั้น (กฎ status เดียวกับ filtered) ─
+  // D1 limit: id IN (...) bind ตามจำนวน ID → แบ่ง chunk ≤ IN_CLAUSE_CHUNK_SIZE
+  // (query มี bind อื่น 6 ตัว: roundId 1 + status 5 → ชุดละ 90 = 96/100)
+  const foundRows: ExportAppRow[] = [];
+  for (const chunk of chunkArray(uniqueIds, IN_CLAUSE_CHUNK_SIZE)) {
+    const rows = await db
+      .select(EXPORT_APP_COLUMNS)
+      .from(applications)
+      .where(and(
+        eq(applications.roundId, request.roundId),
+        isNull(applications.deletedAt),
+        inArray(applications.id, chunk),
+        inArray(applications.status, [...ALL_APPLICATION_STATUSES]),
+      ));
+    foundRows.push(...rows);
+  }
+
+  // หลังรวมหลาย chunk: dedupe ซ้ำอีกชั้นแบบ defensive (chunk ตัดจาก uniqueIds
+  // ที่ไม่ซ้ำกันอยู่แล้ว แต่กัน query layer คืนแถวซ้ำในอนาคต)
+  const seenIds = new Set<string>();
+  const appRows = foundRows.filter((row) => {
+    if (seenIds.has(row.id)) return false;
+    seenIds.add(row.id);
+    return true;
+  });
+
+  // ลำดับ deterministic เหมือน filtered (submittedAt DESC, id DESC) —
+  // ORDER BY ต่อ chunk รวมกันไม่ได้ลำดับ global จึงเรียงใน JS ชุดเดียวจบ
+  appRows.sort((a, b) => {
+    const at = toUnixTimestamp(a.submittedAt) ?? 0;
+    const bt = toUnixTimestamp(b.submittedAt) ?? 0;
+    if (at !== bt) return bt - at;
+    if (a.id < b.id) return 1;
+    if (a.id > b.id) return -1;
+    return 0;
+  });
+
+  // ── 3) ID ใดไม่พบ / ถูกลบ / คนละรอบ / DRAFT → reject ทั้งชุด ──────────
+  const missingCount = uniqueIds.length - appRows.length;
+  if (missingCount > 0) {
+    return {
+      ok: false,
+      code: 'APPLICATIONS_NOT_EXPORTABLE',
+      message: `มีใบสมัคร ${missingCount} รายการจากที่เลือกที่ export ไม่ได้ (ไม่พบ ถูกลบ อยู่คนละรอบ หรือยังเป็นร่าง) กรุณารีเฟรชรายการแล้วเลือกใหม่`,
+      httpStatus: 422,
+      missingCount,
+    };
+  }
+
+  // ── 4) Build workbook (shared builder เดียวกับ filtered) ──────────────
+  const { buffer, columnCount } = await buildWorkbookBuffer(db, round.templateVersionId, appRows);
+
+  const durationMs = Date.now() - startedAt;
+  const generatedAt = new Date().toISOString();
+  const stamp = bangkokStampNow();
+  const filename = buildExportFilename(round, stamp);
+  const filenameAscii = buildExportFilenameAscii(round, stamp);
+
+  // ── 5) Audit — เก็บเฉพาะ selectedCount ไม่เก็บ applicationIds ทั้งก้อน ──
+  const auditPayload = {
+    roundId: request.roundId,
+    exportMode: 'SELECTED' as const,
+    selectedCount: uniqueIds.length,
+    rowCount: appRows.length,
+    columnCount,
+    bytes: buffer.byteLength,
+    filename,
+    durationMs,
+    generatedAt,
+  };
+  await writeExportAudit(db, adminId, ipAddress, auditPayload);
+
+  return {
+    ok: true,
+    buffer,
+    filename,
+    filenameAscii,
+    rowCount: appRows.length,
+    columnCount,
     bytes: buffer.byteLength,
     durationMs,
     generatedAt,

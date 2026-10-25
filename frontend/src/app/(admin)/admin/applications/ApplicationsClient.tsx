@@ -15,6 +15,13 @@ import { ActionMenu } from '@/components/ui/action-menu';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
 import { cn } from '@/lib/utils';
 import { useRole } from '@/lib/useRole';
+import {
+  parseContentDispositionFilename,
+  DEFAULT_EXPORT_FILENAME,
+  areAllPageSelected,
+  isPagePartiallySelected,
+  togglePageSelection,
+} from '@/lib/excel-export';
 
 interface Round {
   id: string;
@@ -213,8 +220,11 @@ export default function ApplicationsClient() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize] = useState(10);
 
-  // Selection state
+  // Selection state — เก็บเป็น Set ของ ID จึงคงอยู่ข้ามหน้า (pagination)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // mirror ค่าล่าสุดสำหรับอ่านใน effect ที่ไม่ depend บน selectedIds
+  const selectedIdsRef = useRef<Set<string>>(selectedIds);
+  selectedIdsRef.current = selectedIds;
 
   // Status update modal (single)
   const [showStatusModal, setShowStatusModal] = useState(false);
@@ -229,14 +239,32 @@ export default function ApplicationsClient() {
   const [bulkReason, setBulkReason] = useState('');
   const [bulkUpdating, setBulkUpdating] = useState(false);
 
-  // Excel export state (loading + กันกดซ้ำ)
+  // Excel export state — loading แยก Filtered / Selected + กันกดซ้ำ
   const [exporting, setExporting] = useState(false);
+  const [exportingSelected, setExportingSelected] = useState(false);
+  // แจ้งเตือนเมื่อ selection ถูกล้างเพราะตัวกรอง/รอบเปลี่ยน (ห้ามหายเงียบ)
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
 
-  // Export Excel — ส่งตัวกรองเดียวกับที่ผู้ใช้เลือกอยู่บนหน้าจอ
+  // ดาวน์โหลด blob ด้วยชื่อไฟล์ที่ backend สร้างให้ (จาก Content-Disposition)
+  const triggerExcelDownload = async (res: Response) => {
+    const filename = parseContentDispositionFilename(res.headers.get('Content-Disposition') || '')
+      ?? DEFAULT_EXPORT_FILENAME;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  // Export Excel (โหมดตามตัวกรอง) — ส่งตัวกรองเดียวกับที่ผู้ใช้เลือกอยู่บนหน้าจอ
   // view → status mapping ให้ผลลัพธ์ตรงกับ FilterPill ที่เห็น:
   //   active = ไม่รวม ARCHIVED/DRAFT, archived = ARCHIVED, all = ทุกสถานะ (backend ตัด DRAFT ให้)
   const handleExportExcel = async () => {
-    if (!selectedRoundId || exporting) return;
+    if (!selectedRoundId || exporting || exportingSelected) return;
     setExporting(true);
     try {
       const params = new URLSearchParams();
@@ -254,24 +282,45 @@ export default function ApplicationsClient() {
         throw new Error(err.message || err.error || 'ส่งออก Excel ไม่สำเร็จ');
       }
 
-      const disposition = res.headers.get('Content-Disposition') || '';
-      const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
-      const filename = filenameMatch?.[1] || 'applications.xlsx';
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      await triggerExcelDownload(res);
     } catch (error) {
       console.error('Excel export error:', error);
       alert(error instanceof Error ? error.message : 'ส่งออก Excel ไม่สำเร็จ');
     } finally {
       setExporting(false);
+    }
+  };
+
+  // Export Excel (โหมดรายการที่เลือก) — POST applicationIds ทั้งหมดที่เลือก
+  // selection อยู่ข้ามหน้าได้ → ส่ง ID ทุกหน้า ไม่ใช่เฉพาะหน้าปัจจุบัน
+  const handleExportSelected = async () => {
+    if (!selectedRoundId || selectedIds.size === 0 || exporting || exportingSelected) return;
+    setExportingSelected(true);
+    try {
+      const res = await fetch(`${API_URL}/admin/applications/export-selected`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
+        },
+        body: JSON.stringify({
+          roundId: selectedRoundId,
+          applicationIds: Array.from(selectedIds),
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || err.error || 'ส่งออก Excel ไม่สำเร็จ');
+      }
+
+      await triggerExcelDownload(res);
+      // สำเร็จแล้วคง selection ไว้ (ไม่ล้างโดยไม่จำเป็น)
+    } catch (error) {
+      console.error('Excel selected export error:', error);
+      alert(error instanceof Error ? error.message : 'ส่งออก Excel ไม่สำเร็จ');
+    } finally {
+      setExportingSelected(false);
     }
   };
 
@@ -372,29 +421,30 @@ export default function ApplicationsClient() {
     setCurrentPage(1);
   }, [selectedRoundId, search, sortId, view]);
 
+  // Policy การเลือก: selection คงอยู่ข้ามหน้า/การเรียงลำดับ แต่ถูกล้างเมื่อ
+  // เปลี่ยนรอบรับสมัคร (เสมอ) หรือเปลี่ยนตัวกรอง search/view — พร้อมแจ้งเหตุผล
+  // (ต้องประกาศก่อน effect เรียก fetchData เพื่อให้ล้าง+แจ้งก่อน reset ใน fetch)
+  const prevFilterStateRef = useRef<{ roundId: string; search: string; view: string } | null>(null);
+  useEffect(() => {
+    const prev = prevFilterStateRef.current;
+    prevFilterStateRef.current = { roundId: selectedRoundId, search, view };
+    if (!prev) return; // render แรกหลัง mount ยังไม่มีตัวกรองเดิมให้เทียบ
+    const roundChanged = prev.roundId !== selectedRoundId;
+    const filterChanged = prev.search !== search || prev.view !== view;
+    if (!roundChanged && !filterChanged) return;
+    const size = selectedIdsRef.current.size;
+    if (size === 0) return;
+    setSelectedIds(new Set());
+    setSelectionNotice(
+      `ล้างการเลือก ${size} รายการ เนื่องจาก${roundChanged ? 'เปลี่ยนรอบรับสมัคร' : 'ตัวกรอง (ค้นหา/สถานะ) เปลี่ยน'}`,
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRoundId, search, view]);
+
   // Fetch on mount and when dependencies change
   useEffect(() => {
     fetchData();
   }, [fetchData]);
-
-  // Selection handlers
-  const toggleSelectAll = () => {
-    if (selectedIds.size === apps.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(apps.map(app => app.id)));
-    }
-  };
-
-  const toggleSelect = (id: string) => {
-    const newSet = new Set(selectedIds);
-    if (newSet.has(id)) {
-      newSet.delete(id);
-    } else {
-      newSet.add(id);
-    }
-    setSelectedIds(newSet);
-  };
 
   // Open status modal
   const openStatusModal = (app: Application, e: React.MouseEvent) => {
@@ -561,6 +611,26 @@ export default function ApplicationsClient() {
     (currentPage - 1) * pageSize,
     currentPage * pageSize
   );
+
+  // Selection handlers — checkbox header ทำงานระดับ "หน้าปัจจุบัน"
+  // (selection จริงเป็น Set ของ ID จึงคงอยู่ข้ามหน้าได้)
+  const pageIds = useMemo(() => paginatedApps.map((app) => app.id), [paginatedApps]);
+  const allPageSelected = areAllPageSelected(pageIds, selectedIds);
+  const somePageSelected = isPagePartiallySelected(pageIds, selectedIds);
+
+  const toggleSelectAll = () => {
+    setSelectedIds(togglePageSelection(pageIds, selectedIds));
+  };
+
+  const toggleSelect = (id: string) => {
+    const newSet = new Set(selectedIds);
+    if (newSet.has(id)) {
+      newSet.delete(id);
+    } else {
+      newSet.add(id);
+    }
+    setSelectedIds(newSet);
+  };
 
   // Count by view (จาก summary ทั้งหมด)
   const totalAll = summary.total;
@@ -763,10 +833,10 @@ export default function ApplicationsClient() {
       {selectedIds.size > 0 && canWrite && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <span className="bg-blue-500 text-white rounded-full px-2.5 py-0.5 text-[11px] font-medium">
-              {selectedIds.size}
+            <span className="text-sm text-slate-700">
+              เลือกแล้ว <span className="font-semibold">{selectedIds.size}</span> รายการ
+              <span className="text-[11px] text-slate-500 ml-1">(รวมทุกหน้า)</span>
             </span>
-            <span className="text-sm text-slate-700">เลือกแล้ว</span>
             <button
               onClick={() => setSelectedIds(new Set())}
               className="text-[11px] text-slate-500 hover:text-slate-700 underline"
@@ -796,6 +866,23 @@ export default function ApplicationsClient() {
               เก็บเข้าคลัง
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* Selection cleared notice — แจ้งเหตุผลที่ selection ถูกล้าง (ห้ามหายเงียบ) */}
+      {selectionNotice && (
+        <div role="status" className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center justify-between gap-2">
+          <span className="text-xs text-amber-800">
+            <span aria-hidden>⚠️</span> {selectionNotice}
+          </span>
+          <button
+            type="button"
+            onClick={() => setSelectionNotice(null)}
+            aria-label="ปิดข้อความแจ้งเตือน"
+            className="text-amber-500 hover:text-amber-700 text-xs px-1 shrink-0"
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -839,16 +926,28 @@ export default function ApplicationsClient() {
             </div>
             <div className="flex items-center gap-2">
               {canWrite && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleExportExcel}
-                  disabled={exporting || !selectedRoundId}
-                  title="ส่งออกใบสมัครทั้งรอบเป็นไฟล์ Excel (ตามตัวกรองที่เลือก)"
-                >
-                  <span aria-hidden>📊</span>
-                  {exporting ? 'กำลังสร้าง Excel...' : 'Export Excel'}
-                </Button>
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleExportExcel}
+                    disabled={exporting || exportingSelected || !selectedRoundId}
+                    title="ส่งออกใบสมัครตามตัวกรองปัจจุบันเป็นไฟล์ Excel"
+                  >
+                    <span aria-hidden>📊</span>
+                    {exporting ? 'กำลังสร้าง Excel...' : 'Export Excel'}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleExportSelected}
+                    disabled={selectedIds.size === 0 || exporting || exportingSelected || !selectedRoundId}
+                    title="ส่งออกเฉพาะใบสมัครที่เลือก (รวมทุกหน้า) เป็นไฟล์ Excel"
+                  >
+                    <span aria-hidden>📑</span>
+                    {exportingSelected ? 'กำลังสร้าง Excel...' : `Export ที่เลือก (${selectedIds.size})`}
+                  </Button>
+                </>
               )}
               <span className="text-[11px] text-slate-500 whitespace-nowrap">
                 {search.trim() ? `พบ ${totalItems}` : `ทั้งหมด ${totalItems}`}
@@ -865,8 +964,10 @@ export default function ApplicationsClient() {
                 <TableHead className="h-10 text-[11px] font-medium text-slate-600 w-[6%]">
                   <input
                     type="checkbox"
-                    checked={selectedIds.size === paginatedApps.length && paginatedApps.length > 0}
+                    checked={allPageSelected}
+                    ref={(el) => { if (el) el.indeterminate = somePageSelected; }}
                     onChange={toggleSelectAll}
+                    aria-label="เลือกทั้งหมดในหน้าปัจจุบัน"
                     className="w-4 h-4 rounded border-slate-300 cursor-pointer"
                   />
                 </TableHead>
@@ -918,6 +1019,7 @@ export default function ApplicationsClient() {
                           type="checkbox"
                           checked={selectedIds.has(app.id)}
                           onChange={() => toggleSelect(app.id)}
+                          aria-label={`เลือกใบสมัคร ${app.applicationNo}`}
                           className="w-4 h-4 rounded border-slate-300 cursor-pointer"
                         />
                       </TableCell>

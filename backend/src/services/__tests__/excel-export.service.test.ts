@@ -35,11 +35,12 @@ import { sign } from 'hono/jwt';
 import ExcelJS from 'exceljs';
 import {
   exportApplicationsExcel,
+  exportSelectedApplicationsExcel,
   __setDrizzleForTests,
   buildFieldColumns,
   MAX_EXPORT_ROWS,
 } from '../excel-export.service';
-import { handleExcelExport } from '../../routes/excel-export.routes';
+import { handleExcelExport, handleExcelExportSelected } from '../../routes/excel-export.routes';
 import { authMiddleware, adminOnlyMiddleware } from '../../middlewares/auth.middleware';
 import { publicRoutes } from '../../routes/public.routes';
 import { Hono } from 'hono';
@@ -77,6 +78,24 @@ function assertTrue(condition, msg = '') {
 // =============================================================================
 function makeTestDb() {
   const sqlite = new Database(':memory:');
+
+  // ── D1 fidelity: จำลอง bound parameter limit ของ Cloudflare D1 ─────────
+  // D1 จำกัด 100 bound parameters ต่อ statement — better-sqlite3 ยอมรับได้
+  // ไม่จำกัด ดังนั้นถ้าไม่ wrap แล้ว "test ผ่าน" ไม่ได้แปลว่า Production ผ่าน
+  // wrapper นับ placeholder '?' ต่อ prepared statement แล้ว throw เมื่อเกิน 100
+  const boundParamLog: Array<{ count: number; sql: string }> = [];
+  const origPrepare = sqlite.prepare.bind(sqlite);
+  sqlite.prepare = ((sql: string) => {
+    const count = (String(sql).match(/\?/g) || []).length;
+    boundParamLog.push({ count, sql: String(sql).replace(/\s+/g, ' ').slice(0, 120) });
+    if (count > 100) {
+      throw new Error(
+        `D1_LIMIT: statement ใช้ bound parameters ${count} ตัว (เกิน limit 100): ${String(sql).slice(0, 200)}`,
+      );
+    }
+    return origPrepare(sql);
+  }) as typeof sqlite.prepare;
+
   sqlite.exec(`
     CREATE TABLE admin_users (
       id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
@@ -120,6 +139,9 @@ function makeTestDb() {
   `);
   const db = drizzle(sqlite);
   (db as any).rawSqlite = sqlite; // เข้าถึง raw better-sqlite3 สำหรับ seed/query ตรงๆ
+  (db as any).boundParamLog = boundParamLog; // log bind ต่อ statement (T)
+  (db as any).maxBoundParams = () =>
+    boundParamLog.reduce((max, entry) => Math.max(max, entry.count), 0);
   return db;
 }
 
@@ -357,6 +379,7 @@ function makeRouteApp() {
   const app = new Hono();
   app.use('/applications/*', authMiddleware);
   app.get('/applications/export', adminOnlyMiddleware, handleExcelExport);
+  app.post('/applications/export-selected', adminOnlyMiddleware, handleExcelExportSelected);
   return app;
 }
 async function makeToken(role: string) {
@@ -796,9 +819,10 @@ async function runAllTests() {
     let payload = latest.payload;
     for (let i = 0; typeof payload === 'string' && i < 3; i++) payload = JSON.parse(payload);
     const payloadStr = JSON.stringify(payload);
-    for (const key of ['roundId', 'filters', 'rowCount', 'columnCount', 'bytes', 'filename', 'durationMs', 'generatedAt']) {
+    for (const key of ['roundId', 'exportMode', 'filters', 'rowCount', 'columnCount', 'bytes', 'filename', 'durationMs', 'generatedAt']) {
       assertTrue(key in payload, `payload ต้องมี ${key}`);
     }
+    assertEqual(payload.exportMode, 'FILTERED', 'filtered export ต้องระบุ exportMode');
     // ห้ามมี PII ใน payload
     assertTrue(!payloadStr.includes('สมชาย'), 'ห้ามมีชื่อ');
     assertTrue(!payloadStr.includes('somchai@example.com'), 'ห้ามมีอีเมล');
@@ -897,7 +921,16 @@ async function runAllTests() {
     );
     const disposition = res.headers.get('Content-Disposition') || '';
     assertTrue(disposition.startsWith('attachment;'), `Content-Disposition: ${disposition}`);
-    assertTrue(/filename="applications-TST01-[^"]+\.xlsx"/.test(disposition), `filename ต้องเป็น applications-TST01-*.xlsx: ${disposition}`);
+    // filename= เป็น ASCII fallback จากรหัสรอบ; ชื่อจริงอยู่ที่ filename* (RFC 5987)
+    assertTrue(/filename="TST01-\d{8}-\d{4}\.xlsx"/.test(disposition), `filename fallback ต้องเป็น TST01-stamp.xlsx: ${disposition}`);
+    assertTrue(/filename\*=UTF-8''%E0%B9%83%E0%B8%9A%E0%B8%AA%E0%B8%A1%E0%B8%B1%E0%B8%84%E0%B8%A3-/.test(disposition), `filename* ต้องขึ้นต้น "ใบสมัคร-" (percent-encoded): ${disposition}`);
+    // FN-H: ห้ามมี CR/LF ใน header (header injection)
+    assertFalse(/[\r\n]/.test(disposition), 'ห้ามมี CR/LF ใน Content-Disposition');
+    // FN-I: filename* decode กลับแล้วได้ชื่อไทยตามรูปแบบ "ใบสมัคร-{รอบ}-{stamp}.xlsx"
+    const star = disposition.match(/filename\*=UTF-8''([^;]+)/);
+    assertTrue(!!star, 'ต้องมี filename*');
+    const decoded = decodeURIComponent(star[1]);
+    assertTrue(/^ใบสมัคร-รอบทดสอบ export-\d{8}-\d{4}\.xlsx$/.test(decoded), `ชื่อไทยจาก filename*: ${decoded}`);
   });
 
   t('21: SUPER_ADMIN → 200', async () => {
@@ -952,6 +985,426 @@ async function runAllTests() {
       {},
     );
     assertEqual(res.status, 404, 'public export ต้องไม่มี');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // FILENAME SUITE (FN-A–K) — ชื่อไฟล์อ้างอิงชื่อรอบจริง ห้ามใช้ UUID
+  // ═══════════════════════════════════════════════════════════════════════
+  const insertRound = (id, title, roundCode = null) => db.rawSqlite.prepare(
+    `INSERT INTO recruitment_rounds (id, template_version_id, title, position_level, open_date, close_date, status, round_code)
+     VALUES (?, ?, ?, 'ระดับต้น', 1735689600, 1767225600, 'CLOSED', ?)`,
+  ).run(id, TV_ID, title, roundCode);
+
+  t('FN-A+J: ใช้ชื่อรอบจริง (title) — ไม่มี UUID ในชื่อไฟล์', async () => {
+    const r = await runExport();
+    assertTrue(/^ใบสมัคร-รอบทดสอบ export-\d{8}-\d{4}\.xlsx$/.test(r.filename), `ได้ ${r.filename}`);
+    assertFalse(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/.test(r.filename), `ห้ามมี UUID: ${r.filename}`);
+  });
+
+  t('FN-B: ชื่อรอบภาษาไทยคงอยู่ครบ', async () => {
+    insertRound('round-thai', 'นักทรัพยากรบุคคล', 'HR01');
+    const r = await runExport({ roundId: 'round-thai' });
+    assertTrue(/^ใบสมัคร-นักทรัพยากรบุคคล-\d{8}-\d{4}\.xlsx$/.test(r.filename), `ได้ ${r.filename}`);
+  });
+
+  t('FN-C: ชื่อรอบมี slash → ถูกแทนที่ ไม่หลงเหลือ / หรือ \\', async () => {
+    insertRound('round-slash', 'รอบ ก/ข\\ค', 'SL01');
+    const r = await runExport({ roundId: 'round-slash' });
+    assertTrue(/^ใบสมัคร-รอบ ก ข ค-\d{8}-\d{4}\.xlsx$/.test(r.filename), `ได้ ${r.filename}`);
+  });
+
+  t('FN-D: อักขระต้องห้ามครบทุกตัว (/ \\ : * ? " < > |) ถูกตัด', async () => {
+    insertRound('round-bad', 'a/b\\c:d*e?f"g<h>i|j', 'BD01');
+    const r = await runExport({ roundId: 'round-bad' });
+    const namePart = r.filename.replace(/^ใบสมัคร-/, '').replace(/-\d{8}-\d{4}\.xlsx$/, '');
+    assertFalse(/[/\\:*?"<>|]/.test(namePart), `namePart: ${namePart}`);
+  });
+
+  t('FN-E: ชื่อรอบยาว 200 ตัวอักษร → ส่วนชื่อรอบ ≤ 80 ตัวอักษร', async () => {
+    insertRound('round-long', 'ร'.repeat(200), 'LN01');
+    const r = await runExport({ roundId: 'round-long' });
+    const namePart = r.filename.replace(/^ใบสมัคร-/, '').replace(/-\d{8}-\d{4}\.xlsx$/, '');
+    assertTrue(namePart.length > 0 && namePart.length <= 80, `namePart.length = ${namePart.length}`);
+  });
+
+  t('FN-F: ชื่อรอบว่าง → fallback เป็น roundCode', async () => {
+    insertRound('round-nocode-title', '', 'FB01');
+    const r = await runExport({ roundId: 'round-nocode-title' });
+    assertTrue(/^ใบสมัคร-FB01-\d{8}-\d{4}\.xlsx$/.test(r.filename), `ได้ ${r.filename}`);
+  });
+
+  t('FN-G: ชื่อรอบและ roundCode ว่าง → fallback "รอบรับสมัคร"', async () => {
+    insertRound('round-nocode', '   ', null);
+    const r = await runExport({ roundId: 'round-nocode' });
+    assertTrue(/^ใบสมัคร-รอบรับสมัคร-\d{8}-\d{4}\.xlsx$/.test(r.filename), `ได้ ${r.filename}`);
+  });
+
+  t('FN-K: audit บันทึก filename สุดท้ายเดียวกับ response', async () => {
+    const r = await runExport({ status: 'QUALIFIED' });
+    assertTrue(r.ok);
+    const log = db.rawSqlite.prepare(`SELECT payload FROM audit_logs WHERE action='EXPORT_EXCEL' ORDER BY rowid DESC`).get();
+    let payload = log.payload;
+    for (let i = 0; typeof payload === 'string' && i < 3; i++) payload = JSON.parse(payload);
+    assertEqual(payload.filename, r.filename, 'audit filename ต้องตรง response');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SELECTED EXPORT SUITE (SEL-L–Z + RBAC) — POST /applications/export-selected
+  // ═══════════════════════════════════════════════════════════════════════
+  const runSelected = (ids, roundId = ROUND_ID) => exportSelectedApplicationsExcel(
+    { JWT_SECRET: SECRET }, // env stub — DB ถูกแทนที่ด้วย seam
+    { roundId, applicationIds: ids },
+    'admin-1',
+    '203.0.113.9',
+  );
+  const postSelected = async (body, token) => {
+    const app = makeRouteApp();
+    return app.fetch(new Request('http://x/applications/export-selected', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    }), { JWT_SECRET: SECRET });
+  };
+  const latestAudit = () => {
+    const log = db.rawSqlite.prepare(`SELECT payload FROM audit_logs WHERE action='EXPORT_EXCEL' ORDER BY rowid DESC`).get();
+    let payload = log.payload;
+    for (let i = 0; typeof payload === 'string' && i < 3; i++) payload = JSON.parse(payload);
+    return payload;
+  };
+
+  // seed เพิ่ม: รอบอื่น (ทดสอบข้ามรอบ) + รายการถูกลบ (soft-delete)
+  insertRound('round-y1', 'รอบอื่น', 'OTH01');
+  db.rawSqlite.prepare(
+    `INSERT INTO applications (id, application_no, round_id, email, fullname, status, form_data, submitted_at)
+     VALUES ('app-y1', 'APP-2026-1001', 'round-y1', 'y@t.t', 'อยู่อีกรอบ', 'SUBMITTED', '{}', ?)`,
+  ).run(NOW + 100);
+  db.rawSqlite.prepare(
+    `INSERT INTO applications (id, application_no, round_id, email, fullname, status, form_data, submitted_at, deleted_at)
+     VALUES ('app-del', 'APP-2026-1002', ?, 'del@t.t', 'ถูกลบแล้ว', 'SUBMITTED', '{}', ?, 1735689600)`,
+  ).run(ROUND_ID, NOW + 200);
+
+  t('SEL-L: เลือก 1 ใบ → 1 แถวถูกต้อง + ชื่อไฟล์ตามชื่อรอบ', async () => {
+    const r = await runSelected(['app-1']);
+    assertTrue(r.ok, JSON.stringify(r).slice(0, 200));
+    assertEqual(r.rowCount, 1);
+    const w = await readWorkbook(r.buffer);
+    assertEqual(String(w.getRow(2).getCell(2).value), 'APP-2026-0001');
+    assertTrue(/^ใบสมัคร-รอบทดสอบ export-\d{8}-\d{4}\.xlsx$/.test(r.filename), `ได้ ${r.filename}`);
+  });
+
+  t('SEL-M+U: เลือกหลายใบ → จำนวนแถวเท่าจำนวนที่เลือกพอดี', async () => {
+    const r = await runSelected(['app-1', 'app-2', 'app-3']);
+    assertTrue(r.ok);
+    assertEqual(r.rowCount, 3);
+  });
+
+  t('SEL-N: เลือกครบทุกใบที่ export ได้ → เท่าผลลัพธ์ filtered default', async () => {
+    const r = await runSelected(['app-1', 'app-2', 'app-3', 'app-5', 'app-6', 'app-7', 'app-8']);
+    assertTrue(r.ok);
+    assertEqual(r.rowCount, 7, 'ไม่รวม DRAFT (app-4) เช่นเดียวกับ filtered');
+  });
+
+  t('SEL-O: ID ซ้ำถูก deduplicate ตาม contract (ไม่ reject)', async () => {
+    const r = await runSelected(['app-1', 'app-1', 'app-2', 'app-2']);
+    assertTrue(r.ok);
+    assertEqual(r.rowCount, 2);
+    assertEqual(latestAudit().selectedCount, 2, 'selectedCount นับหลัง dedupe');
+  });
+
+  t('SEL-R: ID อยู่คนละรอบ → reject ทั้งชุด ห้าม export ข้ามรอบ', async () => {
+    const r = await runSelected(['app-1', 'app-y1']);
+    assertEqual(r.ok, false);
+    assertEqual(r.code, 'APPLICATIONS_NOT_EXPORTABLE');
+    assertEqual(r.httpStatus, 422);
+    assertEqual(r.missingCount, 1);
+  });
+
+  t('SEL-S: ID ไม่มีอยู่ → reject ไม่มี partial export', async () => {
+    const r = await runSelected(['app-1', 'app-not-exist']);
+    assertEqual(r.ok, false);
+    assertEqual(r.code, 'APPLICATIONS_NOT_EXPORTABLE');
+    assertEqual(r.missingCount, 1);
+  });
+
+  t('SEL-T: soft-deleted ไม่ถูก export (กฎเดียวกับ filtered ที่ตัด deletedAt)', async () => {
+    const mixed = await runSelected(['app-1', 'app-del']);
+    assertEqual(mixed.ok, false, 'มี ID ถูกลบปน → reject');
+    const onlyDeleted = await runSelected(['app-del']);
+    assertEqual(onlyDeleted.ok, false, 'เลือกเฉพาะที่ถูกลบ → reject เช่นกัน');
+    assertEqual(onlyDeleted.code, 'APPLICATIONS_NOT_EXPORTABLE');
+  });
+
+  t('SEL-V: ลำดับแถว deterministic (submittedAt desc) ไม่ขึ้นกับลำดับ input', async () => {
+    const r = await runSelected(['app-1', 'app-8', 'app-2']);
+    const w = await readWorkbook(r.buffer);
+    assertEqual(String(w.getRow(2).getCell(2).value), 'APP-2026-0008', 'ล่าสุดก่อน');
+    assertEqual(String(w.getRow(3).getCell(2).value), 'APP-2026-0002');
+    assertEqual(String(w.getRow(4).getCell(2).value), 'APP-2026-0001');
+    const r2 = await runSelected(['app-2', 'app-1', 'app-8']); // สลับลำดับที่ส่ง
+    const w2 = await readWorkbook(r2.buffer);
+    assertEqual(String(w2.getRow(2).getCell(2).value), 'APP-2026-0008', 'ผลลัพธ์เหมือนเดิม');
+  });
+
+  t('SEL-W+AU: workbook mapping เหมือน filtered + เปิดอ่านกลับด้วย ExcelJS ได้', async () => {
+    const flt = await runExport(); // 7 แถว: app-1,2,3,5,6,7,8
+    const sel = await runSelected(['app-1', 'app-2', 'app-3', 'app-5', 'app-6', 'app-7', 'app-8']);
+    assertEqual(sel.columnCount, flt.columnCount, 'columnCount เท่ากัน');
+    const ws = await readWorkbook(sel.buffer);
+    const wf = await readWorkbook(flt.buffer);
+    const headers = [];
+    const headersF = [];
+    for (let i = 1; i <= ws.columnCount; i++) {
+      headers.push(headerAt(ws, i));
+      headersF.push(headerAt(wf, i));
+    }
+    assertEqual(JSON.stringify(headers), JSON.stringify(headersF), 'header ทุกคอลัมน์เหมือน filtered');
+    // ค่าตัวอย่างจาก shared builder: เบอร์โทรของ app-1
+    let r1;
+    for (let r = 2; r <= ws.rowCount; r++) {
+      if (String(ws.getRow(r).getCell(2).value) === 'APP-2026-0001') { r1 = ws.getRow(r); break; }
+    }
+    assertEqual(r1.getCell(8).value, '0812345678');
+  });
+
+  t('SEL-X+Y+Z: audit exportMode=SELECTED + selectedCount ถูกต้อง + ไม่มี PII/ID ทั้งก้อน', async () => {
+    await runSelected(['app-1', 'app-2', 'app-3']);
+    const payload = latestAudit();
+    assertEqual(payload.exportMode, 'SELECTED');
+    assertEqual(payload.selectedCount, 3);
+    assertEqual(payload.rowCount, 3);
+    assertTrue(!('applicationIds' in payload), 'ห้ามเก็บ applicationIds ทั้งก้อน');
+    assertTrue(!('filters' in payload), 'selected mode ไม่มี filters object');
+    const payloadStr = JSON.stringify(payload);
+    assertTrue(!payloadStr.includes('app-1'), 'ห้ามมี application id ใน audit');
+    assertTrue(!payloadStr.includes('สมชาย'), 'ห้ามมีชื่อ');
+    assertTrue(!payloadStr.includes('somchai@example.com'), 'ห้ามมีอีเมล');
+    assertTrue(!payloadStr.includes('0812345678'), 'ห้ามมีเบอร์โทร');
+  });
+
+  t('SEL-404: รอบไม่มีจริง → ROUND_NOT_FOUND', async () => {
+    const r = await runSelected(['app-1'], 'round-not-exist');
+    assertEqual(r.ok, false);
+    assertEqual(r.code, 'ROUND_NOT_FOUND');
+  });
+
+  t('SEL-route-P: 0 รายการ / ไม่ใช่ array / ไม่มี roundId → 400 พร้อมข้อความไทย', async () => {
+    const token = await makeToken('ADMIN');
+    const empty = await postSelected({ roundId: ROUND_ID, applicationIds: [] }, token);
+    assertEqual(empty.status, 400);
+    const body = await empty.json();
+    assertTrue(String(body.message).includes('อย่างน้อย 1'), `ข้อความไทย: ${body.message}`);
+    assertEqual((await postSelected({ roundId: ROUND_ID, applicationIds: 'app-1' }, token)).status, 400);
+    assertEqual((await postSelected({ applicationIds: ['app-1'] }, token)).status, 400);
+    assertEqual((await postSelected(null, token)).status, 400);
+    // service-level defensive: หลัง dedupe เหลือ 0 → reject
+    const zero = await runSelected([]);
+    assertEqual(zero.ok, false);
+  });
+
+  t('SEL-route-Q: เกิน 1,000 ID → 400 (Zod max)', async () => {
+    const token = await makeToken('ADMIN');
+    const ids = Array.from({ length: MAX_EXPORT_ROWS + 1 }, (_, i) => `x-${i}`);
+    const res = await postSelected({ roundId: ROUND_ID, applicationIds: ids }, token);
+    assertEqual(res.status, 400);
+    const body = await res.json();
+    assertTrue(String(body.message).includes('สูงสุด'), `ข้อความ: ${body.message}`);
+  });
+
+  t('SEL-route-RBAC: ไม่มี token → 401, VIEWER → 403, ADMIN → 200 + filename*', async () => {
+    assertEqual((await postSelected({ roundId: ROUND_ID, applicationIds: ['app-1'] }, null)).status, 401);
+    const viewer = await makeToken('VIEWER');
+    assertEqual((await postSelected({ roundId: ROUND_ID, applicationIds: ['app-1'] }, viewer)).status, 403);
+    const admin = await makeToken('ADMIN');
+    const res = await postSelected({ roundId: ROUND_ID, applicationIds: ['app-1'] }, admin);
+    assertEqual(res.status, 200);
+    assertEqual(
+      res.headers.get('Content-Type'),
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    assertTrue((res.headers.get('Content-Disposition') || '').includes("filename*=UTF-8''"), 'selected ต้องมี filename* เหมือน filtered');
+  });
+
+  t('SEL-route-S: reject เป็น JSON ที่ชัดเจน พร้อม missingCount', async () => {
+    const token = await makeToken('ADMIN');
+    const res = await postSelected({ roundId: ROUND_ID, applicationIds: ['app-1', 'app-y1'] }, token);
+    assertEqual(res.status, 422);
+    const body = await res.json();
+    assertEqual(body.error, 'APPLICATIONS_NOT_EXPORTABLE');
+    assertEqual(body.missingCount, 1);
+    assertTrue(String(body.message).length > 0, 'ต้องมีข้อความอธิบาย');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // D1 LIMIT SUITE (A–T) — bound parameters ≤ 100 ต่อ statement บน D1 จริง
+  // makeTestDb wrap sqlite.prepare ให้ throw เมื่อ statement ใดเกิน 100 bind
+  // (better-sqlite3 ไม่จำกัด — ไม่ wrap แล้ว test ผ่านไม่การันตี Production)
+  // ═══════════════════════════════════════════════════════════════════════
+  const D1_ROUND = 'round-sel';
+  {
+    const s = (q: string, ...p: any[]) => db.rawSqlite.prepare(q).run(...p);
+    s(
+      `INSERT INTO recruitment_rounds (id, template_version_id, title, position_level, open_date, close_date, status, round_code)
+       VALUES (?, ?, 'รอบทดสอบ chunk', 'ระดับต้น', 1735689600, 1767225600, 'ACTIVE', 'SEL01')`,
+      D1_ROUND, TV_ID,
+    );
+    const insertSel = db.rawSqlite.prepare(
+      `INSERT INTO applications (id, application_no, round_id, email, fullname, status, form_data, submitted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const tx = db.rawSqlite.transaction(() => {
+      for (let i = 0; i < 1000; i++) {
+        insertSel.run(`sel-${i}`, `SEL-${String(i).padStart(4, '0')}`, D1_ROUND, `sel${i}@t.t`, `ผู้สมัคร ${i}`, 'SUBMITTED', '{}', NOW + i);
+      }
+      insertSel.run('sel-draft', 'SEL-DRAFT', D1_ROUND, 'draft@t.t', 'ร่างในรอบ chunk', 'DRAFT', '{}', NOW + 5000);
+      insertSel.run('sel-del', 'SEL-DELETED', D1_ROUND, 'del2@t.t', 'ถูกลบในรอบ chunk', 'SUBMITTED', '{}', NOW + 5001);
+      db.rawSqlite.prepare(
+        `UPDATE applications SET deleted_at = 1735689600 WHERE id = 'sel-del'`,
+      ).run();
+    });
+    tx();
+
+    // Attachments: 150 apps แรกมีไฟล์ (K) + sel-0 มี 3 ไฟล์ (L)
+    const insertAtt = db.rawSqlite.prepare(
+      `INSERT INTO application_attachments (id, application_id, field_id, file_url, original_filename)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    const attTx = db.rawSqlite.transaction(() => {
+      insertAtt.run('att-sel-a', 'sel-0', FIELD_IDS.docs, 'https://r2.example/files/aaaaaaaa-0000-0000-0000-000000000001-a.pdf', null);
+      insertAtt.run('att-sel-b', 'sel-0', FIELD_IDS.docs, 'https://r2.example/files/aaaaaaaa-0000-0000-0000-000000000002-b.pdf', null);
+      insertAtt.run('att-sel-c', 'sel-0', FIELD_IDS.docs, 'https://r2.example/files/aaaaaaaa-0000-0000-0000-000000000003-c.pdf', null);
+      for (let i = 1; i < 150; i++) {
+        insertAtt.run(`att-sel-${i}`, `sel-${i}`, FIELD_IDS.docs, `https://r2.example/files/bbbbbbbb-0000-0000-0000-${String(i).padStart(12, '0')}-doc-${i}.pdf`, null);
+      }
+    });
+    attTx();
+  }
+
+  const selIds = (n: number) => Array.from({ length: n }, (_, i) => `sel-${i}`);
+
+  t('D1-A: Selected 1 รายการ (chunk เดียว)', async () => {
+    const r = await runSelected(['sel-0'], D1_ROUND);
+    assertTrue(r.ok, JSON.stringify(r).slice(0, 150));
+    assertEqual(r.rowCount, 1);
+  });
+
+  const expectSelectedCount = async (n: number, label: string) => {
+    const r = await runSelected(selIds(n), D1_ROUND);
+    assertTrue(r.ok, `${label}: ${JSON.stringify(r).slice(0, 150)}`);
+    assertEqual(r.rowCount, n, `${label}: rowCount ต้องเท่าจำนวนที่เลือก`);
+  };
+
+  t('D1-B: Selected 90 รายการ (ขอบ chunk พอดี = 96/100 bind)', () => expectSelectedCount(90, 'B'));
+  t('D1-C: Selected 91 รายการ (ข้ามขอบ chunk → 2 chunks)', () => expectSelectedCount(91, 'C'));
+  t('D1-D: Selected 99 รายการ', () => expectSelectedCount(99, 'D'));
+  t('D1-E: Selected 100 รายการ', () => expectSelectedCount(100, 'E'));
+  t('D1-F: Selected 101 รายการ', () => expectSelectedCount(101, 'F'));
+  t('D1-G: Selected 500 รายการ', () => expectSelectedCount(500, 'G'));
+
+  t('D1-H: Selected 1,000 รายการ (ครบ cap) + bind สูงสุด ≤ 96', async () => {
+    const r = await runSelected(selIds(1000), D1_ROUND);
+    assertTrue(r.ok, JSON.stringify(r).slice(0, 150));
+    assertEqual(r.rowCount, 1000);
+    assertTrue(db.maxBoundParams() <= 96, `max bind = ${db.maxBoundParams()} ต้อง ≤ 96`);
+  });
+
+  t('D1-I: Selected 1,001 รายการ → ถูกปฏิเสธ', async () => {
+    const r = await runSelected(selIds(1000).concat(['app-1']), D1_ROUND);
+    assertEqual(r.ok, false, 'เกิน cap ต้อง reject');
+  });
+
+  t('D1-J: Filtered 1,000 รายการ (attachment query ต้อง chunk ด้วย)', async () => {
+    const r = await runExport({ roundId: D1_ROUND });
+    assertTrue(r.ok, JSON.stringify(r).slice(0, 150));
+    assertEqual(r.rowCount, 1000, 'ไม่รวม DRAFT/ถูกลบ → 1,000 พอดี');
+    assertTrue(db.maxBoundParams() <= 96, `max bind = ${db.maxBoundParams()}`);
+  });
+
+  t('D1-K+L: Attachments มากกว่า 100 apps + หลายไฟล์ต่อ app ครบถ้วน', async () => {
+    const r = await runSelected(selIds(150), D1_ROUND); // 150 apps มีไฟล์ → query ต้อง chunk
+    assertTrue(r.ok);
+    const w = await readWorkbook(r.buffer);
+    const docsCol = findHeaderCol(w, 'ฉลาก-f-docs');
+    // sel-0 = แถวสุดท้าย (submittedAt ต่ำสุด) มี 3 ไฟล์ 3 บรรทัดตามลำดับ
+    const lastRow = w.getRow(w.rowCount);
+    assertEqual(String(lastRow.getCell(2).value), 'SEL-0000');
+    assertEqual(String(lastRow.getCell(docsCol).value), 'a.pdf\nb.pdf\nc.pdf', 'หลายไฟล์ต่อ app ครบตามลำดับ');
+    // sel-1 (แถวก่อนหน้า) มีไฟล์ของตัวเอง
+    assertEqual(String(w.getRow(w.rowCount - 1).getCell(docsCol).value), 'doc-1.pdf');
+  });
+
+  t('D1-M: ID ซ้ำข้าม chunk หลัง deduplicate → export 90 ไม่ซ้ำแถว', async () => {
+    const r = await runSelected([...selIds(90), ...selIds(90)], D1_ROUND);
+    assertTrue(r.ok);
+    assertEqual(r.rowCount, 90, 'ซ้ำทั้งชุดต้องเหลือ 90');
+    assertEqual(latestAudit().selectedCount, 90);
+  });
+
+  t('D1-N: ID ข้ามรอบใน chunk ท้ายสุด → reject ทั้งชุด', async () => {
+    const r = await runSelected([...selIds(90), 'app-y1'], D1_ROUND);
+    assertEqual(r.ok, false);
+    assertEqual(r.code, 'APPLICATIONS_NOT_EXPORTABLE');
+  });
+
+  t('D1-O: ID ไม่มีอยู่ใน chunk กลาง → reject ทั้งชุด', async () => {
+    const ids = selIds(200);
+    ids[95] = 'ghost-not-exist'; // ตก chunk ที่ 2 (index 90-179)
+    const r = await runSelected(ids, D1_ROUND);
+    assertEqual(r.ok, false);
+    assertEqual(r.code, 'APPLICATIONS_NOT_EXPORTABLE');
+    assertEqual(r.missingCount, 1);
+  });
+
+  t('D1-P: soft-deleted ใน chunk ใดก็ตาม → reject ทั้งชุด', async () => {
+    const r = await runSelected([...selIds(90), 'sel-del'], D1_ROUND);
+    assertEqual(r.ok, false);
+    assertEqual(r.code, 'APPLICATIONS_NOT_EXPORTABLE');
+  });
+
+  t('D1-Q: DRAFT ใน chunk ใดก็ตาม → reject ทั้งชุด', async () => {
+    const ids = selIds(150);
+    ids[100] = 'sel-draft';
+    const r = await runSelected(ids, D1_ROUND);
+    assertEqual(r.ok, false);
+    assertEqual(r.code, 'APPLICATIONS_NOT_EXPORTABLE');
+  });
+
+  t('D1-R: ลำดับผลลัพธ์ deterministic หลังรวมหลาย chunk (input สลับ)', async () => {
+    const reversed = selIds(1000).reverse();
+    const r = await runSelected(reversed, D1_ROUND);
+    assertTrue(r.ok);
+    const w = await readWorkbook(r.buffer);
+    assertEqual(String(w.getRow(2).getCell(2).value), 'SEL-0999', 'แถวแรก = ล่าสุด (submittedAt desc)');
+    assertEqual(String(w.getRow(w.rowCount).getCell(2).value), 'SEL-0000', 'แถวสุดท้าย = เก่าสุด');
+    const r2 = await runSelected(selIds(1000), D1_ROUND); // ลำดับ input ตรงข้าม → ผลต้องเหมือน
+    const w2 = await readWorkbook(r2.buffer);
+    assertEqual(String(w2.getRow(2).getCell(2).value), 'SEL-0999');
+    assertEqual(String(w2.getRow(w2.rowCount).getCell(2).value), 'SEL-0000');
+  });
+
+  t('D1-S: audit selectedCount/rowCount ถูกต้องข้ามหลาย chunk (101 รายการ)', async () => {
+    await runSelected(selIds(101), D1_ROUND);
+    const payload = latestAudit();
+    assertEqual(payload.exportMode, 'SELECTED');
+    assertEqual(payload.selectedCount, 101);
+    assertEqual(payload.rowCount, 101);
+    assertTrue(!('applicationIds' in payload), 'ห้ามเก็บ applicationIds ใน audit');
+  });
+
+  t('D1-T: instrumentation — ไม่มี statement เกิน 100 bind + มี evidence การ chunk (96 bind)', () => {
+    const max = db.maxBoundParams();
+    assertTrue(max <= 100, `max bound parameters = ${max} (limit 100)`);
+    assertTrue(max <= 96, `max = ${max} ต้อง ≤ 96 ตาม chunk size 90 + bind อื่น 6`);
+    // เจอ statement ที่ bind 96 (= chunk 90 ของ selected query) พิสูจน์ว่าวิ่งผ่าน path chunk จริง
+    assertTrue(
+      db.boundParamLog.some((e: any) => e.count === 96),
+      'ต้องมี statement ที่ใช้ 96 bind (chunk เต็ม 90 + roundId + status 5)',
+    );
+    // และต้องไม่มี statement ไหนเกิน 100 (wrapper ก็ throw อยู่แล้ว — assert ซ้ำเพื่อข้อความชัด)
+    const over = db.boundParamLog.filter((e: any) => e.count > 100);
+    assertEqual(over.length, 0, `statement เกิน 100 bind: ${JSON.stringify(over.slice(0, 3))}`);
   });
 
   // ── teardown ───────────────────────────────────────────────────────────

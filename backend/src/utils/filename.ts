@@ -118,3 +118,70 @@ export function attachmentDisplayName(record: {
   if (original) return original;
   return attachmentDisplayFileName(typeof record.fileUrl === 'string' ? record.fileUrl : '');
 }
+
+// ── Excel Export filename — ใช้ร่วมทั้ง Filtered / Selected export ─────────
+// รูปแบบ: ใบสมัคร-{ชื่อรอบที่ผู้ใช้เห็น}-{YYYYMMDD-HHmm}.xlsx
+// ห้ามใช้ UUID / รหัสรอบเป็นส่วนหลักของชื่อ — ผู้ใช้อ่านไม่รู้เรื่อง
+
+/** อักขระที่ใช้ในชื่อไฟล์บนระบบทั่วไป (Windows) ไม่ได้ */
+const FILENAME_FORBIDDEN_RE = /[/\\:*?"<>|]/g;
+
+/** ความยาวสูงสุดของ "ชื่อรอบ" ในชื่อไฟล์ export (ไม่รวม prefix/stamp/นามสกุล) */
+export const MAX_EXPORT_ROUND_NAME_LENGTH = 80;
+
+/** fallback สุดท้ายเมื่อไม่มีทั้งชื่อรอบและรหัสรอบ */
+export const EXPORT_FALLBACK_ROUND_NAME = 'รอบรับสมัคร';
+
+/**
+ * Sanitize ชื่อรอบสำหรับใช้เป็นส่วนหนึ่งของชื่อไฟล์:
+ *   1. control characters (รวม CR/LF) และอักขระต้องห้าม / \ : * ? " < > | → space
+ *   2. รวมช่องว่างซ้ำเป็นช่องเดียว
+ *   3. trim จุดและช่องว่างหัวท้าย
+ *   4. จำกัดความยาวตาม code point (กันตัด surrogate pair ครึ่งเดียว)
+ * คง Unicode ภาษาไทยทั้งหมด — คืน '' เมื่อไม่เหลือชื่อให้ใช้ (caller fallback ต่อ)
+ */
+export function sanitizeRoundNameForFilename(raw: unknown): string {
+  let name = String(raw ?? '');
+  name = name
+    .replace(CONTROL_CHARS_RE, ' ')
+    .replace(FILENAME_FORBIDDEN_RE, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\s]+|[.\s]+$/g, '');
+  if (!name) return '';
+  const chars = Array.from(name);
+  if (chars.length > MAX_EXPORT_ROUND_NAME_LENGTH) {
+    name = chars.slice(0, MAX_EXPORT_ROUND_NAME_LENGTH).join('').replace(/[.\s]+$/g, '');
+  }
+  return name;
+}
+
+/**
+ * ชื่อไฟล์ .xlsx สำหรับดาวน์โหลด (Unicode) — ลำดับ fallback:
+ *   1. ชื่อรอบ (recruitment_rounds.title) ที่ผู้ใช้เห็นจริง
+ *   2. รหัสรอบ (round_code) เมื่อชื่อรอบว่าง
+ *   3. คำทั่วไป "รอบรับสมัคร"
+ * stamp = เวลา Asia/Bangkok ปี ค.ศ. รูปแบบ YYYYMMDD-HHmm (มาตรฐานเดียวกับคอลัมน์วันที่สมัคร)
+ */
+export function buildExportFilename(
+  round: { title?: string | null; roundCode?: string | null },
+  stamp: string,
+): string {
+  const namePart = sanitizeRoundNameForFilename(round.title)
+    || sanitizeRoundNameForFilename(round.roundCode)
+    || EXPORT_FALLBACK_ROUND_NAME;
+  return `ใบสมัคร-${namePart}-${stamp}.xlsx`;
+}
+
+/**
+ * ชื่อไฟล์ ASCII สำหรับ filename= ใน Content-Disposition (fallback สำหรับ
+ * HTTP client เก่าที่ไม่อ่าน filename*) — ใช้รหัสรอบเมื่อเป็น ASCII ได้
+ * ไม่เกี่ยวข้องกับชื่อหลักที่ผู้ใช้เห็น (ผู้ใช้เห็นค่าจาก filename*)
+ */
+export function buildExportFilenameAscii(
+  round: { roundCode?: string | null },
+  stamp: string,
+): string {
+  const code = String(round.roundCode ?? '').trim();
+  const asciiCode = /^[\x21-\x7e]+$/.test(code) ? code.replace(/["\\]/g, '') : '';
+  return `${asciiCode || 'applications'}-${stamp}.xlsx`;
+}
