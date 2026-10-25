@@ -18,9 +18,9 @@ import { useRole } from '@/lib/useRole';
 import {
   parseContentDispositionFilename,
   DEFAULT_EXPORT_FILENAME,
-  areAllPageSelected,
-  isPagePartiallySelected,
-  togglePageSelection,
+  areAllFilteredSelected,
+  isFilteredPartiallySelected,
+  toggleAllFilteredSelection,
 } from '@/lib/excel-export';
 
 interface Round {
@@ -612,14 +612,15 @@ export default function ApplicationsClient() {
     currentPage * pageSize
   );
 
-  // Selection handlers — checkbox header ทำงานระดับ "หน้าปัจจุบัน"
-  // (selection จริงเป็น Set ของ ID จึงคงอยู่ข้ามหน้าได้)
-  const pageIds = useMemo(() => paginatedApps.map((app) => app.id), [paginatedApps]);
-  const allPageSelected = areAllPageSelected(pageIds, selectedIds);
-  const somePageSelected = isPagePartiallySelected(pageIds, selectedIds);
+  // Selection handlers — Header Checkbox "เลือกทั้งหมด" ทำงานกับผลลัพธ์ตาม
+  // ตัวกรองปัจจุบัน "ทุกหน้า" (sortedApps = หลัง round + search + view + sort
+  // ก่อนทำ pagination แบ่งหน้า) ไม่ใช่เฉพาะหน้าปัจจุบัน
+  const allFilteredIds = useMemo(() => sortedApps.map((app) => app.id), [sortedApps]);
+  const allFilteredSelected = areAllFilteredSelected(allFilteredIds, selectedIds);
+  const someFilteredSelected = isFilteredPartiallySelected(allFilteredIds, selectedIds);
 
   const toggleSelectAll = () => {
-    setSelectedIds(togglePageSelection(pageIds, selectedIds));
+    setSelectedIds(toggleAllFilteredSelection(allFilteredIds, selectedIds));
   };
 
   const toggleSelect = (id: string) => {
@@ -834,8 +835,7 @@ export default function ApplicationsClient() {
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <span className="text-sm text-slate-700">
-              เลือกแล้ว <span className="font-semibold">{selectedIds.size}</span> รายการ
-              <span className="text-[11px] text-slate-500 ml-1">(รวมทุกหน้า)</span>
+              เลือกแล้ว <span className="font-semibold">{selectedIds.size}</span> รายการตามตัวกรอง
             </span>
             <button
               onClick={() => setSelectedIds(new Set())}
@@ -964,10 +964,11 @@ export default function ApplicationsClient() {
                 <TableHead className="h-10 text-[11px] font-medium text-slate-600 w-[6%]">
                   <input
                     type="checkbox"
-                    checked={allPageSelected}
-                    ref={(el) => { if (el) el.indeterminate = somePageSelected; }}
+                    checked={allFilteredSelected}
+                    ref={(el) => { if (el) el.indeterminate = someFilteredSelected; }}
                     onChange={toggleSelectAll}
-                    aria-label="เลือกทั้งหมดในหน้าปัจจุบัน"
+                    aria-label="เลือกผู้สมัครทั้งหมดตามตัวกรอง"
+                    title="เลือกผู้สมัครทั้งหมดตามตัวกรองปัจจุบัน (ทุกหน้า)"
                     className="w-4 h-4 rounded border-slate-300 cursor-pointer"
                   />
                 </TableHead>

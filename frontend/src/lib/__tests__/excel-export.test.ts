@@ -17,9 +17,9 @@
 import {
   parseContentDispositionFilename,
   DEFAULT_EXPORT_FILENAME,
-  areAllPageSelected,
-  isPagePartiallySelected,
-  togglePageSelection,
+  areAllFilteredSelected,
+  isFilteredPartiallySelected,
+  toggleAllFilteredSelection,
 } from '../excel-export';
 
 let passed = 0;
@@ -95,63 +95,19 @@ test('parser: ชื่อว่าง/เว้นวรรคจาก filenam
   assertEqual(parseContentDispositionFilename('attachment; filename="   "'), null);
 });
 
-// ═══════════════ Selection helpers (page-based, ข้ามหน้า) ═══════════════
-
-test('AB: เลือกทั้งหน้าปัจจุบัน — เพิ่ม ID ทั้งหน้า คง ID หน้าอื่นที่เลือกไว้', () => {
-  const selected = new Set(['p1-a', 'p1-b']);
-  const pageIds = ['p1-b', 'p1-c', 'p1-d'];
-  const next = togglePageSelection(pageIds, selected);
-  assertEqual(next.size, 4, 'เดิม 2 + เพิ่ม p1-c, p1-d (p1-b ซ้ำไม่นับซ้ำ)');
-  assertTrue(next.has('p1-a'), 'ID จากการเลือกก่อนหน้า (หน้าอื่น) ต้องคงอยู่');
-  assertTrue(next.has('p1-c') && next.has('p1-d'));
-});
-
-test('AC: หน้าเลือกครบแล้วกด header อีกครั้ง → ถอดเฉพาะหน้านี้ คงหน้าอื่น', () => {
-  const selected = new Set(['p1-a', 'p1-b', 'p1-c']);
-  const pageIds = ['p1-a', 'p1-b'];
-  const next = togglePageSelection(pageIds, selected);
-  assertEqual(next.size, 1);
-  assertTrue(next.has('p1-c'), 'ID นอกหน้าปัจจุบันต้องไม่ถูกถอด');
-});
-
-test('AA/AD: checked + indeterminate ถูกต้องทุกกรณี', () => {
-  const pageIds = ['a', 'b', 'c'];
-  // ว่าง
-  assertFalse(areAllPageSelected(pageIds, new Set()));
-  assertFalse(isPagePartiallySelected(pageIds, new Set()));
-  // เลือกบางส่วน
-  assertFalse(areAllPageSelected(pageIds, new Set(['a'])));
-  assertTrue(isPagePartiallySelected(pageIds, new Set(['a'])));
-  // ครบหน้า
-  assertTrue(areAllPageSelected(pageIds, new Set(['a', 'b', 'c'])));
-  assertFalse(isPagePartiallySelected(pageIds, new Set(['a', 'b', 'c'])));
-  // ครบหน้า + เกิน (เลือกจากหน้าอื่นปน)
-  assertTrue(areAllPageSelected(pageIds, new Set(['a', 'b', 'c', 'x'])));
-});
-
-test('AD: หน้าไม่มีรายการ → checked=false (ไม่ tick ปลอม)', () => {
-  assertFalse(areAllPageSelected([], new Set(['x'])));
-  assertFalse(isPagePartiallySelected([], new Set(['x'])));
-});
-
-test('helpers: ไม่แก้ Set เดิม (คืน Set ใหม่เสมอ)', () => {
-  const original = new Set(['a']);
-  const next = togglePageSelection(['a', 'b'], original);
-  assertEqual(original.size, 1, 'ต้นฉบับต้องไม่ถูกแก้');
-  assertEqual(next.size, 2);
-});
-
-// ═══════════════ Pagination Selection (PAG A–M) ═══════════════
-// State-machine ที่ mirror logic จริงของ ApplicationsClient (commit 2dd1dba3):
-//   - selection เก็บเป็น Set ของ ID, toggle/selectAll ผ่าน helpers จริง
+// ═══════════════ Select All ตามตัวกรอง (SEL A–Q) ═══════════════
+// Requirement: Header Checkbox "เลือกทั้งหมด" เลือกผู้สมัครทั้งหมดตามตัวกรอง
+// ปัจจุบัน "ทุกหน้า" (filtered result ก่อน pagination) ไม่ใช่เฉพาะหน้าปัจจุบัน
+// State-machine นี้ mirror logic จริงของ ApplicationsClient:
+//   - allFilteredIds มาจาก sortedApps.map(id) (หลัง round + search + view + sort ก่อน slice)
+//   - selectAll / headerState ผ่าน helpers จริง
 //   - policy ล้าง (mirror useEffect จริง): ล้างเมื่อ roundId/search/view เปลี่ยน
 //     เท่านั้น — เปลี่ยนหน้า (currentPage) หรือ sort ไม่ล้าง
 //   - export request ส่ง Array.from(selectedIds) ทั้งก้อน (mirror handler จริง)
-// พิสูจน์เสริมด้วย runtime จริง (dev + production build + browser) มาแล้ว
-// ชุดนี้ทำหน้าที่ lock พฤติกรรมไว้กัน regression
 
+const TOTAL = 13; // ผลลัพธ์ตามตัวกรอง 13 รายการ
 const PAGE_SIZE = 10; // ตรงกับ pageSize จริงใน ApplicationsClient
-const ALL_IDS = Array.from({ length: 25 }, (_, i) => `app-${i + 1}`);
+const ALL_IDS = Array.from({ length: TOTAL }, (_, i) => `app-${i + 1}`);
 /** ID ของหน้า n (1-based) ตาม slice จริง: sortedApps.slice((n-1)*size, n*size) */
 const pageIdsOf = (page: number) => ALL_IDS.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
@@ -167,146 +123,203 @@ function createSelectionSim() {
   let selected = new Set<string>();
   return {
     get size() { return selected.size; },
-    selectAllPage(pageIds: string[]) { selected = togglePageSelection(pageIds, selected); },
-    toggleOne(id: string) { selected = togglePageSelection([id], selected); },
+    has: (id: string) => selected.has(id),
+    selectAll(allFilteredIds: string[]) { selected = toggleAllFilteredSelection(allFilteredIds, selected); },
+    toggleOne(id: string) { selected = toggleAllFilteredSelection([id], selected); },
     clearByPolicy() { selected = new Set<string>(); },
-    headerState(pageIds: string[]) {
+    headerState(allFilteredIds: string[]) {
       return {
-        checked: areAllPageSelected(pageIds, selected),
-        indeterminate: isPagePartiallySelected(pageIds, selected),
+        checked: areAllFilteredSelected(allFilteredIds, selected),
+        indeterminate: isFilteredPartiallySelected(allFilteredIds, selected),
       };
     },
     exportIds: () => Array.from(selected), // mirror body จริงของ handleExportSelected
   };
 }
 
-test('PAG-A: Select All หน้า 1 → ยอด = จำนวนแถวหน้า 1', () => {
-  const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1));
-  assertEqual(sim.size, 10);
-  assertEqual(sim.headerState(pageIdsOf(1)).checked, true);
+test('A: โลก 13 รายการ หน้าละ 10 → หน้า 1 = 10, หน้า 2 = 3, รวม 13', () => {
+  assertEqual(pageIdsOf(1).length, 10, 'หน้า 1 แสดง 10');
+  assertEqual(pageIdsOf(2).length, 3, 'หน้า 2 เหลือ 3');
+  assertEqual(ALL_IDS.length, 13);
 });
 
-test('PAG-B: เปลี่ยนหน้าถัดไป (อย่างเดียว) → ยอดไม่หาย (ไม่มี effect ล้างเมื่อ page เปลี่ยน)', () => {
+test('B: กด Header Checkbox หน้าแรก → selectedIds มีครบ 13 IDs (ทุกหน้า)', () => {
   const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1));
-  // เปลี่ยนหน้า = เพียงอ่าน pageIds ของหน้าใหม่ — policy ไม่ถูก trigger (round/search/view คงเดิม)
-  const policyCleared = shouldClearByPolicy(
-    { roundId: 'r1', search: '', view: 'active' },
-    { roundId: 'r1', search: '', view: 'active' },
-  );
-  assertFalse(policyCleared, 'เปลี่ยนหน้าอย่างเดียวต้องไม่ล้าง');
-  assertEqual(sim.size, 10, 'ยอดคงเดิมหลังเปลี่ยนหน้า');
+  sim.selectAll(ALL_IDS); // component ส่ง allFilteredIds ทั้งชุด ไม่ใช่ pageIds
+  assertEqual(sim.size, 13, 'ต้องเลือก 13 ไม่ใช่ 10 เฉพาะหน้า');
 });
 
-test('PAG-C: หน้าใหม่ที่ยังไม่เลือก → header unchecked + ไม่ indeterminate', () => {
+test('C: ปุ่มแสดง "Export ที่เลือก (13)"', () => {
   const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1));
-  const st = sim.headerState(pageIdsOf(2));
-  assertEqual(st.checked, false);
+  sim.selectAll(ALL_IDS);
+  assertEqual(`Export ที่เลือก (${sim.size})`, 'Export ที่เลือก (13)');
+});
+
+test('D: ไปหน้าที่ 2 → อีก 3 รายการ (app-11..13) ต้องถูกเลือก (checked)', () => {
+  const sim = createSelectionSim();
+  sim.selectAll(ALL_IDS);
+  const page2 = pageIdsOf(2);
+  assertTrue(page2.every((id) => sim.has(id)), 'ทั้ง 3 รายการหน้า 2 ต้อง checked');
+});
+
+test('E: เลือกครบ 13 แล้ว Header Checkbox ต้อง checked (ทุกหน้าที่เปิด)', () => {
+  const sim = createSelectionSim();
+  sim.selectAll(ALL_IDS);
+  const st = sim.headerState(ALL_IDS);
+  assertEqual(st.checked, true, 'ครบทั้ง filtered result → checked');
   assertEqual(st.indeterminate, false);
 });
 
-test('PAG-D: Select All สองหน้า → ยอดรวม 20', () => {
+test('F: กด Header ซ้ำ → selectedIds ว่าง + ปุ่ม Export ที่เลือก Disabled (N=0)', () => {
   const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1));
-  sim.selectAllPage(pageIdsOf(2));
-  assertEqual(sim.size, 20);
+  sim.selectAll(ALL_IDS);
+  sim.selectAll(ALL_IDS); // ครบแล้ว → toggle = ลบทั้งชุด
+  assertEqual(sim.size, 0, 'ต้องว่างสนิท');
+  const disabled = sim.size === 0; // mirror เงื่อนไข disabled จริงของปุ่ม
+  assertEqual(disabled, true, 'N=0 ปุ่มต้อง Disabled');
+  assertEqual(`Export ที่เลือก (${sim.size})`, 'Export ที่เลือก (0)');
 });
 
-test('PAG-E: กลับหน้าเดิมที่เลือกครบ → header checked', () => {
+test('G: เลือกทีละรายการ 5 ตัว → Header indeterminate (ยังไม่ครบ 13)', () => {
   const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1));
-  sim.selectAllPage(pageIdsOf(2));
-  assertEqual(sim.headerState(pageIdsOf(1)).checked, true, 'หน้า 1 ยังครบ');
-  assertEqual(sim.headerState(pageIdsOf(2)).checked, true, 'หน้า 2 ยังครบ');
+  for (let i = 0; i < 5; i++) sim.toggleOne(`app-${i + 1}`);
+  const st = sim.headerState(ALL_IDS);
+  assertEqual(st.checked, false, 'ยังไม่ครบ → ไม่ checked');
+  assertEqual(st.indeterminate, true, 'เลือกบางส่วน → indeterminate');
 });
 
-test('PAG-F: Deselect All หน้าปัจจุบัน → ลบเฉพาะหน้านั้น หน้าอื่นคงครบ', () => {
+test('H: Export Selected ส่ง 13 IDs ครบทุกหน้า', () => {
   const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1));
-  sim.selectAllPage(pageIdsOf(2));
-  sim.selectAllPage(pageIdsOf(1)); // หน้า 1 ครบอยู่ → toggle = ถอดทั้งหน้า 1
-  assertEqual(sim.size, 10, 'เหลือของหน้า 2 เท่านั้น');
-  assertEqual(sim.headerState(pageIdsOf(1)).checked, false);
-  assertEqual(sim.headerState(pageIdsOf(2)).checked, true, 'selection หน้า 2 ต้องยังอยู่ครบ');
-});
-
-test('PAG-G: เลือกบางส่วนในหน้า → header indeterminate', () => {
-  const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1));
-  sim.toggleOne('app-11'); // หน้า 2 เลือก 1 จาก 10
-  const st = sim.headerState(pageIdsOf(2));
-  assertEqual(st.checked, false);
-  assertEqual(st.indeterminate, true);
-});
-
-test('PAG-H+M: Export Selected ส่ง ID รวมทุกหน้า + ปุ่มแสดงยอดรวม', () => {
-  const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1));
-  sim.selectAllPage(pageIdsOf(2));
-  sim.toggleOne('app-21'); // หน้า 3 เพิ่มอีก 1
-  assertEqual(sim.size, 21);
-  const ids = sim.exportIds(); // mirror Array.from(selectedIds) ใน handler จริง
-  assertEqual(ids.length, 21, 'request ต้องมี ID จากทุกหน้าที่เลือก');
-  assertTrue(ids.includes('app-1') && ids.includes('app-15') && ids.includes('app-21'),
-    'ต้องมี ID จากหน้า 1, 2 และ 3 ปนกัน');
-  // M: label ปุ่ม = `Export ที่เลือก (${selectedIds.size})`
-  assertEqual(`Export ที่เลือก (${sim.size})`, 'Export ที่เลือก (21)');
-});
-
-test('PAG-I: ไม่มี ID ซ้ำใน request แม้ selectAll หน้าเดิมซ้ำ/เลือกทับกัน', () => {
-  const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1));
-  sim.selectAllPage(pageIdsOf(1)); // deselect
-  sim.selectAllPage(pageIdsOf(1)); // select ใหม่อีกครั้ง
-  sim.toggleOne('app-1'); // toggle คนละทิศ: ถอด app-1
-  sim.toggleOne('app-1'); // ใส่กลับ
+  sim.selectAll(ALL_IDS);
   const ids = sim.exportIds();
-  assertEqual(ids.length, 10);
-  assertEqual(new Set(ids).size, 10, 'ไม่มี ID ซ้ำ (Set → Array by construction)');
+  assertEqual(ids.length, 13);
+  assertTrue(ALL_IDS.every((id) => ids.includes(id)), 'ครบทั้งหน้า 1 และหน้า 2');
 });
 
-test('PAG-J: เปลี่ยน Sort → selection ไม่หาย (sort ไม่อยู่ใน policy ล้าง)', () => {
+test('I: IDs ใน Request ไม่ซ้ำ (แม้กด selectAll ซ้ำหลายรอบ)', () => {
   const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1)); // เลือก app-1..app-10
-  const policyCleared = shouldClearByPolicy(
-    { roundId: 'r1', search: '', view: 'active' },
-    { roundId: 'r1', search: '', view: 'active' }, // sortId เปลี่ยนแต่ไม่เข้า policy
-  );
-  assertFalse(policyCleared, 'เปลี่ยน sort ต้องไม่ล้าง');
-  assertEqual(sim.size, 10, 'ยอดคงเดิมหลังเปลี่ยน sort');
-  // sort กลับด้าน: ลำดับกลายเป็น app-25..app-1 → app-1..5 ไปอยู่ "หน้า 3" (ครบที่เลือก)
-  //   และ "หน้า 2" มี app-6..10 (เลือก) + app-11..15 (ไม่เลือก) → indeterminate
-  const reversed = [...ALL_IDS].reverse();
-  const reversedPage2 = reversed.slice(10, 20);
-  const reversedPage3 = reversed.slice(20, 25);
-  assertEqual(sim.headerState(reversedPage3).checked, true, 'หน้าที่แถวที่เลือกไปตกลง ต้อง checked ครบ');
-  assertEqual(sim.headerState(reversedPage2).indeterminate, true, 'หน้าที่มีแถวเลือกบางส่วน ต้อง indeterminate');
+  sim.selectAll(ALL_IDS);
+  sim.selectAll(ALL_IDS); // deselect
+  sim.selectAll(ALL_IDS); // select ใหม่
+  const ids = sim.exportIds();
+  assertEqual(ids.length, 13);
+  assertEqual(new Set(ids).size, 13, 'ไม่มี ID ซ้ำ (Set → Array by construction)');
 });
 
-test('PAG-K: เปลี่ยน Filter (search/view) → ล้าง selection ตาม policy', () => {
+test('J: Search เหลือ 4 รายการ → Select All ต้องเลือก 4 เท่านั้น', () => {
   const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1));
-  const shouldClear = shouldClearByPolicy(
+  // mirror ลำดับจริง: เปลี่ยน search → policy ล้าง selection ก่อน แล้ว filtered เหลือ 4
+  assertTrue(shouldClearByPolicy(
     { roundId: 'r1', search: '', view: 'active' },
     { roundId: 'r1', search: 'สมชาย', view: 'active' },
-  );
-  assertTrue(shouldClear, 'เปลี่ยน search ต้องล้าง');
+  ), 'เปลี่ยน search ต้องล้างก่อน');
+  sim.clearByPolicy();
+  const filtered4 = ALL_IDS.slice(0, 4); // ผล search เหลือ 4
+  sim.selectAll(filtered4);
+  assertEqual(sim.size, 4, 'เลือกเท่าผลตามตัวกรองใหม่');
+  assertTrue(filtered4.every((id) => sim.has(id)));
+});
+
+test('K: เปลี่ยน Search → ล้าง Selection ตาม policy', () => {
+  const sim = createSelectionSim();
+  sim.selectAll(ALL_IDS);
+  const st = sim.headerState(ALL_IDS);
+  assertEqual(st.checked, true, 'ก่อนเปลี่ยน: ครบ');
+  assertTrue(shouldClearByPolicy(
+    { roundId: 'r1', search: '', view: 'active' },
+    { roundId: 'r1', search: 'สมชาย', view: 'active' },
+  ));
   sim.clearByPolicy();
   assertEqual(sim.size, 0);
 });
 
-test('PAG-L: เปลี่ยน Round → ล้าง selection ตาม policy', () => {
+test('L: เปลี่ยน View/Status → ล้าง Selection ตาม policy', () => {
   const sim = createSelectionSim();
-  sim.selectAllPage(pageIdsOf(1));
-  const shouldClear = shouldClearByPolicy(
+  sim.selectAll(ALL_IDS);
+  assertTrue(shouldClearByPolicy(
     { roundId: 'r1', search: '', view: 'active' },
-    { roundId: 'r2', search: '', view: 'active' },
-  );
-  assertTrue(shouldClear, 'เปลี่ยน round ต้องล้าง');
+    { roundId: 'r1', search: '', view: 'archived' },
+  ));
   sim.clearByPolicy();
   assertEqual(sim.size, 0);
+});
+
+test('M: เปลี่ยน Round → ล้าง Selection ตาม policy', () => {
+  const sim = createSelectionSim();
+  sim.selectAll(ALL_IDS);
+  assertTrue(shouldClearByPolicy(
+    { roundId: 'r1', search: '', view: 'active' },
+    { roundId: 'r2', search: '', view: 'active' },
+  ));
+  sim.clearByPolicy();
+  assertEqual(sim.size, 0);
+});
+
+test('N: เปลี่ยน Pagination (อย่างเดียว) → ห้ามล้าง Selection', () => {
+  const sim = createSelectionSim();
+  sim.selectAll(ALL_IDS);
+  // เปลี่ยนหน้า = เพียงเปลี่ยนมุมมอง slice — policy ไม่ถูก trigger
+  const policyCleared = shouldClearByPolicy(
+    { roundId: 'r1', search: '', view: 'active' },
+    { roundId: 'r1', search: '', view: 'active' },
+  );
+  assertFalse(policyCleared, 'เปลี่ยนหน้าต้องไม่ล้าง');
+  assertEqual(sim.size, 13, 'ยอดคงเดิม');
+  // และ header ของทุกหน้ายัง checked เพราะคำนวณกับ filtered ทั้งชุด
+  assertEqual(sim.headerState(pageIdsOf(2)).checked, true);
+});
+
+test('O: เปลี่ยน Sort → ห้ามล้าง Selection (ID ชุดเดิม เพียงเรียงใหม่)', () => {
+  const sim = createSelectionSim();
+  sim.selectAll(ALL_IDS);
+  const policyCleared = shouldClearByPolicy(
+    { roundId: 'r1', search: '', view: 'active' },
+    { roundId: 'r1', search: '', view: 'active' }, // sort เปลี่ยนแต่ไม่เข้า policy
+  );
+  assertFalse(policyCleared, 'เปลี่ยน sort ต้องไม่ล้าง');
+  assertEqual(sim.size, 13);
+  // sortedIds เรียงกลับด้าน = ชุด ID เดียวกัน → header ยัง checked
+  const reversed = [...ALL_IDS].reverse();
+  assertEqual(sim.headerState(reversed).checked, true);
+});
+
+test('P: เลือกทีละแถวข้ามหน้าได้ (หน้า 1 และหน้า 2 ปนกัน)', () => {
+  const sim = createSelectionSim();
+  sim.toggleOne('app-1');   // หน้า 1
+  sim.toggleOne('app-13');  // หน้า 2
+  sim.toggleOne('app-7');   // หน้า 1
+  assertEqual(sim.size, 3);
+  const st = sim.headerState(ALL_IDS);
+  assertEqual(st.indeterminate, true, 'บางส่วน → indeterminate');
+  const ids = sim.exportIds();
+  assertTrue(ids.includes('app-1') && ids.includes('app-13') && ids.includes('app-7'));
+  assertEqual(new Set(ids).size, 3, 'ไม่ซ้ำ');
+});
+
+test('Q: Empty result → Header unchecked + ไม่ indeterminate + ปุ่ม Disabled', () => {
+  const sim = createSelectionSim();
+  const st = sim.headerState([]);
+  assertEqual(st.checked, false, 'ไม่มีรายการ → ห้าม checked');
+  assertEqual(st.indeterminate, false);
+  sim.selectAll([]); // toggle บนชุดว่าง → ไม่มีอะไรถูกเพิ่ม
+  assertEqual(sim.size, 0, 'ยังว่าง');
+  assertEqual(sim.size === 0, true, 'ปุ่ม Export ที่เลือก Disabled (N=0)');
+});
+
+test('helpers: ไม่แก้ Set เดิม (คืน Set ใหม่เสมอ)', () => {
+  const original = new Set(['a']);
+  const next = toggleAllFilteredSelection(['a', 'b', 'c'], original);
+  assertEqual(original.size, 1, 'ต้นฉบับต้องไม่ถูกแก้');
+  assertEqual(next.size, 3);
+});
+
+test('helpers: เลือกครบแล้ว toggle ลบเฉพาะ ID ใน filtered (นอกชุดคงเดิม)', () => {
+  // กรณี selection มี ID นอก filtered result ตกค้าง (ปกติไม่เกิดเพราะ policy ล้าง
+  // เมื่อ filter เปลี่ยน — แต่ helper ต้อง "ห้ามลบ Selection อื่นโดยไม่จำเป็น")
+  const selected = new Set(['in-1', 'in-2', 'out-x']);
+  const next = toggleAllFilteredSelection(['in-1', 'in-2'], selected); // ครบ → ลบเฉพาะในชุด
+  assertEqual(next.has('out-x'), true, 'ID นอก filtered ต้องคงเดิม');
+  assertEqual(next.size, 1);
 });
 
 console.log('\n========================================');

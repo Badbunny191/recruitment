@@ -5,7 +5,8 @@
  *   - parseContentDispositionFilename: ถอดชื่อไฟล์จาก header Content-Disposition
  *     ที่ backend สร้าง (filename= เป็น ASCII fallback, filename*=UTF-8''...
  *     เป็นชื่อจริงภาษาไทยตาม RFC 5987)
- *   - Selection helpers: พฤติกรรม checkbox ระดับหน้าปัจจุบัน (select all page)
+ *   - Selection helpers: พฤติกรรม "เลือกทั้งหมด" ของ Header Checkbox ทำงานกับ
+ *     ผลลัพธ์ตามตัวกรองปัจจุบัน "ทุกหน้า" (filtered result ก่อน pagination)
  *     โดย selection เก็บเป็น Set ของ ID — อยู่ข้ามหน้า (pagination) ได้
  */
 
@@ -41,28 +42,33 @@ export function parseContentDispositionFilename(disposition: string): string | n
   return stripHeaderUnsafe(raw) || null;
 }
 
-/** หน้าปัจจุบันถูกเลือกครบทุกแถวหรือไม่ (header checkbox checked) */
-export function areAllPageSelected(pageIds: string[], selectedIds: Set<string>): boolean {
-  return pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
+// ── Selection helpers (scope = ผลลัพธ์ตามตัวกรองทั้งหมด ทุกหน้า) ───────────────
+// allFilteredIds คือ collection หลังใช้ Recruitment Round + Search + View/Status
+// filter และเรียงลำดับแล้ว "ก่อนทำ pagination" (sortedApps ใน ApplicationsClient)
+
+/** ผลลัพธ์ตามตัวกรองทั้งหมดถูกเลือกครบทุก ID หรือยัง (header checkbox checked) */
+export function areAllFilteredSelected(allFilteredIds: string[], selectedIds: Set<string>): boolean {
+  return allFilteredIds.length > 0 && allFilteredIds.every((id) => selectedIds.has(id));
 }
 
-/** หน้าปัจจุบันเลือกบางส่วน (header checkbox indeterminate) */
-export function isPagePartiallySelected(pageIds: string[], selectedIds: Set<string>): boolean {
-  return pageIds.some((id) => selectedIds.has(id)) && !areAllPageSelected(pageIds, selectedIds);
+/** มีบาง ID ในผลลัพธ์ตามตัวกรองถูกเลือกแต่ยังไม่ครบทั้งหมด (indeterminate) */
+export function isFilteredPartiallySelected(allFilteredIds: string[], selectedIds: Set<string>): boolean {
+  return allFilteredIds.some((id) => selectedIds.has(id)) && !areAllFilteredSelected(allFilteredIds, selectedIds);
 }
 
 /**
- * สลับ "เลือกทั้งหมดในหน้าปัจจุบัน":
- *   - ครบอยู่แล้ว → ถอดเฉพาะ ID ในหน้านี้ (ID หน้าอื่นที่เลือกไว้คงเดิม)
- *   - ยังไม่ครบ → เพิ่ม ID ทั้งหน้านี้เข้า selection
- * คืน Set ใหม่ ไม่แก้ของเดิม
+ * สลับ "เลือกทั้งหมดตามตัวกรอง":
+ *   - ยังไม่ครบ → เพิ่มทุก ID ของ filtered result เข้า selection
+ *     (selection อื่นที่มีอยู่คงเดิม — ปกติไม่มี เพราะ filter เปลี่ยนจะล้าง selection)
+ *   - ครบแล้ว → ลบทุก ID ของ filtered result ออก
+ * คืน Set ใหม่ ไม่แก้ของเดิม และไม่มีทางมี ID ซ้ำ (เป็น Set)
  */
-export function togglePageSelection(pageIds: string[], selectedIds: Set<string>): Set<string> {
+export function toggleAllFilteredSelection(allFilteredIds: string[], selectedIds: Set<string>): Set<string> {
   const next = new Set(selectedIds);
-  if (areAllPageSelected(pageIds, selectedIds)) {
-    pageIds.forEach((id) => next.delete(id));
+  if (areAllFilteredSelected(allFilteredIds, selectedIds)) {
+    allFilteredIds.forEach((id) => next.delete(id));
   } else {
-    pageIds.forEach((id) => next.add(id));
+    allFilteredIds.forEach((id) => next.add(id));
   }
   return next;
 }
