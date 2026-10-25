@@ -22,11 +22,23 @@ import {
   isFilteredPartiallySelected,
   toggleAllFilteredSelection,
 } from '@/lib/excel-export';
+import {
+  BULK_PDF_LIMIT,
+  BULK_PDF_NEAR_LIMIT,
+  buildBulkZipFilename,
+  bulkDownloadPdfs,
+  formatBulkEstimate,
+  resolveBulkTarget,
+  type BulkDownloadFailure,
+  type BulkDownloadMode,
+  type PdfBulkTarget,
+} from '@/lib/pdf-bulk-download';
 
 interface Round {
   id: string;
   title: string;
   status: string;
+  roundCode?: string | null;
   deletedAt?: string | number | Date | null;
 }
 
@@ -245,6 +257,15 @@ export default function ApplicationsClient() {
   // แจ้งเตือนเมื่อ selection ถูกล้างเพราะตัวกรอง/รอบเปลี่ยน (ห้ามหายเงียบ)
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
 
+  // Bulk PDF download (Browser ZIP) — dialog phase + progress + ผลสรุป
+  const [pdfBulkDialog, setPdfBulkDialog] = useState<BulkDownloadMode | null>(null);
+  const [pdfBulkPhase, setPdfBulkPhase] = useState<'confirm' | 'running' | 'done' | 'canceled'>('confirm');
+  const [pdfBulkProgress, setPdfBulkProgress] = useState({ done: 0, total: 0, failed: 0 });
+  const [pdfBulkFailures, setPdfBulkFailures] = useState<BulkDownloadFailure[]>([]);
+  const [pdfBulkSuccessCount, setPdfBulkSuccessCount] = useState(0);
+  const [pdfBulkCacheStats, setPdfBulkCacheStats] = useState({ hit: 0, miss: 0, unknown: 0 });
+  const pdfBulkAbortRef = useRef<AbortController | null>(null);
+
   // ดาวน์โหลด blob ด้วยชื่อไฟล์ที่ backend สร้างให้ (จาก Content-Disposition)
   const triggerExcelDownload = async (res: Response) => {
     const filename = parseContentDispositionFilename(res.headers.get('Content-Disposition') || '')
@@ -322,6 +343,76 @@ export default function ApplicationsClient() {
     } finally {
       setExportingSelected(false);
     }
+  };
+
+  // ── Bulk PDF download (Browser ZIP) — Phase 1 ──────────────────────────────
+  // ใช้ endpoint เดิม GET /admin/applications/:id/pdf ทีละใบ (Concurrency = 2)
+  // รวมเป็น ZIP ฝั่งเบราว์เซอร์ — backend ไม่ถูกแตะ, ชื่อไฟล์ต่อใบมาจาก
+  // Content-Disposition (backend Source of Truth) เหมือนดาวน์โหลดรายคน
+  // (bulkTargets/selectedBulkTargets ประกาศหลัง sortedApps เพื่อเลี่ยง TDZ)
+
+  const openPdfBulkDialog = (mode: BulkDownloadMode) => {
+    setPdfBulkDialog(mode);
+    setPdfBulkPhase('confirm');
+    setPdfBulkProgress({ done: 0, total: 0, failed: 0 });
+    setPdfBulkFailures([]);
+    setPdfBulkSuccessCount(0);
+  };
+
+  const closePdfBulkDialog = () => {
+    if (pdfBulkPhase === 'running') return; // ต้องกดยกเลิกก่อนเสมอ
+    setPdfBulkDialog(null);
+  };
+
+  const startPdfBulkDownload = async () => {
+    if (!pdfBulkDialog || pdfBulkPhase === 'running') return;
+    const resolved = resolveBulkTarget(
+      pdfBulkDialog,
+      bulkTargets,
+      pdfBulkDialog === 'selected' ? selectedIds : new Set(bulkTargets.map((t) => t.id)),
+    );
+    if (!resolved.ok) return; // dialog จะ disable ปุ่มไว้ก่อนแล้ว
+
+    setPdfBulkPhase('running');
+    setPdfBulkProgress({ done: 0, total: resolved.targets.length, failed: 0 });
+    const controller = new AbortController();
+    pdfBulkAbortRef.current = controller;
+
+    const result = await bulkDownloadPdfs({
+      targets: resolved.targets,
+      zipFilename: buildBulkZipFilename(selectedRound?.roundCode),
+      signal: controller.signal,
+      onProgress: (p) => setPdfBulkProgress(p),
+      fetchPdf: (target, signal) =>
+        fetch(`${API_URL}/admin/applications/${target.id}/pdf`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
+          signal,
+        }),
+    });
+    pdfBulkAbortRef.current = null;
+    setPdfBulkSuccessCount(result.successCount);
+    setPdfBulkFailures(result.failures);
+    setPdfBulkCacheStats(result.cacheStats);
+
+    if (result.status === 'canceled') {
+      setPdfBulkPhase('canceled');
+      return;
+    }
+    if (result.zip) {
+      const url = URL.createObjectURL(result.zip);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = result.zipFilename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+    setPdfBulkPhase('done');
+  };
+
+  const cancelPdfBulkDownload = () => {
+    pdfBulkAbortRef.current?.abort();
   };
 
   // Fetch rounds
@@ -616,6 +707,13 @@ export default function ApplicationsClient() {
   // ตัวกรองปัจจุบัน "ทุกหน้า" (sortedApps = หลัง round + search + view + sort
   // ก่อนทำ pagination แบ่งหน้า) ไม่ใช่เฉพาะหน้าปัจจุบัน
   const allFilteredIds = useMemo(() => sortedApps.map((app) => app.id), [sortedApps]);
+
+  // Bulk PDF (Browser ZIP) — target ตามลำดับที่แสดงบนจอ, แนบ applicationNo
+  // เพื่อให้ fallback ชื่อไฟล์ต่อใบตรงกับดาวน์โหลดรายคนพอดี
+  const bulkTargets = useMemo<PdfBulkTarget[]>(
+    () => sortedApps.map((app) => ({ id: app.id, applicationNo: app.applicationNo })),
+    [sortedApps]
+  );
   const allFilteredSelected = areAllFilteredSelected(allFilteredIds, selectedIds);
   const someFilteredSelected = isFilteredPartiallySelected(allFilteredIds, selectedIds);
 
@@ -949,6 +1047,27 @@ export default function ApplicationsClient() {
                   </Button>
                 </>
               )}
+              {/* Bulk PDF (Browser ZIP) — ใช้ได้ทุก role เช่นเดียวกับ PDF รายคน */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => openPdfBulkDialog('selected')}
+                disabled={selectedIds.size === 0 || pdfBulkDialog !== null}
+                title="ดาวน์โหลด PDF เฉพาะใบสมัครที่เลือก (รวมทุกหน้า) เป็นไฟล์ ZIP"
+              >
+                <span aria-hidden>📄</span>
+                ดาวน์โหลด PDF ที่เลือก ({selectedIds.size})
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => openPdfBulkDialog('filtered')}
+                disabled={totalItems === 0 || pdfBulkDialog !== null}
+                title="ดาวน์โหลด PDF ทุกใบที่ตรงตัวกรองปัจจุบัน (ทุกหน้า) เป็นไฟล์ ZIP"
+              >
+                <span aria-hidden>🗂️</span>
+                ดาวน์โหลด PDF ตามตัวกรอง ({totalItems})
+              </Button>
               <span className="text-[11px] text-slate-500 whitespace-nowrap">
                 {search.trim() ? `พบ ${totalItems}` : `ทั้งหมด ${totalItems}`}
               </span>
@@ -1220,6 +1339,161 @@ export default function ApplicationsClient() {
           </div>
         </div>
       )}
+
+      {/* ============================================ */}
+      {/* 6. MODAL - Bulk PDF Download (Browser ZIP) */}
+      {/* ============================================ */}
+      {pdfBulkDialog && (() => {
+        const resolved = resolveBulkTarget(
+          pdfBulkDialog,
+          bulkTargets,
+          pdfBulkDialog === 'selected' ? selectedIds : new Set(bulkTargets.map((t) => t.id)),
+        );
+        const count = resolved.ok ? resolved.targets.length : resolved.count;
+        const overLimit = !resolved.ok && resolved.reason === 'over-limit';
+        return (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg p-6 w-full max-w-md">
+              {pdfBulkPhase === 'confirm' && (
+                <>
+                  <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+                    📄 ดาวน์โหลด PDF {pdfBulkDialog === 'selected' ? 'ที่เลือก' : 'ตามตัวกรอง'}
+                  </h2>
+                  <div className="text-sm text-slate-700 space-y-2 mb-4">
+                    <p>
+                      จำนวนรายการ <span className="font-semibold tabular-nums">{count}</span> ใบ
+                    </p>
+                    <p>
+                      ขนาดโดยประมาณ{' '}
+                      <span className="font-semibold">{formatBulkEstimate(count)}</span>{' '}
+                      <span className="text-xs text-slate-500">(ประมาณการ ~200KB ต่อใบ ขึ้นกับเอกสารจริง)</span>
+                    </p>
+                    {overLimit && (
+                      <p className="bg-red-50 border border-red-200 rounded-md px-3 py-2 text-xs text-red-700">
+                        เกินจำนวนสูงสุด {BULK_PDF_LIMIT} รายการต่อครั้ง — กรุณากรองให้แคบลง
+                        หรือแบ่งดาวน์โหลดเป็นหลายรอบ
+                      </p>
+                    )}
+                    {!overLimit && count >= BULK_PDF_NEAR_LIMIT && (
+                      <p className="bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs text-amber-800">
+                        ⚠️ ใกล้จำนวนสูงสุด ({BULK_PDF_LIMIT} รายการ) — การดาวน์โหลดอาจใช้เวลานาน
+                        และห้ามปิดหน้าเบราว์เซอร์ระหว่างทำงาน
+                      </p>
+                    )}
+                    <p className="text-xs text-slate-500">
+                      ระบบจะดาวน์โหลดทีละใบแล้วรวมเป็นไฟล์ ZIP เดียว หากบางใบสร้างไม่สำเร็จ
+                      ระบบจะข้ามใบนั้นและสรุปผลเมื่อเสร็จ
+                    </p>
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <Button variant="outline" onClick={closePdfBulkDialog}>
+                      ยกเลิก
+                    </Button>
+                    <Button onClick={startPdfBulkDownload} disabled={!resolved.ok}>
+                      เริ่มดาวน์โหลด
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {pdfBulkPhase === 'running' && (
+                <>
+                  <h2 className="text-lg font-bold mb-4 flex items-center gap-2">⏳ กำลังดาวน์โหลด</h2>
+                  <div className="text-sm text-slate-700 space-y-3 mb-4">
+                    <p className="tabular-nums">
+                      กำลังดาวน์โหลด <span className="font-semibold">{pdfBulkProgress.done}</span> /{' '}
+                      <span className="font-semibold">{pdfBulkProgress.total}</span> ใบ
+                      {pdfBulkProgress.failed > 0 && (
+                        <span className="text-amber-700"> · ล้มเหลว {pdfBulkProgress.failed} ใบ</span>
+                      )}
+                    </p>
+                    <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500 rounded-full transition-all"
+                        style={{
+                          width: pdfBulkProgress.total > 0
+                            ? `${Math.min(100, (pdfBulkProgress.done / pdfBulkProgress.total) * 100)}%`
+                            : '0%',
+                        }}
+                      />
+                    </div>
+                    <p className="text-xs text-slate-500">ห้ามปิดหรือรีเฟรชหน้านี้จนกว่าจะเสร็จ</p>
+                  </div>
+                  <div className="flex justify-end">
+                    <Button variant="outline" onClick={cancelPdfBulkDownload}>
+                      ยกเลิกการดาวน์โหลด
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {pdfBulkPhase === 'done' && (
+                <>
+                  <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+                    {pdfBulkSuccessCount > 0 ? '✅ ดาวน์โหลดเสร็จสิ้น' : '❌ ดาวน์โหลดไม่สำเร็จ'}
+                  </h2>
+                  <div className="text-sm text-slate-700 space-y-2 mb-4">
+                    <p>
+                      สำเร็จ <span className="font-semibold text-emerald-700 tabular-nums">{pdfBulkSuccessCount}</span>{' '}
+                      รายการ · ล้มเหลว{' '}
+                      <span className={cn('font-semibold tabular-nums', pdfBulkFailures.length > 0 ? 'text-red-700' : 'text-slate-500')}>
+                        {pdfBulkFailures.length}
+                      </span>{' '}
+                      รายการ
+                    </p>
+                    {pdfBulkSuccessCount > 0 && (
+                      <>
+                        <p className="text-xs text-slate-500">
+                          ไฟล์ ZIP ถูกบันทึกในโฟลเดอร์ดาวน์โหลดของเบราว์เซอร์แล้ว
+                          {pdfBulkCacheStats.hit + pdfBulkCacheStats.miss > 0 && (
+                            <> · Cache: HIT {pdfBulkCacheStats.hit} / MISS {pdfBulkCacheStats.miss}</>
+                          )}
+                        </p>
+                      </>
+                    )}
+                    {pdfBulkFailures.length > 0 && (
+                      <div className="bg-red-50 border border-red-200 rounded-md px-3 py-2 text-xs text-red-700 max-h-40 overflow-y-auto">
+                        <p className="font-semibold mb-1">รายการที่ล้มเหลว (อาจถูกลบหรือเกิดข้อผิดพลาดชั่วคราว):</p>
+                        <ul className="list-disc list-inside space-y-0.5">
+                          {pdfBulkFailures.map((f) => (
+                            <li key={f.id}>
+                              {f.applicationNo || f.id} — {f.status}
+                              {f.cause ? ` (${f.cause})` : ''}
+                              {f.durationMs !== undefined ? ` · ${f.durationMs}ms` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex justify-end">
+                    <Button onClick={closePdfBulkDialog}>ปิด</Button>
+                  </div>
+                </>
+              )}
+
+              {pdfBulkPhase === 'canceled' && (
+                <>
+                  <h2 className="text-lg font-bold mb-4 flex items-center gap-2">🚫 ยกเลิกการดาวน์โหลด</h2>
+                  <div className="text-sm text-slate-700 space-y-2 mb-4">
+                    <p>
+                      ดาวน์โหลดสำเร็จไปแล้ว{' '}
+                      <span className="font-semibold tabular-nums">{pdfBulkSuccessCount}</span> รายการก่อนยกเลิก
+                      — ไม่มีไฟล์ ZIP ถูกสร้าง
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      เริ่มดาวน์โหลดใหม่ได้เสมอ — ใบที่เคยสร้างแล้วจะถูกใช้จาก cache ทำให้เร็วขึ้น
+                    </p>
+                  </div>
+                  <div className="flex justify-end">
+                    <Button onClick={closePdfBulkDialog}>ปิด</Button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
