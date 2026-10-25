@@ -14,6 +14,7 @@ import {
   replaceOtherInDisplay,
 } from '@/lib/otherOption';
 import { attachmentDisplayName } from '@/lib/filename';
+import { parseContentDispositionFilename } from '@/lib/pdf-download';
 
 interface ApplicationAttachment {
   id: string;
@@ -117,10 +118,12 @@ export default function ApplicationDetailClient() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.message || err.error || 'ดาวน์โหลด PDF ไม่สำเร็จ');
       }
-      // Get filename from Content-Disposition header
+      // ชื่อไฟล์จาก backend (Source of Truth) — filename* ก่อน filename
+      // Header ไม่มี/ผิดรูปแบบ → fallback เลขที่ใบสมัคร (ห้าม resolve pattern เอง)
       const disposition = res.headers.get('Content-Disposition') || '';
-      const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
-      const filename = filenameMatch?.[1] || `${app.applicationNo || app.id}.pdf`;
+      const filename =
+        parseContentDispositionFilename(disposition) ||
+        `${app.applicationNo || app.id}.pdf`;
 
       // Download via Blob
       const blob = await res.blob();

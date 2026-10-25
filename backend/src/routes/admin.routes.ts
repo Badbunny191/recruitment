@@ -28,6 +28,13 @@ import {
   validateRoundCode,
   DEFAULT_APPLICATION_PATTERN,
 } from '../utils/application-pattern';
+import {
+  validatePdfFilenamePattern,
+  normalizePdfFilenamePattern,
+  buildApplicationPdfFilename,
+  buildPdfContentDisposition,
+} from '../utils/application-pdf-filename';
+import { loadPdfFilenameContext } from '../services/application-pdf-context';
 import bcrypt from 'bcryptjs';
 import { hashPassword } from '../services/auth.service';
 import { validatePassword, isCommonPassword } from '../utils/password';
@@ -867,6 +874,14 @@ adminRoutes.post('/templates/:id/versions', adminOnlyMiddleware, auditMiddleware
   const payload = c.req.valid('json') as any;
   const versionId = uuidv4();
 
+  // ── Configurable PDF Filename (Migration 028) ──
+  // validate ด้วยข้อความไทย (ผู้ดูแลอ่านจาก UI ตรง ๆ); null/ว่าง = ใช้ค่าเริ่มต้น
+  const patternCheck = validatePdfFilenamePattern(payload.pdfFilenamePattern);
+  if (!patternCheck.ok) {
+    return c.json({ error: patternCheck.message, details: patternCheck.message }, 400);
+  }
+  const pdfFilenamePattern = normalizePdfFilenamePattern(payload.pdfFilenamePattern);
+
   const currentVersions = await db.select({ v: templateVersions.versionNumber }).from(templateVersions).where(eq(templateVersions.templateId, payload.templateId));
   const nextVer = currentVersions.length > 0 ? Math.max(...currentVersions.map(x => x.v)) + 1 : 1;
 
@@ -875,7 +890,8 @@ adminRoutes.post('/templates/:id/versions', adminOnlyMiddleware, auditMiddleware
     id: versionId,
     templateId: payload.templateId,
     versionNumber: nextVer,
-    status: 'DRAFT'
+    status: 'DRAFT',
+    pdfFilenamePattern,
   });
 
   // Map from source sectionId (tempId or original uuid) -> new sectionId (uuid)
@@ -890,6 +906,14 @@ adminRoutes.post('/templates/:id/versions', adminOnlyMiddleware, auditMiddleware
       .where(eq(templateVersions.id, srcVersionId)).get();
     if (!srcVersion) {
       return c.json({ error: 'Source version not found' }, 404);
+    }
+
+    // ── Configurable PDF Filename (Migration 028) ──
+    // Clone ต้องคัดลอก Pattern จาก source เมื่อ payload ไม่ได้ระบุมาเอง
+    if (payload.pdfFilenamePattern === undefined && srcVersion.pdfFilenamePattern) {
+      await db.update(templateVersions)
+        .set({ pdfFilenamePattern: srcVersion.pdfFilenamePattern })
+        .where(eq(templateVersions.id, versionId));
     }
 
     // Clone sections (skip is_active=false)
@@ -1073,9 +1097,24 @@ adminRoutes.put('/template-versions/:versionId', adminOnlyMiddleware,
 
     // 2. Validate: เฉพาะ DRAFT เท่านั้นที่อัปเดตได้
     if (version.status !== 'DRAFT') {
-      return c.json({ 
-        error: `Can only update DRAFT version. Current status: ${version.status}` 
+      return c.json({
+        error: `Can only update DRAFT version. Current status: ${version.status}`
       }, 400);
+    }
+
+    // ── Configurable PDF Filename (Migration 028) ──
+    // optional: ไม่ส่ง = ไม่แตะค่าเดิม (Builder save ไม่ลบ Pattern โดยไม่ตั้งใจ)
+    // null/'' = ใช้ค่าเริ่มต้น (เก็บเป็น null)
+    let patternUpdate: string | null | undefined;
+    if (payload.pdfFilenamePattern !== undefined) {
+      const patternCheck = validatePdfFilenamePattern(payload.pdfFilenamePattern);
+      if (!patternCheck.ok) {
+        return c.json({ error: patternCheck.message, details: patternCheck.message }, 400);
+      }
+      patternUpdate = normalizePdfFilenamePattern(payload.pdfFilenamePattern);
+      await db.update(templateVersions)
+        .set({ pdfFilenamePattern: patternUpdate })
+        .where(eq(templateVersions.id, versionId));
     }
 
     // 3. Atomic rebuild of fields+sections via D1 batch.
@@ -2241,14 +2280,21 @@ adminRoutes.get('/applications/:id/pdf', async (c) => {
       console.error(`[PDF] Failed to log audit: ${auditErr}`);
     }
 
-    // Build filename: {applicationNo}.pdf
-    const filename = `${app.applicationNo ?? id}.pdf`;
+    // ── Configurable PDF Filename (Migration 028) ──
+    // Backend เป็น Source of Truth — pattern จาก template version ที่ round อ้างอิง
+    // ใช้ helper เดียวกับ Public download เพื่อให้ชื่อไฟล์เหมือนกันทุกตัวอักษร
+    const filenameContext = await loadPdfFilenameContext(db, id);
+    const filename = buildApplicationPdfFilename(filenameContext ?? { applicationId: id });
+    const contentDisposition = buildPdfContentDisposition(filename, {
+      applicationNo: filenameContext?.applicationNo,
+      applicationId: id,
+    });
 
     return new Response(result.bytes, {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Disposition': contentDisposition,
         'Content-Length': String(result.bytes.length),
         'X-Cache': result.cacheHit ? 'HIT' : 'MISS',
         'Cache-Control': 'private, max-age=300',

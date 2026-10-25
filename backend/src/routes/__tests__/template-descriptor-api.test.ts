@@ -129,7 +129,8 @@ function makeInMemorySchema() {
       descriptor_json TEXT,
       descriptor_schema_version INTEGER,
       descriptor_updated_at INTEGER,
-      descriptor_updated_by TEXT
+      descriptor_updated_by TEXT,
+      pdf_filename_pattern TEXT
     );
     CREATE TABLE template_sections (
       id TEXT PRIMARY KEY,

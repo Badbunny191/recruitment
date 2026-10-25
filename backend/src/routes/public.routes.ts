@@ -9,6 +9,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { getCurrentBangkokYear, buildApplicationNo, parseApplicationNo } from '../utils/application-no';
 import { sanitizeOriginalFilenameOrNull } from '../utils/filename';
 import {
+  buildApplicationPdfFilename,
+  buildPdfContentDisposition,
+} from '../utils/application-pdf-filename';
+import { loadPdfFilenameContext } from '../services/application-pdf-context';
+import {
   OTHER_OPTION_LABEL,
   extractOtherText,
   isOtherValue,
@@ -891,13 +896,21 @@ publicRoutes.post(
         return c.json({ success: false, error: 'ไม่พบไฟล์ใบสมัครหรือเกิดข้อผิดพลาดในการสร้าง PDF' }, 500);
       }
 
-      const filename = `application-${lookupResult.data.applicationNo || lookupResult.data.applicationId}.pdf`;
+      // ── Configurable PDF Filename (Migration 028) ──
+      // ใช้ helper เดียวกับ Admin download (pattern จาก template version ของ round)
+      // เพื่อให้ชื่อไฟล์เหมือนกันทุกตัวอักษร — ไม่เปิดเผย pattern/fullname เพิ่มใน error
+      const filenameContext = await loadPdfFilenameContext(db, lookupResult.data.applicationId);
+      const filename = buildApplicationPdfFilename(filenameContext ?? { applicationId: lookupResult.data.applicationId });
+      const contentDisposition = buildPdfContentDisposition(filename, {
+        applicationNo: filenameContext?.applicationNo,
+        applicationId: lookupResult.data.applicationId,
+      });
 
       return new Response(pdfResult.bytes, {
         status: 200,
         headers: {
           'Content-Type': 'application/pdf',
-          'Content-Disposition': `attachment; filename="${filename}"`,
+          'Content-Disposition': contentDisposition,
           'Content-Length': String(pdfResult.bytes.length),
           'Cache-Control': 'private, no-cache, no-store, must-revalidate',
         },

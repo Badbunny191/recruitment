@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { StatusBadge, ApplicationStatus } from '@/components/ui/status-badge';
 import { formatDateThai } from '@/lib/date';
+import { parseContentDispositionFilename } from '@/lib/pdf-download';
 
 interface RoundOption {
   id: string;
@@ -155,11 +156,18 @@ export default function LookupPage() {
         throw new Error(errorJson?.error || 'ไม่สามารถดาวน์โหลดใบสมัครได้');
       }
 
+      // ชื่อไฟล์จาก backend (Source of Truth) — filename* ก่อน filename
+      // Header ไม่มี/ผิดรูปแบบ → fallback เลขที่ใบสมัคร (ห้าม resolve pattern เอง)
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const filename =
+        parseContentDispositionFilename(disposition) ||
+        `${result.applicationNo || 'application'}.pdf`;
+
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `application-${result.applicationNo || 'document'}.pdf`;
+      link.download = filename;
       document.body.appendChild(link);
       link.click();
       window.URL.revokeObjectURL(url);

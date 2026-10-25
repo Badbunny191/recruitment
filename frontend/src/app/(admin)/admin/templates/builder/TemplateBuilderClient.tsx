@@ -19,6 +19,13 @@ import { SectionFieldList } from '@/components/SectionFieldList';
 import { useRole } from '@/lib/useRole';
 import { OTHER_OPTION_LABEL, withOtherOption } from '@/lib/otherOption';
 import { validateFieldSettings } from '@/lib/fieldSettings';
+import {
+  DEFAULT_PDF_FILENAME_PATTERN,
+  PDF_FILENAME_TOKENS,
+  PDF_TOKEN_LABELS,
+  validatePdfFilenamePattern,
+  buildPdfFilenamePreview,
+} from '@/lib/pdf-filename-pattern';
 
 interface MasterField {
   id: string;
@@ -41,6 +48,8 @@ interface TemplateVersion {
   versionNumber: number;
   status: string;
   createdAt: number;
+  /** Migration 028 — รูปแบบชื่อไฟล์ PDF (null = ใช้ค่าเริ่มต้น) */
+  pdfFilenamePattern?: string | null;
 }
 
 interface VersionField {
@@ -236,6 +245,11 @@ function BuilderInner() {
   // แสดงใน Advanced Settings; เคลียร์เมื่อบันทึกสำเร็จ
   const [fieldSettingsErrors, setFieldSettingsErrors] = useState<Record<string, string>>({});
 
+  // ── Configurable PDF Filename (Migration 028) ──
+  // แก้ได้เฉพาะ Draft; Published/Archived แสดงแบบอ่านอย่างเดียว
+  // บันทึกพร้อม Save Draft (PUT/POST ส่ง pdfFilenamePattern)
+  const [pdfFilenamePattern, setPdfFilenamePattern] = useState<string>(DEFAULT_PDF_FILENAME_PATTERN);
+
   const watchedFields = watch('fields');
   const watchedSections = watch('sections');
 
@@ -289,6 +303,10 @@ function BuilderInner() {
         } else {
           setDraftVersionId(null); // Clear draft ID when showing published
         }
+
+        // ── Configurable PDF Filename (Migration 028) ──
+        // โหลด pattern ของ version ปัจจุบัน (null → แสดงค่าเริ่มต้นใน input)
+        setPdfFilenamePattern(targetVersion.pdfFilenamePattern ?? DEFAULT_PDF_FILENAME_PATTERN);
 
         // Load fields for this version
         const fieldsDataRes = await fetch(
@@ -598,10 +616,23 @@ function BuilderInner() {
     }
     setFieldSettingsErrors({});
 
+    // ── Configurable PDF Filename (Migration 028) ──
+    // Inline validation ก่อนส่ง (backend validate อีกชั้นด้วยข้อความไทยชุดเดียวกัน)
+    // ว่าง = ใช้ค่าเริ่มต้น (ส่ง null)
+    const patternTrimmed = pdfFilenamePattern.trim();
+    if (patternTrimmed !== '') {
+      const patternErr = validatePdfFilenamePattern(pdfFilenamePattern);
+      if (!patternErr.ok) {
+        alert(`รูปแบบชื่อไฟล์ PDF ไม่ถูกต้อง: ${patternErr.message}`);
+        return;
+      }
+    }
+
       setSubmitting(true);
       try {
         // ส่ง fieldId ตรง ๆ ไม่ต้องแปลง (FK migration เสร็จแล้ว — template_fields.field_id รับ UUID ได้แล้ว)
         const payload = {
+          pdfFilenamePattern: patternTrimmed === '' ? null : pdfFilenamePattern,
           sections: data.sections.map((s) => ({
             tempId: s.id, // tempId for client-side mapping
             name: s.name,
@@ -1043,6 +1074,96 @@ function BuilderInner() {
           )}
         </AlertDescription>
       </Alert>
+
+      {/* ── Configurable PDF Filename (Migration 028) ───────────────────────
+          รูปแบบชื่อไฟล์ PDF ระดับ Template Version — แก้ได้เฉพาะ Draft
+          Published/Archived แสดงแบบอ่านอย่างเดียว (backend เป็น Source of Truth
+          ของชื่อไฟล์จริงตอนดาวน์โหลด) */}
+      {currentVersion && (
+        <Card className="border-slate-200">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base font-semibold flex items-center gap-2">
+              📄 รูปแบบชื่อไฟล์ PDF
+              {isEditMode ? (
+                <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-300">แก้ไขได้</Badge>
+              ) : (
+                <Badge variant="outline" className="bg-gray-100 text-gray-600 border-gray-300">อ่านอย่างเดียว</Badge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="space-y-1">
+              <Label htmlFor="pdf-filename-pattern" className="text-sm font-medium">
+                รูปแบบชื่อไฟล์ PDF
+              </Label>
+              <p id="pdf-filename-pattern-help" className="text-xs text-slate-500">
+                กำหนดชื่อไฟล์ PDF ที่ดาวน์โหลด ระบบจะเติมนามสกุล .pdf ให้อัตโนมัติ
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  id="pdf-filename-pattern"
+                  aria-describedby="pdf-filename-pattern-help pdf-filename-pattern-error"
+                  value={pdfFilenamePattern}
+                  onChange={(e) => setPdfFilenamePattern(e.target.value)}
+                  readOnly={!isEditMode}
+                  disabled={!isEditMode}
+                  maxLength={300}
+                  className="font-mono text-sm min-w-0 flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  disabled={!isEditMode}
+                  onClick={() => setPdfFilenamePattern(DEFAULT_PDF_FILENAME_PATTERN)}
+                  title="คืนค่าเริ่มต้น ใบสมัคร_{applicationNo}_{fullname}"
+                >
+                  ↺ คืนค่าเริ่มต้น
+                </Button>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-400">
+                  {pdfFilenamePattern.length}/{200} ตัวอักษร
+                </span>
+                {(() => {
+                  const err = validatePdfFilenamePattern(pdfFilenamePattern);
+                  return err.ok ? null : (
+                    <span
+                      id="pdf-filename-pattern-error"
+                      role="alert"
+                      className="text-red-600 font-medium text-right"
+                    >
+                      {err.message}
+                    </span>
+                  );
+                })()}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3 space-y-2">
+              <p className="text-xs font-medium text-slate-600">ตัวแปรที่ใช้ได้ (คลิกเพื่อคัดลอก)</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {PDF_FILENAME_TOKENS.map((token) => (
+                  <span key={token} className="text-xs text-slate-600">
+                    <code className="font-mono bg-white border border-slate-200 rounded px-1 py-0.5">{`{${token}}`}</code>{' '}
+                    = {PDF_TOKEN_LABELS[token]}
+                  </span>
+                ))}
+              </div>
+              <p className="text-xs text-slate-600">
+                ตัวอย่าง Preview:{' '}
+                <span className="font-medium text-slate-800 break-all">
+                  {buildPdfFilenamePreview(pdfFilenamePattern)}
+                </span>
+              </p>
+              <p className="text-xs text-slate-400">
+                หมายเหตุ: ชื่อไฟล์จริงตอนดาวน์โหลดมาจากระบบ (หน้า Admin และหน้าค้นหาของผู้สมัครใช้ชื่อเดียวกัน) — การเปลี่ยนรูปแบบชื่อไฟล์ไม่กระทบเนื้อหา PDF
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="flex justify-between items-start">
         <div>

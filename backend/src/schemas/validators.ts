@@ -252,6 +252,10 @@ export const TemplateVersionCreateSchema = z.object({
   status: TemplateVersionStatusEnum.default('DRAFT'),
   // Sprint 4 - Mode B
   cloneFromVersionId: z.string().optional(),
+  // ── Configurable PDF Filename (Migration 028) ──
+  // รูปแบบชื่อไฟล์ PDF (null/ว่าง = ใช้ค่าเริ่มต้น) — validate เนื้อหาด้วย
+  // validatePdfFilenamePattern ใน route handler เพื่อคืนข้อความไทยกลับ UI
+  pdfFilenamePattern: z.string().max(500).nullable().optional(),
   // Sprint 4 - Mode A
   sections: z.array(TemplateSectionCreatePayloadSchema).optional(),
   // Fields required ทุก mode (Mode A, C) — Mode B (clone) จะ ignore fields
@@ -281,6 +285,10 @@ export const TemplateVersionUpdateSchema = z.object({
   fields: z.array(TemplateFieldBaseSchema.extend({
     sectionId: z.string().nullable().optional(), // client tempId
   }).superRefine(textareaSettingsRefine)).min(1, 'At least 1 field required'),
+  // ── Configurable PDF Filename (Migration 028) ──
+  // optional: ไม่ส่ง = ไม่แตะค่าเดิม (Builder เก่า/backward compatible)
+  // null/ว่าง = ใช้ค่าเริ่มต้น — validate เนื้อหาใน route handler (ข้อความไทย)
+  pdfFilenamePattern: z.string().max(500).nullable().optional(),
 });
 
 export const RecruitmentRoundCreateSchema = z.object({

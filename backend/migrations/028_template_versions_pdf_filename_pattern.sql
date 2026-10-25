@@ -1,0 +1,25 @@
+-- =============================================================================
+-- Migration: 028_template_versions_pdf_filename_pattern.sql
+-- =============================================================================
+--
+-- Feature: กำหนดรูปแบบชื่อไฟล์ PDF ใบสมัครระดับ Template Version
+-- Branch:  feat/configurable-pdf-filename
+--
+-- การเปลี่ยนแปลง:
+--   1. template_versions.pdf_filename_pattern (TEXT, nullable)
+--      → รูปแบบชื่อไฟล์ PDF ตอนดาวน์โหลด เช่น ใบสมัคร_{applicationNo}_{fullname}
+--        Token ที่รองรับ: {applicationNo} {fullname} {roundCode} {year}
+--
+-- ข้อกำหนดที่ยืนยันกับเจ้าของระบบ:
+--   - Nullable ทั้งหมด: ข้อมูลเก่า = NULL → ใช้ค่าเริ่มต้น
+--     "ใบสมัคร_{applicationNo}_{fullname}" ที่ resolver ฝั่ง backend
+--   - ห้าม NOT NULL / DEFAULT / backfill
+--   - ห้ามแก้ตาราง applications (snapshot year/roundCode/fullname มีอยู่แล้ว)
+--   - การเปลี่ยนชื่อดาวน์โหลดไม่กระทบ PDF bytes → ห้าม bump PDF_CACHE_VERSION
+--     และห้ามแตะ R2 key / invalidate cache
+--   - Migration นี้ทำหน้าที่เดียวเท่านั้น (ไม่รวม schema change อื่น)
+--
+-- =============================================================================
+
+-- 1. template_versions.pdf_filename_pattern
+ALTER TABLE `template_versions` ADD COLUMN `pdf_filename_pattern` TEXT;

@@ -73,6 +73,12 @@ export const templateVersions = sqliteTable('template_versions', {
   descriptorSchemaVersion: integer('descriptor_schema_version'),
   descriptorUpdatedAt: integer('descriptor_updated_at', { mode: 'timestamp' }),
   descriptorUpdatedBy: text('descriptor_updated_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+  // ── Configurable PDF Filename (Migration 028) ─────────────────────────
+  // รูปแบบชื่อไฟล์ PDF ตอนดาวน์โหลด เช่น ใบสมัคร_{applicationNo}_{fullname}
+  //   - Token ที่รองรับ: {applicationNo} {fullname} {roundCode} {year}
+  //   - null = legacy → ใช้ค่าเริ่มต้น (DEFAULT_PDF_FILENAME_PATTERN)
+  //   - แก้ได้เฉพาะ DRAFT; ดาวน์โหลดไม่กระทบ PDF bytes / cache
+  pdfFilenamePattern: text('pdf_filename_pattern'),
 }, (table) => ({
   unqVersion: uniqueIndex('unq_template_version').on(table.templateId, table.versionNumber),
   checkStatus: check('chk_version_status', sql`${table.status} IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')`),
