@@ -403,6 +403,40 @@ const FONT_SIZE_FIELD_VALUE = 13;
 const FIELD_VALUE_LINE_ADVANCE = 15;
 
 /**
+ * ── Field spacing policy (named constants — ห้าม magic number กระจาย) ────
+ *
+ * Layout แบบ stacked (Label อยู่บรรทัดเดียว / Value เยื้องลงมา เช่น TEXTAREA):
+ *
+ *   Label
+ *     │ ◄ STACKED_VALUE_INDENT
+ *     Value บรรทัดที่ 1      ◄ LABEL_TO_MULTILINE_VALUE_GAP ใต้ Label
+ *     Value บรรทัดที่ 2      ◄ ระยะระหว่างบรรทัด = fontSize × LINE_HEIGHT
+ *     (tail)                ◄ MULTILINE_VALUE_TAIL ใต้บรรทัดสุดท้าย
+ *   Field ถัดไป             ◄ + POST_BLOCK_SPACING + block margin
+ */
+
+/** indent ซ้ายของ Value แบบ stacked — ทุกบรรทัดของ Value (รวม "-") เริ่มแนวเดียวกัน */
+const STACKED_VALUE_INDENT = 12;
+
+/**
+ * ระยะเสริมใต้ Label ก่อนบรรทัดแรกของ Value แบบ stacked
+ * ใช้กับคำตอบ 1 บรรทัดและหลายบรรทัดเท่ากัน (policy เดียวกัน)
+ */
+const LABEL_TO_MULTILINE_VALUE_GAP = 3;
+
+/**
+ * พื้นที่ใต้ baseline บรรทัดสุดท้ายของ Value แบบ stacked ก่อนถึง POST_BLOCK_SPACING
+ *
+ * เดิมบรรทัดสุดท้ายโดนหัก advance เต็มบรรทัด (fontSize × LINE_HEIGHT) ทั้งที่ไม่มี
+ * ข้อความตามมา → ช่องว่างหลัง TEXTAREA ใหญ่กว่าช่องว่างระหว่างบรรทัด ~3 เท่า
+ * ค่านี้ทำให้ช่องว่าง Value → Field ถัดไป "ค่าเดียวกัน" ทั้งคำตอบ 1 และหลายบรรทัด
+ */
+const MULTILINE_VALUE_TAIL = 2;
+
+/** คั่น Label ↔ Value ใน layout แบบ inline (บรรทัดเดียวกัน) */
+const INLINE_FIELD_VALUE_SEPARATOR = "  ";
+
+/**
  * ── Field label: ความสูงบรรทัดคงเดิมเช่นกัน ───────────────────────────
  *
  * label เดิม 11pt × 1.25 = 13.75pt → คงที่ 13.75pt
@@ -1284,10 +1318,11 @@ function drawSystemData(state: ExecState, cmd: SystemDataRenderCommand): void {
   }
 
   // stacked (or no label): วาด value ในบรรทัดถัดไป
-  // indent 12pt เฉพาะเมื่อ align=left และ showLabel
+  // indent STACKED_VALUE_INDENT เฉพาะเมื่อ align=left และ showLabel
+  // (policy เดียวกับ Field stacked — ทุกบรรทัดของ value เริ่มแนวเดียวกัน)
   const valueX =
     cmd.showLabel && cmd.align === "left"
-      ? box.contentLeft + 12
+      ? box.contentLeft + STACKED_VALUE_INDENT
       : box.contentLeft;
   drawValueBlock(state, cmd, valueX, valueColor);
 
@@ -1368,7 +1403,10 @@ function drawField(
 
   if (cmd.layout === "inline" && cmd.showLabel) {
     // ── Inline Compound Layout: Label + Space + Value เป็นก้อนเดียว ──
-    const spaceW = state.fonts.regular.widthOfTextAtSize("  ", cmd.valueFontSize);
+    const spaceW = state.fonts.regular.widthOfTextAtSize(
+      INLINE_FIELD_VALUE_SEPARATOR,
+      cmd.valueFontSize
+    );
     const labelW = state.fonts.bold.widthOfTextAtSize(labelText, cmd.labelFontSize);
     const rawLines = displayValue.split(/\r?\n/);
     const availableValW = box.contentWidth - labelW - spaceW;
@@ -1467,9 +1505,14 @@ function drawField(
   }
 
   // Draw stacked value
+  // LABEL_TO_MULTILINE_VALUE_GAP: เว้นระยะ Label → Value ชัดเจน (คำตอบ
+  // 1 บรรทัดและหลายบรรทัดใช้ gap เดียวกัน — policy เดียว)
+  if (cmd.showLabel) {
+    state.y -= LABEL_TO_MULTILINE_VALUE_GAP;
+  }
   const valueX =
     cmd.showLabel && cmd.align === "left"
-      ? box.contentLeft + 12
+      ? box.contentLeft + STACKED_VALUE_INDENT
       : box.contentLeft;
   drawFieldValue(
     state,
@@ -1517,15 +1560,20 @@ function drawFieldValue(
   const isEmpty = !isNonEmptyValue(rawValue);
   const color = isEmpty ? COLOR_PLACEHOLDER : COLOR_BLACK;
 
-  // บรรทัดเดียว: ค่า advance คงเดิม (15pt) เพื่อรักษา layout ความกะทัดรัดเดิม
-  // หลายบรรทัด: ขยาย advance เป็น fontSize * LINE_HEIGHT เพื่อให้อ่านสบายตาและวรรณยุกต์ไม่ชนกัน
-  const lineAdvance =
-    lines.length > 1 ? fontSize * LINE_HEIGHT : FIELD_VALUE_LINE_ADVANCE;
+  // ระยะระหว่างบรรทัดของ value หลายบรรทัด — policy เดียวกันทั้งคำตอบ
+  // 1 บรรทัดและหลายบรรทัด: ระยะระหว่างบรรทัดเกิดเฉพาะ "ระหว่าง" บรรทัด
+  // ส่วนบรรทัดสุดท้ายกินแค่ fontSize + MULTILINE_VALUE_TAIL
+  // (เดิมบรรทัดสุดท้ายโดนหัก advance เต็มบรรทัด → ช่องว่างหลัง TEXTAREA ใหญ่เกิน)
+  const lineAdvance = fontSize * LINE_HEIGHT;
 
-  for (const line of lines) {
-    const w = state.fonts.regular.widthOfTextAtSize(line, fontSize);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const isLast = i === lines.length - 1;
+    // พื้นที่ที่บรรทัดนี้กิน: ระหว่างบรรทัด = lineAdvance / บรรทัดสุดท้าย = fontSize + tail
+    const consumed = isLast ? fontSize + MULTILINE_VALUE_TAIL : lineAdvance;
     // ข้อความยาวที่ wrap หลายบรรทัด → ขึ้นหน้าใหม่ถ้าบรรทัดนี้ล้น content box
-    ensureLineSpace(state, lineAdvance);
+    ensureLineSpace(state, consumed);
+    const w = state.fonts.regular.widthOfTextAtSize(line, fontSize);
     const x =
       align === "center"
         ? alignX(box, "center", w)
@@ -1539,7 +1587,7 @@ function drawFieldValue(
       size: fontSize,
       color,
     });
-    state.y -= lineAdvance;
+    state.y -= consumed;
   }
 }
 
