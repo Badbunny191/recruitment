@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/components/ui/card';
@@ -71,6 +71,15 @@ function ReviewContent() {
   // desktop = all open; mobile = only the first open.
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [isMobile, setIsMobile] = useState(false);
+
+  // ✅ Double-submit guard (ช่วง B): one request per user action. React
+  // state (`submitting`) re-renders asynchronously, so a second click /
+  // Enter before the re-render lands could fire a second POST. The ref
+  // closes that window synchronously. It is also LATCHED on success: the
+  // client-side navigation to /apply/success is still in flight and the
+  // submission token was just cleared — a stray click in that window must
+  // NOT mint a fresh token and fire a duplicate application request.
+  const submitInFlightRef = useRef(false);
 
   // =========================================================================
   //  Load draft on mount
@@ -321,8 +330,18 @@ function ReviewContent() {
   const handleSubmit = async () => {
     if (!draft) return;
     if (!confirmed) return; // belt-and-suspenders: button is also disabled
+    // ✅ Double-submit guard: see submitInFlightRef declaration. Evaluated
+    // on EVERY invocation path (click today, any keyboard/programmatic
+    // trigger tomorrow) — the disabled attribute alone is not trusted.
+    if (submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
     setSubmitting(true);
     setSubmitError(null);
+    // Set to true only on a confirmed backend success. The finally block
+    // uses it to decide whether to release the guard + spinner: failure
+    // paths release (retry allowed, same token), success keeps them
+    // latched until the route change unmounts the page.
+    let succeeded = false;
     try {
       // Ensure we have a token (the apply page already created one, but
       // a hard refresh between apply and review may have lost it).
@@ -449,6 +468,7 @@ function ReviewContent() {
         clearSubmissionToken();
 
         router.push('/apply/success');
+        succeeded = true;
         return;
       }
       setSubmitError(result?.error ?? 'ไม่สามารถส่งใบสมัครได้');
@@ -456,7 +476,16 @@ function ReviewContent() {
       console.error('Submit error:', err);
       setSubmitError(err instanceof Error ? err.message : 'ไม่ทราบสาเหตุ');
     } finally {
-      setSubmitting(false);
+      if (!succeeded) {
+        // Retryable failure (network error, 4xx/5xx): re-enable the button
+        // and KEEP the draft + attachment metadata + the SAME submission
+        // token so the retry hits the backend idempotency contract.
+        submitInFlightRef.current = false;
+        setSubmitting(false);
+      }
+      // On success both the guard and the spinner stay latched: the
+      // navigation to /apply/success is in flight and the token is gone —
+      // a duplicate click in that window must not create a new one.
     }
   };
 
@@ -653,6 +682,7 @@ function ReviewContent() {
               type="button"
               onClick={handleSubmit}
               disabled={submitDisabled}
+              aria-busy={submitting}
               title={
                 turnstileEnabled && (!turnstileToken || turnstileExpired)
                   ? 'กรุณายืนยันว่าท่านไม่ใช่โปรแกรมอัตโนมัติ'

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useForm, Controller, SubmitHandler, useWatch } from 'react-hook-form';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
@@ -189,6 +189,13 @@ function FormInner() {
   const [masterDataError, setMasterDataError] = useState<string | null>(null);
 
   const { register, handleSubmit, control, formState: { errors }, reset } = useForm<FormValues>();
+
+  // ✅ Double-submit guard (ช่วง A): re-entry flag for the "ตรวจสอบข้อมูล"
+  // flow. `isSubmitting` (React state) re-renders asynchronously, so a rapid
+  // double-click / Enter before the re-render lands could invoke `onSubmit`
+  // twice — re-saving the draft and pushing the same route twice. The ref
+  // closes that window synchronously, independent of the disabled attribute.
+  const submitInFlightRef = useRef(false);
 
   // ✅ Other Option Support — ค่าที่เลือกของ field ที่รองรับ "อื่นๆ (โปรดระบุ)"
   // ใช้สำหรับตัดสินว่าจะแสดงช่อง Text Input `[________________]` หรือไม่
@@ -472,19 +479,16 @@ function FormInner() {
     setDraftRestored(true);
   }, [roundId, schema, reset, draftRestored]);
 
-  const onSubmit: SubmitHandler<FormValues> = async (data) => {
-    setIsSubmitting(true);
-
-    // PR #2 — Two-step flow:
-    //   1. Validate the form (handled by react-hook-form via zodResolver-equivalent rules)
-    //   2. Build the payload (formData + attachments) and SAVE IT as a draft
-    //   3. Redirect to /apply/review where the user confirms + submits
-    //
-    // The actual POST /public/applications/submit is moved to the
-    // review page so we can show a confirm-checkbox + double-submit guard.
-
-    // NEW MODE: Send formData only (no root fields)
-    // Core fields are already included in formData from schema
+  // Serialize the form state into the draft payload (formData + attachment
+  // metadata). Extracted into a helper so `onSubmit` can wrap the entire
+  // prepare step — including this serialization — in one error boundary:
+  // any throw here must reset the pending state, not strand the button.
+  //
+  // NEW MODE: Send formData only (no root fields)
+  // Core fields are already included in formData from schema
+  const buildDraftPayload = (
+    data: FormValues
+  ): { formData: Record<string, any>; attachments: FileAttachmentDraft[] } => {
     const formData: Record<string, any> = {};
     const attachments: FileAttachmentDraft[] = [];
 
@@ -578,14 +582,40 @@ function FormInner() {
       }
     });
 
+    return { formData, attachments };
+  };
+
+  const onSubmit: SubmitHandler<FormValues> = async (data) => {
+    // PR #2 — Two-step flow:
+    //   1. Validate the form (handled by react-hook-form via zodResolver-equivalent rules)
+    //   2. Build the payload (formData + attachments) and SAVE IT as a draft
+    //   3. Redirect to /apply/review where the user confirms + submits
+    //
+    // The actual POST /public/applications/submit is moved to the
+    // review page so we can show a confirm-checkbox + double-submit guard.
+
+    // ✅ Double-submit guard: ignore re-entry while this flow is in flight
+    // (rapid double-click or Enter before the disabled attribute lands).
+    if (submitInFlightRef.current) return;
+
+    if (!roundId) {
+      alert('ไม่พบรหัสรอบสมัคร');
+      return;
+    }
+
+    // Pending state ONLY after validation passed: react-hook-form invokes
+    // onSubmit exclusively for a valid form, so a failed validation never
+    // reaches here and the button never gets stuck loading.
+    submitInFlightRef.current = true;
+    setIsSubmitting(true);
+
     try {
+      const { formData, attachments } = buildDraftPayload(data);
+
       // Ensure we have a submissionToken for the upcoming review page.
+      // get-or-create: the SAME token is reused on retries and by the
+      // review-page submit (backend idempotency contract).
       const token = getOrCreateSubmissionToken();
-      if (!roundId) {
-        alert('ไม่พบรหัสรอบรับสมัคร');
-        setIsSubmitting(false);
-        return;
-      }
 
       // Persist the draft to sessionStorage. The review page will read
       // it back to render the read-only summary. We deliberately do NOT
@@ -599,10 +629,16 @@ function FormInner() {
       });
 
       router.push('/apply/review');
+
+      // Success: keep the spinner visible until the route change unmounts
+      // this page. Do NOT reset the pending state here — `setIsSubmitting(true)`
+      // and a reset in the same synchronous block would be batched by React 18
+      // and the spinner would never paint (the original no-feedback bug).
     } catch (error) {
       console.error('Save draft error:', error);
       alert('เกิดข้อผิดพลาด: ' + (error instanceof Error ? error.message : 'ไม่ทราบสาเหตุ'));
-    } finally {
+      // Release the guard + pending state so the user can retry.
+      submitInFlightRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -1187,6 +1223,7 @@ function FormInner() {
               type="submit"
               className="w-full bg-blue-600 hover:bg-blue-700 h-12 text-lg"
               disabled={isSubmitting}
+              aria-busy={isSubmitting}
             >
               {isSubmitting ? (
                 <span className="flex items-center gap-2">
@@ -1194,7 +1231,7 @@ function FormInner() {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
-                  กำลังบันทึก...
+                  กำลังเตรียมข้อมูล...
                 </span>
               ) : 'ตรวจสอบข้อมูล'}
             </Button>
