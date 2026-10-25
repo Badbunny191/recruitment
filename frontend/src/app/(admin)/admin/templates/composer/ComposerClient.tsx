@@ -454,6 +454,23 @@ function ComposerInner() {
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
 
   // -------------------------------------------------------------------------
+  // Data Source area collapse (PDF Preview พื้นที่มากที่สุด)
+  //
+  // Header ของคอลัมน์ Preview เคยสูงมาก (title + toggle + data source toolbar
+  // ซ้อน 3 แถว + picker) → กินพื้นที่ PDF Viewer
+  // → ยุบ data source เหลือแถวเดียวที่แสดง "กำลัง Preview: ..." เสมอ
+  //   กดขยายได้เมื่อต้องการเปลี่ยน — การยุบ/ขยายเกิดจากการกดของผู้ใช้ ไม่กระโดดเอง
+  //   (auto-expand เฉพาะเมื่อสลับเป็นโหมดผู้สมัครจริงแล้วยังไม่เลือกใคร
+  //    เพราะ picker ต้องโผล่ให้เลือก)
+  // -------------------------------------------------------------------------
+  const needsApplicationPicker =
+    previewDataSource.mode === 'real' && !previewDataSource.selectedApplication;
+  const [dataSourceOpen, setDataSourceOpen] = useState(false);
+  useEffect(() => {
+    if (needsApplicationPicker) setDataSourceOpen(true);
+  }, [needsApplicationPicker]);
+
+  // -------------------------------------------------------------------------
   // Preview view (Continuous Preview 2026-10-22)
   //
   // - 'html' → Continuous HTML (โตตามเนื้อหา ไม่แบ่งหน้าในเบราว์เซอร์)
@@ -1047,18 +1064,58 @@ function ComposerInner() {
         }
         previewContent={
           <Card className="flex flex-col min-h-0 h-full overflow-hidden">
-            <CardHeader className="pb-3 shrink-0 space-y-2">
+            {/*
+              ⚠️ Header บางลง (px-3 pt-3) — เดิมรับ pt-6 default ของ CardHeader มาทั้งก้อน
+                 ทุกแถวรวมกันบีบพื้นที่ PDF Viewer → รวม title + toggle + จำนวนหน้า
+                 + Fullscreen เหลือแถวเดียว และ data source เป็นแถบยุบได้
+            */}
+            <CardHeader className="px-3 pt-3 pb-3 shrink-0 space-y-2">
               <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <span>👁</span>
-                  <span>Live Preview</span>
-                </CardTitle>
+                <div className="flex items-center gap-2 min-w-0">
+                  <CardTitle className="text-sm flex items-center gap-2 shrink-0">
+                    <span>👁</span>
+                    <span>Live Preview</span>
+                  </CardTitle>
+
+                  {/*
+                    ⚠️ Preview view toggle (Continuous Preview 2026-10-22)
+                       - 'html' → Continuous HTML (เอกสารยาวต่อเนื่อง ไม่แบ่งหน้าในเบราว์เซอร์)
+                       - 'pdf'  → PDF จริงจาก renderer ตัวเดียวกับ export
+                                  🔑 source of truth เรื่องการแบ่งหน้า
+                  */}
+                  <div
+                    className="inline-flex rounded-md border border-slate-300 bg-slate-50 p-0.5 shrink-0"
+                    role="tablist"
+                    aria-label="โหมด preview"
+                  >
+                    <PreviewViewTab
+                      label="ต่อเนื่อง"
+                      icon="↕"
+                      active={previewView === 'html'}
+                      onClick={() => setPreviewView('html')}
+                    />
+                    <PreviewViewTab
+                      label="PDF จริง"
+                      icon="📄"
+                      active={previewView === 'pdf'}
+                      onClick={() => setPreviewView('pdf')}
+                    />
+                  </div>
+                  {previewView === 'pdf' && (
+                    <span className="text-[10px] text-slate-500 shrink-0 truncate">
+                      {pdfPageCount !== null
+                        ? `📄 ${pdfPageCount} หน้า (PDF จริง)`
+                        : 'กำลังสร้าง PDF…'}
+                    </span>
+                  )}
+                </div>
+
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={handleManualPreview}
                   disabled={loading.preview || !isTextValid || isVersionMismatch}
-                  className="h-7 text-[11px]"
+                  className="h-7 text-[11px] shrink-0"
                   title="เปิด Fullscreen Preview"
                   aria-label="เปิด Fullscreen Preview"
                 >
@@ -1072,46 +1129,60 @@ function ComposerInner() {
               </div>
 
               {/*
-                ⚠️ Preview view toggle (Continuous Preview 2026-10-22)
-                   - 'html' → Continuous HTML (เอกสารยาวต่อเนื่อง ไม่แบ่งหน้าในเบราว์เซอร์)
-                   - 'pdf'  → PDF จริงจาก renderer ตัวเดียวกับ export
-                              🔑 source of truth เรื่องการแบ่งหน้า
+                Data Source Toolbar (Requirement A) — ยุบเหลือแถวเดียว
+                แถวยุบแสดงสิ่งที่กำลัง preview อยู่เสมอ (โจทย์ข้อ 6)
               */}
-              <div
-                className="flex items-center justify-between gap-2"
-                role="tablist"
-                aria-label="โหมด preview"
-              >
-                <div className="inline-flex rounded-md border border-slate-300 bg-slate-50 p-0.5">
-                  <PreviewViewTab
-                    label="ต่อเนื่อง"
-                    icon="↕"
-                    active={previewView === 'html'}
-                    onClick={() => setPreviewView('html')}
+              <div className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
+                <button
+                  type="button"
+                  onClick={() => setDataSourceOpen((o) => !o)}
+                  aria-expanded={dataSourceOpen}
+                  data-testid="data-source-toggle"
+                  className="flex items-center gap-1.5 text-[11px] text-slate-600 min-w-0 text-left"
+                  title={dataSourceOpen ? 'ซ่อนตัวเลือกข้อมูลตัวอย่าง' : 'เปลี่ยนข้อมูลที่ใช้แสดงตัวอย่าง'}
+                >
+                  <span
+                    aria-hidden
+                    className={`inline-block h-1.5 w-1.5 rounded-full shrink-0 ${
+                      previewDataSource.mode === 'real' ? 'bg-blue-500' : 'bg-slate-400'
+                    }`}
                   />
-                  <PreviewViewTab
-                    label="PDF จริง"
-                    icon="📄"
-                    active={previewView === 'pdf'}
-                    onClick={() => setPreviewView('pdf')}
-                  />
-                </div>
-                {previewView === 'pdf' && (
-                  <span className="text-[10px] text-slate-500">
-                    {pdfPageCount !== null
-                      ? `📄 ${pdfPageCount} หน้า (PDF จริง)`
-                      : 'กำลังสร้าง PDF…'}
-                  </span>
-                )}
+                  <span className="font-medium shrink-0">ข้อมูลที่ใช้แสดง:</span>
+                  {previewDataSource.mode === 'real' &&
+                  previewDataSource.selectedApplication ? (
+                    <span className="truncate">
+                      <span className="font-medium text-blue-700">
+                        {previewDataSource.selectedApplication.applicationNo}
+                      </span>
+                      {' - '}
+                      {previewDataSource.selectedApplication.fullname}
+                    </span>
+                  ) : previewDataSource.mode === 'real' ? (
+                    <span className="truncate text-amber-700">ผู้สมัครจริง (ยังไม่เลือก)</span>
+                  ) : (
+                    <span className="truncate">ข้อมูลตัวอย่าง</span>
+                  )}
+                  <svg
+                    aria-hidden
+                    className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${
+                      dataSourceOpen ? 'rotate-180' : ''
+                    }`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
               </div>
-
-              {/* Data Source Toolbar (Requirement A) — อยู่ในหัว จึงไม่เลื่อนตาม */}
-              <DataSourceToolbar
-                value={previewDataSource}
-                onChange={setPreviewDataSource}
-                templateVersionId={versionId}
-                disabled={loading.save || loading.generate || isVersionMismatch}
-              />
+              {dataSourceOpen && (
+                <DataSourceToolbar
+                  value={previewDataSource}
+                  onChange={setPreviewDataSource}
+                  templateVersionId={versionId}
+                  disabled={loading.save || loading.generate || isVersionMismatch}
+                />
+              )}
             </CardHeader>
             {/*
               ⚠️ hierarchy ความสูง (ก้อนที่ 2 — UAT fix):

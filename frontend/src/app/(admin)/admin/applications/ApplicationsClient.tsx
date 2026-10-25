@@ -100,6 +100,24 @@ const getErrorMessage = (data: any, fallback = 'เกิดข้อผิด�
   return fallback;
 };
 
+/**
+ * แยก sortId ที่อยู่ใน URL (format "<field>-<direction>") เป็น field/direction
+ * ค่าที่ไม่รู้จัก → fallback submittedAt-desc (ตรงกับ sortOptions ใน component)
+ */
+const parseSortId = (sortId: string): { field: string; direction: 'asc' | 'desc' } => {
+  const idx = sortId.lastIndexOf('-');
+  if (idx <= 0) return { field: 'submittedAt', direction: 'desc' };
+  const field = sortId.slice(0, idx);
+  const direction = sortId.slice(idx + 1);
+  if (
+    (field === 'submittedAt' || field === 'fullname') &&
+    (direction === 'asc' || direction === 'desc')
+  ) {
+    return { field, direction };
+  }
+  return { field: 'submittedAt', direction: 'desc' };
+};
+
 // ============================================
 // DESIGN SYSTEM - Smart Family Style (คัดลอกจาก Recruitment Rounds)
 // ============================================
@@ -195,12 +213,33 @@ export default function ApplicationsClient() {
   const { canWrite } = useRole();
 
   // URL State
+  // ── List state (page/search/view/sort) อยู่ใน URL ทั้งหมด ──────────────────
+  // เปิดรายละเอียดแล้วกด Back (router.back) → component remount
+  // → อ่านค่ากลับจาก URL จึงกลับมาตำแหน่งเดิมได้ (หน้าที่จากไป, search, filter, sort, view)
   const urlRoundId = searchParams.get('round') || '';
   const showArchived = searchParams.get('archived') === '1';
+  const urlSearch = searchParams.get('q') || '';
+  const urlViewParam = searchParams.get('view');
+  const urlView: 'all' | 'active' | 'archived' =
+    urlViewParam === 'all' || urlViewParam === 'archived' ? urlViewParam : 'active';
+  const urlSortId = searchParams.get('sort') || 'submittedAt-desc';
+  const urlPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
 
   // Helper: อัปเดต URL (ไม่ trigger re-mount)
+  // ⚠️ ถือ "แผนที่ params ของตัวเอง" ใน ref ไม่อ่านจาก window.location / searchParams
+  //   เพราะ router.replace แก้ URL แบบ async (transition เสร็จค่อย update) →
+  //   การ replace ติดกันหลายครั้งในรอบเดียว (เช่น เปลี่ยน view แล้ว reset หน้า)
+  //   ถ้าอ่านค่าล่าสุดจาก URL ตรง ๆ จะอ่านได้ค่าเก่าและทับ param ที่เพิ่งเขียนหาย
+  // ref ถูก sync กลับจาก searchParams ทุกครั้งที่ transition จบ (ครอบคลุม Back/Forward)
+  const urlParamsRef = useRef<URLSearchParams>(
+    new URLSearchParams(searchParams.toString())
+  );
+  useEffect(() => {
+    urlParamsRef.current = new URLSearchParams(searchParams.toString());
+  }, [searchParams]);
+
   const updateUrl = useCallback((patch: Record<string, string | null>) => {
-    const params = new URLSearchParams(searchParams.toString());
+    const params = new URLSearchParams(urlParamsRef.current.toString());
     Object.entries(patch).forEach(([key, value]) => {
       if (value === null || value === '') {
         params.delete(key);
@@ -208,9 +247,34 @@ export default function ApplicationsClient() {
         params.set(key, value);
       }
     });
+    urlParamsRef.current = params;
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-  }, [searchParams, pathname, router]);
+  }, [pathname, router]);
+
+  // ── List state setters — ทุกการเปลี่ยนแนบลง URL ทันที ──────────────────────
+  // (Back จากหน้ารายละเอียด → remount → hydrate จาก URL → ได้ตำแหน่งเดิม)
+  const handleSearchChange = useCallback((value: string) => {
+    setSearch(value);
+    updateUrl({ q: value.trim() ? value : null });
+  }, [updateUrl]);
+
+  const handleViewChange = useCallback((next: 'all' | 'active' | 'archived') => {
+    setView(next);
+    updateUrl({ view: next === 'active' ? null : next });
+  }, [updateUrl]);
+
+  const handleSortChange = useCallback((id: string, field: string, direction?: 'asc' | 'desc' | null) => {
+    setSortId(id);
+    setSortField(field);
+    if (direction) setSortDirection(direction);
+    updateUrl({ sort: id === 'submittedAt-desc' ? null : id });
+  }, [updateUrl]);
+
+  const handlePageChange = useCallback((page: number) => {
+    setCurrentPage(page);
+    updateUrl({ page: page <= 1 ? null : String(page) });
+  }, [updateUrl]);
 
   // State
   const [rounds, setRounds] = useState<Round[]>([]);
@@ -219,17 +283,19 @@ export default function ApplicationsClient() {
   const [summary, setSummary] = useState<Summary>({ total: 0, byStatus: {} });
   const [loading, setLoading] = useState(true);
 
-  // View filter: all | active (excl. archived) | archived
-  const [view, setView] = useState<'all' | 'active' | 'archived'>('active');
+  // View filter: all | active (excl. archived) | archived — hydrate จาก URL
+  const [view, setView] = useState<'all' | 'active' | 'archived'>(urlView);
 
-  // Search & Sort state
-  const [search, setSearch] = useState('');
-  const [sortId, setSortId] = useState<string>('submittedAt-desc');
-  const [sortField, setSortField] = useState<string>('submittedAt');
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  // Search & Sort state — hydrate จาก URL (sortId format: "<field>-<direction>")
+  const [search, setSearch] = useState(urlSearch);
+  const [sortId, setSortId] = useState<string>(urlSortId);
+  const [sortField, setSortField] = useState<string>(parseSortId(urlSortId).field);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(
+    parseSortId(urlSortId).direction
+  );
 
-  // Pagination state
-  const [currentPage, setCurrentPage] = useState(1);
+  // Pagination state — hydrate หน้าจาก URL
+  const [currentPage, setCurrentPage] = useState(urlPage);
   const [pageSize] = useState(10);
 
   // Selection state — เก็บเป็น Set ของ ID จึงคงอยู่ข้ามหน้า (pagination)
@@ -508,9 +574,30 @@ export default function ApplicationsClient() {
     }
   }, [selectedRoundId, search, view, API_URL]);
 
+  // Reset กลับหน้า 1 เมื่อตัวกรอง/รอบ/การเรียงเปลี่ยน
+  // ⚠️ mount แรก (prev === null) ต้อง "ไม่ reset" — หน้าปัจจุบันเพิ่ง restore จาก URL
+  // ⚠️ roundId จาก '' → รอบแรกที่โหลดเสร็จ ก็เป็นการ "init" หลัง restore เช่นกัน
+  //   (กด Back กลับมา selectedRoundId เริ่มจาก '' แล้วค่อย set จาก URL ทีหลัง
+  //    ถ้าถือเป็นการเปลี่ยนรอบ → จะเคลียร์ page ที่ restore มาทิ้ง = กลับหน้า 1 เสมอ)
+  const prevListStateRef = useRef<{
+    roundId: string;
+    search: string;
+    sortId: string;
+    view: string;
+  } | null>(null);
   useEffect(() => {
+    const prev = prevListStateRef.current;
+    prevListStateRef.current = { roundId: selectedRoundId, search, sortId, view };
+    if (!prev) return;
+    const roundInitialized = prev.roundId === '';
+    const roundChanged = !roundInitialized && prev.roundId !== selectedRoundId;
+    const filterChanged =
+      prev.search !== search || prev.sortId !== sortId || prev.view !== view;
+    if (roundInitialized && !filterChanged) return;
+    if (!roundChanged && !filterChanged) return;
     setCurrentPage(1);
-  }, [selectedRoundId, search, sortId, view]);
+    updateUrl({ page: null });
+  }, [selectedRoundId, search, sortId, view, updateUrl]);
 
   // Policy การเลือก: selection คงอยู่ข้ามหน้า/การเรียงลำดับ แต่ถูกล้างเมื่อ
   // เปลี่ยนรอบรับสมัคร (เสมอ) หรือเปลี่ยนตัวกรอง search/view — พร้อมแจ้งเหตุผล
@@ -702,6 +789,16 @@ export default function ApplicationsClient() {
     (currentPage - 1) * pageSize,
     currentPage * pageSize
   );
+
+  // กันหน้าเกินช่วงจริง (เช่น page ใน URL มากกว่าจำนวนหน้าหลังข้อมูลเปลี่ยน)
+  // ⚠️ ข้ามตอน loading — ยังไม่มีข้อมูลชุดใหม่ ห้าม clamp ด้วยข้อมูลเก่า
+  useEffect(() => {
+    if (loading) return;
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    if (currentPage > totalPages) {
+      handlePageChange(totalPages);
+    }
+  }, [loading, totalItems, pageSize, currentPage, handlePageChange]);
 
   // Selection handlers — Header Checkbox "เลือกทั้งหมด" ทำงานกับผลลัพธ์ตาม
   // ตัวกรองปัจจุบัน "ทุกหน้า" (sortedApps = หลัง round + search + view + sort
@@ -995,7 +1092,7 @@ export default function ApplicationsClient() {
             <div className="flex-1 min-w-0">
               <SearchInput
                 value={search}
-                onChange={setSearch}
+                onChange={handleSearchChange}
                 placeholder="ค้นหาชื่อ, อีเมล, เลขใบสมัคร..."
                 resultCount={totalItems}
                 resultLabel="รายการ"
@@ -1005,11 +1102,7 @@ export default function ApplicationsClient() {
             </div>
             <SortDropdown
               value={sortId}
-              onChange={(id, field, direction) => {
-                setSortId(id);
-                setSortField(field);
-                if (direction) setSortDirection(direction);
-              }}
+              onChange={handleSortChange}
               options={sortOptions}
               size="sm"
             />
@@ -1018,9 +1111,9 @@ export default function ApplicationsClient() {
           {/* Row 2: Filter Pills + Export + Result Count */}
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1">
-              <FilterPill label="ทั้งหมด" isActive={view === 'all'} onClick={() => setView('all')} count={viewCounts.all} />
-              <FilterPill label="กำลังดำเนินการ" isActive={view === 'active'} onClick={() => setView('active')} count={viewCounts.active} />
-              <FilterPill label="เก็บเข้าคลัง" isActive={view === 'archived'} onClick={() => setView('archived')} count={viewCounts.archived} />
+              <FilterPill label="ทั้งหมด" isActive={view === 'all'} onClick={() => handleViewChange('all')} count={viewCounts.all} />
+              <FilterPill label="กำลังดำเนินการ" isActive={view === 'active'} onClick={() => handleViewChange('active')} count={viewCounts.active} />
+              <FilterPill label="เก็บเข้าคลัง" isActive={view === 'archived'} onClick={() => handleViewChange('archived')} count={viewCounts.archived} />
             </div>
             <div className="flex items-center gap-2">
               {canWrite && (
@@ -1116,7 +1209,7 @@ export default function ApplicationsClient() {
                 <TableRow>
                   <TableCell colSpan={7} className="py-0">
                     {search ? (
-                      <NoResultsEmptyState keyword={search} onClearFilters={() => setSearch('')} />
+                      <NoResultsEmptyState keyword={search} onClearFilters={() => handleSearchChange('')} />
                     ) : (
                       <NoDataEmptyState
                         title="ไม่พบใบสมัคร"
@@ -1215,7 +1308,7 @@ export default function ApplicationsClient() {
             currentPage={currentPage}
             totalItems={totalItems}
             pageSize={pageSize}
-            onPageChange={setCurrentPage}
+            onPageChange={handlePageChange}
             showPageSizeSelector={false}
             showResultCount={false}
           />
