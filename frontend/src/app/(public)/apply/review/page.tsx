@@ -322,6 +322,14 @@ function ReviewContent() {
 
   const handleEdit = () => {
     if (!draft) return;
+    // ✅ Guard: while a submit is in flight (or has just SUCCEEDED and the
+    // navigation to /apply/success is in flight), "กลับไปแก้ไข" must be a
+    // no-op. On success the draft + submissionToken are already cleared —
+    // navigating back to /apply here would re-mint a fresh token and could
+    // start a duplicate application. `submitting` (React state) covers the
+    // button's disabled attribute; the ref covers the synchronous window
+    // and the post-success latch.
+    if (submitInFlightRef.current) return;
     // Draft is already in sessionStorage; just navigate back. The apply
     // page rehydrates from the same key on mount.
     router.push(`/apply?id=${encodeURIComponent(draft.roundId)}`);
@@ -674,6 +682,7 @@ function ReviewContent() {
               variant="outline"
               onClick={handleEdit}
               disabled={submitting}
+              aria-label="กลับไปหน้าสมัครเพื่อแก้ไขข้อมูล"
               className="w-full md:w-auto"
             >
               ← กลับไปแก้ไข

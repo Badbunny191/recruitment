@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { FileUpload, UploadedFileMeta } from '@/components/FileUpload';
+import { ApplyBackBar } from '@/components/ApplyBackBar';
 import { attachmentDisplayName } from '@/lib/filename';
 import { SearchableDropdown } from '@/components/SearchableDropdown';
 import {
@@ -188,7 +189,7 @@ function FormInner() {
   const [organizations, setOrganizations] = useState<MasterDataOption[]>([]);
   const [masterDataError, setMasterDataError] = useState<string | null>(null);
 
-  const { register, handleSubmit, control, formState: { errors }, reset } = useForm<FormValues>();
+  const { register, handleSubmit, control, formState: { errors }, reset, getValues } = useForm<FormValues>();
 
   // ✅ Double-submit guard (ช่วง A): re-entry flag for the "ตรวจสอบข้อมูล"
   // flow. `isSubmitting` (React state) re-renders asynchronously, so a rapid
@@ -196,6 +197,17 @@ function FormInner() {
   // twice — re-saving the draft and pushing the same route twice. The ref
   // closes that window synchronously, independent of the disabled attribute.
   const submitInFlightRef = useRef(false);
+
+  // ✅ Back-button guard (ปุ่ม "กลับ"): re-entry flag for the back flow.
+  // Same rationale as `submitInFlightRef` — the ref closes the synchronous
+  // window between the click and the disabled attribute landing. It also
+  // makes "กลับ" and "ตรวจสอบข้อมูล" mutually exclusive so navigation and
+  // review-prepare can never race.
+  const backInFlightRef = useRef(false);
+  // Set when saving the draft on "กลับ" fails. The user stays on the page
+  // with their form values intact (nothing is cleared) and the error is
+  // announced — data loss must never be silent.
+  const [backError, setBackError] = useState<string | null>(null);
 
   // ✅ Other Option Support — ค่าที่เลือกของ field ที่รองรับ "อื่นๆ (โปรดระบุ)"
   // ใช้สำหรับตัดสินว่าจะแสดงช่อง Text Input `[________________]` หรือไม่
@@ -640,6 +652,52 @@ function FormInner() {
       // Release the guard + pending state so the user can retry.
       submitInFlightRef.current = false;
       setIsSubmitting(false);
+    }
+  };
+
+  // ✅ ปุ่ม "กลับ" (ApplyBackBar): save the CURRENT form values with the
+  // SAME draft mechanism as "ตรวจสอบข้อมูล" BEFORE leaving the page, then
+  // navigate to `/` — the round list page, which is the closest thing to
+  // a "round detail" this app has (there is no dedicated /rounds/[id]
+  // route; the round card on the home page IS the detail). A fixed
+  // destination also makes Direct-URL entry safe: no router.back(), no
+  // dependency on browser history.
+  //
+  // Contract:
+  //   - formData / dynamic fields / attachment metadata are preserved
+  //     (buildDraftPayload serialises exactly what "ตรวจสอบข้อมูล" saves).
+  //   - NO submit, NO re-upload (FILE values are already R2 URLs),
+  //     NO draft clearing, submissionToken untouched (get-or-create).
+  //   - Never runs while the review-prepare flow (isSubmitting /
+  //     submitInFlightRef) is in flight — the two navigations must not race.
+  //   - On save failure: stay on the page, re-enable the button, surface
+  //     the error. Form values are untouched, so nothing is lost silently.
+  const handleBack = () => {
+    if (backInFlightRef.current || submitInFlightRef.current) return;
+    if (!roundId) {
+      router.push('/');
+      return;
+    }
+    backInFlightRef.current = true;
+    setBackError(null);
+    try {
+      const { formData, attachments } = buildDraftPayload(getValues());
+      const token = getOrCreateSubmissionToken();
+      saveApplyDraft({
+        roundId,
+        formData,
+        attachments,
+        submissionToken: token,
+      });
+      router.push('/');
+      // Success: keep the guard latched until the route change unmounts
+      // this page (same pattern as the submit flow).
+    } catch (error) {
+      console.error('Save draft on back error:', error);
+      setBackError(
+        'บันทึกฉบับร่างก่อนกลับไม่สำเร็จ — ข้อมูลที่กรอกยังอยู่ครบ กรุณาลองอีกครั้ง'
+      );
+      backInFlightRef.current = false;
     }
   };
 
@@ -1111,6 +1169,12 @@ function FormInner() {
 
   return (
     <div className="max-w-3xl mx-auto p-4 md:p-8">
+      {/* ✅ ปุ่ม "กลับ" — ส่วนหัวของหน้าสมัคร เห็นชัดทั้ง Desktop และ Mobile
+          (h-10 touch target, aria-label, focus ring จาก Button base styles)
+          Disabled ระหว่าง "กำลังเตรียมข้อมูล..." เพื่อไม่ให้ navigation
+          แข่งกับการเตรียมไปหน้า Review */}
+      <ApplyBackBar onBack={handleBack} disabled={isSubmitting} error={backError} />
+
       {/* ✅ BUG 2 FIX: Round announcement / contact / remark block.
           Rendered ABOVE the application form (per spec). Only shows when
           roundInfo loaded and the matching field is non-empty. */}
