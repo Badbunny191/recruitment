@@ -81,7 +81,7 @@ sqlite.exec(`
   CREATE TABLE template_fields (
     id TEXT PRIMARY KEY, template_version_id TEXT NOT NULL, field_id TEXT NOT NULL,
     section_id TEXT, display_order INTEGER NOT NULL, is_required INTEGER DEFAULT 1,
-    allow_other INTEGER
+    allow_other INTEGER, rows INTEGER, min_length INTEGER, max_length INTEGER
   );
   CREATE TABLE recruitment_rounds (
     id TEXT PRIMARY KEY, template_version_id TEXT NOT NULL, title TEXT NOT NULL,
@@ -119,9 +119,9 @@ sqlite.exec(`
   INSERT INTO field_master VALUES ('field-email','TEXT','อีเมล','email',0);
   INSERT INTO field_master VALUES ('field-fullname','TEXT','ชื่อ-นามสกุล','fullname',0);
   INSERT INTO field_master VALUES ('f-files','FILE','เอกสารแนบ',NULL,0);
-  INSERT INTO template_fields VALUES ('tf-1','tv-1','field-email',NULL,1,1,NULL);
-  INSERT INTO template_fields VALUES ('tf-2','tv-1','field-fullname',NULL,2,1,NULL);
-  INSERT INTO template_fields VALUES ('tf-3','tv-1','f-files',NULL,3,0,NULL);
+  INSERT INTO template_fields VALUES ('tf-1','tv-1','field-email',NULL,1,1,NULL,NULL,NULL,NULL);
+  INSERT INTO template_fields VALUES ('tf-2','tv-1','field-fullname',NULL,2,1,NULL,NULL,NULL,NULL);
+  INSERT INTO template_fields VALUES ('tf-3','tv-1','f-files',NULL,3,0,NULL,NULL,NULL,NULL);
   -- หน้าต่างเปิดรับกว้างพอสำหรับทุกช่วงเวลาที่ test รัน
   INSERT INTO recruitment_rounds (id, template_version_id, title, position_level, open_date, close_date, status)
   VALUES ('round-1','tv-1','รอบทดสอบ submit','ระดับต้น',1735603200,1798761600,'ACTIVE');

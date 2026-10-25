@@ -570,7 +570,7 @@ function ReviewContent() {
           {label}
           {field.isRequired && <span className="text-red-500 ml-1">*</span>}
         </div>
-        <div className="text-sm text-slate-900 md:col-span-2 break-words">
+        <div className="text-sm text-slate-900 md:col-span-2 whitespace-pre-wrap break-words">
           {text.startsWith('__FILE_LIST__')
             ? renderAttachmentList(field)
             : isEmpty

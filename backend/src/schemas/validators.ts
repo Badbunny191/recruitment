@@ -139,7 +139,18 @@ export const TemplateCreateSchema = z.object({
 
 export const TemplateUpdateSchema = TemplateCreateSchema.partial();
 
-export const TemplateFieldCreateSchema = z.object({
+// ── TEXTAREA ค่ากำหนดระบบ (Rich Field Metadata) ─────────────────────────────
+// rows     = ความสูงเริ่มต้นของช่องกรอกบนหน้าจอ (ไม่เกี่ยวกับ PDF)
+// min/max  = ความยาวคำตอบ (UTF-16 code units เทียบ String.length / HTML maxlength)
+// maxLength ที่เกิน cap นี้ต้องถูกปฏิเสธทั้ง Builder และ Backend
+export const TEXTAREA_ROWS_MIN = 1;
+export const TEXTAREA_ROWS_MAX = 20;
+export const TEXTAREA_MIN_LENGTH_MIN = 0;
+export const TEXTAREA_LENGTH_CAP = 5000;
+
+// Base object แยกไว้เพื่อให้ .extend() ได้ (superRefine ครอบแล้วจะเป็น ZodEffects
+// ซึ่งไม่มี .extend — ทุก variant ต้อง .superRefine(textareaSettingsRefine) เอง)
+const TemplateFieldBaseSchema = z.object({
   fieldId: z.string(),
   displayOrder: z.number().int().positive(),
   isRequired: z.boolean().default(true),
@@ -153,10 +164,50 @@ export const TemplateFieldCreateSchema = z.object({
   // Other Option Support (null = ใช้ค่าจาก Master)
   allowOther: z.boolean().nullable().optional(),
   // Rich Field Metadata
-  rows: z.number().int().positive().nullable().optional(),
-  minLength: z.number().int().min(0).nullable().optional(),
-  maxLength: z.number().int().min(1).nullable().optional(),
+  rows: z
+    .number()
+    .int('ความสูงเริ่มต้นต้องเป็นจำนวนเต็ม')
+    .min(TEXTAREA_ROWS_MIN, 'ความสูงเริ่มต้นต้องอยู่ระหว่าง 1 ถึง 20 บรรทัด')
+    .max(TEXTAREA_ROWS_MAX, 'ความสูงเริ่มต้นต้องอยู่ระหว่าง 1 ถึง 20 บรรทัด')
+    .nullable()
+    .optional(),
+  minLength: z
+    .number()
+    .int('ความยาวขั้นต่ำต้องเป็นจำนวนเต็ม')
+    .min(TEXTAREA_MIN_LENGTH_MIN, 'ความยาวขั้นต่ำต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป')
+    .max(TEXTAREA_LENGTH_CAP, 'ความยาวขั้นต่ำต้องไม่เกิน 5,000 ตัวอักษร')
+    .nullable()
+    .optional(),
+  maxLength: z
+    .number()
+    .int('ความยาวสูงสุดต้องเป็นจำนวนเต็ม')
+    .min(1, 'ความยาวสูงสุดต้องเป็นจำนวนเต็มตั้งแต่ 1 ขึ้นไป')
+    .max(TEXTAREA_LENGTH_CAP, 'ความยาวสูงสุดต้องไม่เกิน 5,000 ตัวอักษร')
+    .nullable()
+    .optional(),
 });
+
+/**
+ * minLength ต้องไม่มากกว่า effective maxLength (ถ้าไม่มี maxLength ให้เทียบ cap)
+ */
+export function textareaSettingsRefine(
+  field: { minLength?: number | null; maxLength?: number | null },
+  ctx: z.RefinementCtx
+): void {
+  if (field.minLength != null) {
+    const effectiveMax = field.maxLength ?? TEXTAREA_LENGTH_CAP;
+    if (field.minLength > effectiveMax) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['minLength'],
+        message: 'ความยาวขั้นต่ำต้องไม่มากกว่าความยาวสูงสุด',
+      });
+    }
+  }
+}
+
+export const TemplateFieldCreateSchema =
+  TemplateFieldBaseSchema.superRefine(textareaSettingsRefine);
 
 // Sprint 4 - Section schemas
 export const TemplateSectionCreatePayloadSchema = z.object({
@@ -205,9 +256,9 @@ export const TemplateVersionCreateSchema = z.object({
   sections: z.array(TemplateSectionCreatePayloadSchema).optional(),
   // Fields required ทุก mode (Mode A, C) — Mode B (clone) จะ ignore fields
   // ดังนั้นทำให้ optional เพื่อรองรับ clone ที่ไม่ต้องส่ง fields
-  fields: z.array(TemplateFieldCreateSchema.extend({
+  fields: z.array(TemplateFieldBaseSchema.extend({
     sectionId: z.string().nullable().optional(), // Mode A: client tempId
-  })).min(1).optional(), // เพิ่ม .optional() เพื่อรองรับ Mode B
+  }).superRefine(textareaSettingsRefine)).min(1).optional(), // เพิ่ม .optional() เพื่อรองรับ Mode B
 }).refine(data => {
   // Mode B (clone): ต้องมี cloneFromVersionId
   // Mode A/C: ต้องมี fields อย่างน้อย 1
@@ -227,9 +278,9 @@ export const TemplateVersionCreateSchema = z.object({
 // =============================================================================
 export const TemplateVersionUpdateSchema = z.object({
   sections: z.array(TemplateSectionCreatePayloadSchema).min(1, 'At least 1 section required'),
-  fields: z.array(TemplateFieldCreateSchema.extend({
+  fields: z.array(TemplateFieldBaseSchema.extend({
     sectionId: z.string().nullable().optional(), // client tempId
-  })).min(1, 'At least 1 field required'),
+  }).superRefine(textareaSettingsRefine)).min(1, 'At least 1 field required'),
 });
 
 export const RecruitmentRoundCreateSchema = z.object({

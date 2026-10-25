@@ -18,6 +18,7 @@ import { FieldSortableItem } from '@/components/FieldSortableItem';
 import { SectionFieldList } from '@/components/SectionFieldList';
 import { useRole } from '@/lib/useRole';
 import { OTHER_OPTION_LABEL, withOtherOption } from '@/lib/otherOption';
+import { validateFieldSettings } from '@/lib/fieldSettings';
 
 interface MasterField {
   id: string;
@@ -230,6 +231,10 @@ function BuilderInner() {
   });
   const { fields, append, remove, replace, move } = useFieldArray({ control, name: 'fields' });
   const { append: appendSection, remove: removeSection, replace: replaceSections } = useFieldArray({ control, name: 'sections' });
+
+  // ✅ Rich Field Metadata — inline validation error ต่อ field (key = fieldId)
+  // แสดงใน Advanced Settings; เคลียร์เมื่อบันทึกสำเร็จ
+  const [fieldSettingsErrors, setFieldSettingsErrors] = useState<Record<string, string>>({});
 
   const watchedFields = watch('fields');
   const watchedSections = watch('sections');
@@ -572,13 +577,27 @@ function BuilderInner() {
       alert('กรุณาเพิ่ม Section อย่างน้อย 1 Section');
       return;
     }
-    
+
     // Validate templateId before making request
     if (!templateId || templateId.trim() === '') {
       alert('ไม่พบ Template ID');
       return;
     }
-    
+
+    // ✅ Rich Field Metadata — inline validation ก่อนส่ง (rows/minLength/maxLength)
+    // Backend (zod) ปฏิเสธอยู่แล้ว แต่ต้องให้ผู้ดูแลเห็น error ตรง field
+    const settingsErrors: Record<string, string> = {};
+    for (const f of data.fields) {
+      const err = validateFieldSettings(f);
+      if (err) settingsErrors[f.fieldId] = err;
+    }
+    if (Object.keys(settingsErrors).length > 0) {
+      setFieldSettingsErrors(settingsErrors);
+      alert('พบค่าที่ไม่ถูกต้องใน Advanced Settings กรุณาแก้ไขตามข้อความสีแดงในแต่ละฟิลด์');
+      return;
+    }
+    setFieldSettingsErrors({});
+
       setSubmitting(true);
       try {
         // ส่ง fieldId ตรง ๆ ไม่ต้องแปลง (FK migration เสร็จแล้ว — template_fields.field_id รับ UUID ได้แล้ว)
@@ -1619,36 +1638,49 @@ function BuilderInner() {
 
                                     {/* Rich Field Metadata - TEXT / TEXTAREA */}
                                     {(field.fieldType === 'TEXT' || field.fieldType === 'TEXTAREA') && (
-                                      <div className="grid grid-cols-3 gap-2">
-                                        {field.fieldType === 'TEXTAREA' && (
+                                      <div className="space-y-1">
+                                        <div className="grid grid-cols-3 gap-2">
+                                          {field.fieldType === 'TEXTAREA' && (
+                                            <div className="space-y-1">
+                                              <Label className="text-xs">ความสูงเริ่มต้นของช่องกรอก (บรรทัด)</Label>
+                                              <Input
+                                                type="number"
+                                                min={1}
+                                                max={20}
+                                                {...register(`fields.${globalIdx}.rows`)}
+                                                placeholder="3"
+                                              />
+                                              <p className="text-[10px] text-slate-400 leading-tight">
+                                                กำหนดขนาดเริ่มต้นของช่องกรอกบนหน้าจอ ไม่จำกัดจำนวนบรรทัดในเอกสาร PDF
+                                              </p>
+                                            </div>
+                                          )}
                                           <div className="space-y-1">
-                                            <Label className="text-xs">จำนวนบรรทัด</Label>
+                                            <Label className="text-xs">ความยาวขั้นต่ำ</Label>
+                                            <Input
+                                              type="number"
+                                              min={0}
+                                              max={5000}
+                                              {...register(`fields.${globalIdx}.minLength`)}
+                                              placeholder="0"
+                                            />
+                                          </div>
+                                          <div className="space-y-1">
+                                            <Label className="text-xs">ความยาวสูงสุด</Label>
                                             <Input
                                               type="number"
                                               min={1}
-                                              {...register(`fields.${globalIdx}.rows`)}
-                                              placeholder="3"
+                                              max={5000}
+                                              {...register(`fields.${globalIdx}.maxLength`)}
+                                              placeholder="500"
                                             />
                                           </div>
+                                        </div>
+                                        {fieldSettingsErrors[field.fieldId] && (
+                                          <p className="text-xs text-red-500">
+                                            {fieldSettingsErrors[field.fieldId]}
+                                          </p>
                                         )}
-                                        <div className="space-y-1">
-                                          <Label className="text-xs">ความยาวขั้นต่ำ</Label>
-                                          <Input
-                                            type="number"
-                                            min={0}
-                                            {...register(`fields.${globalIdx}.minLength`)}
-                                            placeholder="0"
-                                          />
-                                        </div>
-                                        <div className="space-y-1">
-                                          <Label className="text-xs">ความยาวสูงสุด</Label>
-                                          <Input
-                                            type="number"
-                                            min={1}
-                                            {...register(`fields.${globalIdx}.maxLength`)}
-                                            placeholder="500"
-                                          />
-                                        </div>
                                       </div>
                                     )}
 

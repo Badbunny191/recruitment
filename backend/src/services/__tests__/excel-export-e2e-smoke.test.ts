@@ -124,7 +124,7 @@ async function runAll() {
     CREATE TABLE template_versions (id TEXT PRIMARY KEY, template_id TEXT NOT NULL, version_number INTEGER NOT NULL, status TEXT DEFAULT 'DRAFT');
     CREATE TABLE template_sections (id TEXT PRIMARY KEY, template_version_id TEXT NOT NULL, name TEXT NOT NULL, display_order INTEGER NOT NULL, is_active INTEGER DEFAULT 1);
     CREATE TABLE field_master (id TEXT PRIMARY KEY, field_type TEXT NOT NULL, label_th TEXT NOT NULL, pdf_mapping_key TEXT, allow_other INTEGER DEFAULT 0);
-    CREATE TABLE template_fields (id TEXT PRIMARY KEY, template_version_id TEXT NOT NULL, field_id TEXT NOT NULL, section_id TEXT, display_order INTEGER NOT NULL, is_required INTEGER DEFAULT 1, override_label_th TEXT, allow_other INTEGER);
+    CREATE TABLE template_fields (id TEXT PRIMARY KEY, template_version_id TEXT NOT NULL, field_id TEXT NOT NULL, section_id TEXT, display_order INTEGER NOT NULL, is_required INTEGER DEFAULT 1, override_label_th TEXT, allow_other INTEGER, rows INTEGER, min_length INTEGER, max_length INTEGER);
     CREATE TABLE recruitment_rounds (
       id TEXT PRIMARY KEY, template_version_id TEXT NOT NULL, title TEXT NOT NULL,
       position_level TEXT NOT NULL, open_date INTEGER NOT NULL, close_date INTEGER NOT NULL,
@@ -151,10 +151,10 @@ async function runAll() {
     INSERT INTO field_master VALUES ('field-email','TEXT','อีเมล','email',0);
     INSERT INTO field_master VALUES ('field-phone','TEXT','เบอร์โทรศัพท์','phone',0);
     INSERT INTO field_master VALUES ('f-files','FILE','เอกสารประกอบ',NULL,0);
-    INSERT INTO template_fields VALUES ('tf-1','tv-1','field-fullname','sec-1',1,1,NULL,NULL);
-    INSERT INTO template_fields VALUES ('tf-2','tv-1','field-email','sec-1',2,1,NULL,NULL);
-    INSERT INTO template_fields VALUES ('tf-3','tv-1','field-phone','sec-1',3,0,NULL,NULL);
-    INSERT INTO template_fields VALUES ('tf-4','tv-1','f-files','sec-1',4,0,NULL,NULL);
+    INSERT INTO template_fields VALUES ('tf-1','tv-1','field-fullname','sec-1',1,1,NULL,NULL,NULL,NULL,NULL);
+    INSERT INTO template_fields VALUES ('tf-2','tv-1','field-email','sec-1',2,1,NULL,NULL,NULL,NULL,NULL);
+    INSERT INTO template_fields VALUES ('tf-3','tv-1','field-phone','sec-1',3,0,NULL,NULL,NULL,NULL,NULL);
+    INSERT INTO template_fields VALUES ('tf-4','tv-1','f-files','sec-1',4,0,NULL,NULL,NULL,NULL,NULL);
     INSERT INTO recruitment_rounds (id, template_version_id, title, position_level, open_date, close_date, status, round_code)
     VALUES ('round-smoke','tv-1','รอบ smoke','ระดับต้น',1735603200,1798761600,'ACTIVE','SMK01');
     INSERT INTO admin_users VALUES ('admin-1','a@t.t','x','ADMIN',1);

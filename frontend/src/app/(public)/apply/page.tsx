@@ -27,6 +27,17 @@ import {
   supportsOtherOption,
   effectiveOptions,
 } from '@/lib/otherOption';
+import {
+  countUtf16Units,
+  counterLevel,
+  formatCounter,
+  getTextareaMaxLength,
+  getTextareaMinLength,
+  getTextareaRows,
+  textareaMaxLengthValidator,
+  textareaMinLengthValidator,
+  textareaNotBlankValidator,
+} from '@/lib/textareaField';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 type ValidationType = 'NONE' | 'EMAIL' | 'PHONE' | 'NUMBER' | 'URL' | 'CITIZEN_ID' | 'REGEX';
@@ -67,6 +78,11 @@ interface SchemaField {
   section?: string; // Legacy: fieldMaster.section (for fallback)
   // ✅ Other Option Support — field รองรับตัวเลือก "อื่นๆ (โปรดระบุ)" หรือไม่
   allowOther?: boolean;
+  // ✅ Rich Field Metadata (TEXT/TEXTAREA) — null = ไม่ได้กำหนด
+  // rows = ความสูงเริ่มต้นของช่องกรอกบนหน้าจอ (ไม่มีผลต่อ PDF)
+  rows?: number | null;
+  minLength?: number | null;
+  maxLength?: number | null;
 }
 
 interface TemplateSection {
@@ -230,6 +246,15 @@ function FormInner() {
   );
   const watchedOtherValues = useWatch({ control, name: otherCapableFieldIds });
 
+  // ✅ Character Counter ของ TEXTAREA — watch เฉพาะ field TEXTAREA (ไม่ watch
+  // ทั้งฟอร์ม) ตามรูปแบบเดียวกับ watchedOtherValues; ค่ามาจาก RHF state เดียวกับ
+  // textarea จึงถูกต้องทั้งพิมพ์, paste, และ draft rehydration (reset)
+  const textareaFieldIds = useMemo(
+    () => schema.filter((f) => f.type === 'TEXTAREA').map((f) => f.fieldId),
+    [schema]
+  );
+  const watchedTextareaValues = useWatch({ control, name: textareaFieldIds });
+
   const isOtherSelected = (field: SchemaField): boolean => {
     const options = effectiveOptions(
       parseSchemaOptions(field.options),
@@ -365,6 +390,11 @@ function FormInner() {
           fileConfig,
           // ✅ Other Option Support — flag จาก backend (effective: override ?? master)
           allowOther: !!field.allowOther,
+          // ✅ Rich Field Metadata (TEXT/TEXTAREA) — null = ผู้ดูแลไม่ได้กำหนด
+          // (ต้อง copy ผ่านทุกครั้ง ไม่งั้น counter/limit จะ fallback 5000 เสมอ)
+          rows: field.rows ?? null,
+          minLength: field.minLength ?? null,
+          maxLength: field.maxLength ?? null,
           // Legacy fallback - keep fieldMaster.section if backend still returns it
           section: field.section,
         };
@@ -759,7 +789,23 @@ function FormInner() {
         }
       };
     }
-    
+
+    // ✅ TEXTAREA — Rich Field Metadata (minLength / maxLength)
+    // นับความยาวแบบ UTF-16 (String.length) ตรงกับ native maxlength และ backend
+    if (field.type === 'TEXTAREA') {
+      const min = getTextareaMinLength(field);
+      const max = getTextareaMaxLength(field);
+      rules.validate = {
+        ...(rules.validate || {}),
+        // required ที่เป็น whitespace ล้วน = ไม่มีคำตอบ (RHF required จับแค่ "")
+        textareaNotBlank: textareaNotBlankValidator(!!field.isRequired),
+        ...(min != null
+          ? { textareaMinLength: textareaMinLengthValidator(min) }
+          : {}),
+        textareaMaxLength: textareaMaxLengthValidator(max),
+      };
+    }
+
     return rules;
   };
 
@@ -803,6 +849,18 @@ function FormInner() {
     // (ฟิลด์เดิมที่ไม่มี flag นี้ยังเป็น boolean checkbox แบบเดิม)
     const isCheckboxGroup =
       field.type === 'CHECKBOX' && !!field.allowOther && options.length > 0;
+
+    // ✅ TEXTAREA Character Counter — อ่านค่าจาก useWatch (RHF state เดียวกับ
+    // textarea) → ถูกต้องทั้งพิมพ์, paste, และ draft rehydration
+    const textareaCounter = field.type === 'TEXTAREA'
+      ? (() => {
+          const idx = textareaFieldIds.indexOf(field.fieldId);
+          const value = idx >= 0 ? watchedTextareaValues?.[idx] : undefined;
+          const len = countUtf16Units(value);
+          const max = getTextareaMaxLength(field);
+          return { len, max, level: counterLevel(len, max) };
+        })()
+      : null;
 
     const otherInput = showOtherInput ? (
       <div className="space-y-1 pl-6">
@@ -877,13 +935,35 @@ function FormInner() {
         )}
         
         {field.type === 'TEXTAREA' && (
-          <Textarea 
-            id={field.fieldId}
-            rows={4}
-            {...register(field.fieldId, validationRules)}
-            placeholder={placeholder}
-            className={errors[field.fieldId] ? 'border-red-500' : ''}
-          />
+          <>
+            <Textarea
+              id={field.fieldId}
+              rows={getTextareaRows(field)}
+              minLength={field.minLength ?? undefined}
+              maxLength={getTextareaMaxLength(field)}
+              wrap="soft"
+              aria-describedby={`${field.fieldId}-counter`}
+              {...register(field.fieldId, validationRules)}
+              placeholder={placeholder}
+              className={`resize-none overflow-y-auto overflow-x-hidden min-h-0 ${
+                errors[field.fieldId] ? 'border-red-500' : ''
+              }`}
+            />
+            {textareaCounter && (
+              <div
+                id={`${field.fieldId}-counter`}
+                className={`text-xs text-right ${
+                  textareaCounter.level === 'max'
+                    ? 'text-red-500'
+                    : textareaCounter.level === 'warning'
+                      ? 'text-amber-600'
+                      : 'text-slate-400'
+                }`}
+              >
+                {formatCounter(textareaCounter.len, textareaCounter.max)}
+              </div>
+            )}
+          </>
         )}
         
         {field.type === 'DROPDOWN' && (

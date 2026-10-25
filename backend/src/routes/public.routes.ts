@@ -22,6 +22,7 @@ import { honeypotMiddleware } from '../middlewares/honeypot.middleware';
 import { turnstileMiddleware } from '../middlewares/turnstile.middleware';
 import { lookupApplication, getLookupRoundOptions } from '../services/applicant-lookup.service';
 import { getApplicationPdf } from '../lib/pdf.service';
+import { validateTextareaAnswer } from '../lib/textarea-validation';
 
 const publicRoutes = new Hono<{ Bindings: Bindings }>();
 
@@ -110,55 +111,19 @@ const evaluateRound = (round: {
   return { ok: true };
 };
 
-// =============================================================================
-// MASTER DATA - Phase 1 (organizations only)
-// =============================================================================
-// Public, unauthenticated. Only active records, ordered by displayOrder.
-publicRoutes.get('/master-data/organizations', async (c) => {
-  const db = drizzle(c.env.DB);
-  const rows = await db
-    .select({ id: organizations.id, name: organizations.name })
-    .from(organizations)
-    .where(eq(organizations.isActive, true))
-    .orderBy(asc(organizations.displayOrder));
-
-  return c.json({ data: rows });
-});
-
-publicRoutes.get('/rounds/active', async (c) => {
-  const db = drizzle(c.env.DB);
-  // Exclude archived rounds (deletedAt IS NOT NULL)
-  const rounds = await db.select().from(recruitmentRounds)
-    .where(and(eq(recruitmentRounds.status, 'ACTIVE'), isNull(recruitmentRounds.deletedAt)));
-  return c.json({ data: rounds });
-});
-
-publicRoutes.get('/rounds/:id/schema', async (c) => {
-  const db = drizzle(c.env.DB);
-  const round = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.id, c.req.param('id'))).get();
-  if (!round) return c.json({ error: 'Not found' }, 404);
-
-  // ✅ Block archived rounds: deletedAt IS NOT NULL
-  if (round.deletedAt) {
-    return c.json({
-      success: false,
-      error: 'Round นี้ถูก archive แล้ว ไม่สามารถรับสมัครได้',
-      reason: 'ARCHIVED',
-      status: round.status,
-    }, 403);
-  }
-
-  // ✅ Business rule: gate by status (DRAFT/CLOSED) AND by Asia/Bangkok time
-  // window when status is ACTIVE. See the evaluateRound() helper above for
-  // the timezone math.
-  const gate = evaluateRound(round);
-  if (!gate.ok) {
-    return c.json({ success: false, error: gate.message, reason: gate.reason, status: round.status }, 403);
-  }
-
-  // Sprint 4: Fetch sections (ordered) for sectioned layout
+/**
+ * Public field schema loader (shared ระหว่าง GET /rounds/:id/schema กับ tests)
+ * -----------------------------------------------------------------------------
+ * คืน sections + normalized fields ของ template version
+ * รวม Rich Field Metadata ของ TEXT/TEXTAREA: rows / minLength / maxLength
+ * (null = ผู้ดูแลไม่ได้กำหนด — ห้ามแปลงค่าให้เป็น default ที่นี่
+ *  เพื่อให้ client แยกแยะ "ไม่ได้ตั้ง" กับค่าจริงได้)
+ *
+ * ห้ามเพิ่ม admin-only columns (เช่น pdfMappingKey) ลงใน select นี้
+ */
+export async function loadPublicRoundSchemaFields(db: any, templateVersionId: string) {
   const sections = await db.select().from(templateSections)
-    .where(eq(templateSections.templateVersionId, round.templateVersionId))
+    .where(eq(templateSections.templateVersionId, templateVersionId))
     .orderBy(asc(templateSections.displayOrder));
 
   const schema = await db.select({
@@ -175,6 +140,12 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
     helpText: sql`COALESCE(${templateFields.helpText}, ${fieldMaster.helpText})`,
     placeholder: sql`COALESCE(${templateFields.placeholder}, ${fieldMaster.placeholder})`,
     validationMessage: sql`COALESCE(${templateFields.validationMessage}, ${fieldMaster.validationMessage})`,
+    // Rich Field Metadata (TEXT/TEXTAREA) — null = ไม่ได้กำหนด
+    // rows = ความสูงเริ่มต้นของช่องกรอกบนหน้าจอ (ไม่มีผลต่อ PDF)
+    // min/max = ความยาวคำตอบที่ผู้ดูแลกำหนด (maxlength ฝั่ง applicant ใช้ cap 5000 เอง)
+    rows: templateFields.rows,
+    minLength: templateFields.minLength,
+    maxLength: templateFields.maxLength,
     section: fieldMaster.section, // Legacy: ใช้สำหรับ fallback (Sprint 3 behavior)
     fileConfig: fieldMaster.fileConfig,
     validationType: fieldMaster.validationType,
@@ -182,14 +153,14 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
   })
   .from(templateFields)
   .innerJoin(fieldMaster, eq(templateFields.fieldId, fieldMaster.id))
-  .where(eq(templateFields.templateVersionId, round.templateVersionId))
+  .where(eq(templateFields.templateVersionId, templateVersionId))
   .orderBy(templateFields.displayOrder);
 
   // Normalize MASTER_DATA fields:
   // defaultOptions for MASTER_DATA is { source: 'organizations' }, not string[].
   // Send it as a separate `masterDataSource` field so the frontend does not have
   // to guess, and drop the object from `options`.
-  const normalized = schema.map((f) => {
+  const normalized = schema.map((f: any) => {
     // ✅ Other Option Support — เติม option "อื่นๆ (โปรดระบุ)" ให้ฟิลด์ที่เปิด
     // allowOther (ผู้ดูแลไม่ต้องพิมพ์ label เอง) — idempotent
     //
@@ -238,11 +209,63 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
     return { ...f, options: null, masterDataSource: source };
   });
 
+  return { sections, fields: normalized };
+}
+
+// =============================================================================
+// MASTER DATA - Phase 1 (organizations only)
+// =============================================================================
+// Public, unauthenticated. Only active records, ordered by displayOrder.
+publicRoutes.get('/master-data/organizations', async (c) => {
+  const db = drizzle(c.env.DB);
+  const rows = await db
+    .select({ id: organizations.id, name: organizations.name })
+    .from(organizations)
+    .where(eq(organizations.isActive, true))
+    .orderBy(asc(organizations.displayOrder));
+
+  return c.json({ data: rows });
+});
+
+publicRoutes.get('/rounds/active', async (c) => {
+  const db = drizzle(c.env.DB);
+  // Exclude archived rounds (deletedAt IS NOT NULL)
+  const rounds = await db.select().from(recruitmentRounds)
+    .where(and(eq(recruitmentRounds.status, 'ACTIVE'), isNull(recruitmentRounds.deletedAt)));
+  return c.json({ data: rounds });
+});
+
+publicRoutes.get('/rounds/:id/schema', async (c) => {
+  const db = drizzle(c.env.DB);
+  const round = await db.select().from(recruitmentRounds).where(eq(recruitmentRounds.id, c.req.param('id'))).get();
+  if (!round) return c.json({ error: 'Not found' }, 404);
+
+  // ✅ Block archived rounds: deletedAt IS NOT NULL
+  if (round.deletedAt) {
+    return c.json({
+      success: false,
+      error: 'Round นี้ถูก archive แล้ว ไม่สามารถรับสมัครได้',
+      reason: 'ARCHIVED',
+      status: round.status,
+    }, 403);
+  }
+
+  // ✅ Business rule: gate by status (DRAFT/CLOSED) AND by Asia/Bangkok time
+  // window when status is ACTIVE. See the evaluateRound() helper above for
+  // the timezone math.
+  const gate = evaluateRound(round);
+  if (!gate.ok) {
+    return c.json({ success: false, error: gate.message, reason: gate.reason, status: round.status }, 403);
+  }
+
+  // Sprint 4: Fetch sections (ordered) for sectioned layout
   // Hybrid Mode: return sections + fields (Sprint 4)
   // Frontend จะ fallback ไปใช้ fieldMaster.section ถ้า sections ว่าง
+  const { sections, fields: normalized } = await loadPublicRoundSchemaFields(db, round.templateVersionId);
+
   return c.json({
     data: {
-      sections: sections.filter(s => s.isActive), // only active sections
+      sections: sections.filter((s: any) => s.isActive), // only active sections
       fields: normalized,
     }
   });
@@ -606,6 +629,45 @@ publicRoutes.post('/applications/submit',
         eq(templateFields.isRequired, true)
       )
     );
+
+  // ✅ TEXTAREA answer validation — ตรวจความยาวคำตอบทุก field TEXTAREA ของรอบ
+  // (required + optional), fallback ข้อมูลเก่า: minLength=null → ไม่บังคับ,
+  // maxLength=null → Global Hard Cap 5000. ห้ามเชื่อ client validation อย่างเดียว
+  const textareaFields = await db
+    .select({
+      fieldId: templateFields.fieldId,
+      isRequired: templateFields.isRequired,
+      minLength: templateFields.minLength,
+      maxLength: templateFields.maxLength,
+    })
+    .from(templateFields)
+    .innerJoin(fieldMaster, eq(templateFields.fieldId, fieldMaster.id))
+    .where(
+      and(
+        eq(templateFields.templateVersionId, round.templateVersionId),
+        eq(fieldMaster.fieldType, 'TEXTAREA')
+      )
+    );
+
+  for (const textareaField of textareaFields) {
+    const result = validateTextareaAnswer(data.formData?.[textareaField.fieldId], {
+      fieldId: textareaField.fieldId,
+      // คอลัมน์ is_required ไม่มี notNull → null เทียบเท่า default (true)
+      isRequired: textareaField.isRequired ?? true,
+      minLength: textareaField.minLength,
+      maxLength: textareaField.maxLength,
+    });
+    if (!result.ok) {
+      return c.json({
+        success: false,
+        error: result.code === 'REQUIRED_FIELD_EMPTY'
+          ? `กรุณากรอกข้อมูลที่จำเป็น: ${result.fieldId}`
+          : result.message,
+        fieldId: result.fieldId,
+        code: result.code,
+      }, 400);
+    }
+  }
 
   // Validate required fields from template schema
   for (const requiredField of templateRequiredFields) {

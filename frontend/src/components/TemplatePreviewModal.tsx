@@ -345,7 +345,9 @@ export function TemplatePreviewModal({
       field.allowOther
     );
     const placeholder = field.placeholder || '';
-    const rows = field.rows || 4;
+    // ✅ Rich Field Metadata — fallback ตรงกับ Applicant Form (rows null → 4,
+    // maxLength null → hard cap 5000; preview เป็น read-only จึงไม่มี counter)
+    const rows = field.rows ?? 4;
     const isCheckbox = field.type === 'CHECKBOX';
     // ✅ Other Option Support — ถ้ามีตัวเลือก "อื่นๆ (โปรดระบุ)" ให้แสดงช่อง
     // Text Input `[________________]` เพิ่มเติม (disabled ในโหมดตัวอย่าง)
@@ -409,7 +411,7 @@ export function TemplatePreviewModal({
             placeholder={placeholder}
             disabled
             className="bg-slate-50 resize-none"
-            maxLength={field.maxLength || undefined}
+            maxLength={field.maxLength ?? 5000}
           />
         )}
 
