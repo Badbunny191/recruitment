@@ -173,6 +173,7 @@ function setupTestDb() {
       application_id TEXT NOT NULL,
       field_id TEXT NOT NULL,
       file_url TEXT NOT NULL,
+      original_filename TEXT,
       uploaded_at INTEGER
     );
   `);

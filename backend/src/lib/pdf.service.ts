@@ -258,6 +258,7 @@ export async function buildApplicationContext(
       id: applicationAttachments.id,
       fieldId: applicationAttachments.fieldId,
       fileUrl: applicationAttachments.fileUrl,
+      originalFilename: applicationAttachments.originalFilename,
       uploadedAt: applicationAttachments.uploadedAt,
     })
     .from(applicationAttachments)
@@ -269,6 +270,7 @@ export async function buildApplicationContext(
       id: a.id,
       fieldId: a.fieldId,
       fileUrl: a.fileUrl,
+      originalFilename: a.originalFilename ?? null,
       uploadedAt: typeof a.uploadedAt === 'number' ? a.uploadedAt : Math.floor((a.uploadedAt as Date).getTime() / 1000),
     }));
 

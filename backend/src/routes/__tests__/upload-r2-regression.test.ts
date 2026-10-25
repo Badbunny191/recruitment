@@ -164,7 +164,7 @@ async function runAllTests() {
   });
 
   const applicationId = 'app-reg-1';
-  const pdfCacheKey = buildPdfCacheKey(applicationId); // pdf/applications/{id}/v1.pdf
+  const pdfCacheKey = buildPdfCacheKey(applicationId); // pdf/applications/{id}/{PDF_CACHE_VERSION}.pdf
   const pdfCacheBytes = new TextEncoder().encode('%PDF-1.5 cached-pdf-body');
   await bucket.put(pdfCacheKey, pdfCacheBytes, {
     httpMetadata: { contentType: 'application/pdf' },

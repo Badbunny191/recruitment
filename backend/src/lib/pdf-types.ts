@@ -155,6 +155,8 @@ export interface AttachmentData {
   id: string;
   fieldId: string;
   fileUrl: string;
+  /** ชื่อไฟล์ต้นฉบับที่ผู้สมัครอัปโหลด (migration 027) — null สำหรับข้อมูลเก่า */
+  originalFilename: string | null;
   uploadedAt: number;
 }
 
@@ -186,7 +188,10 @@ export interface RenderedPdf {
 // =============================================================================
 
 export const PDF_CACHE_PREFIX = 'pdf/applications';
-export const PDF_CACHE_VERSION = 'v1';
+// v2 (2026-10-26): flush cache ยุคเก่าที่ render ก่อนสลับ engine V1 → Document
+// Composer + แก้ renderer หลายรอบ (spacing/other-option/filename) โดยไม่เคย bump
+// v1 (ตั้งแต่ a33e1f94) — object v1 เดิมที่ค้างใน R2 จะกลายเป็น orphan (ไม่ถูกอ่านอีก)
+export const PDF_CACHE_VERSION = 'v2';
 
 export function buildPdfCacheKey(applicationId: string): string {
   return `${PDF_CACHE_PREFIX}/${applicationId}/${PDF_CACHE_VERSION}.pdf`;

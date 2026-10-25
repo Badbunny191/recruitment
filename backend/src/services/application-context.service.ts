@@ -132,6 +132,7 @@ export async function loadApplicationContext(
       id: applicationAttachments.id,
       fieldId: applicationAttachments.fieldId,
       fileUrl: applicationAttachments.fileUrl,
+      originalFilename: applicationAttachments.originalFilename,
       uploadedAt: applicationAttachments.uploadedAt,
     })
     .from(applicationAttachments)
@@ -141,6 +142,7 @@ export async function loadApplicationContext(
     id: a.id,
     fieldId: a.fieldId,
     fileUrl: a.fileUrl,
+    originalFilename: a.originalFilename ?? null,
     uploadedAt: Math.floor(
       (a.uploadedAt ? new Date(a.uploadedAt).getTime() : Date.now()) / 1000
     ),

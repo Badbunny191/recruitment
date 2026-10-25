@@ -29,6 +29,7 @@ import {
   resolveDocumentTokens,
   applyDocumentTokensWithFields,
   resolveFieldValue,
+  resolveFileAttachmentValue,
   type DocumentToken,
   type TokenValue,
   DOCUMENT_TOKEN_LABELS,
@@ -2390,11 +2391,17 @@ function drawSignatureText(
 
 function resolveAnswerValue(field: FieldData, ctx: ApplicationContext): unknown {
   const formData = (ctx.application.formData ?? {}) as Record<string, unknown>;
-  return (
+  const raw =
     formData[field.fieldId] ??
     formData[field.pdfMappingKey ?? ""] ??
-    null
-  );
+    null;
+
+  // FILE field — formData ไม่มีค่า (apply flow เก็บใน attachments) →
+  // resolve จาก ctx.attachments (ชื่อไฟล์ / ตัวนับ) — mirror preview-renderer
+  if (field.type === "FILE" && (raw === null || raw === "")) {
+    return resolveFileAttachmentValue(field.fieldId, ctx);
+  }
+  return raw;
 }
 
 /**

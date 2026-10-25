@@ -1,7 +1,7 @@
 /**
  * PDF Cache Invalidation (D1)
  * --------------------------------------------
- * ทำให้ R2 PDF cache (`pdf/applications/{id}/v1.pdf`) หมดอายุเมื่อ
+ * ทำให้ R2 PDF cache (`pdf/applications/{id}/{PDF_CACHE_VERSION}.pdf`) หมดอายุเมื่อ
  * ข้อมูลต้นทางที่มีผลต่อเนื้อหา PDF ถูกเปลี่ยนแปลง
  *
  * ขอบเขต (พิสูจน์จากโค้ดแล้ว — ดู pdf-cache-invalidation.test.ts [3]):

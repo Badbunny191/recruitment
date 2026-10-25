@@ -228,8 +228,15 @@ export function resolveFieldValue(
   if (!field) return null;
 
   const formData = (ctx.application.formData ?? {}) as Record<string, unknown>;
-  const raw =
+  let raw =
     formData[field.fieldId] ?? formData[field.pdfMappingKey ?? ""] ?? null;
+
+  // FILE field — ค่าจริงอยู่ใน ctx.attachments ไม่ใช่ formData (apply flow
+  // เก็บ FILE เฉพาะ attachments) — sample preview ที่ใส่ค่าปลอมไว้ใน formData
+  // ยังทำงานเพราะตรวจ formData ก่อน (resolveFileAttachmentValue docstring)
+  if (field.type === "FILE" && (raw === null || raw === "")) {
+    raw = resolveFileAttachmentValue(field.fieldId, ctx);
+  }
 
   const text = normalizeTokenValue(raw, []);
   if (text === null) {
@@ -244,6 +251,34 @@ export function resolveFieldValue(
     ),
     empty: false,
   };
+}
+
+/**
+ * Resolve ค่าของ FILE field จาก ctx.attachments (ชื่อไฟล์ คั่น ", ")
+ *
+ * กติกา (ตาม spec งาน FILE field 2026-10-26):
+ *   - ทุกไฟล์มี originalFilename → join ด้วย ", " เช่น
+ *     "Resume_Thanet.pdf, Portfolio.pdf"
+ *   - บางไฟล์ไม่มีชื่อ (ข้อมูลก่อน migration 027) → fallback เป็นจำนวนรวม
+ *     "ไฟล์แนบ 2 รายการ" (ไม่ปนชื่อจริงกับตัวนับ — deterministic ง่าย test)
+ *   - ไม่มี attachment เลย → null (caller ใช้ empty marker)
+ *
+ * Pure function — renderer ทั้ง HTML/PDF เรียกตัวเดียวกัน (parity by construction)
+ */
+export function resolveFileAttachmentValue(
+  fieldId: string,
+  ctx: ApplicationContext
+): string | null {
+  const items = (ctx.attachments ?? []).filter(
+    (a) => a.fieldId === fieldId && a.uploadedAt > 0
+  );
+  if (items.length === 0) return null;
+
+  const names = items.map((a) =>
+    typeof a.originalFilename === "string" ? a.originalFilename.trim() : ""
+  );
+  if (names.every((n) => n.length > 0)) return names.join(", ");
+  return `ไฟล์แนบ ${items.length} รายการ`;
 }
 
 /**

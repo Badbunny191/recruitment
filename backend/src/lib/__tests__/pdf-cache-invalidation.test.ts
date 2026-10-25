@@ -2,7 +2,7 @@
  * D1 Tests — PDF Cache Invalidation in R2
  * ============================================================
  *
- * ปัญหา D1: PDF cache key เป็นคงที่ (`pdf/applications/{id}/v1.pdf`)
+ * ปัญหา D1: PDF cache key เป็นคงที่ (`pdf/applications/{id}/{PDF_CACHE_VERSION}.pdf`)
  * เมื่อ cache hit ระบบคืนไฟล์เดิมทันทีโดยไม่ตรวจ version/timestamp —
  * ทำให้คืน PDF เก่าหลังข้อมูลต้นทางที่มีผลต่อ PDF เปลี่ยน
  *

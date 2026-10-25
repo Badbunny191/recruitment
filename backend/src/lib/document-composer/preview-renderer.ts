@@ -68,6 +68,7 @@ import {
   applyDocumentTokens,
   applyDocumentTokensWithFields,
   resolveFieldValue,
+  resolveFileAttachmentValue,
   DOCUMENT_TOKENS,
   DOCUMENT_TOKEN_LABELS,
   INSERTABLE_DOCUMENT_TOKENS,
@@ -1158,8 +1159,10 @@ function renderDocumentValue(
   valuePt?: number
 ): string {
   const fontStyle = valuePt ? ` style="font-size: ${valuePt}pt"` : "";
+  // Empty marker = "-" มาตรฐานเดียวกับ PDF (formatAnswerValueForDisplay) —
+  // เดิม HTML ใช้ "(ว่าง)" ทำให้ HTML Preview กับ PDF แสดงค่าว่างคนละรูป
   if (!isNonEmptyValue(rawValue)) {
-    return `<div class="dc-field__value dc-field__value--empty"${fontStyle}>(ว่าง)</div>`;
+    return `<div class="dc-field__value dc-field__value--empty"${fontStyle}>-</div>`;
   }
   // CHECKBOX / RADIO → แสดงค่าเป็นข้อความ (ไม่ใช่กล่องติ๊ก)
   //   boolean → "ใช่"/"ไม่ใช่" ผ่าน formatAnswerValueForDisplay เดียวกับ PDF
@@ -2154,6 +2157,8 @@ ${rows}
  * mirror descriptor-renderer.ts:resolveAnswerValue
  *   - formData[fieldId]
  *   - fallback: formData[pdfMappingKey]
+ *   - FILE field ไม่มีค่าใน formData (apply flow เก็บใน attachments) →
+ *     resolve จาก ctx.attachments ผ่าน resolveFileAttachmentValue ตัวเดียวกัน
  *   - fallback: null
  */
 function resolveAnswerValue(
@@ -2161,11 +2166,15 @@ function resolveAnswerValue(
   ctx: ApplicationContext
 ): unknown {
   const formData = (ctx.application.formData ?? {}) as Record<string, unknown>;
-  return (
+  const raw =
     formData[field.fieldId] ??
     formData[field.pdfMappingKey ?? ""] ??
-    null
-  );
+    null;
+
+  if (field.type === "FILE" && (raw === null || raw === "")) {
+    return resolveFileAttachmentValue(field.fieldId, ctx);
+  }
+  return raw;
 }
 
 /**
