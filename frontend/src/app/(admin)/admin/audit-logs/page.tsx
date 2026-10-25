@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { SearchInput } from '@/components/ui/search-input';
 import { FilterDropdown } from '@/components/ui/filter-dropdown';
@@ -308,19 +309,62 @@ function buildDescription(log: AuditLog, entityName: string | null): string {
 // =============================================================================
 
 export default function AuditLogsPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
   // RBAC guard (RBAC v1): Audit Logs เข้าได้เฉพาะ SUPER_ADMIN เท่านั้น
   // ตาม RBAC matrix ใหม่: ADMIN และ VIEWER ห้ามเข้าถึง
   const { isSuperAdmin } = useRole();
 
-  // Page state
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  // URL State — page/pageSize/search/filter อยู่ใน URL ทั้งหมด
+  // (ออกจากหน้าแล้วกด Back → remount → hydrate จาก URL → ได้ตำแหน่งเดิม)
+  const urlSearch = searchParams.get('q') || '';
+  const urlPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
+  const urlPageSizeRaw = parseInt(searchParams.get('pageSize') || String(DEFAULT_PAGE_SIZE), 10) || DEFAULT_PAGE_SIZE;
+  const urlPageSize = PAGE_SIZE_OPTIONS.includes(urlPageSizeRaw) ? urlPageSizeRaw : DEFAULT_PAGE_SIZE;
+  const urlActionFilters = (searchParams.get('action') || '')
+    .split(',')
+    .filter((v): v is (typeof ACTION_OPTIONS)[number] => (ACTION_OPTIONS as readonly string[]).includes(v));
+  const urlEntityFilters = (searchParams.get('entity') || '')
+    .split(',')
+    .filter((v): v is (typeof ENTITY_OPTIONS)[number] => (ENTITY_OPTIONS as readonly string[]).includes(v));
 
-  // Filter / Search state
-  const [search, setSearch] = useState('');
+  // Helper: อัปเดต URL (ไม่ trigger re-mount)
+  // ⚠️ ถือ "แผนที่ params ของตัวเอง" ใน ref ไม่อ่านจาก window.location / searchParams
+  //   เพราะ router.replace แก้ URL แบบ async — replace ติดกันหลายครั้งในรอบเดียว
+  //   ถ้าอ่านค่าล่าสุดจาก URL ตรง ๆ จะอ่านได้ค่าเก่าและทับ param ที่เพิ่งเขียนหาย
+  // ref ถูก sync กลับจาก searchParams ทุกครั้งที่ transition จบ (ครอบคลุม Back/Forward)
+  const urlParamsRef = useRef<URLSearchParams>(
+    new URLSearchParams(searchParams.toString())
+  );
+  useEffect(() => {
+    urlParamsRef.current = new URLSearchParams(searchParams.toString());
+  }, [searchParams]);
+
+  const updateUrl = useCallback((patch: Record<string, string | null>) => {
+    const params = new URLSearchParams(urlParamsRef.current.toString());
+    Object.entries(patch).forEach(([key, value]) => {
+      if (value === null || value === '') {
+        params.delete(key);
+      } else {
+        params.set(key, value);
+      }
+    });
+    urlParamsRef.current = params;
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [pathname, router]);
+
+  // Page state — hydrate หน้า/page size จาก URL
+  const [page, setPage] = useState(urlPage);
+  const [pageSize, setPageSize] = useState(urlPageSize);
+
+  // Filter / Search state — hydrate จาก URL
+  const [search, setSearch] = useState(urlSearch);
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [actionFilters, setActionFilters] = useState<string[]>([]);
-  const [entityFilters, setEntityFilters] = useState<string[]>([]);
+  const [actionFilters, setActionFilters] = useState<string[]>(urlActionFilters);
+  const [entityFilters, setEntityFilters] = useState<string[]>(urlEntityFilters);
 
   // Data
   const [items, setItems] = useState<AuditLog[]>([]);
@@ -340,6 +384,36 @@ export default function AuditLogsPage() {
     () => (typeof window !== 'undefined' ? localStorage.getItem('adminToken') || '' : ''),
     []
   );
+
+  // ── List state setters — ทุกการเปลี่ยนแนบลง URL ทันที ──────────────────────
+  const handleSearchChange = useCallback((value: string) => {
+    setSearch(value);
+    updateUrl({ q: value.trim() ? value : null });
+  }, [updateUrl]);
+
+  const handleActionFiltersChange = useCallback((next: string[]) => {
+    setActionFilters(next);
+    setPage(1);
+    updateUrl({ action: next.length > 0 ? next.join(',') : null, page: null });
+  }, [updateUrl]);
+
+  const handleEntityFiltersChange = useCallback((next: string[]) => {
+    setEntityFilters(next);
+    setPage(1);
+    updateUrl({ entity: next.length > 0 ? next.join(',') : null, page: null });
+  }, [updateUrl]);
+
+  const handlePageChange = useCallback((nextPage: number) => {
+    setPage(nextPage);
+    updateUrl({ page: nextPage <= 1 ? null : String(nextPage) });
+  }, [updateUrl]);
+
+  // เปลี่ยน page size → reset กลับหน้า 1 เสมอ + บันทึกลง URL (ค่า default ไม่เขียนลง URL)
+  const handlePageSizeChange = useCallback((size: number) => {
+    setPageSize(size);
+    setPage(1);
+    updateUrl({ pageSize: size === DEFAULT_PAGE_SIZE ? null : String(size), page: null });
+  }, [updateUrl]);
 
   // Debounce search 300ms ก่อนส่งไป Backend
   useEffect(() => {
@@ -389,7 +463,10 @@ export default function AuditLogsPage() {
         setTotal(json.total || 0);
         setTotalPages(json.totalPages || 0);
         // ถ้า backend clamp page (เช่น ขอเกิน) → sync กลับ
-        if (json.page && json.page !== page) setPage(json.page);
+        if (json.page && json.page !== page) {
+          setPage(json.page);
+          updateUrl({ page: json.page <= 1 ? null : String(json.page) });
+        }
       } catch (e) {
         if ((e as Error).name === 'AbortError') return;
         setError((e as Error).message || 'โหลดข้อมูลไม่สำเร็จ');
@@ -397,7 +474,7 @@ export default function AuditLogsPage() {
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [apiUrl, token, page, pageSize, actionFilters, entityFilters, debouncedSearch]
+    [apiUrl, token, page, pageSize, actionFilters, entityFilters, debouncedSearch, updateUrl]
   );
 
   useEffect(() => {
@@ -406,10 +483,17 @@ export default function AuditLogsPage() {
     return () => ctrl.abort();
   }, [fetchLogs]);
 
-  // Reset กลับหน้า 1 เมื่อ filter/search/pageSize เปลี่ยน
+  // Reset กลับหน้า 1 เมื่อ filter/search/pageSize เปลี่ยน — ข้าม mount แรก
+  // (ไม่งั้นทับหน้าที่ restore จาก URL)
+  const prevFilterKeyRef = useRef<string | null>(null);
   useEffect(() => {
+    const key = JSON.stringify([debouncedSearch, actionFilters, entityFilters, pageSize]);
+    const prev = prevFilterKeyRef.current;
+    prevFilterKeyRef.current = key;
+    if (prev === null || key === prev) return;
     setPage(1);
-  }, [debouncedSearch, actionFilters, entityFilters, pageSize]);
+    updateUrl({ page: null });
+  }, [debouncedSearch, actionFilters, entityFilters, pageSize, updateUrl]);
 
   // Resolve entity name
   const resolveEntityName = (entityType: string, entityId: string): string | null => {
@@ -423,6 +507,7 @@ export default function AuditLogsPage() {
     setEntityFilters([]);
     setSearch('');
     setPage(1);
+    updateUrl({ action: null, entity: null, q: null, page: null });
   };
 
   const renderEntity = (log: AuditLog) => {
@@ -509,7 +594,7 @@ export default function AuditLogsPage() {
           <div className="flex-1 min-w-0">
             <SearchInput
               value={search}
-              onChange={setSearch}
+              onChange={handleSearchChange}
               placeholder="ค้นหา... (Admin ID, Entity ID, IP)"
             />
           </div>
@@ -520,10 +605,7 @@ export default function AuditLogsPage() {
                 label: 'Action',
                 type: 'multi',
                 selected: actionFilters,
-                onChange: (next) => {
-                  setActionFilters(next);
-                  setPage(1);
-                },
+                onChange: handleActionFiltersChange,
                 options: ACTION_OPTIONS.map((a) => ({
                   value: a,
                   label: ACTION_CONFIG[a]?.label || a,
@@ -531,10 +613,7 @@ export default function AuditLogsPage() {
               },
             ]}
             totalActiveFilters={actionFilters.length}
-            onClearAll={() => {
-              setActionFilters([]);
-              setPage(1);
-            }}
+            onClearAll={() => handleActionFiltersChange([])}
           />
           <FilterDropdown
             label="Entity"
@@ -543,10 +622,7 @@ export default function AuditLogsPage() {
                 label: 'Entity Type',
                 type: 'multi',
                 selected: entityFilters,
-                onChange: (next) => {
-                  setEntityFilters(next);
-                  setPage(1);
-                },
+                onChange: handleEntityFiltersChange,
                 options: ENTITY_OPTIONS.map((t) => ({
                   value: t,
                   label: ENTITY_LABEL[t] || t,
@@ -554,10 +630,7 @@ export default function AuditLogsPage() {
               },
             ]}
             totalActiveFilters={entityFilters.length}
-            onClearAll={() => {
-              setEntityFilters([]);
-              setPage(1);
-            }}
+            onClearAll={() => handleEntityFiltersChange([])}
           />
           {actionFilters.length > 0 || entityFilters.length > 0 || search ? (
             <button
@@ -673,11 +746,8 @@ export default function AuditLogsPage() {
               currentPage={page}
               totalItems={total}
               pageSize={pageSize}
-              onPageChange={setPage}
-              onPageSizeChange={(size) => {
-                setPageSize(size);
-                setPage(1);
-              }}
+              onPageChange={handlePageChange}
+              onPageSizeChange={handlePageSizeChange}
               pageSizeOptions={PAGE_SIZE_OPTIONS}
               resultLabel="รายการ"
             />

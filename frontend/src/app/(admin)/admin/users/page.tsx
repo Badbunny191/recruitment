@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -81,24 +82,45 @@ const EMPTY_CREATE_FORM: CreateUserForm = {
   mustChangePassword: true,
 };
 
+// ตัวเลือกจำนวนรายการต่อหน้า — ค่า default คือ 10 (ไม่เขียนลง URL)
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+const VALID_ROLE_FILTERS = ['SUPER_ADMIN', 'ADMIN', 'VIEWER'];
+const VALID_STATUS_FILTERS = ['active', 'inactive'];
+
 // =============================================================================
 // MAIN COMPONENT
 // =============================================================================
 export default function UsersPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { canManageUsers, canWrite } = useRole();
+
+  // URL State — page/pageSize/search/filter อยู่ใน URL ทั้งหมด
+  // (Back จากหน้าอื่น → remount → hydrate จาก URL → ได้ตำแหน่งเดิม)
+  const urlSearch = searchParams.get('q') || '';
+  const urlPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
+  const urlPageSizeRaw = parseInt(searchParams.get('pageSize') || '10', 10) || 10;
+  const urlPageSize = PAGE_SIZE_OPTIONS.includes(urlPageSizeRaw) ? urlPageSizeRaw : 10;
+  const urlRoleFilters = (searchParams.get('roles') || '')
+    .split(',')
+    .filter((v): v is string => VALID_ROLE_FILTERS.includes(v));
+  const urlStatusFilters = (searchParams.get('status') || '')
+    .split(',')
+    .filter((v): v is string => VALID_STATUS_FILTERS.includes(v));
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Search & Pagination
-  const [search, setSearch] = useState('');
-  const [currentPage, setCurrentPage] = useState(1);
-  const pageSize = 10;
+  // Search & Pagination — hydrate ค่าเริ่มต้นจาก URL
+  const [search, setSearch] = useState(urlSearch);
+  const [currentPage, setCurrentPage] = useState(urlPage);
+  const [pageSize, setPageSize] = useState(urlPageSize);
 
-  // Filters (RBAC v1)
-  const [roleFilters, setRoleFilters] = useState<string[]>([]);
-  const [statusFilters, setStatusFilters] = useState<string[]>([]);
+  // Filters (RBAC v1) — hydrate จาก URL
+  const [roleFilters, setRoleFilters] = useState<string[]>(urlRoleFilters);
+  const [statusFilters, setStatusFilters] = useState<string[]>(urlStatusFilters);
 
   // Dialogs
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -138,13 +160,75 @@ export default function UsersPage() {
     }
   };
 
+  // Helper: อัปเดต URL (ไม่ trigger re-mount)
+  // ⚠️ ถือ "แผนที่ params ของตัวเอง" ใน ref ไม่อ่านจาก window.location / searchParams
+  //   เพราะ router.replace แก้ URL แบบ async — replace ติดกันหลายครั้งในรอบเดียว
+  //   ถ้าอ่านค่าล่าสุดจาก URL ตรง ๆ จะอ่านได้ค่าเก่าและทับ param ที่เพิ่งเขียนหาย
+  // ref ถูก sync กลับจาก searchParams ทุกครั้งที่ transition จบ (ครอบคลุม Back/Forward)
+  const urlParamsRef = useRef<URLSearchParams>(
+    new URLSearchParams(searchParams.toString())
+  );
+  useEffect(() => {
+    urlParamsRef.current = new URLSearchParams(searchParams.toString());
+  }, [searchParams]);
+
+  const updateUrl = useCallback((patch: Record<string, string | null>) => {
+    const params = new URLSearchParams(urlParamsRef.current.toString());
+    Object.entries(patch).forEach(([key, value]) => {
+      if (value === null || value === '') {
+        params.delete(key);
+      } else {
+        params.set(key, value);
+      }
+    });
+    urlParamsRef.current = params;
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [pathname, router]);
+
+  // ── List state setters — ทุกการเปลี่ยนแนบลง URL ทันที ──────────────────────
+  const handleSearchChange = useCallback((value: string) => {
+    setSearch(value);
+    updateUrl({ q: value.trim() ? value : null });
+  }, [updateUrl]);
+
+  const handleRoleFiltersChange = useCallback((next: string[]) => {
+    setRoleFilters(next);
+    updateUrl({ roles: next.length > 0 ? next.join(',') : null });
+  }, [updateUrl]);
+
+  const handleStatusFiltersChange = useCallback((next: string[]) => {
+    setStatusFilters(next);
+    updateUrl({ status: next.length > 0 ? next.join(',') : null });
+  }, [updateUrl]);
+
+  const handlePageChange = useCallback((page: number) => {
+    setCurrentPage(page);
+    updateUrl({ page: page <= 1 ? null : String(page) });
+  }, [updateUrl]);
+
+  // เปลี่ยน page size → reset กลับหน้า 1 เสมอ + บันทึกลง URL (ค่า default ไม่เขียนลง URL)
+  const handlePageSizeChange = useCallback((size: number) => {
+    setPageSize(size);
+    setCurrentPage(1);
+    updateUrl({ pageSize: size === 10 ? null : String(size), page: null });
+  }, [updateUrl]);
+
   useEffect(() => {
     load();
   }, []);
 
+  // Reset กลับหน้า 1 เมื่อ filter/search เปลี่ยน — ข้าม mount แรก
+  // (ไม่งั้นทับหน้าที่ restore จาก URL)
+  const prevFilterKeyRef = useRef<string | null>(null);
   useEffect(() => {
+    const key = JSON.stringify([search, roleFilters, statusFilters]);
+    const prev = prevFilterKeyRef.current;
+    prevFilterKeyRef.current = key;
+    if (prev === null || key === prev) return;
     setCurrentPage(1);
-  }, [search, roleFilters, statusFilters]);
+    updateUrl({ page: null });
+  }, [search, roleFilters, statusFilters, updateUrl]);
 
   // =============================================================================
   // PERMISSIONS
@@ -197,6 +281,7 @@ export default function UsersPage() {
     setRoleFilters([]);
     setStatusFilters([]);
     setSearch('');
+    updateUrl({ roles: null, status: null, q: null });
   };
 
   const totalItems = filteredUsers.length;
@@ -204,6 +289,16 @@ export default function UsersPage() {
     (currentPage - 1) * pageSize,
     currentPage * pageSize
   );
+
+  // กันหน้าเกินช่วงจริง (เช่น page ใน URL มากกว่าจำนวนหน้าหลังข้อมูลเปลี่ยน)
+  // ⚠️ ข้ามตอน loading — ยังไม่มีข้อมูลชุดใหม่ ห้าม clamp ด้วยข้อมูลเก่า
+  useEffect(() => {
+    if (loading) return;
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    if (currentPage > totalPages) {
+      handlePageChange(totalPages);
+    }
+  }, [loading, totalItems, pageSize, currentPage, handlePageChange]);
 
   // =============================================================================
   // KPI COUNTS
@@ -221,7 +316,7 @@ export default function UsersPage() {
       label: 'Role',
       type: 'multi',
       selected: roleFilters,
-      onChange: setRoleFilters,
+      onChange: handleRoleFiltersChange,
       options: [
         { value: 'SUPER_ADMIN', label: `${ROLE_BADGE.SUPER_ADMIN.emoji} ${ROLE_LABELS.SUPER_ADMIN}`, count: superAdminCount },
         { value: 'ADMIN', label: `${ROLE_BADGE.ADMIN.emoji} ${ROLE_LABELS.ADMIN}`, count: adminCount },
@@ -232,7 +327,7 @@ export default function UsersPage() {
       label: 'สถานะ',
       type: 'multi',
       selected: statusFilters,
-      onChange: setStatusFilters,
+      onChange: handleStatusFiltersChange,
       options: [
         {
           value: 'active',
@@ -469,7 +564,7 @@ export default function UsersPage() {
             <div className="flex-1 min-w-0">
               <SearchInput
                 value={search}
-                onChange={setSearch}
+                onChange={handleSearchChange}
                 placeholder="ค้นหาอีเมล หรือ role..."
                 resultCount={totalItems}
                 resultLabel="รายการ"
@@ -675,14 +770,17 @@ export default function UsersPage() {
           <span className="text-[11px] text-slate-500">
             {hasActiveFilters ? (
               <>
-                แสดง <strong className="text-slate-700 tabular-nums">{paginatedUsers.length}</strong> จาก{' '}
-                <strong className="text-slate-700 tabular-nums">{totalItems}</strong> รายการที่ตรงกับตัวกรอง
-                (จากทั้งหมด {totalUsers})
+                พบ <strong className="text-slate-700 tabular-nums">{totalItems}</strong> รายการ
               </>
+            ) : totalItems === 0 ? (
+              'ไม่พบรายการ'
             ) : (
               <>
-                แสดง <strong className="text-slate-700 tabular-nums">{paginatedUsers.length}</strong> จาก{' '}
-                <strong className="text-slate-700 tabular-nums">{totalItems}</strong>
+                แสดง{' '}
+                <strong className="text-slate-700 tabular-nums">
+                  {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, totalItems)}
+                </strong>{' '}
+                จาก <strong className="text-slate-700 tabular-nums">{totalItems}</strong> รายการ
               </>
             )}
           </span>
@@ -690,8 +788,10 @@ export default function UsersPage() {
             currentPage={currentPage}
             totalItems={totalItems}
             pageSize={pageSize}
-            onPageChange={setCurrentPage}
-            showPageSizeSelector={false}
+            onPageChange={handlePageChange}
+            onPageSizeChange={handlePageSizeChange}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            showPageSizeSelector
             showResultCount={false}
           />
         </div>

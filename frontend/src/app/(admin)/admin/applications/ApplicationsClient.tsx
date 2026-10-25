@@ -206,6 +206,9 @@ function FilterPill({
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
+// ตัวเลือกจำนวนรายการต่อหน้า — ค่า default คือ 10 (ไม่เขียนลง URL)
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+
 export default function ApplicationsClient() {
   const router = useRouter();
   const pathname = usePathname();
@@ -224,6 +227,8 @@ export default function ApplicationsClient() {
     urlViewParam === 'all' || urlViewParam === 'archived' ? urlViewParam : 'active';
   const urlSortId = searchParams.get('sort') || 'submittedAt-desc';
   const urlPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
+  const urlPageSizeRaw = parseInt(searchParams.get('pageSize') || '10', 10) || 10;
+  const urlPageSize = PAGE_SIZE_OPTIONS.includes(urlPageSizeRaw) ? urlPageSizeRaw : 10;
 
   // Helper: อัปเดต URL (ไม่ trigger re-mount)
   // ⚠️ ถือ "แผนที่ params ของตัวเอง" ใน ref ไม่อ่านจาก window.location / searchParams
@@ -276,6 +281,13 @@ export default function ApplicationsClient() {
     updateUrl({ page: page <= 1 ? null : String(page) });
   }, [updateUrl]);
 
+  // เปลี่ยน page size → reset กลับหน้า 1 เสมอ + บันทึกลง URL (ค่า default ไม่เขียนลง URL)
+  const handlePageSizeChange = useCallback((size: number) => {
+    setPageSize(size);
+    setCurrentPage(1);
+    updateUrl({ pageSize: size === 10 ? null : String(size), page: null });
+  }, [updateUrl]);
+
   // State
   const [rounds, setRounds] = useState<Round[]>([]);
   const [selectedRoundId, setSelectedRoundId] = useState<string>('');
@@ -294,9 +306,9 @@ export default function ApplicationsClient() {
     parseSortId(urlSortId).direction
   );
 
-  // Pagination state — hydrate หน้าจาก URL
+  // Pagination state — hydrate หน้า/page size จาก URL
   const [currentPage, setCurrentPage] = useState(urlPage);
-  const [pageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(urlPageSize);
 
   // Selection state — เก็บเป็น Set ของ ID จึงคงอยู่ข้ามหน้า (pagination)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -1302,14 +1314,20 @@ export default function ApplicationsClient() {
         {/* 3.3 PAGINATION */}
         <div className={cn(CARD_STYLE.header, "flex items-center justify-between")}>
           <span className="text-[11px] text-slate-500">
-            {search.trim() ? `พบ ${totalItems} รายการ` : `แสดง ${paginatedApps.length} จาก ${totalItems}`}
+            {search.trim()
+              ? `พบ ${totalItems} รายการ`
+              : totalItems === 0
+                ? 'ไม่พบรายการ'
+                : `แสดง ${(currentPage - 1) * pageSize + 1}-${Math.min(currentPage * pageSize, totalItems)} จาก ${totalItems} รายการ`}
           </span>
           <Pagination
             currentPage={currentPage}
             totalItems={totalItems}
             pageSize={pageSize}
             onPageChange={handlePageChange}
-            showPageSizeSelector={false}
+            onPageSizeChange={handlePageSizeChange}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            showPageSizeSelector
             showResultCount={false}
           />
         </div>

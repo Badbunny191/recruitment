@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -272,8 +273,36 @@ function FilterPill({
 // MAIN PAGE
 // ============================================
 
+// ตัวเลือกจำนวนรายการต่อหน้า — ค่า default คือ 10 (ไม่เขียนลง URL)
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+
+// Sort options (module-level เพื่อใช้ validate sort id จาก URL ตอน hydrate)
+const SORT_OPTIONS = [
+  { id: 'labelTh-asc', field: 'labelTh', label: 'ชื่อ A-Z', direction: 'asc' as const },
+  { id: 'labelTh-desc', field: 'labelTh', label: 'ชื่อ Z-A', direction: 'desc' as const },
+  { id: 'fieldType-asc', field: 'fieldType', label: 'ประเภท A-Z', direction: 'asc' as const },
+  { id: 'fieldType-desc', field: 'fieldType', label: 'ประเภท Z-A', direction: 'desc' as const },
+];
+const defaultSortOption = SORT_OPTIONS[0];
+const sortOptionsById = (id: string) =>
+  SORT_OPTIONS.find((o) => o.id === id) ?? defaultSortOption;
+
 export default function FieldMasterPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { canWrite } = useRole();
+
+  // URL State — page/pageSize/search/view/sort อยู่ใน URL ทั้งหมด
+  // (ออกจากหน้าแล้วกด Back → remount → hydrate จาก URL → ได้ตำแหน่งเดิม)
+  const urlSearch = searchParams.get('q') || '';
+  const urlViewParam = searchParams.get('view');
+  const urlView: 'all' | 'active' | 'inactive' =
+    urlViewParam === 'active' || urlViewParam === 'inactive' ? urlViewParam : 'all';
+  const urlSort = sortOptionsById(searchParams.get('sort') || '');
+  const urlPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
+  const urlPageSizeRaw = parseInt(searchParams.get('pageSize') || '10', 10) || 10;
+  const urlPageSize = PAGE_SIZE_OPTIONS.includes(urlPageSizeRaw) ? urlPageSizeRaw : 10;
   const [fields, setFields] = useState<FieldMaster[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -285,17 +314,17 @@ export default function FieldMasterPage() {
   const [pdfMappingKeyTouched, setPdfMappingKeyTouched] = useState(false);
 
   // View filter: all | active | inactive
-  const [view, setView] = useState<'all' | 'active' | 'inactive'>('all');
+  const [view, setView] = useState<'all' | 'active' | 'inactive'>(urlView);
 
-  // Search & Sort state
-  const [search, setSearch] = useState('');
-  const [sortId, setSortId] = useState<string>('labelTh-asc');
-  const [sortField, setSortField] = useState<string>('labelTh');
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  // Search & Sort state — hydrate ค่าเริ่มต้นจาก URL
+  const [search, setSearch] = useState(urlSearch);
+  const [sortId, setSortId] = useState<string>(urlSort.id);
+  const [sortField, setSortField] = useState<string>(urlSort.field);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(urlSort.direction);
 
-  // Pagination state
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize] = useState(10);
+  // Pagination state — hydrate หน้า/page size จาก URL
+  const [currentPage, setCurrentPage] = useState(urlPage);
+  const [pageSize, setPageSize] = useState(urlPageSize);
 
   // Field Delete Impact Modal
   const [impactModalOpen, setImpactModalOpen] = useState(false);
@@ -311,13 +340,77 @@ export default function FieldMasterPage() {
     setLoading(false);
   };
 
+  // Helper: อัปเดต URL (ไม่ trigger re-mount)
+  // ⚠️ ถือ "แผนที่ params ของตัวเอง" ใน ref ไม่อ่านจาก window.location / searchParams
+  //   เพราะ router.replace แก้ URL แบบ async — replace ติดกันหลายครั้งในรอบเดียว
+  //   ถ้าอ่านค่าล่าสุดจาก URL ตรง ๆ จะอ่านได้ค่าเก่าและทับ param ที่เพิ่งเขียนหาย
+  // ref ถูก sync กลับจาก searchParams ทุกครั้งที่ transition จบ (ครอบคลุม Back/Forward)
+  const urlParamsRef = useRef<URLSearchParams>(
+    new URLSearchParams(searchParams.toString())
+  );
+  useEffect(() => {
+    urlParamsRef.current = new URLSearchParams(searchParams.toString());
+  }, [searchParams]);
+
+  const updateUrl = useCallback((patch: Record<string, string | null>) => {
+    const params = new URLSearchParams(urlParamsRef.current.toString());
+    Object.entries(patch).forEach(([key, value]) => {
+      if (value === null || value === '') {
+        params.delete(key);
+      } else {
+        params.set(key, value);
+      }
+    });
+    urlParamsRef.current = params;
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [pathname, router]);
+
+  // ── List state setters — ทุกการเปลี่ยนแนบลง URL ทันที ──────────────────────
+  const handleSearchChange = useCallback((value: string) => {
+    setSearch(value);
+    updateUrl({ q: value.trim() ? value : null });
+  }, [updateUrl]);
+
+  const handleViewChange = useCallback((next: 'all' | 'active' | 'inactive') => {
+    setView(next);
+    updateUrl({ view: next === 'all' ? null : next });
+  }, [updateUrl]);
+
+  const handleSortChange = useCallback((id: string, field: string, direction?: 'asc' | 'desc' | null) => {
+    setSortId(id);
+    setSortField(field);
+    if (direction) setSortDirection(direction);
+    updateUrl({ sort: id === defaultSortOption.id ? null : id });
+  }, [updateUrl]);
+
+  const handlePageChange = useCallback((page: number) => {
+    setCurrentPage(page);
+    updateUrl({ page: page <= 1 ? null : String(page) });
+  }, [updateUrl]);
+
+  // เปลี่ยน page size → reset กลับหน้า 1 เสมอ + บันทึกลง URL (ค่า default ไม่เขียนลง URL)
+  const handlePageSizeChange = useCallback((size: number) => {
+    setPageSize(size);
+    setCurrentPage(1);
+    updateUrl({ pageSize: size === 10 ? null : String(size), page: null });
+  }, [updateUrl]);
+
   useEffect(() => {
     load();
   }, []);
 
+  // Reset กลับหน้า 1 เมื่อ view/search/sort เปลี่ยน — ข้าม mount แรก
+  // (ไม่งั้นทับหน้าที่ restore จาก URL)
+  const prevListStateRef = useRef<string | null>(null);
   useEffect(() => {
+    const key = JSON.stringify([view, search, sortId]);
+    const prev = prevListStateRef.current;
+    prevListStateRef.current = key;
+    if (prev === null || key === prev) return;
     setCurrentPage(1);
-  }, [view, search, sortId]);
+    updateUrl({ page: null });
+  }, [view, search, sortId, updateUrl]);
 
   // เรียก Impact API ก่อนลบ
   const checkFieldImpact = async (fieldId: string) => {
@@ -530,13 +623,8 @@ export default function FieldMasterPage() {
     return colors[type] || 'bg-slate-100 text-slate-600 border-slate-200';
   };
 
-  // Sort options
-  const sortOptions = [
-    { id: 'labelTh-asc', field: 'labelTh', label: 'ชื่อ A-Z', direction: 'asc' as const },
-    { id: 'labelTh-desc', field: 'labelTh', label: 'ชื่อ Z-A', direction: 'desc' as const },
-    { id: 'fieldType-asc', field: 'fieldType', label: 'ประเภท A-Z', direction: 'asc' as const },
-    { id: 'fieldType-desc', field: 'fieldType', label: 'ประเภท Z-A', direction: 'desc' as const },
-  ];
+  // Sort options (module-level SORT_OPTIONS)
+  const sortOptions = SORT_OPTIONS;
 
   // Filter & Sort & Paginate
   // หมายเหตุ: KPI คำนวณจาก `fields` (System State - ข้อมูลทั้งหมด) — ไม่ถูกกระทบโดย filter
@@ -584,6 +672,16 @@ export default function FieldMasterPage() {
     (currentPage - 1) * pageSize,
     currentPage * pageSize
   );
+
+  // กันหน้าเกินช่วงจริง (เช่น page ใน URL มากกว่าจำนวนหน้าหลังข้อมูลเปลี่ยน)
+  // ⚠️ ข้ามตอน loading — ยังไม่มีข้อมูลชุดใหม่ ห้าม clamp ด้วยข้อมูลเก่า
+  useEffect(() => {
+    if (loading) return;
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    if (currentPage > totalPages) {
+      handlePageChange(totalPages);
+    }
+  }, [loading, totalItems, pageSize, currentPage, handlePageChange]);
 
   const totalFields = fields.length;
   const activeFields = fields.filter(f => f.isActive).length;
@@ -635,7 +733,7 @@ export default function FieldMasterPage() {
             <div className="flex-1 min-w-0">
               <SearchInput
                 value={search}
-                onChange={setSearch}
+                onChange={handleSearchChange}
                 placeholder="ค้นหาชื่อฟิลด์, ประเภท, section..."
                 resultCount={totalItems}
                 resultLabel="รายการ"
@@ -645,11 +743,7 @@ export default function FieldMasterPage() {
             </div>
             <SortDropdown
               value={sortId}
-              onChange={(id, field, direction) => {
-                setSortId(id);
-                setSortField(field);
-                if (direction) setSortDirection(direction);
-              }}
+              onChange={handleSortChange}
               options={sortOptions}
               size="sm"
             />
@@ -658,9 +752,9 @@ export default function FieldMasterPage() {
           {/* Row 2: Filter Pills + Result Count */}
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1">
-              <FilterPill label="ทั้งหมด" isActive={view === 'all'} onClick={() => setView('all')} count={viewCounts.all} />
-              <FilterPill label="ใช้งานอยู่" isActive={view === 'active'} onClick={() => setView('active')} count={viewCounts.active} />
-              <FilterPill label="ปิดใช้งาน" isActive={view === 'inactive'} onClick={() => setView('inactive')} count={viewCounts.inactive} />
+              <FilterPill label="ทั้งหมด" isActive={view === 'all'} onClick={() => handleViewChange('all')} count={viewCounts.all} />
+              <FilterPill label="ใช้งานอยู่" isActive={view === 'active'} onClick={() => handleViewChange('active')} count={viewCounts.active} />
+              <FilterPill label="ปิดใช้งาน" isActive={view === 'inactive'} onClick={() => handleViewChange('inactive')} count={viewCounts.inactive} />
             </div>
             <span className="text-[11px] text-slate-500 whitespace-nowrap">
               {search.trim() ? `พบทั้งหมด ${totalItems} รายการ` : `ทั้งหมด ${totalItems} รายการ`}
@@ -704,6 +798,7 @@ export default function FieldMasterPage() {
                         onClearFilters={() => {
                           setSearch('');
                           setView('all');
+                          updateUrl({ q: null, view: null });
                         }}
                       />
                     ) : (
@@ -813,14 +908,20 @@ export default function FieldMasterPage() {
         {/* 3.3 PAGINATION */}
         <div className={cn(CARD_STYLE.header, "flex items-center justify-between")}>
           <span className="text-[11px] text-slate-500">
-            {search.trim() ? `พบ ${totalItems} รายการ` : `แสดง ${paginatedFields.length} จาก ${totalItems}`}
+            {search.trim()
+              ? `พบ ${totalItems} รายการ`
+              : totalItems === 0
+                ? 'ไม่พบรายการ'
+                : `แสดง ${(currentPage - 1) * pageSize + 1}-${Math.min(currentPage * pageSize, totalItems)} จาก ${totalItems} รายการ`}
           </span>
           <Pagination
             currentPage={currentPage}
             totalItems={totalItems}
             pageSize={pageSize}
-            onPageChange={setCurrentPage}
-            showPageSizeSelector={false}
+            onPageChange={handlePageChange}
+            onPageSizeChange={handlePageSizeChange}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            showPageSizeSelector
             showResultCount={false}
           />
         </div>
