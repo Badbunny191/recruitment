@@ -249,7 +249,7 @@ const tokensByMode: PreviewTokenInfo[] = useMemo(
         role="dialog"
         aria-modal="true"
         aria-label="Document preview"
-        className="relative z-10 flex flex-col bg-slate-100 rounded-lg shadow-2xl ring-1 ring-slate-200 overflow-hidden max-w-[95vw] max-h-[95vh] w-[1100px] h-[820px]"
+        className="relative z-10 flex flex-col bg-slate-100 rounded-lg shadow-2xl ring-1 ring-slate-200 overflow-hidden max-w-[95vw] max-h-[95vh] w-[1100px] h-[95vh]"
       >
         {/* ── Toolbar ───────────────────────────────────────────── */}
         <Toolbar
@@ -269,7 +269,7 @@ const tokensByMode: PreviewTokenInfo[] = useMemo(
            * 🔑 PDF Preview — source of truth เรื่องการแบ่งหน้า
            *    เรียก PDF Renderer ตัวเดียวกับ export ผ่าน PdfPreviewFrame
            */
-          <div className="flex-1 min-h-0 px-4 py-4 bg-slate-200">
+          <div className="flex-1 min-h-0 px-3 py-2 bg-slate-200">
             <PdfPreviewFrame
               className="rounded bg-white overflow-hidden"
               templateVersionId={templateVersionId}

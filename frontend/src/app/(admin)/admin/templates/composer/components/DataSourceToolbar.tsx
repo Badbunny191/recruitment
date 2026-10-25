@@ -55,6 +55,13 @@ export interface SelectedApplication {
 
 export type DataSourceMode = 'sample' | 'real';
 
+/**
+ * จำนวนผลลัพธ์สูงสุดที่ backend คืนต่อการค้นหาหนึ่งครั้ง
+ * (GET /admin/rounds/:id/applications → limit(20))
+ * ใช้เป็นเกณฑ์แสดง notice "ผลลัพธ์เต็ม กรุณาค้นหาให้แคบลง"
+ */
+const PICKER_RESULT_LIMIT = 20;
+
 export interface DataSourceState {
   mode: DataSourceMode;
   selectedRound: Round | null;
@@ -294,11 +301,43 @@ function ApplicationSelector({
   disabled,
 }: ApplicationSelectorProps) {
   const [searchQuery, setSearchQuery] = useState('');
+  /** ค่าค้นหาที่ใช้จริง (debounce 300ms — กันยิง request ทุกตัวอักษร) */
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [applications, setApplications] = useState<ApplicationSummary[]>([]);
   const [appsLoading, setAppsLoading] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
+  /** จำนวนผู้สมัครทั้งหมดของรอบ (จาก /admin/applications/summary — เฉพาะตัวเลข ไม่มี PII) */
+  const [roundTotal, setRoundTotal] = useState<number | null>(null);
 
-  // Load applications when round changes or search changes
+  // Debounce ช่องค้นหา — พิมพ์ติดกันให้ยิงครั้งเดียวหลังหยุดพิมพ์ 300ms
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // จำนวนผู้สมัครทั้งหมดของรอบ (สำหรับโชว์ "แสดง X จาก Y คน")
+  useEffect(() => {
+    setRoundTotal(null);
+    if (!selectedRound) return;
+
+    let cancelled = false;
+    const baseUrl = process.env.NEXT_PUBLIC_API_URL || '';
+    adminFetch(`${baseUrl}/admin/applications/summary?roundId=${selectedRound.id}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled) return;
+        setRoundTotal(data?.data?.total ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setRoundTotal(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRound]);
+
+  // Load applications when round changes or debounced search changes
   useEffect(() => {
     if (!selectedRound) {
       setApplications([]);
@@ -310,7 +349,7 @@ function ApplicationSelector({
 
     const baseUrl = process.env.NEXT_PUBLIC_API_URL || '';
     const url = `${baseUrl}/admin/rounds/${selectedRound.id}/applications` +
-      (searchQuery ? `?search=${encodeURIComponent(searchQuery)}` : '');
+      (debouncedQuery ? `?search=${encodeURIComponent(debouncedQuery)}` : '');
 
     adminFetch(url)
       .then((res) => res.ok ? res.json() : null)
@@ -330,7 +369,7 @@ function ApplicationSelector({
     return () => {
       cancelled = true;
     };
-  }, [selectedRound, searchQuery]);
+  }, [selectedRound, debouncedQuery]);
 
   // Hide picker when no round selected
   useEffect(() => {
@@ -373,12 +412,13 @@ function ApplicationSelector({
         )}
       </div>
 
-      {/* Selected Application Display */}
+      {/* Selected Application Display — โจทย์ข้อ 6: ชี้ชัดว่ากำลัง preview ใครอยู่ */}
       {selectedApplication && (
         <div className="flex items-center gap-2 flex-wrap">
           <div className="flex items-center gap-1.5 px-2 py-1 bg-blue-50 border border-blue-200 rounded text-[11px]">
-            <span className="text-blue-600 font-medium">{selectedApplication.applicationNo}</span>
-            <span className="text-slate-600">{selectedApplication.fullname}</span>
+            <span className="text-slate-500 shrink-0">กำลัง Preview:</span>
+            <span className="text-blue-700 font-semibold">{selectedApplication.applicationNo}</span>
+            <span className="text-slate-700">- {selectedApplication.fullname}</span>
           </div>
           <button
             type="button"
@@ -406,6 +446,7 @@ function ApplicationSelector({
           loading={appsLoading}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
+          roundTotal={roundTotal}
           onSelect={onApplicationSelect}
           disabled={disabled}
         />
@@ -428,6 +469,8 @@ interface ApplicationPickerProps {
   loading: boolean;
   searchQuery: string;
   onSearchChange: (query: string) => void;
+  /** จำนวนผู้สมัครทั้งหมดของรอบ (null = ยังโหลดไม่ได้) */
+  roundTotal: number | null;
   onSelect: (app: ApplicationSummary) => void;
   disabled: boolean;
 }
@@ -437,9 +480,13 @@ function ApplicationPicker({
   loading,
   searchQuery,
   onSearchChange,
+  roundTotal,
   onSelect,
   disabled,
 }: ApplicationPickerProps) {
+  const isSearching = searchQuery.trim().length > 0;
+  const isSaturated = applications.length >= PICKER_RESULT_LIMIT && roundTotal !== null && roundTotal > applications.length;
+
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
@@ -454,6 +501,15 @@ function ApplicationPicker({
         />
       </div>
 
+      {/* จำนวนที่กำลังใช้งาน — โจทย์ข้อ 5 */}
+      {!loading && roundTotal !== null && (
+        <p className="text-[11px] text-slate-500" data-testid="picker-result-count">
+          {isSearching
+            ? `พบ ${applications.length} รายการ (จากผู้สมัครทั้งหมด ${roundTotal} คน)`
+            : `แสดง ${applications.length} จาก ${roundTotal} คน`}
+        </p>
+      )}
+
       {loading && (
         <div className="flex items-center gap-1 text-[11px] text-slate-400">
           <Spinner />
@@ -462,21 +518,37 @@ function ApplicationPicker({
       )}
 
       {!loading && applications.length > 0 && (
-        <div className="max-h-40 overflow-y-auto border border-slate-200 rounded">
-          {applications.map((app) => (
-            <button
-              key={app.id}
-              type="button"
-              onClick={() => onSelect(app)}
-              disabled={disabled}
-              className="w-full text-left px-2 py-1.5 text-[11px] hover:bg-blue-50 border-b border-slate-100 last:border-b-0 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span className="font-medium text-slate-700">{app.applicationNo}</span>
-              <span className="text-slate-500 ml-2">{app.fullname}</span>
-              <span className="text-slate-400 ml-1">({app.email})</span>
-            </button>
-          ))}
-        </div>
+        <>
+          {/*
+            พื้นที่รายการ — โจทย์ข้อ 4: สูงขึ้นจากเดิม (max-h-40 → max-h-72)
+            เห็นรายการได้ราว 2 เท่า ลดการ scroll ในรอบที่มีผู้สมัครจำนวนมาก
+          */}
+          <div className="max-h-72 overflow-y-auto border border-slate-200 rounded">
+            {applications.map((app) => (
+              <button
+                key={app.id}
+                type="button"
+                onClick={() => onSelect(app)}
+                disabled={disabled}
+                className="w-full text-left px-2 py-1.5 hover:bg-blue-50 border-b border-slate-100 last:border-b-0 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <div className="text-[11px] leading-tight">
+                  <span className="font-medium text-slate-700">{app.applicationNo}</span>
+                  <span className="text-slate-900 ml-2">{app.fullname}</span>
+                </div>
+                <div className="text-[10px] text-slate-400 leading-tight truncate" title={app.email}>
+                  {app.email}
+                </div>
+              </button>
+            ))}
+          </div>
+          {/* ผลลัพธ์เต็มเพดานของ endpoint (20) — บอกผู้ใช้ตรง ๆ ว่ายังเหลืออีก */}
+          {isSaturated && (
+            <p className="text-[10px] text-amber-700" data-testid="picker-saturated-notice">
+              แสดงได้สูงสุด {PICKER_RESULT_LIMIT} รายการแรกจาก {roundTotal} คน — พิมพ์ค้นหาเพื่อให้ผลลัพธ์แคบลง
+            </p>
+          )}
+        </>
       )}
 
       {!loading && applications.length === 0 && searchQuery.length > 0 && (
