@@ -1,11 +1,13 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
+import { drizzle } from 'drizzle-orm/d1';
 
 import { Bindings } from './types';
 import { publicRoutes } from './routes/public.routes';
 import { adminRoutes } from './routes/admin.routes';
 import { uploadRoutes } from './routes/upload.routes';
+import { cleanupExpiredTempAttachments } from './lib/attachment-cleanup';
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -74,5 +76,25 @@ export default {
     ctx: ExecutionContext
   ): Promise<Response> {
     return app.fetch(request, env, ctx);
+  },
+
+  // ── Attachment Lifecycle (Migration 029) — Cron GC ──
+  // wrangler.toml [triggers]: รันวันละครั้ง 01:00 น. เวลาไทย (18:00 UTC)
+  // ลบไฟล์ TEMP (ไม่ถูก submit) อายุเกิน 7 วัน — idempotent ดู
+  // lib/attachment-cleanup.ts
+  async scheduled(
+    controller: ScheduledController,
+    env: Bindings,
+    ctx: ExecutionContext
+  ): Promise<void> {
+    ctx.waitUntil(
+      cleanupExpiredTempAttachments(drizzle(env.DB), env.R2_BUCKET)
+        .then((result) => {
+          console.log('[AttachmentCleanup] scheduled run:', result);
+        })
+        .catch((err) => {
+          console.error('[AttachmentCleanup] scheduled run failed:', err);
+        })
+    );
   },
 };

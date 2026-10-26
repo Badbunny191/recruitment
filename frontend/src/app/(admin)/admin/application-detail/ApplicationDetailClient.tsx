@@ -143,6 +143,12 @@ export default function ApplicationDetailClient() {
     }
   };
 
+  // ── Attachment Lifecycle (Migration 029) ──
+  // GET /public/uploads/files/:key บังคับ signature แล้ว — เปิดไฟล์แนบ
+  // จากหน้า admin ต้องผ่าน signed URL ที่ mint โดย admin endpoint
+  // (TTL 60 นาที) map จาก fileUrl → viewUrl
+  const [viewUrls, setViewUrls] = useState<Record<string, string>>({});
+
   useEffect(() => {
     const id = searchParams.get('id');
     if (!id) {
@@ -151,23 +157,33 @@ export default function ApplicationDetailClient() {
     }
 
     const token = localStorage.getItem('adminToken');
-    
+
     Promise.all([
       fetch(`${API_URL}/admin/applications/${id}`, {
         headers: { Authorization: `Bearer ${token}` }
       }),
       fetch(`${API_URL}/admin/applications/${id}/history`, {
         headers: { Authorization: `Bearer ${token}` }
+      }),
+      fetch(`${API_URL}/admin/applications/${id}/attachment-urls`, {
+        headers: { Authorization: `Bearer ${token}` }
       })
     ])
-      .then(([appRes, historyRes]) => Promise.all([appRes.json(), historyRes.json()]))
-      .then(([appData, historyData]) => {
+      .then(([appRes, historyRes, urlsRes]) => Promise.all([appRes.json(), historyRes.json(), urlsRes.json().catch(() => ({}))]))
+      .then(([appData, historyData, urlsData]) => {
         if (appData.data) {
           setApp(appData.data);
           setNewStatus(appData.data.status || 'SUBMITTED');
         }
         if (historyData.data) {
           setHistory(historyData.data);
+        }
+        if (Array.isArray(urlsData.data)) {
+          const map: Record<string, string> = {};
+          urlsData.data.forEach((att: { fileUrl?: string; viewUrl?: string }) => {
+            if (att.fileUrl && att.viewUrl) map[att.fileUrl] = att.viewUrl;
+          });
+          setViewUrls(map);
         }
         setLoading(false);
       })
@@ -179,15 +195,24 @@ export default function ApplicationDetailClient() {
     return match ? match[1] : fileUrl;
   };
 
+  /** signed URL ของ attachment — ไม่มี viewUrl (mint ล้มเหลว/ข้อมูลเก่า) คืน null */
+  const getSignedViewUrl = (fileUrl: string): string | null => {
+    const path = viewUrls[fileUrl];
+    if (!path) return null;
+    return path.startsWith('http') ? path : `${API_URL}${path}`;
+  };
+
   const handleViewFile = (fileUrl: string) => {
-    const key = getFileKey(fileUrl);
-    const url = `${API_URL}/public/uploads/files/${encodeURIComponent(key)}`;
+    const signed = getSignedViewUrl(fileUrl);
+    // fallback เส้นทางเดิม — จะ 403 ถ้า backend บังคับ signature แล้ว
+    // (แสดงว่า mint ไม่สำเร็จ ผู้ใช้กดซ้ำเพื่อ retry ได้)
+    const url = signed || `${API_URL}/public/uploads/files/${encodeURIComponent(getFileKey(fileUrl))}`;
     window.open(url, '_blank');
   };
 
   const handleDownloadFile = (fileUrl: string, filename: string) => {
-    const key = getFileKey(fileUrl);
-    const url = `${API_URL}/public/uploads/files/${encodeURIComponent(key)}`;
+    const signed = getSignedViewUrl(fileUrl);
+    const url = signed || `${API_URL}/public/uploads/files/${encodeURIComponent(getFileKey(fileUrl))}`;
     const a = document.createElement('a');
     a.href = url;
     a.download = filename || 'download.pdf';

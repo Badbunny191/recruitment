@@ -23,7 +23,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-import { getFileKey, buildAttachmentViewUrl } from '../attachment-url';
+import { getFileKey, buildAttachmentViewUrl, buildAttachmentUrlFromPath } from '../attachment-url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const libPath = join(__dirname, '..', 'attachment-url.ts');
@@ -105,13 +105,37 @@ test('E: ชื่อไฟล์ภาษาไทย encode ถูกต้อ
 });
 
 // =========================================================
+//  buildAttachmentUrlFromPath — signed view path จาก backend (Migration 029)
+// =========================================================
+
+test('I: viewPath relative บน API → absolute URL ต่อกับ API_URL', () => {
+  const path = '/api/v1/public/uploads/files/uploads%2Fdocuments%2F2026%2Fabc-x.pdf?exp=1790000000&sig=deadbeef';
+  const url = buildAttachmentUrlFromPath(path);
+  assertTrue(url.includes('/api/v1/public/uploads/files/'), 'คง path เดิม');
+  assertTrue(url.includes('exp=1790000000') && url.includes('sig=deadbeef'), 'คง query ของ signature ไว้ครบ');
+  assertTrue(url === `${ADMIN_API_URL}${path}` || url === `http://localhost:8787/api/v1${path}` || url.endsWith(path), 'ต้องต่อกับ API origin');
+});
+
+test('J: absolute URL ผ่านเข้ามา → คืนตรง ๆ / ค่าว่าง → คืนว่าง', () => {
+  const abs = 'https://api.example.com/api/v1/public/uploads/files/x.pdf?exp=1&sig=2';
+  assertEqual(buildAttachmentUrlFromPath(abs), abs, 'absolute ต้องไม่ถูกต่อซ้ำ');
+  assertEqual(buildAttachmentUrlFromPath(''), '', 'ค่าว่าง → ค่าว่าง');
+});
+
+// =========================================================
 //  Source contract — review page
 // =========================================================
 
-test('F: href ของลิงก์ "เปิดดู" ต้องผ่าน buildAttachmentViewUrl ไม่ใช่ att.fileUrl ตรง ๆ', () => {
+test('F: href ของลิงก์ "เปิดดู" ต้องใช้ signed viewUrl ก่อน (Migration 029) fallback buildAttachmentViewUrl', () => {
+  // Attachment Lifecycle — GET /files/:key บังคับ signature แล้ว ไฟล์ที่
+  // อัปโหลดผ่านระบบใหม่ต้องเปิดด้วย viewUrl (?exp=&sig=) เสมอ
   assertTrue(
-    source.includes('href={buildAttachmentViewUrl(att.fileUrl)}'),
-    'ต้องเป็น href={buildAttachmentViewUrl(att.fileUrl)}'
+    source.includes('att.viewUrl ? buildAttachmentUrlFromPath(att.viewUrl) : buildAttachmentViewUrl(att.fileUrl)'),
+    'ต้องเลือก viewUrl ก่อนเสมอ แล้ว fallback เส้นทางเดิมสำหรับ draft เก่า'
+  );
+  assertTrue(
+    source.includes('buildAttachmentUrlFromPath'),
+    'ต้อง import buildAttachmentUrlFromPath จาก lib'
   );
   assertTrue(
     !/href=\{att\.fileUrl\}/.test(source),

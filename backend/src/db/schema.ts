@@ -214,6 +214,39 @@ export const applicationAttachments = sqliteTable('application_attachments', {
   appIdx: index('idx_attachments_app').on(table.applicationId)
 }));
 
+// =============================================================================
+// Attachment Lifecycle Ledger (Migration 029) — TEMP → ACTIVE → DELETED
+// =============================================================================
+// ปิด 3 ปัญหา: orphan files (ไม่มีใคร track ไฟล์ที่อัปโหลดแล้วไม่ submit),
+// ปุ่มลบหน้า /apply ลบเฉพาะ React state, และ GET /public/uploads/files/:key
+// เปิดได้แบบไม่มีเงื่อนไข ตารางนี้เป็น source of truth ของสถานะไฟล์:
+//   - upload   → insert TEMP
+//   - submit   → TEMP → ACTIVE (+ application_id)
+//   - delete   → TEMP เท่านั้น: R2.delete + mark DELETED (ต้องมี delete token)
+//   - cron รายวัน → TEMP อายุเกิน 7 วัน: ลบ R2 + mark DELETED
+// หมายเหตุ: ไฟล์เก่าก่อน deploy (ไม่มีแถวในตารางนี้) ยังเปิดดูได้ผ่าน signed
+// URL เท่านั้น — access control อยู่ที่ signature ไม่ใช่การมี-ไม่มีแถว
+export const attachmentUploads = sqliteTable('attachment_uploads', {
+  id: text('id').primaryKey(),
+  r2Key: text('r2_key').notNull().unique(),
+  status: text('status').notNull().default('TEMP'),
+  uploadedAt: integer('uploaded_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  // TEMP ยังไม่ผูกใบสมัคร — ผูกตอน submit สำเร็จ (SET NULL เมื่อลบใบสมัคร
+  // เพื่อให้ object ยังถูก GC ตามสถานะได้ ไม่ผูก lifecycle กับ applications)
+  applicationId: text('application_id').references(() => applications.id, { onDelete: 'set null' }),
+  originalFilename: text('original_filename'),
+  // SHA-256 hex ของ one-time token ที่ออกพร้อม response ตอน upload —
+  // ผู้สมัครไม่มี login จึงใช้ token เป็น capability พิสูจน์ว่าเป็นเจ้าของไฟล์
+  // NULL = legacy row (ข้อมูลเก่า) → ลบผ่าน anonymous endpoint ไม่ได้
+  deleteTokenHash: text('delete_token_hash'),
+  activatedAt: integer('activated_at', { mode: 'timestamp' }),
+  deletedAt: integer('deleted_at', { mode: 'timestamp' }),
+}, (table) => ({
+  statusUploadedIdx: index('idx_attachment_uploads_status_uploaded').on(table.status, table.uploadedAt),
+  applicationIdx: index('idx_attachment_uploads_application').on(table.applicationId),
+  checkStatus: check('chk_attachment_uploads_status', sql`${table.status} IN ('TEMP', 'ACTIVE', 'DELETED')`)
+}));
+
 export const auditLogs = sqliteTable('audit_logs', {
   id: text('id').primaryKey(),
   adminId: text('admin_id').notNull().references(() => adminUsers.id, { onDelete: 'restrict' }),

@@ -592,10 +592,17 @@ async function runAllTests() {
     assertEqual(second.cacheHit, true, 'F.2b: cache reused after regenerate (cacheHit=true)');
   });
 
-  await test('F.3-F.5: uploadRoutes/descriptorRouter ไม่มี DELETE + PDF read path ไม่ delete', () => {
-    // F.3 uploadRoutes ยังไม่มี DELETE (S1 ไม่กลับมา) — สอดคล้อง upload-r2-regression.test.ts
+  await test('F.3-F.5: uploadRoutes DELETE จำกัดที่ lifecycle เท่านั้น + descriptorRouter ไม่มี DELETE + PDF read path ไม่ delete', () => {
+    // F.3 uploadRoutes — Migration 029 มี DELETE /direct/:ledgerId (lifecycle
+    // temp delete, TEMP + delete token เท่านั้น) — สิ่งที่ห้ามกลับมาคือ
+    // DELETE บน /files/:key (S1: ลบ arbitrary key รวม PDF cache ได้)
+    const deleteEntries = uploadRoutes.routes.filter((r) => r.method === 'DELETE');
+    assertTrue(deleteEntries.length >= 1, 'F.3: lifecycle DELETE route must exist');
+    deleteEntries.forEach((r) => {
+      assertTrue(String(r.path).includes('/direct/'), 'F.3: DELETE ต้องอยู่บน /direct เท่านั้น');
+      assertTrue(!String(r.path).includes('/files'), 'F.3: DELETE ห้ามอยู่บน /files/:key (S1 ไม่กลับมา)');
+    });
     const methods = uploadRoutes.routes.map((r) => r.method);
-    assertTrue(!methods.includes('DELETE'), 'F.3: uploadRoutes must not expose DELETE');
     assertTrue(methods.includes('POST') && methods.includes('GET'), 'F.3: upload GET/POST intact');
 
     // F.4 route table ของ descriptorRouter ต้องไม่มี DELETE เช่นกัน
