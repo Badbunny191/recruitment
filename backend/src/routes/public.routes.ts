@@ -676,8 +676,15 @@ publicRoutes.post('/applications/submit',
 
   // Validate required fields from template schema
   for (const requiredField of templateRequiredFields) {
+    // ✅ Required FILE — คำตอบของ FILE field ไม่เคยอยู่ใน formData (ฝั่ง client
+    // serialize ลง attachments เท่านั้น) จึงต้องตรวจจาก attachments: ผ่านเมื่อมี
+    // attachment ≥ 1 รายการของ field นี้ (ครอบคลุมทั้ง single-file และ multi-file)
+    // ค่าใน formData ยังยอมรับเหมือนเดิมเพื่อรองรับ payload รูปแบบเก่า
+    const hasFileAttachment = requiredField.fieldType === 'FILE'
+      ? (data.attachments ?? []).some((att) => att.fieldId === requiredField.fieldId)
+      : false;
     const fieldValue = data.formData?.[requiredField.fieldId];
-    if (!fieldValue && fieldValue !== 0) { // Allow 0 as valid value
+    if (!fieldValue && fieldValue !== 0 && !hasFileAttachment) { // Allow 0 as valid value
       return c.json({
         success: false,
         error: `กรุณากรอกข้อมูลที่จำเป็น: ${requiredField.fieldId}`
