@@ -80,18 +80,29 @@ export function FileUpload({
   // Consume a `defaultFiles` change that happens after mount. This is
   // the "schema loaded → restoration effect ran → setAttachmentMeta
   // updated the prop" sequence.
+  //
+  // หลังผู้ใช้แตะ component (userTouchedRef) เราไม่สน defaultFiles ที่ไม่ว่าง
+  // (กัน parent re-render ด้วย array ใหม่ทับสิ่งที่ผู้ใช้เลือก) — ยกเว้น
+  // กรณี parent สั่ง "ล้าง" เป็นค่าว่าง (reset-all / meta sync) ซึ่งต้อง
+  // เคลียร์ตามเสมอ เพื่อคุม invariant "attachmentMeta ว่าง ⟺ UI ว่าง"
+  // แม้ลำดับ state update ผิดปกติ (self-healing กัน chip ค้างจนต้อง refresh)
   useEffect(() => {
-    if (userTouchedRef.current) return;
-    if (!defaultFiles) return;
-    // Skip if it's the same content we already have (avoids the initial
-    // double-set when the parent re-renders for unrelated reasons).
-    if (
-      defaultFiles.length === files.length &&
-      defaultFiles.every((f, i) => f.url === files[i]?.url && f.name === files[i]?.name)
-    ) {
+    if (!userTouchedRef.current) {
+      if (!defaultFiles) return;
+      // Skip if it's the same content we already have (avoids the initial
+      // double-set when the parent re-renders for unrelated reasons).
+      if (
+        defaultFiles.length === files.length &&
+        defaultFiles.every((f, i) => f.url === files[i]?.url && f.name === files[i]?.name)
+      ) {
+        return;
+      }
+      setFiles(defaultFiles);
       return;
     }
-    setFiles(defaultFiles);
+    if (files.length > 0 && (!defaultFiles || defaultFiles.length === 0)) {
+      setFiles([]);
+    }
   }, [defaultFiles, files]);
 
   /**

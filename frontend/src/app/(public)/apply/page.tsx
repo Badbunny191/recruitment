@@ -585,11 +585,17 @@ function FormInner() {
     if (!window.confirm(RESET_CONFIRM_MESSAGE)) return;
     setIsResetting(true);
     try {
-      await resetApplySession({ attachmentMeta });
+      // เคลียร์ React state ทันที — ห้ามรอ network (prod bug รอบ 2: เดิมรอ
+      // resetApplySession ลบไฟล์ครบก่อน ทำให้ช่วง DELETE ค้างผู้ใช้ยังเห็น
+      // chip ของไฟล์ที่ backend ลบไปแล้ว → กดลบ/เปิดดูซ้ำ → "File not found"
+      // และต้อง refresh เอง UI จึงหาย)
+      const metaSnapshot = attachmentMeta;
       setAttachmentMeta({});
       reset({});
       setBackError(null);
       setFormResetCount((c) => c + 1);
+      // ลบไฟล์จาก R2/ledger + ล้าง draft/token — best-effort หลัง UI สะอาดแล้ว
+      await resetApplySession({ attachmentMeta: metaSnapshot });
     } finally {
       setIsResetting(false);
     }
