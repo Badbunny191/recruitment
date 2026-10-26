@@ -7,7 +7,7 @@ import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/componen
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
-import { loadApplyDraft, clearApplyDraft, listDraftRoundIds, type ApplyDraft, type FileAttachmentDraft } from '@/lib/applyDraft';
+import { loadApplyDraft, clearApplyDraft, loadLatestApplyDraft, type ApplyDraft, type FileAttachmentDraft } from '@/lib/applyDraft';
 import { clearSubmissionToken, getOrCreateSubmissionToken } from '@/lib/submissionToken';
 import { usePublicConfig } from '@/lib/usePublicConfig';
 import { TurnstileWidget } from '@/components/TurnstileWidget';
@@ -89,10 +89,11 @@ function ReviewContent() {
   //
   // Three ways the user can land here:
   //   1. From /apply (the normal flow) — `urlRoundId` is null, but a
-  //      draft is in sessionStorage. We discover the roundId by listing
-  //      stored drafts. F5 falls into this case too.
+  //      draft is in sessionStorage. We resume the most recently saved
+  //      one (the tab may hold several drafts from unfinished rounds).
+  //      F5 falls into this case too.
   //   2. Deep link `/apply/review?id=<roundId>` — explicit roundId.
-  //   3. Direct visit with no draft and no id — error card.
+  //   3. Direct visit with no usable draft and no id — error card.
   //
   // The effect is **idempotent**: once we've set `draft`, we exit so the
   // dep change from `setDraft` doesn't trigger a redundant second load.
@@ -111,20 +112,16 @@ function ReviewContent() {
       return;
     }
 
-    // Case 1: no roundId in the URL but sessionStorage may have a draft.
-    const stored = listDraftRoundIds();
-    if (stored.length === 1) {
-      const loaded = loadApplyDraft(stored[0]);
-      if (loaded) {
-        setDraft(loaded);
-        return;
-      }
-    }
-    if (stored.length > 1) {
-      // More than one in-flight draft in this tab. We can't disambiguate
-      // — treat as "no draft" and let the user pick a round on the home
-      // page. This is an extremely rare edge case (user opened multiple
-      // apply tabs and merged them) so we just show the error card.
+    // Case 1: no roundId in the URL — resume the most recently saved
+    // draft. A tab can legitimately hold several drafts (the user started
+    // applications for multiple rounds and never submitted some of them —
+    // drafts are only cleared on successful submit), so picking by
+    // savedAt is the correct "resume what I was working on" behavior.
+    // Error only when there is no usable draft at all.
+    const loaded = loadLatestApplyDraft();
+    if (loaded) {
+      setDraft(loaded);
+      return;
     }
 
     // Case 3: nothing to load.

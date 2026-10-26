@@ -192,6 +192,24 @@ export function listDraftRoundIds(): string[] {
 }
 
 /**
+ * เลือก draft ที่บันทึกล่าสุด (savedAt สูงสุด) จาก draft ทั้งหมดที่ยัง
+ * ใช้ได้ — ใช้เมื่อแท็บมีหลาย draft (ผู้ใช้เริ่มสมัครหลายรอบแล้วไม่ได้
+ * submit บางรอบ) — review page ต้อง resume ใบล่าสุดที่กำลังทำเสมอ
+ * ห้าม error ทั้งที่ยังมี draft ใช้งานได้
+ * คืน null เมื่อไม่มี draft ที่โหลดได้เลย (กรณีเดียวที่ review ควร error)
+ */
+export function loadLatestApplyDraft(): ApplyDraft | null {
+  let latest: ApplyDraft | null = null;
+  for (const roundId of listDraftRoundIds()) {
+    const draft = loadApplyDraft(roundId);
+    if (draft && (latest === null || draft.savedAt > latest.savedAt)) {
+      latest = draft;
+    }
+  }
+  return latest;
+}
+
+/**
  * Test-only helper. Not used in production code.
  */
 export function __resetApplyDraftsForTests(): void {
@@ -206,4 +224,12 @@ export function __resetApplyDraftsForTests(): void {
       keys.forEach((k) => window.sessionStorage.removeItem(k));
     } catch { /* ignore */ }
   }
+}
+
+/**
+ * Test-only helper — เขียน raw JSON ลง slot ของ draft โดยตรง
+ * (จำลอง draft เสีย / เวอร์ชันเก่าโดยไม่ต้องผ่าน saveApplyDraft)
+ */
+export function __writeRawApplyDraftForTests(roundId: string, value: string): void {
+  writeRaw(roundId, value);
 }
