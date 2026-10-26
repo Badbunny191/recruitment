@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { FileUploadRequestSchema } from '../schemas/validators';
 import { Bindings } from '../types';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
@@ -259,8 +259,11 @@ uploadRoutes.get('/files/:key{.+}', async (c) => {
  *   403 = token ไม่ตรง / ไม่ได้แนบ token (legacy row ไม่มี token ก็ 403)
  *   409 = ไฟล์ถูก submit แล้ว (ACTIVE) — ห้ามลบผ่าน endpoint นี้
  *
- * ลบทั้ง R2 object และ mark ledger DELETED (ลบ R2 ก่อน mark — ถ้า mark
- * ล้ม รอบถัดไปยัง retry ได้เพราะแถวยัง TEMP)
+ * Mark ledger TEMP → DELETED ก่อน (guard status='TEMP') แล้วจึงลบ R2 object —
+ * ปิด race กับ submit promote: ถ้า mark กระทบ 0 แถว = แถวถูก promote เป็น
+ * ACTIVE ไปแล้ว ต้อง 409 โดยไม่แตะ R2 (ถ้า mark สำเร็จแต่ลบ R2 ล้ม เหลือ
+ * orphan object ที่ GET ไม่ได้เพราะ ledger เป็น DELETED แล้ว — ปลอดภัยกว่า
+ * การลบไฟล์ของใบสมัครจริง)
  */
 uploadRoutes.delete('/direct/:ledgerId', rateLimitMiddleware(), async (c) => {
   try {
@@ -301,12 +304,23 @@ uploadRoutes.delete('/direct/:ledgerId', rateLimitMiddleware(), async (c) => {
       return c.json({ success: false, error: 'Invalid delete token' }, 403);
     }
 
-    await c.env.R2_BUCKET.delete(row.r2Key);
-    await db
+    // Mark TEMP → DELETED ก่อนลบ R2 ด้วย guard status='TEMP' — ถ้า submit
+    // promote แถวนี้เป็น ACTIVE ไปแล้ว UPDATE จะกระทบ 0 แถว และเราห้ามลบ
+    // R2 object (ไม่งั้นใบสมัครที่เพิ่ง submit จะเสียไฟล์แนบถาวร)
+    const markResult = await db
       .update(attachmentUploads)
       .set({ status: 'DELETED', deletedAt: new Date() })
-      // Guard: ระหว่าง R2.delete กับ mark อาจมี submit promote แถวนี้ไปแล้ว
-      .where(eq(attachmentUploads.id, row.id));
+      .where(and(eq(attachmentUploads.id, row.id), eq(attachmentUploads.status, 'TEMP')))
+      .run();
+    const marked = (markResult as any)?.meta?.changes ?? (markResult as any)?.changes ?? 0;
+    if (marked === 0) {
+      return c.json({
+        success: false,
+        error: 'File is already attached to a submitted application and cannot be deleted',
+      }, 409);
+    }
+
+    await c.env.R2_BUCKET.delete(row.r2Key);
 
     return c.json({ success: true, data: { deleted: true } });
   } catch (error) {
