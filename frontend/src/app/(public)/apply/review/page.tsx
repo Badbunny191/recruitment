@@ -18,6 +18,7 @@ import {
   formatOtherDisplay,
 } from '@/lib/otherOption';
 import { attachmentDisplayName } from '@/lib/filename';
+import { buildAttachmentViewUrl } from '@/lib/attachment-url';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 
@@ -289,7 +290,7 @@ function ReviewContent() {
               <div className="text-xs text-slate-500 truncate">{att.contentType || 'ไฟล์แนบ'}</div>
             </div>
             <a
-              href={att.fileUrl}
+              href={buildAttachmentViewUrl(att.fileUrl)}
               target="_blank"
               rel="noopener noreferrer"
               className="flex-shrink-0 text-blue-600 hover:text-blue-800 text-sm font-medium underline whitespace-nowrap"
