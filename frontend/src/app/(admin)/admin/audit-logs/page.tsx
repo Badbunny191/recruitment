@@ -548,7 +548,7 @@ export default function AuditLogsPage() {
             <SearchInput
               value={search}
               onChange={handleSearchChange}
-              placeholder="ค้นหา... (Admin ID, Entity ID, IP)"
+              placeholder="ค้นหา... (Email, Admin ID, Entity ID, IP)"
             />
           </div>
           <FilterDropdown

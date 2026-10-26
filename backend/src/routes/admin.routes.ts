@@ -24,6 +24,7 @@ import {
 
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
+import { buildAuditLogWhere, parseMultiParam } from '../lib/audit-log-query';
 import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
 import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
 import { ensureNotLastSuperAdmin } from '../services/rbac.service';
@@ -2981,27 +2982,12 @@ adminRoutes.get('/audit-logs', async (c) => {
     : 50;
 
   // ---------- Filter params ----------
-  const action = c.req.query('action')?.trim() || '';
-  const entity = c.req.query('entity')?.trim() || '';
+  // multi-select: frontend ส่ง comma-separated เช่น "PDF_DOWNLOAD,EXPORT_EXCEL"
+  const actions = parseMultiParam(c.req.query('action'));
+  const entities = parseMultiParam(c.req.query('entity'));
   const search = c.req.query('search')?.trim() || '';
 
-  // ---------- Build WHERE ----------
-  const filters: ReturnType<typeof eq>[] = [];
-  if (action) filters.push(eq(auditLogs.action, action));
-  if (entity) filters.push(eq(auditLogs.entityType, entity));
-
-  // Search: ค้นหาใน adminId / entityId / ipAddress (ใช้ index บน entity_id ร่วมกับ prefix LIKE ได้)
-  if (search) {
-    const likePattern = `%${search}%`;
-    const searchOr = or(
-      like(auditLogs.adminId, likePattern),
-      like(auditLogs.entityId, likePattern),
-      like(auditLogs.ipAddress, likePattern)
-    );
-    if (searchOr) filters.push(searchOr);
-  }
-
-  const whereClause = filters.length > 0 ? and(...filters) : undefined;
+  const whereClause = buildAuditLogWhere(db, { actions, entities, search });
 
   // ---------- Total count ----------
   const totalRow = await db
