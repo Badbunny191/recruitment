@@ -19,6 +19,11 @@ import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-sta
 import { ApplicationPatternField } from '@/components/ApplicationPatternField';
 import { cn } from '@/lib/utils';
 import { useRole } from '@/lib/useRole';
+import {
+  buildTemplateVersionOptions,
+  formatTemplateVersionOptionLabel,
+  type PublishedTemplateVersion,
+} from '@/lib/template-version-options';
 
 interface Round {
   id: string;
@@ -37,14 +42,6 @@ interface Round {
   // Migration 019 - Application Number Pattern
   applicationPattern?: string | null;
   roundCode?: string | null;
-}
-
-interface PublishedTemplateVersion {
-  id: string;
-  versionNumber: number;
-  status: string;
-  templateId: string;
-  templateName: string;
 }
 
 interface FormState {
@@ -657,6 +654,26 @@ export default function RoundsPage() {
     return `(Template ถูกลบ) ${templateVersionId.slice(0, 8)}…`;
   };
 
+  // ===== Dropdown Template Version (Create/Edit Round) =====
+  // แสดงเฉพาะ Published version ล่าสุดของแต่ละ template (กัน admin เลือกผิด)
+  // - โหมด Create: แสดงตัวล่าสุดของทุก template
+  // - โหมด Edit:   ถ้ารอบผูกกับ version ที่ไม่ใช่ตัวล่าสุด → ต่อท้าย version นั้นกลับเข้ามา
+  //                  (ไม่งั้นค่าที่เลือกอยู่จะหาย → submit แล้ว template เปลี่ยนเงียบ ๆ)
+  const templateVersionOptions = useMemo(
+    () =>
+      buildTemplateVersionOptions(
+        publishedVersions,
+        editing ? editing.templateVersionId : null,
+        editing
+          ? {
+              templateName: editing.templateName,
+              versionNumber: editing.versionNumber,
+            }
+          : null
+      ),
+    [publishedVersions, editing]
+  );
+
   // Sort options (module-level SORT_OPTIONS)
   const sortOptions = SORT_OPTIONS;
 
@@ -1135,11 +1152,11 @@ export default function RoundsPage() {
                     <Label htmlFor="templateVersionId">Template Version <span className="text-red-500">*</span></Label>
                     <Select id="templateVersionId" value={form.templateVersionId} onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })} required>
                       <option value="">-- เลือก Published Version --</option>
-                      {publishedVersions.map((v) => (
-                        <option key={v.id} value={v.id}>{v.templateName} v{v.versionNumber}</option>
+                      {templateVersionOptions.map((v) => (
+                        <option key={v.id} value={v.id}>{formatTemplateVersionOptionLabel(v)}</option>
                       ))}
                     </Select>
-                    <p className="text-[11px] text-slate-500">เฉพาะ Published Version เท่านั้นที่สร้าง Round ได้</p>
+                    <p className="text-[11px] text-slate-500">เฉพาะ Published Version ล่าสุดของแต่ละ Template เท่านั้นที่สร้าง Round ได้</p>
                   </div>
                 )}
 
@@ -1150,11 +1167,13 @@ export default function RoundsPage() {
                       <>
                         <Select value={form.templateVersionId} onChange={(e) => setForm({ ...form, templateVersionId: e.target.value })}>
                           <option value="">-- เลือก Published Version --</option>
-                          {publishedVersions.map((v) => (
-                            <option key={v.id} value={v.id}>{v.templateName} v{v.versionNumber}</option>
+                          {templateVersionOptions.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {formatTemplateVersionOptionLabel(v, v.id === form.templateVersionId)}
+                            </option>
                           ))}
                         </Select>
-                        <p className="text-[11px] text-blue-600">Draft Round: สามารถเปลี่ยน Version ได้</p>
+                        <p className="text-[11px] text-blue-600">Draft Round: สามารถเปลี่ยน Version ได้ (เฉพาะ Published ล่าสุดของแต่ละ Template)</p>
                       </>
                     ) : editing.status === 'ACTIVE' ? (
                       <div className="p-3 bg-slate-100 rounded-lg">
