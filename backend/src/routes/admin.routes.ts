@@ -10,6 +10,7 @@ import { auditMiddleware, setAuditPayload } from '../middlewares/audit.middlewar
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { handleApplicationStatusChange, buildAuditPayload } from '../lib/change-tracking';
 import { getApplicationPdf } from '../lib/pdf.service';
+import { invalidatePdfCacheForRound, invalidatePdfCacheForFieldMaster } from '../lib/pdf-cache-invalidation';
 import {
   ATTACHMENT_VIEW_TTL_ADMIN,
   buildSignedAttachmentPath,
@@ -303,6 +304,11 @@ adminRoutes.patch('/fields/:id', adminOnlyMiddleware, auditMiddleware('FIELD_MAS
   }
 
   await db.update(fieldMaster).set(updateValues).where(eq(fieldMaster.id, id));
+
+  // Field label/options/pdfMappingKey ถูก join จาก field_master ตอน render —
+  // invalidate PDF cache ของทุกใบสมัครที่ template version ผูกกับ field นี้
+  await invalidatePdfCacheForFieldMaster(db, c.env.R2_BUCKET, id);
+
   return c.json({ success: true });
 });
 
@@ -1855,6 +1861,13 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
   setAuditPayload(c, auditPayload);
 
   await db.update(recruitmentRounds).set(updateValues).where(eq(recruitmentRounds.id, id));
+
+  // PDF อ่าน round.title สดตอน render ({ROUND_NAME}) — แก้ชื่อรอบแล้วต้อง
+  // invalidate cache เดิม (R2 object ไม่มี TTL ไม่งั้นเสิร์ฟ PDF ชื่อเก่าตลอดไป)
+  if (data.title !== undefined && data.title !== round.title) {
+    await invalidatePdfCacheForRound(db, c.env.R2_BUCKET, id);
+  }
+
   return c.json({ success: true });
 });
 

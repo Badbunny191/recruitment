@@ -23,9 +23,9 @@
  *     และไม่ถูกส่งกลับไปยัง client ไม่ว่ากรณีใด
  */
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { drizzle as drizzleFn } from 'drizzle-orm/d1';
-import { applications, recruitmentRounds } from '../db/schema';
+import { applications, recruitmentRounds, templateFields, templateVersions } from '../db/schema';
 import { buildPdfCacheKey } from './pdf-types';
 
 type DB = ReturnType<typeof drizzleFn<any>>;
@@ -84,6 +84,94 @@ export async function invalidatePdfCacheForTemplateVersion(
   } catch (err) {
     console.error(
       `[PDF-CACHE] Failed to invalidate R2 PDF cache for template version ${templateVersionId}: ` +
+        (err instanceof Error ? err.message : String(err))
+    );
+    return { invalidated: 0, failed: true };
+  }
+}
+
+/** ลบ cache key ของ application ids ที่ให้มา (best-effort, never throws) */
+async function deleteApplicationCaches(
+  db: DB,
+  r2: R2Bucket | undefined,
+  applicationIds: string[],
+  scopeLabel: string
+): Promise<PdfCacheInvalidationResult> {
+  if (!r2) return { invalidated: 0, failed: false };
+  if (applicationIds.length === 0) return { invalidated: 0, failed: false };
+
+  try {
+    const keys = applicationIds.map((id) => buildPdfCacheKey(id));
+    for (let i = 0; i < keys.length; i += R2_DELETE_BATCH_SIZE) {
+      await r2.delete(keys.slice(i, i + R2_DELETE_BATCH_SIZE));
+    }
+    return { invalidated: keys.length, failed: false };
+  } catch (err) {
+    console.error(
+      `[PDF-CACHE] Failed to invalidate R2 PDF cache (${scopeLabel}): ` +
+        (err instanceof Error ? err.message : String(err))
+    );
+    return { invalidated: 0, failed: true };
+  }
+}
+
+/**
+ * Invalidate PDF cache ของทุกใบสมัครใน round หนึ่ง ๆ
+ *
+ * เหตุผล: PDF render อ่าน recruitment_rounds.title สด ๆ ทุกครั้ง
+ * ({ROUND_NAME} token) — แก้ชื่อรอบ/announcement แล้ว cache เดิม (ไม่มี TTL)
+ * จะเสิร์ฟ PDF ชื่อเก่าตลอดไป
+ */
+export async function invalidatePdfCacheForRound(
+  db: DB,
+  r2: R2Bucket | undefined,
+  roundId: string
+): Promise<PdfCacheInvalidationResult> {
+  try {
+    const rows = await db
+      .select({ id: applications.id })
+      .from(applications)
+      .where(eq(applications.roundId, roundId));
+    return await deleteApplicationCaches(db, r2, (rows as { id: string }[]).map((r) => r.id), `round ${roundId}`);
+  } catch (err) {
+    console.error(
+      `[PDF-CACHE] Failed to list applications for round ${roundId}: ` +
+        (err instanceof Error ? err.message : String(err))
+    );
+    return { invalidated: 0, failed: true };
+  }
+}
+
+/**
+ * Invalidate PDF cache ของทุกใบสมัครที่ PDF ผูกกับ field master นี้
+ *
+ * เหตุผล: field label / options / pdfMappingKey ถูก join จาก field_master
+ * ตอน render — แก้ field master (global, ไม่ต่อ version) แล้ว PDF เดิมที่
+ * cache ไว้จะแสดง label เก่าตลอดไป ขอบเขต = applications ใน rounds ที่
+ * template version ของรอบนั้นมี template_fields อ้าง field นี้
+ */
+export async function invalidatePdfCacheForFieldMaster(
+  db: DB,
+  r2: R2Bucket | undefined,
+  fieldId: string
+): Promise<PdfCacheInvalidationResult> {
+  try {
+    const rows = await db
+      .selectDistinct({ id: applications.id })
+      .from(applications)
+      .innerJoin(recruitmentRounds, eq(applications.roundId, recruitmentRounds.id))
+      .innerJoin(templateVersions, eq(recruitmentRounds.templateVersionId, templateVersions.id))
+      .innerJoin(
+        templateFields,
+        and(
+          eq(templateFields.templateVersionId, templateVersions.id),
+          eq(templateFields.fieldId, fieldId),
+        ),
+      );
+    return await deleteApplicationCaches(db, r2, (rows as { id: string }[]).map((r) => r.id), `field-master ${fieldId}`);
+  } catch (err) {
+    console.error(
+      `[PDF-CACHE] Failed to list applications for field master ${fieldId}: ` +
         (err instanceof Error ? err.message : String(err))
     );
     return { invalidated: 0, failed: true };
