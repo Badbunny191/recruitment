@@ -15,6 +15,7 @@ import {
 } from '@/lib/otherOption';
 import { attachmentDisplayName } from '@/lib/filename';
 import { parseContentDispositionFilename } from '@/lib/pdf-download';
+import { joinApiUrl } from '@/lib/attachment-url';
 
 interface ApplicationAttachment {
   id: string;
@@ -199,7 +200,9 @@ export default function ApplicationDetailClient() {
   const getSignedViewUrl = (fileUrl: string): string | null => {
     const path = viewUrls[fileUrl];
     if (!path) return null;
-    return path.startsWith('http') ? path : `${API_URL}${path}`;
+    // viewUrl จาก backend มี /api/v1 นำหน้าอยู่แล้ว — joinApiUrl กัน
+    // ต่อกับ API_URL จน prefix ซ้ำเป็น /api/v1/api/v1/...
+    return path.startsWith('http') ? path : joinApiUrl(path);
   };
 
   const handleViewFile = (fileUrl: string) => {

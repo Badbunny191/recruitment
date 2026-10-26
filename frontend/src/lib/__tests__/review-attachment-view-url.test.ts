@@ -15,6 +15,11 @@
  *         ทุกประการ (parity) รวมถึงชื่อไฟล์ภาษาไทย
  *   F–H. Source contract ของ review page — ใช้ helper ใน href,
  *         และ submit payload ยังส่ง fileUrl ดิบเหมือนเดิม (ห้ามแตะ)
+ *   I–K. buildAttachmentUrlFromPath / joinApiUrl — กัน prefix /api/v1
+ *         ซ้ำ (/api/v1/api/v1/...) เมื่อ viewUrl จาก backend มี
+ *         mount prefix มาเองแล้ว (prod bug 2026-10-27)
+ *   L.   Source contract ของ ApplicationDetailClient — ห้าม concat
+ *        `${API_URL}${path}` ตรง ๆ (จุดเกิด bug ฝั่ง admin)
  *
  * Run: node --import tsx src/lib/__tests__/review-attachment-view-url.test.ts
  */
@@ -23,7 +28,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-import { getFileKey, buildAttachmentViewUrl, buildAttachmentUrlFromPath } from '../attachment-url';
+import { getFileKey, buildAttachmentViewUrl, buildAttachmentUrlFromPath, joinApiUrl } from '../attachment-url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const libPath = join(__dirname, '..', 'attachment-url.ts');
@@ -108,18 +113,68 @@ test('E: ชื่อไฟล์ภาษาไทย encode ถูกต้อ
 //  buildAttachmentUrlFromPath — signed view path จาก backend (Migration 029)
 // =========================================================
 
-test('I: viewPath relative บน API → absolute URL ต่อกับ API_URL', () => {
+test('I: viewPath ที่มี /api/v1 นำหน้า → ตัด prefix ซ้ำ ไม่ให้เป็น /api/v1/api/v1/ (prod bug)', () => {
   const path = '/api/v1/public/uploads/files/uploads%2Fdocuments%2F2026%2Fabc-x.pdf?exp=1790000000&sig=deadbeef';
   const url = buildAttachmentUrlFromPath(path);
   assertTrue(url.includes('/api/v1/public/uploads/files/'), 'คง path เดิม');
+  assertTrue(!url.includes('/api/v1/api/v1/'), 'ห้ามมี prefix /api/v1 ซ้ำ');
   assertTrue(url.includes('exp=1790000000') && url.includes('sig=deadbeef'), 'คง query ของ signature ไว้ครบ');
-  assertTrue(url === `${ADMIN_API_URL}${path}` || url === `http://localhost:8787/api/v1${path}` || url.endsWith(path), 'ต้องต่อกับ API origin');
+  assertTrue(url.endsWith('/public/uploads/files/uploads%2Fdocuments%2F2026%2Fabc-x.pdf?exp=1790000000&sig=deadbeef'), 'ต้องต่อกับ API origin เพียงชั้นเดียว');
+});
+
+test('I2: viewPath ที่ไม่มี /api/v1 นำหน้า → ต่อกับ API_URL ได้ปกติ (tolerate ทั้งสองรูปแบบ)', () => {
+  const path = '/public/uploads/files/abc-x.pdf?exp=1&sig=a';
+  const url = buildAttachmentUrlFromPath(path);
+  assertTrue(!url.includes('/api/v1/api/v1/'), 'ห้ามมี prefix ซ้ำ');
+  assertTrue(url.includes('/public/uploads/files/abc-x.pdf?exp=1&sig=a'), 'คง path และ query ไว้');
 });
 
 test('J: absolute URL ผ่านเข้ามา → คืนตรง ๆ / ค่าว่าง → คืนว่าง', () => {
   const abs = 'https://api.example.com/api/v1/public/uploads/files/x.pdf?exp=1&sig=2';
   assertEqual(buildAttachmentUrlFromPath(abs), abs, 'absolute ต้องไม่ถูกต่อซ้ำ');
   assertEqual(buildAttachmentUrlFromPath(''), '', 'ค่าว่าง → ค่าว่าง');
+});
+
+// =========================================================
+//  joinApiUrl — กัน prefix /api/v1 ซ้ำ (hotfix signed URL ซ้ำ)
+// =========================================================
+
+test('K: joinApiUrl ตัด /api/v1 ซ้ำเมื่อ path มี prefix มาเอง', () => {
+  const url = joinApiUrl('/api/v1/public/uploads/files/x.pdf?exp=1&sig=a');
+  assertTrue(!url.includes('/api/v1/api/v1/'), `ห้ามซ้ำ: ${url}`);
+  assertTrue(url.includes('/public/uploads/files/x.pdf?exp=1&sig=a'), 'คง path+query ครบ');
+});
+
+test('K2: joinApiUrl ตัดเฉพาะ prefix นำหน้า ไม่แตะ /api/v1 ที่อยู่กลาง path', () => {
+  const url = joinApiUrl('/api/v1/public/uploads/files/xx/api/v1.pdf');
+  assertTrue(!url.includes('/api/v1/api/v1/'), `ห้ามซ้ำ: ${url}`);
+  assertTrue(url.includes('/public/uploads/files/xx/api/v1.pdf'), 'segment กลาง path ต้องคงอยู่');
+});
+
+test('K3: joinApiUrl tolerate path ไม่นำหน้า / และ base ที่ลงท้าย /', () => {
+  const url = joinApiUrl('public/uploads/files/x.pdf');
+  assertTrue(url.includes('/public/uploads/files/x.pdf'), `ต้องเติม slash ให้: ${url}`);
+});
+
+// =========================================================
+//  Source contract — ApplicationDetailClient (จุดเกิด prod bug ที่สอง)
+// =========================================================
+
+test('L: admin detail ต้อง join viewUrl ผ่าน joinApiUrl ห้าม concat API_URL ตรง ๆ', () => {
+  const adminClientPath = join(__dirname, '..', '..', 'app', '(admin)', 'admin', 'application-detail', 'ApplicationDetailClient.tsx');
+  const adminSource = readFileSync(adminClientPath, 'utf8');
+  assertTrue(
+    adminSource.includes("from '@/lib/attachment-url'"),
+    'ต้อง import helper จาก lib/attachment-url'
+  );
+  assertTrue(
+    !/\$\{API_URL\}\$\{path\}/.test(adminSource),
+    'ห้าม `${API_URL}${path}` — viewUrl มี /api/v1 มาเอง จะซ้ำเป็น /api/v1/api/v1/'
+  );
+  assertTrue(
+    adminSource.includes('joinApiUrl(path)'),
+    'getSignedViewUrl ต้องใช้ joinApiUrl'
+  );
 });
 
 // =========================================================

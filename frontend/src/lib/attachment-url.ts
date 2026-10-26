@@ -22,9 +22,24 @@ export function buildAttachmentViewUrl(fileUrl: string): string {
 }
 
 /**
+ * ต่อ path บน API origin เข้ากับ API_URL — กัน prefix /api/v1 ซ้ำ
+ * ---------------------------------------------------------------------------
+ * path จาก backend (fileUrl และ viewUrl จาก buildSignedAttachmentPath)
+ * มี `/api/v1` นำหน้าเป็นส่วนหนึ่งของ contract แต่ API_URL ก็ลงท้ายด้วย
+ * `/api/v1` เช่นกัน (เช่น https://api.example.com/api/v1) — join ตรง ๆ
+ * จะได้ /api/v1/api/v1/... จึงต้องตัด prefix ซ้ำออกก่อน
+ * (path ที่ไม่มี prefix ก็ยังใช้ได้ — ตัดเมื่อมีเท่านั้น)
+ */
+export function joinApiUrl(path: string): string {
+  const base = API_URL.replace(/\/+$/, '');
+  const stripped = path.replace(/^\/api\/v1(?=\/)/, '');
+  return `${base}${stripped.startsWith('/') ? '' : '/'}${stripped}`;
+}
+
+/**
  * ประกอบ absolute URL จาก view path ที่ backend ติด signature ให้แล้ว
  * (Attachment Lifecycle — GET /files/:key ต้องมี ?exp=&sig= เสมอ)
- * viewPath เป็น relative path บน API origin เช่น
+ * viewPath เป็น relative path บน origin ที่มี mount prefix มาแล้ว เช่น
  * `/api/v1/public/uploads/files/<enc>?exp=...&sig=...`
  * รับ absolute URL กลับมาคืนตรง ๆ (defensive) และคงค่า fallback เดิม
  * buildAttachmentViewUrl ไว้สำหรับ draft เก่าที่ไม่มี viewUrl
@@ -32,5 +47,5 @@ export function buildAttachmentViewUrl(fileUrl: string): string {
 export function buildAttachmentUrlFromPath(viewPath: string): string {
   if (!viewPath) return '';
   if (/^https?:\/\//i.test(viewPath)) return viewPath;
-  return `${API_URL}${viewPath.startsWith('/') ? '' : '/'}${viewPath}`;
+  return joinApiUrl(viewPath);
 }
