@@ -199,6 +199,18 @@ function BuilderInner() {
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
 
+  // กันปิดแท็บ/รีเฟรชทั้งที่มี edit ค้าง (แบบเดียวกับ ComposerClient)
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [hasUnsavedChanges]);
+
   // Phase 1: Collapse state for field cards (default = all collapsed)
   const [expandedFields, setExpandedFields] = useState<Set<string>>(new Set());
   // Phase 2: Collapse state for Version History (default = collapsed)
@@ -811,7 +823,14 @@ function BuilderInner() {
       alert('ไม่มี Draft version ที่จะ Publish');
       return;
     }
-    
+
+    // Publish แล้ว version ถูกล็อก — edit ที่ยังไม่ save จะหายถาวรและไม่มี
+    // ทางบันทึกตามหลัง จึงต้องบังคับ save ก่อนเสมอ
+    if (hasUnsavedChanges) {
+      alert('มีการเปลี่ยนแปลงที่ยังไม่บันทึก\n\nกรุณากด "Save Draft" ก่อน Publish มิฉะนั้นการแก้ไขจะหายทั้งหมด');
+      return;
+    }
+
     if (!confirm('ต้องการ Publish Draft version นี้?\n\nVersion ที่ Publish แล้วจะถูกล็อก ไม่สามารถแก้ไขได้')) {
       return;
     }
@@ -1052,7 +1071,7 @@ function BuilderInner() {
                 variant="default"
                 size="sm"
                 onClick={onPublish}
-                disabled={submitting}
+                disabled={submitting || hasUnsavedChanges}
                 className="bg-green-600 hover:bg-green-700"
               >
                 🔵 Publish v{latestDraft?.versionNumber}
@@ -1559,7 +1578,10 @@ function BuilderInner() {
                                         type="button"
                                         variant="destructive"
                                         size="sm"
-                                        onClick={() => remove(globalIdx)}
+                                        onClick={() => {
+                                          remove(globalIdx);
+                                          setHasUnsavedChanges(true);
+                                        }}
                                         className="h-7"
                                       >
                                         ลบ
