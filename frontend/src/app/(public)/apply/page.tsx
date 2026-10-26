@@ -11,13 +11,19 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { FileUpload, UploadedFileMeta } from '@/components/FileUpload';
 import { ApplyBackBar } from '@/components/ApplyBackBar';
+import { ApplyResetBar } from '@/components/ApplyResetBar';
 import { attachmentDisplayName } from '@/lib/filename';
 import { SearchableDropdown } from '@/components/SearchableDropdown';
 import {
   loadApplyDraft,
   saveApplyDraft,
+  setDraftFieldAttachments,
   type FileAttachmentDraft,
 } from '@/lib/applyDraft';
+import {
+  RESET_CONFIRM_MESSAGE,
+  resetApplySession,
+} from '@/lib/applyReset';
 import {
   getOrCreateSubmissionToken,
 } from '@/lib/submissionToken';
@@ -473,6 +479,14 @@ function FormInner() {
   // "no-schema" early-return still flips it to avoid infinite re-runs.
   const [draftRestored, setDraftRestored] = useState(false);
 
+  // "ล้างข้อมูลทั้งหมด" — isResetting ครอบช่วงลบไฟล์ผ่าน backend (async);
+  // formResetCount เป็น React key ของ FileUpload ทุกตัว — bump แล้ว component
+  // ถูก remount ทั้งหมด ทำให้ local files state + error ของ FileUpload
+  // เคลียร์จริง แม้ผู้ใช้เคยแตะ component นั้น (userTouchedRef บล็อกการ
+  // adopt defaultFiles แล้ว) — การ reset ด้วย state อย่างเดียวไม่พอ
+  const [isResetting, setIsResetting] = useState(false);
+  const [formResetCount, setFormResetCount] = useState(0);
+
   useEffect(() => {
     if (!roundId) return;
     if (draftRestored) return; // only run once
@@ -525,6 +539,61 @@ function FormInner() {
     setAttachmentMeta(meta);
     setDraftRestored(true);
   }, [roundId, schema, reset, draftRestored]);
+
+  // =========================================================================
+  //  Attachment ↔ draft sync (fix 2026-10-27)
+  // =========================================================================
+  // เดิม draft ถูกเขียนเฉพาะตอนกด "ตรวจสอบข้อมูล" / "กลับ" — การลบไฟล์
+  // (DELETE สำเร็จ เคลียร์ R2 + state แล้ว) ไม่แตะ draft เลย ทำให้ Refresh
+  // โหลด draft เก่าที่ยังอ้างไฟล์ที่ถูกลบ → ไฟล์กลับมาใน UI → submit ส่ง
+  // fileUrl ที่ตายแล้ว ("File not found")
+  //
+  // FileUpload แจ้งทุกครั้งที่รายการไฟล์ของ field เปลี่ยน (upload/remove
+  // ผ่าน onFilesChange) — เรา sync รายการนั้นลง draft ทันที ทำให้
+  // "draft attachments = สิ่งที่ผู้ใช้เห็นบนจอ" เป็นจริงเสมอ ไม่มี draft
+  // ยัง (ก่อนกด save ครั้งแรก) → setDraftFieldAttachments no-op
+  const syncDraftAttachments = (fieldId: string, files: UploadedFileMeta[]) => {
+    if (!roundId) return;
+    setDraftFieldAttachments(
+      roundId,
+      fieldId,
+      files.map((f) => ({
+        fileUrl: f.url,
+        fileName: f.name,
+        contentType: f.contentType,
+        ledgerId: f.ledgerId,
+        deleteToken: f.deleteToken,
+        viewUrl: f.viewUrl,
+      }))
+    );
+  };
+
+  // =========================================================================
+  //  "ล้างข้อมูลทั้งหมด" (fix 2026-10-27)
+  // =========================================================================
+  // ล้าง session การสมัครที่ยังไม่ได้ส่งให้หมดจริง:
+  //   1. ยืนยันด้วยข้อความมาตรฐาน (RESET_CONFIRM_MESSAGE)
+  //   2. ลบไฟล์ที่อัปโหลดค้างออกจาก R2/ledger จริง (best-effort)
+  //   3. applyDraft:* ทุก key + submissionToken
+  //   4. React state: attachmentMeta, RHF values + errors, backError
+  //   5. bump formResetCount → FileUpload ทุกตัว remount (ไฟล์/error
+  //      ค้างใน component หายจริง แม้ userTouchedRef ถูกเซ็ตไว้แล้ว)
+  // draftRestored ยังเป็น true อยู่ — restore effect จะไม่กลับมาฟื้น
+  // ข้อมูลเก่าหลังล้าง (และ draft ก็ไม่มีแล้ว)
+  const handleResetAll = async () => {
+    if (isResetting || submitInFlightRef.current || backInFlightRef.current) return;
+    if (!window.confirm(RESET_CONFIRM_MESSAGE)) return;
+    setIsResetting(true);
+    try {
+      await resetApplySession({ attachmentMeta });
+      setAttachmentMeta({});
+      reset({});
+      setBackError(null);
+      setFormResetCount((c) => c + 1);
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   // Serialize the form state into the draft payload (formData + attachment
   // metadata). Extracted into a helper so `onSubmit` can wrap the entire
@@ -1124,9 +1193,15 @@ function FormInner() {
             rules={validationRules}
             render={({ field: { onChange, value } }) => (
               <FileUpload
+                // formResetCount — bump ตอน "ล้างข้อมูลทั้งหมด" เพื่อบังคับ
+                // remount เคลียร์ local state ของ FileUpload (ดู handleResetAll)
+                key={`${field.fieldId}-${formResetCount}`}
                 onUploadSuccess={onChange}
                 onFilesChange={(files) => {
                   setAttachmentMeta((prev) => ({ ...prev, [field.fieldId]: files }));
+                  // Fix 2026-10-27: sync draft ทันทีที่ไฟล์ถูกลบ/เพิ่ม —
+                  // กัน draft เก่าฟื้นไฟล์ที่ถูกลบจาก R2 หลัง Refresh
+                  syncDraftAttachments(field.fieldId, files);
                 }}
                 defaultFiles={attachmentMeta[field.fieldId]}
                 accept={getFileAccept(field)}
@@ -1396,6 +1471,15 @@ function FormInner() {
                 </span>
               ) : 'ตรวจสอบข้อมูล'}
             </Button>
+
+            {/* "ล้างข้อมูลทั้งหมด" — destructive reset ของ session การสมัคร
+                (draft ทุกรอบ + ไฟล์ที่อัปโหลดค้าง + form state) — handleResetAll
+                ยืนยันก่อนล้างเสมอ */}
+            <ApplyResetBar
+              onReset={() => void handleResetAll()}
+              disabled={isSubmitting}
+              busy={isResetting}
+            />
           </form>
         </CardContent>
       </Card>

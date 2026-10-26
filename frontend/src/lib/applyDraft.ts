@@ -169,6 +169,86 @@ export function clearApplyDraft(roundId: string): void {
 }
 
 /**
+ * ล้าง draft ของ **ทุก** รอบ (`applyDraft:*` ทุก key) — ใช้กับปุ่ม
+ * "ล้างข้อมูลทั้งหมด" บนหน้าสมัคร ซึ่งต้องไม่ทิ้ง draft ค้างของรอบอื่น
+ * ที่ผู้ใช้เริ่มไว้แต่ไม่ได้ submit คืนจำนวน draft ที่ถูกลบ
+ */
+export function clearAllApplyDrafts(): number {
+  const keys: string[] = [];
+  if (useFallback) {
+    const keys = Array.from(memoryFallback.keys()).filter((k) => k.startsWith(DRAFT_PREFIX));
+    keys.forEach((k) => memoryFallback.delete(k));
+    return keys.length;
+  }
+  try {
+    for (let i = 0; i < window.sessionStorage.length; i++) {
+      const k = window.sessionStorage.key(i);
+      if (k && k.startsWith(DRAFT_PREFIX)) keys.push(k);
+    }
+    keys.forEach((k) => window.sessionStorage.removeItem(k));
+    return keys.length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Shape ของไฟล์แนบหนึ่งไฟล์ต่อ field สำหรับ `setDraftFieldAttachments` —
+ * โครงเดียวกับ UploadedFileMeta ของ FileUpload (ตัด fieldId ออกเพราะ
+ * ผูกกับพารามิเตอร์แยกแล้ว)
+ */
+export type DraftAttachmentInput = {
+  fileUrl: string;
+  fileName?: string;
+  contentType?: string;
+  ledgerId?: string;
+  deleteToken?: string;
+  viewUrl?: string;
+};
+
+/**
+ * Sync รายการไฟล์แนบ **ของ field เดียว** ลง draft ที่บันทึกไว้แล้ว
+ * (ถ้ามี) — ใช้หลังผู้ใช้ลบ/เพิ่มไฟล์ใน FileUpload เพื่อให้ draft ไม่คง
+ * reference ของไฟล์ที่ถูกลบจาก R2 ไปแล้ว
+ *
+ * Bug ที่แก้ (2026-10-27): ลบไฟล์ → DELETE สำเร็จ → state ถูกเคลียร์ →
+ * Refresh → restore effect โหลด draft เก่าที่ยังมี attachment → ไฟล์เดิม
+ * กลับมาใน UI → submit ส่ง fileUrl ของไฟล์ที่ถูกลบ → "File not found"
+ *
+ * - formData / submissionToken / savedAt ของ draft เดิมถูกคงไว้
+ * - attachment ของ field อื่นไม่ถูกกระทบ
+ * - ไม่มี draft สำหรับรอบนี้ → no-op (คืน null ไม่สร้าง draft ใหม่)
+ */
+export function setDraftFieldAttachments(
+  roundId: string,
+  fieldId: string,
+  files: DraftAttachmentInput[]
+): ApplyDraft | null {
+  const draft = loadApplyDraft(roundId);
+  if (!draft) return null;
+  const rest = draft.attachments.filter((a) => a.fieldId !== fieldId);
+  const synced: FileAttachmentDraft[] = [
+    ...rest,
+    ...files.map((f) => ({
+      fieldId,
+      fileUrl: f.fileUrl,
+      fileName: f.fileName,
+      contentType: f.contentType,
+      ledgerId: f.ledgerId,
+      deleteToken: f.deleteToken,
+      viewUrl: f.viewUrl,
+    })),
+  ];
+  saveApplyDraft({
+    roundId,
+    formData: draft.formData,
+    attachments: synced,
+    submissionToken: draft.submissionToken,
+  });
+  return loadApplyDraft(roundId);
+}
+
+/**
  * Returns the list of round IDs that currently have a draft. Used by
  * the home page to show a "Resume your application" hint. Not required
  * by the spec but cheap to add for the next PR.
