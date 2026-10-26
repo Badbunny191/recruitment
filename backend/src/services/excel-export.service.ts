@@ -270,17 +270,19 @@ export function transformFieldValue(
       // ✅ Other Option — checkbox กลุ่ม (allowOther) เก็บ string[]
       if (Array.isArray(raw)) {
         const joined = raw.map((v) => toStringSafe(v)).join(', ');
-        return replaceOtherInDisplay(joined, otherTextOf(formData, fieldId));
+        // formData เก็บค่าจากผู้สมัครแบบไม่ whitelist — ทุก string cell ต้องผ่าน
+        // sanitizeCell (ปิด formula injection ผ่านทาง other-text ด้วย)
+        return sanitizeCell(replaceOtherInDisplay(joined, otherTextOf(formData, fieldId)));
       }
       if (typeof raw === 'boolean') return raw ? 'ใช่' : 'ไม่ใช่';
       return sanitizeCell(toStringSafe(raw));
     }
     case 'MASTER_DATA': {
       if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
-        return objectDisplayLabel(raw as Record<string, unknown>); // name/label เท่านั้น
+        return sanitizeCell(objectDisplayLabel(raw as Record<string, unknown>)); // name/label เท่านั้น
       }
       if (Array.isArray(raw)) {
-        return raw.map((v) => toStringSafe(v)).join(', ');
+        return sanitizeCell(raw.map((v) => toStringSafe(v)).join(', '));
       }
       return sanitizeCell(String(raw)); // legacy string
     }
@@ -303,7 +305,7 @@ export function transformFieldValue(
         ? raw.map((v) => toStringSafe(v)).join(', ')
         : toStringSafe(raw);
       // ✅ Other Option: "อื่นๆ (โปรดระบุ)" → "อื่นๆ: <ข้อความ>"
-      return formatFieldValueWithOther(fieldId, display, formData);
+      return sanitizeCell(formatFieldValueWithOther(fieldId, display, formData));
     }
     case 'TEXTAREA':
     case 'TEXT':
