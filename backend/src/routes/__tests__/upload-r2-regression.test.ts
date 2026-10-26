@@ -20,9 +20,12 @@
 import { Hono } from 'hono';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/d1';
 import { uploadRoutes } from '../upload.routes';
 import { getApplicationPdf } from '../../lib/pdf.service';
 import { buildPdfCacheKey } from '../../lib/pdf-types';
+import { signAttachmentKey } from '../../lib/attachment-signing';
 import { __resetRateLimitStoreForTests } from '../../middlewares/rate-limit.middleware';
 
 let passed = 0;
@@ -144,17 +147,54 @@ async function runAllTests() {
 
   const { bucket, objects, calls } = createMockR2Bucket();
 
+  // Migration 029: POST /direct ลง ledger TEMP ด้วย — ต้องมี D1 จำลอง
+  const sqlite = new Database(':memory:');
+  sqlite.exec(`
+    CREATE TABLE attachment_uploads (
+      id TEXT PRIMARY KEY, r2_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'TEMP',
+      uploaded_at INTEGER, application_id TEXT, original_filename TEXT,
+      delete_token_hash TEXT, activated_at INTEGER, deleted_at INTEGER
+    );
+  `);
+  const d1: any = {
+    prepare: (sqlText) => {
+      const stmt = sqlite.prepare(sqlText);
+      let bound = [];
+      return {
+        bind(...params) { bound = params; return this; },
+        async all() { return { results: stmt.all(...bound) }; },
+        async first() { return stmt.get(...bound) ?? null; },
+        async run() { stmt.run(...bound); return { success: true, meta: {} }; },
+        async raw() { return stmt.raw(true).all(...bound); },
+      };
+    },
+    async batch(statements) {
+      const results = [];
+      for (const s of statements) { await s.run(); results.push({ results: [], success: true }); }
+      return results;
+    },
+  };
+  void drizzle; // drizzle ถูกเรียกภายใน route (drizzle(c.env.DB)) — import ไว้เพื่อ parity กับไฟล์อื่น
+
   // โครงสร้าง app เหมือน index.ts: mount uploadRoutes ที่ /api/v1/public/uploads
   const app = new Hono();
   app.route('/api/v1/public/uploads', uploadRoutes);
 
+  const JWT_SECRET = 'test-secret';
   const env: any = {
-    DB: {},
+    DB: d1,
     R2_BUCKET: bucket,
-    JWT_SECRET: 'test-secret',
+    JWT_SECRET,
   };
 
   const BASE = '/api/v1/public/uploads';
+
+  /** signed view path ของ key (GET /files/:key บังคับ signature แล้ว — Migration 029) */
+  const signedPath = async (key: string) => {
+    const exp = Math.floor(Date.now() / 1000) + 600;
+    const sig = await signAttachmentKey(key, exp, JWT_SECRET);
+    return `${BASE}/files/${encodeURIComponent(key)}?exp=${exp}&sig=${sig}`;
+  };
 
   // Seed ข้อมูลจำลองใน bucket: attachment 1 ชิ้น + PDF cache 1 ชิ้น
   const attachmentKey = 'uploads/documents/2026/test-attachment.pdf';
@@ -207,11 +247,18 @@ async function runAllTests() {
     assertEqual(calls.delete.length, 0, 'R2 delete must never be called');
   });
 
-  await test('1.6 route table ของ uploadRoutes ไม่มี method DELETE', () => {
+  await test('1.6 route table: DELETE มีเฉพาะ /direct/:ledgerId (lifecycle) — ห้ามมีบน /files', () => {
     const methods = uploadRoutes.routes.map((r: any) => r.method);
-    assertTrue(!methods.includes('DELETE'), `found DELETE in routes: ${methods.join(',')}`);
     assertTrue(methods.includes('POST'), 'POST routes must exist');
     assertTrue(methods.includes('GET'), 'GET routes must exist');
+    // Hono ลงทะเบียน 1 entry ต่อ handler (middleware + handler = หลาย entry
+    // ต่อ 1 route) — เช็คว่าทุก entry DELETE อยู่บน /direct เท่านั้น
+    const deleteRoutes = uploadRoutes.routes.filter((r: any) => r.method === 'DELETE');
+    assertTrue(deleteRoutes.length >= 1, 'lifecycle DELETE route must be registered');
+    deleteRoutes.forEach((r: any) => {
+      assertTrue(r.path.includes('/direct/'), `DELETE route path must be /direct/:ledgerId, got: ${r.path}`);
+      assertTrue(!r.path.includes('/files'), 'DELETE must not be exposed on /files/:key');
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -331,7 +378,7 @@ async function runAllTests() {
 
   await test('2b.U ดาวน์โหลดไฟล์ชื่อไทยกลับได้ (GET /files/:key roundtrip) + header ปลอดภัย', async () => {
     const data = await uploadName('ใบสมัคร-ฉบับแก้ไข.pdf');
-    const res = await app.request(`${BASE}/files/${encodeURIComponent(data.fileKey)}`, {}, env);
+    const res = await app.request(await signedPath(data.fileKey), {}, env);
     assertEqual(res.status, 200, 'GET ต้อง 200');
     assertEqual(res.headers.get('Content-Type'), 'application/pdf');
     const disposition = res.headers.get('Content-Disposition') || '';
@@ -349,11 +396,7 @@ async function runAllTests() {
   // ---------------------------------------------------------------------------
 
   await test('3.1 GET ไฟล์ที่เพิ่ง upload → 200 + bytes ตรงต้นฉบับ', async () => {
-    const res = await app.request(
-      `${BASE}/files/${encodeURIComponent(uploadedFileKey)}`,
-      {},
-      env
-    );
+    const res = await app.request(await signedPath(uploadedFileKey), {}, env);
     assertEqual(res.status, 200, 'GET uploaded file must be 200');
     assertEqual(res.headers.get('Content-Type'), 'application/pdf', 'Content-Type must be pdf');
     const got = new Uint8Array(await res.arrayBuffer());
@@ -361,18 +404,19 @@ async function runAllTests() {
   });
 
   await test('3.2 GET attachment เดิม → 200 (flow แนบไฟล์ใบสมัครไม่กระทบ)', async () => {
-    const res = await app.request(
-      `${BASE}/files/${encodeURIComponent(attachmentKey)}`,
-      {},
-      env
-    );
+    const res = await app.request(await signedPath(attachmentKey), {}, env);
     assertEqual(res.status, 200, 'GET seeded attachment must be 200');
     const text = await res.text();
     assertTrue(text.startsWith('%PDF-1.4'), 'attachment content must match');
   });
 
-  await test('3.3 GET key ที่ไม่มี → 404', async () => {
-    const res = await app.request(`${BASE}/files/uploads/documents/2026/ghost.pdf`, {}, env);
+  await test('3.3 GET ไม่มี signature → 403 (Migration 029: ห้ามเปิด public)', async () => {
+    const res = await app.request(`${BASE}/files/${encodeURIComponent(uploadedFileKey)}`, {}, env);
+    assertEqual(res.status, 403, 'unsigned GET must be rejected');
+  });
+
+  await test('3.4 GET key ที่ไม่มี (signature ถูก) → 404', async () => {
+    const res = await app.request(await signedPath('uploads/documents/2026/ghost.pdf'), {}, env);
     assertEqual(res.status, 404, 'GET missing key must be 404');
   });
 
@@ -433,10 +477,15 @@ async function runAllTests() {
     assertEqual(calls.delete.length, 0, 'no R2 delete call may occur at all');
   });
 
-  await test('5.2 source ของ upload.routes.ts ไม่มีการลงทะเบียน DELETE route', () => {
+  await test('5.2 source ของ upload.routes.ts: DELETE ลงทะเบียนเฉพาะ /direct/:ledgerId เท่านั้น', () => {
     const here = fileURLToPath(import.meta.url);
     const source = readFileSync(here.replace('__tests__/upload-r2-regression.test.ts', 'upload.routes.ts'), 'utf8');
-    assertTrue(!/uploadRoutes\.delete\(/.test(source), 'uploadRoutes.delete() must not exist in source');
+    // Migration 029: DELETE route เดียวที่อนุญาต = lifecycle temp delete
+    // (TEMP + delete token เท่านั้น) — ห้ามมี DELETE บน /files/:key อีก
+    assertTrue(source.includes("uploadRoutes.delete('/direct/:ledgerId'"), 'lifecycle DELETE route must exist');
+    assertTrue(!/uploadRoutes\.delete\(['"`]\/files/.test(source), 'no DELETE on /files/:key');
+    // GET /files ต้องตรวจ signature เสมอ (ปิดช่อง public access)
+    assertTrue(source.includes('verifyAttachmentSignature'), 'GET /files must verify signature');
   });
 }
 

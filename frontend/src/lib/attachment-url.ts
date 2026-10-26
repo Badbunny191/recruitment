@@ -20,3 +20,17 @@ export function getFileKey(fileUrl: string): string {
 export function buildAttachmentViewUrl(fileUrl: string): string {
   return `${API_URL}/public/uploads/files/${encodeURIComponent(getFileKey(fileUrl))}`;
 }
+
+/**
+ * ประกอบ absolute URL จาก view path ที่ backend ติด signature ให้แล้ว
+ * (Attachment Lifecycle — GET /files/:key ต้องมี ?exp=&sig= เสมอ)
+ * viewPath เป็น relative path บน API origin เช่น
+ * `/api/v1/public/uploads/files/<enc>?exp=...&sig=...`
+ * รับ absolute URL กลับมาคืนตรง ๆ (defensive) และคงค่า fallback เดิม
+ * buildAttachmentViewUrl ไว้สำหรับ draft เก่าที่ไม่มี viewUrl
+ */
+export function buildAttachmentUrlFromPath(viewPath: string): string {
+  if (!viewPath) return '';
+  if (/^https?:\/\//i.test(viewPath)) return viewPath;
+  return `${API_URL}${viewPath.startsWith('/') ? '' : '/'}${viewPath}`;
+}

@@ -31,6 +31,12 @@ export type FileAttachmentDraft = {
   // show a friendly file name + type without re-fetching.
   fileName?: string;
   contentType?: string;
+  // Attachment Lifecycle (Migration 029) — capability + signed view URL
+  // จาก response ตอน upload (undefined = ไฟล์จาก draft รูปแบบเก่า —
+  // ลบได้เฉพาะ state และเปิดดูผ่านลิงก์เดิมซึ่งจะ 403 เพราะไม่มี signature)
+  ledgerId?: string;
+  deleteToken?: string;
+  viewUrl?: string;
 };
 
 export type ApplyDraft = {

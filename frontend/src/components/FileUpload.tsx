@@ -5,8 +5,19 @@ import { Button } from '@/components/ui/button';
 
 export interface UploadedFileMeta {
   name: string;
+  /** relative fileUrl (/api/v1/...) — ค่าที่ใช้ตอน submit (เก็บลง DB) ห้ามใส่ signature */
   url: string;
   contentType?: string;
+  /**
+   * Attachment Lifecycle (Migration 029) — ได้จาก response ตอน upload:
+   * ledgerId + deleteToken = capability สำหรับลบไฟล์จริงผ่าน
+   * DELETE /public/uploads/direct/:ledgerId (ผู้สมัครไม่มี login)
+   * viewUrl = signed URL (?exp=&sig=) สำหรับเปิดดูก่อน submit
+   * undefined = ไฟล์จาก draft เก่า → ลบได้เฉพาะ state เหมือนพฤติกรรมเดิม
+   */
+  ledgerId?: string;
+  deleteToken?: string;
+  viewUrl?: string;
 }
 
 interface FileUploadProps {
@@ -55,6 +66,8 @@ export function FileUpload({
   // Seed from `defaultFiles` if provided at first render. The effect
   // below handles the case where `defaultFiles` arrives after mount.
   const [files, setFiles] = useState<UploadedFileMeta[]>(defaultFiles ?? []);
+  // Attachment Lifecycle — กัน double-click ระหว่างลบไฟล์จริงผ่าน backend
+  const [isRemoving, setIsRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const inputId = useId();
@@ -162,6 +175,11 @@ export function FileUpload({
           name: file.name,
           url: responseData.data.fileUrl,
           contentType: file.type || responseData.data.contentType,
+          // Attachment Lifecycle — เก็บ capability + signed view URL ไว้ใช้
+          // ตอนลบไฟล์จริง / เปิดดูหน้า review
+          ledgerId: responseData.data.ledgerId || undefined,
+          deleteToken: responseData.data.deleteToken || undefined,
+          viewUrl: responseData.data.viewUrl || undefined,
         });
       }
 
@@ -176,7 +194,34 @@ export function FileUpload({
     }
   };
 
-  const handleRemove = (index: number) => {
+  /**
+   * ลบไฟล์ — Attachment Lifecycle: ถ้ามี ledgerId + deleteToken (ไฟล์ที่
+   * อัปโหลดผ่านระบบใหม่) ต้องลบจริงทั้ง R2 object และ ledger ผ่าน backend
+   * ก่อนเสมอ — ลบเฉพาะ state อย่างเดียวทิ้ง object ค้างใน bucket
+   * ไฟล์จาก draft เก่า (ไม่มี token) ยังลบเฉพาะ state ตามพฤติกรรมเดิม
+   */
+  const handleRemove = async (index: number) => {
+    const target = files[index];
+    if (target?.ledgerId && target?.deleteToken) {
+      setIsRemoving(true);
+      try {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
+        const res = await fetch(`${apiUrl}/public/uploads/direct/${encodeURIComponent(target.ledgerId)}`, {
+          method: 'DELETE',
+          headers: { 'X-Attachment-Token': target.deleteToken },
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error || 'ไม่สามารถลบไฟล์ได้ กรุณาลองอีกครั้ง');
+        }
+      } catch (err) {
+        console.error('Delete attachment error:', err);
+        setError(err instanceof Error ? err.message : 'ไม่สามารถลบไฟล์ได้ กรุณาลองอีกครั้ง');
+        setIsRemoving(false);
+        return; // ลบไม่สำเร็จ — คงไฟล์ไว้ใน state ให้ตรงกับ R2 จริง
+      }
+      setIsRemoving(false);
+    }
     const newFiles = files.filter((_, i) => i !== index);
     updateFiles(newFiles);
   };
@@ -208,11 +253,12 @@ export function FileUpload({
               </svg>
               <span>{files[0].name}</span>
             </div>
-            <Button 
-              type="button" 
-              variant="ghost" 
-              size="sm" 
-              onClick={() => handleRemove(0)} 
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={isRemoving}
+              onClick={() => void handleRemove(0)}
               className="text-red-500 hover:text-red-700 hover:bg-red-50"
             >
               ลบไฟล์
@@ -260,11 +306,12 @@ export function FileUpload({
                 </svg>
                 <span className="text-sm truncate">{file.name}</span>
               </div>
-              <Button 
-                type="button" 
-                variant="ghost" 
-                size="sm" 
-                onClick={() => handleRemove(index)} 
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={isRemoving}
+                onClick={() => void handleRemove(index)}
                 className="text-red-500 hover:text-red-700 hover:bg-red-50 flex-shrink-0"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

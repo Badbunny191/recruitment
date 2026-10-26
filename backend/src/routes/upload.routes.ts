@@ -1,9 +1,18 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { drizzle } from 'drizzle-orm/d1';
+import { eq } from 'drizzle-orm';
 import { FileUploadRequestSchema } from '../schemas/validators';
 import { Bindings } from '../types';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { sanitizeDisplayFilename } from '../utils/filename';
+import { attachmentUploads } from '../db/schema';
+import { hashDeleteToken, insertTempLedger } from '../lib/attachment-ledger';
+import {
+  ATTACHMENT_VIEW_TTL_TEMP,
+  buildSignedAttachmentPath,
+  verifyAttachmentSignature,
+} from '../lib/attachment-signing';
 
 const uploadRoutes = new Hono<{ Bindings: Bindings }>();
 
@@ -97,20 +106,46 @@ uploadRoutes.post('/direct', rateLimitMiddleware(), async (c) => {
       }
     });
 
+    // ── Attachment Lifecycle: ลงทะเบียนไฟล์เป็น TEMP (Migration 029) ──
+    // ทุก object ที่เข้า bucket ต้องมี ledger row ไม่งั้น cron จะไม่เก็บ
+    // ถ้า ledger insert ล้มเหลว (DB error) ยังคืน upload success — ไฟล์เส้น
+    // เดิมใช้ได้ แต่จะไม่มี delete token และไม่ถูก GC (fail-open เพื่อไม่
+    // บล็อกผู้สมัครทั้งคนด้วยความผิดพลาดของ ledger)
+    let ledgerId: string | undefined;
+    let deleteToken: string | undefined;
+    try {
+      const entry = await insertTempLedger(drizzle(c.env.DB), {
+        r2Key: fileKey,
+        originalFilename: displayFilename,
+      });
+      ledgerId = entry.ledgerId;
+      deleteToken = entry.deleteToken;
+    } catch (ledgerErr) {
+      console.error('[Upload] Failed to create TEMP ledger entry:', ledgerErr);
+    }
+
+    // Signed view URL (TTL 7 วัน = horizon ของ TEMP cleanup) — ผู้สมัครใช้
+    // เปิดดูไฟล์ตัวเองบนหน้า review โดยที่ key เปล่า ๆ เปิดจาก URL ตรงไม่ได้
+    const viewUrl = await buildSignedAttachmentPath(fileKey, c.env.JWT_SECRET, ATTACHMENT_VIEW_TTL_TEMP);
+
     // Generate public URL for the file
-    // R2 bucket มี public URL format: https://<bucket>.<account>.r2.dev/<key>
-    // หรือใช้ Workers ที่ตั้งค่า custom domain
+    // รูปแบบ fileUrl เดิม (relative path ไม่มี signature) — ค่าที่เก็บลง
+    // application_attachments ตอน submit ต้องเป็นค่านี้เท่านั้น
     const fileUrl = `/api/v1/public/uploads/files/${encodeURIComponent(fileKey)}`;
 
-    return c.json({ 
-      success: true, 
-      data: { 
+    return c.json({
+      success: true,
+      data: {
         fileKey,
         fileUrl,
         filename: displayFilename,
         size: file.size,
-        contentType: 'application/pdf'
-      } 
+        contentType: 'application/pdf',
+        // ── Attachment Lifecycle fields ──
+        ledgerId,
+        deleteToken,
+        viewUrl,
+      }
     }, 201);
 
   } catch (error) {
@@ -124,20 +159,63 @@ uploadRoutes.post('/direct', rateLimitMiddleware(), async (c) => {
 
 /**
  * GET /api/v1/public/uploads/files/:key
- * Download/View file จาก R2
+ * Download/View file จาก R2 — ต้องมี signed URL เท่านั้น
+ *
+ * ── Authorization: Hybrid (signed URL + status enforcement) ──
+ * เดิม endpoint นี้เปิดได้แบบไม่มีเงื่อนไข — Resume/Transcript ของผู้สมัคร
+ * รั่วผ่าน URL ตรง ผู้สมัครไม่มีระบบ login จึงใช้ capability model:
+ *   - signature (HMAC-SHA256 ด้วย JWT_SECRET) mint ให้ตอน upload / โดย admin
+ *   - เงื่อนไขเพิ่มเติมจาก ledger: แถว DELETED → 404 แม้ object ยังอยู่ใน R2
+ *     (กัน race: object ถูกลบไม่หมดแต่ lifecycle ปิดแล้ว)
+ *   - ไม่มีแถว = legacy (ไฟล์ก่อน deploy) — signature ยังต้องถูกเสมอ
+ *
+ * Cache ต้องเป็น private เท่านั้น (เดิม public max-age=1 ปี — เพราะเคยเป็น
+ * endpoint สาธารณะ) กัน CDN/cache กลางทางจับ response ที่ผ่าน access control
  */
 uploadRoutes.get('/files/:key{.+}', async (c) => {
   try {
     const key = c.req.param('key');
     const decodedKey = decodeURIComponent(key);
 
+    // ── 1) Signed URL check ──
+    const exp = Number(c.req.query('exp') || 0);
+    const sig = c.req.query('sig') || '';
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (!exp || !sig || exp < nowSec) {
+      return c.json({
+        success: false,
+        error: 'Missing or expired signature',
+      }, 403);
+    }
+    const signatureValid = await verifyAttachmentSignature(decodedKey, exp, sig, c.env.JWT_SECRET);
+    if (!signatureValid) {
+      return c.json({
+        success: false,
+        error: 'Invalid signature',
+      }, 403);
+    }
+
+    // ── 2) Ledger status check (DELETED = lifecycle ปิดแล้ว) ──
+    const db = drizzle(c.env.DB);
+    const ledgerRow = await db
+      .select({ status: attachmentUploads.status })
+      .from(attachmentUploads)
+      .where(eq(attachmentUploads.r2Key, decodedKey))
+      .get();
+    if (ledgerRow?.status === 'DELETED') {
+      return c.json({
+        success: false,
+        error: 'File not found',
+      }, 404);
+    }
+
     // ดึงไฟล์จาก R2
     const object = await c.env.R2_BUCKET.get(decodedKey);
 
     if (!object) {
-      return c.json({ 
-        success: false, 
-        error: 'File not found' 
+      return c.json({
+        success: false,
+        error: 'File not found'
       }, 404);
     }
 
@@ -154,17 +232,86 @@ uploadRoutes.get('/files/:key{.+}', async (c) => {
         'Content-Disposition': metadata.contentDisposition
           || contentDispositionInline(customMeta.originalFilename || 'file.pdf'),
         'Content-Length': object.size.toString(),
-        'Cache-Control': 'public, max-age=31536000', // Cache 1 year for uploaded files
+        // ไฟล์ต่อ key ไม่เปลี่ยน แต่ access control อยู่บน signature —
+        // cache ได้เฉพาะ private (browser เดียว) ห้าม public/CDN
+        'Cache-Control': 'private, max-age=3600',
         'ETag': object.httpEtag,
       }
     });
 
   } catch (error) {
     console.error('Download error:', error);
-    return c.json({ 
-      success: false, 
-      error: 'Failed to retrieve file' 
+    return c.json({
+      success: false,
+      error: 'Failed to retrieve file'
     }, 500);
+  }
+});
+
+/**
+ * DELETE /api/v1/public/uploads/direct/:ledgerId
+ * ลบไฟล์ TEMP จริง — ปิดปัญหา "ปุ่มลบลบเฉพาะ React state"
+ *
+ * Capability model: ผู้สมัครไม่มี login จึงใช้ delete token ที่ออกตอน upload
+ * (ครั้งเดียว ฝั่ง client เก็บใน draft) — เทียบ SHA-256 กับ delete_token_hash
+ *
+ *   404 = ไม่พบ ledger id / ถูกลบไปแล้ว
+ *   403 = token ไม่ตรง / ไม่ได้แนบ token (legacy row ไม่มี token ก็ 403)
+ *   409 = ไฟล์ถูก submit แล้ว (ACTIVE) — ห้ามลบผ่าน endpoint นี้
+ *
+ * ลบทั้ง R2 object และ mark ledger DELETED (ลบ R2 ก่อน mark — ถ้า mark
+ * ล้ม รอบถัดไปยัง retry ได้เพราะแถวยัง TEMP)
+ */
+uploadRoutes.delete('/direct/:ledgerId', rateLimitMiddleware(), async (c) => {
+  try {
+    const ledgerId = c.req.param('ledgerId');
+    const token = c.req.header('X-Attachment-Token') || c.req.query('token') || '';
+    if (!token) {
+      return c.json({ success: false, error: 'Missing delete token' }, 403);
+    }
+
+    const db = drizzle(c.env.DB);
+    const row = await db
+      .select({
+        id: attachmentUploads.id,
+        r2Key: attachmentUploads.r2Key,
+        status: attachmentUploads.status,
+        deleteTokenHash: attachmentUploads.deleteTokenHash,
+      })
+      .from(attachmentUploads)
+      .where(eq(attachmentUploads.id, ledgerId))
+      .get();
+
+    if (!row || row.status === 'DELETED') {
+      return c.json({ success: false, error: 'File not found' }, 404);
+    }
+    if (row.status === 'ACTIVE') {
+      return c.json({
+        success: false,
+        error: 'File is already attached to a submitted application and cannot be deleted',
+      }, 409);
+    }
+    if (!row.deleteTokenHash) {
+      // legacy row — ไม่มี capability ที่ตรงกันได้เลย
+      return c.json({ success: false, error: 'Invalid delete token' }, 403);
+    }
+
+    const tokenHash = await hashDeleteToken(token);
+    if (tokenHash !== row.deleteTokenHash) {
+      return c.json({ success: false, error: 'Invalid delete token' }, 403);
+    }
+
+    await c.env.R2_BUCKET.delete(row.r2Key);
+    await db
+      .update(attachmentUploads)
+      .set({ status: 'DELETED', deletedAt: new Date() })
+      // Guard: ระหว่าง R2.delete กับ mark อาจมี submit promote แถวนี้ไปแล้ว
+      .where(eq(attachmentUploads.id, row.id));
+
+    return c.json({ success: true, data: { deleted: true } });
+  } catch (error) {
+    console.error('Delete temp attachment error:', error);
+    return c.json({ success: false, error: 'Failed to delete file' }, 500);
   }
 });
 

@@ -11,6 +11,11 @@ import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { handleApplicationStatusChange, buildAuditPayload } from '../lib/change-tracking';
 import { getApplicationPdf } from '../lib/pdf.service';
 import {
+  ATTACHMENT_VIEW_TTL_ADMIN,
+  buildSignedAttachmentPath,
+} from '../lib/attachment-signing';
+import { extractR2KeyFromFileUrl } from '../utils/filename';
+import {
   OTHER_OPTION_FIELD_TYPES,
   appendOtherOption,
   parseOptionsArray,
@@ -2174,6 +2179,46 @@ adminRoutes.patch('/applications/:id/status', adminOnlyMiddleware, auditMiddlewa
       details: error?.cause?.message || null
     }, 500);
   }
+});
+
+// GET /admin/applications/:id/attachment-urls - Mint signed view URLs
+// ── Attachment Lifecycle (Migration 029) ──
+// เดิมหน้า admin เปิดไฟล์แนบผ่าน GET /public/uploads/files/:key ตรง ๆ —
+// endpoint นั้นตอนนี้ต้องมี signature (Hybrid authz ดู attachment-signing.ts)
+// จึงต้องมีจุด mint ฝั่ง admin: JWT ผ่าน authMiddleware แล้ว (use '/*')
+// VIEWER ก็เรียกได้ (read-only) จึงไม่ใส่ adminOnlyMiddleware
+// TTL 60 นาที — พอสำหรับ session ทบทวนใบสมัคร ไม่ยาวจน URL ลอยไปคนอื่น
+adminRoutes.get('/applications/:id/attachment-urls', async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+
+  const app = await db.select({ id: applications.id }).from(applications).where(eq(applications.id, id)).get();
+  if (!app) {
+    return c.json({ error: 'Application not found' }, 404);
+  }
+
+  const attachments = await db
+    .select({
+      id: applicationAttachments.id,
+      fieldId: applicationAttachments.fieldId,
+      fileUrl: applicationAttachments.fileUrl,
+      originalFilename: applicationAttachments.originalFilename,
+    })
+    .from(applicationAttachments)
+    .where(eq(applicationAttachments.applicationId, id));
+
+  const data = await Promise.all(
+    attachments.map(async (att) => ({
+      ...att,
+      viewUrl: await buildSignedAttachmentPath(
+        extractR2KeyFromFileUrl(att.fileUrl),
+        c.env.JWT_SECRET,
+        ATTACHMENT_VIEW_TTL_ADMIN,
+      ),
+    })),
+  );
+
+  return c.json({ data });
 });
 
 // GET /admin/applications/:id - Get full application detail with attachments

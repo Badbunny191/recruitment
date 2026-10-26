@@ -18,7 +18,7 @@ import {
   formatOtherDisplay,
 } from '@/lib/otherOption';
 import { attachmentDisplayName } from '@/lib/filename';
-import { buildAttachmentViewUrl } from '@/lib/attachment-url';
+import { buildAttachmentViewUrl, buildAttachmentUrlFromPath } from '@/lib/attachment-url';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 
@@ -290,7 +290,13 @@ function ReviewContent() {
               <div className="text-xs text-slate-500 truncate">{att.contentType || 'ไฟล์แนบ'}</div>
             </div>
             <a
-              href={buildAttachmentViewUrl(att.fileUrl)}
+              href={
+                // Attachment Lifecycle: ไฟล์ที่อัปโหลดผ่านระบบใหม่เปิดผ่าน
+                // signed viewUrl เท่านั้น (GET /files/:key บังคับ signature) —
+                // draft รูปแบบเก่า (ไม่มี viewUrl) fallback เส้นทางเดิมซึ่ง
+                // จะ 403 เพราะขาด signature
+                att.viewUrl ? buildAttachmentUrlFromPath(att.viewUrl) : buildAttachmentViewUrl(att.fileUrl)
+              }
               target="_blank"
               rel="noopener noreferrer"
               className="flex-shrink-0 text-blue-600 hover:text-blue-800 text-sm font-medium underline whitespace-nowrap"

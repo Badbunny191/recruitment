@@ -21,6 +21,7 @@ import {
   parseOptionsArray,
 } from '../lib/other-option';
 import { buildApplicationNumber } from '../services/application-number.service';
+import { buildPromoteAttachmentsStatements } from '../lib/attachment-ledger';
 import { idempotencyMiddleware } from '../middlewares/idempotency.middleware';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { honeypotMiddleware } from '../middlewares/honeypot.middleware';
@@ -437,6 +438,15 @@ async function insertApplicationWithRetry(
               }),
             );
           }
+          // ── Attachment Lifecycle (Migration 029) ──
+          // TEMP → ACTIVE ใน batch เดียวกับ insert — submit สำเร็จ/ล้มพร้อมกัน
+          // ไฟล์ที่ promote แล้วจึงไม่ถูก cron cleanup เก็บ
+          statements.push(
+            ...buildPromoteAttachmentsStatements(db, {
+              applicationId: args.id,
+              fileUrls: args.attachments.map((att) => att.fileUrl),
+            }),
+          );
         }
         await db.batch(statements as [any, ...any[]]);
         return { ok: true, applicationNo };
@@ -492,6 +502,14 @@ async function insertApplicationWithRetry(
             }),
           );
         }
+        // ── Attachment Lifecycle (Migration 029) ──
+        // TEMP → ACTIVE ใน batch เดียวกับ insert — ดู path Strategy B
+        statements.push(
+          ...buildPromoteAttachmentsStatements(db, {
+            applicationId: args.id,
+            fileUrls: args.attachments.map((att) => att.fileUrl),
+          }),
+        );
       }
       await db.batch(statements as [any, ...any[]]);
       return { ok: true, applicationNo };

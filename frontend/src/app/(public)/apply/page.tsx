@@ -515,6 +515,11 @@ function FormInner() {
         name: attachmentDisplayName({ fileName: att.fileName, fileUrl: att.fileUrl }) || 'ไฟล์แนบ',
         url: att.fileUrl,
         contentType: att.contentType,
+        // Attachment Lifecycle — คง capability ลบไฟล์จริง + signed view URL
+        // ข้าม draft save/restore (undefined = draft รูปแบบเก่า)
+        ledgerId: att.ledgerId,
+        deleteToken: att.deleteToken,
+        viewUrl: att.viewUrl,
       });
     });
     setAttachmentMeta(meta);
@@ -541,7 +546,16 @@ function FormInner() {
         if (field.fileConfig?.maxFiles && field.fileConfig.maxFiles > 1) {
           // Multi-file: meta is the source of truth.
           meta.forEach((m) => {
-            attachments.push({ fieldId: field.fieldId, fileUrl: m.url, fileName: m.name, contentType: m.contentType });
+            attachments.push({
+              fieldId: field.fieldId,
+              fileUrl: m.url,
+              fileName: m.name,
+              contentType: m.contentType,
+              // Attachment Lifecycle — คง capability ไว้ใช้ต่อหลังกลับมาแก้
+              ledgerId: m.ledgerId,
+              deleteToken: m.deleteToken,
+              viewUrl: m.viewUrl,
+            });
           });
         } else if (value) {
           // Single-file: prefer meta (has name + type); fall back to bare URL.
@@ -551,6 +565,9 @@ function FormInner() {
             fileUrl: value,
             fileName: m?.name,
             contentType: m?.contentType,
+            ledgerId: m?.ledgerId,
+            deleteToken: m?.deleteToken,
+            viewUrl: m?.viewUrl,
           });
         }
       } else if (field.type === 'CHECKBOX') {

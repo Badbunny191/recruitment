@@ -101,6 +101,11 @@ sqlite.exec(`
     id TEXT PRIMARY KEY, application_id TEXT NOT NULL, field_id TEXT NOT NULL,
     file_url TEXT NOT NULL, original_filename TEXT, uploaded_at INTEGER
   );
+  CREATE TABLE attachment_uploads (
+    id TEXT PRIMARY KEY, r2_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'TEMP',
+    uploaded_at INTEGER, application_id TEXT, original_filename TEXT,
+    delete_token_hash TEXT, activated_at INTEGER, deleted_at INTEGER
+  );
 `);
 
 const d1 = createD1Adapter(sqlite);

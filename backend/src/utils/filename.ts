@@ -133,6 +133,28 @@ export const MAX_EXPORT_ROUND_NAME_LENGTH = 80;
 export const EXPORT_FALLBACK_ROUND_NAME = 'รอบรับสมัคร';
 
 /**
+ * ถอด R2 object key จาก fileUrl ที่ระบบเก็บไว้:
+ *   - รูปแบบมาตรฐาน `/api/v1/public/uploads/files/<encoded-key>` → key หลัง
+ *     `/uploads/files/` ปิดท้าย query/hash แล้ว decode percent-encoding
+ *   - ค่าที่ไม่ตรงรูปแบบ (ข้อมูลเก่า / key ดิบ) → คืนดิบหลังตัด query/hash
+ * คืน '' เมื่อ input ไม่ใช่ string หรือว่าง — ห้าม throw กับข้อมูลเพี้ยน
+ * ใช้ตอน promote TEMP→ACTIVE (submit) และ mint signed URL ฝั่ง admin
+ */
+export function extractR2KeyFromFileUrl(fileUrl: string): string {
+  if (typeof fileUrl !== 'string' || !fileUrl) return '';
+  const noQuery = fileUrl.split('?')[0].split('#')[0];
+  const marker = '/uploads/files/';
+  const idx = noQuery.indexOf(marker);
+  const raw = idx >= 0 ? noQuery.slice(idx + marker.length) : noQuery;
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Sanitize ชื่อรอบสำหรับใช้เป็นส่วนหนึ่งของชื่อไฟล์:
  *   1. control characters (รวม CR/LF) และอักขระต้องห้าม / \ : * ? " < > | → space
  *   2. รวมช่องว่างซ้ำเป็นช่องเดียว

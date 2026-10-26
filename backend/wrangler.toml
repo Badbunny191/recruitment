@@ -3,6 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2026-10-07"
 compatibility_flags = ["nodejs_compat"]
 
+# ── Attachment Lifecycle (Migration 029) ──
+# Cron GC: ลบไฟล์ TEMP (ไม่ถูก submit) อายุเกิน 7 วัน วันละครั้ง
+# 18:00 UTC = 01:00 น. เวลาไทย (Asia/Bangkok, UTC+7)
+[triggers]
+crons = ["0 18 * * *"]
+
 # PDF V1 assets are base64-inlined via scripts/build-assets.ts
 # (auto-run before dev/build/deploy via package.json prebuild/predev hooks)
 # No build rules needed — Wrangler 3 / esbuild bundles TS string literals directly.
