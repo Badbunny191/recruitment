@@ -15,6 +15,7 @@ import {
   buildSignedAttachmentPath,
 } from '../lib/attachment-signing';
 import { extractR2KeyFromFileUrl } from '../utils/filename';
+import { resolveAuditEntityDisplays } from '../services/audit-display.service';
 import {
   OTHER_OPTION_FIELD_TYPES,
   appendOtherOption,
@@ -3024,8 +3025,17 @@ adminRoutes.get('/audit-logs', async (c) => {
     .limit(pageSize)
     .offset(offset);
 
+  // ── Human-readable display (resolve ณ ตอนอ่าน — ไม่แก้ historical data) ──
+  // resolver ล้ม → ไม่มี display → frontend fallback UUID ย่อ (fail-open)
+  let displays: Record<string, { name: string | null; secondary: string | null }> = {};
+  try {
+    displays = await resolveAuditEntityDisplays(db, items);
+  } catch (displayErr) {
+    console.error('[AUDIT_LOGS] Failed to resolve entity displays:', displayErr);
+  }
+
   return c.json({
-    items,
+    items: items.map((log) => ({ ...log, display: displays[log.id] ?? null })),
     total,
     page: safePage,
     pageSize,

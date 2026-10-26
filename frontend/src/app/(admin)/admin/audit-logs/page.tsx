@@ -12,18 +12,23 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { useRole } from '@/lib/useRole';
+import {
+  getAuditActionConfig,
+  getAuditEntityLabel,
+  shortId,
+  resolveAuditEntity,
+  buildAuditDescription,
+  type AuditLogForDisplay,
+} from '@/lib/audit-log-display';
 
 // =============================================================================
 // Types
 // =============================================================================
 
-interface AuditLog {
+interface AuditLog extends AuditLogForDisplay {
   id: string;
   adminId: string;
   adminEmail?: string; // Resolved from lookup
-  action: 'CREATE' | 'UPDATE' | 'DELETE' | string;
-  entityType: string;
-  entityId: string;
   payload: string | null;
   ipAddress: string | null;
   createdAt: string | number | Date;
@@ -61,43 +66,25 @@ const CARD_STYLE = {
   body: 'px-4 py-3',
 };
 
-// Action Badge Config
-const ACTION_CONFIG: Record<string, { label: string; className: string }> = {
-  CREATE: { label: 'สร้าง', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
-  UPDATE: { label: 'แก้ไข', className: 'bg-amber-100 text-amber-700 border-amber-200' },
-  DELETE: { label: 'ลบ', className: 'bg-red-100 text-red-700 border-red-200' },
-};
-
-// Entity Type Label
-const ENTITY_LABEL: Record<string, string> = {
-  RECRUITMENT_ROUND: 'รอบรับสมัคร',
-  TEMPLATE: 'Template',
-  TEMPLATE_VERSION: 'เวอร์ชัน Template',
-  TEMPLATE_SECTION: 'Section',
-  TEMPLATE_FIELD: 'ช่องในฟอร์ม',
-  FIELD_MASTER: 'ฟิลด์หลัก',
-  APPLICATION: 'ใบสมัคร',
-  ROUND_CLONED: 'คัดลอกรอบ',
-  ORGANIZATION: 'หน่วยงาน',
-  JOB_FAMILY: 'กลุ่มงาน',
-  POSITION_LEVEL: 'ระดับตำแหน่ง',
-  POSITION: 'ตำแหน่ง',
-};
+// Action Badge Config / Entity Label / shortId — ใช้ resolver กลางจาก
+// @/lib/audit-log-display (ครบทุก action รวม PDF_DOWNLOAD, EXPORT_EXCEL)
 
 // รายการ Action ที่ใช้ใน Filter (ค่าคงที่ — ไม่ขึ้นกับ data เพราะ data มีแค่หน้าปัจจุบัน)
-const ACTION_OPTIONS = ['CREATE', 'UPDATE', 'DELETE'] as const;
+const ACTION_OPTIONS = ['CREATE', 'UPDATE', 'DELETE', 'PDF_DOWNLOAD', 'EXPORT_EXCEL'] as const;
 
 // รายการ Entity ทั้งหมด (จาก requirement)
 const ENTITY_OPTIONS = [
   'RECRUITMENT_ROUND',
   'TEMPLATE',
   'TEMPLATE_VERSION',
+  'TEMPLATE_VERSION_DESCRIPTOR',
   'FIELD_MASTER',
   'APPLICATION',
   'POSITION',
   'ORGANIZATION',
   'JOB_FAMILY',
   'POSITION_LEVEL',
+  'ADMIN_USER',
 ] as const;
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
@@ -212,12 +199,6 @@ function formatDateTime(value: string | number | Date): string {
   });
 }
 
-function shortId(id: string): string {
-  if (!id) return '-';
-  if (id.length <= 8) return id;
-  return `${id.slice(0, 4)}…${id.slice(-4)}`;
-}
-
 function resolveAdminEmail(adminId: string, adminLookup: AdminLookup): string {
   return adminLookup[adminId] || adminId;
 }
@@ -275,34 +256,8 @@ function getTableChangeSummary(payload: ParsedPayload | null): string {
   return `${payload.changes.length} รายการ`;
 }
 
-function buildDescription(log: AuditLog, entityName: string | null): string {
-  const payload = parsePayload(log.payload);
-  const action = log.action;
-  const entityLabel = ENTITY_LABEL[log.entityType] || log.entityType;
-  const displayName = entityName || shortId(log.entityId);
-
-  if (log.entityType === 'ROUND_CLONED') {
-    return `คัดลอกรอบรับสมัคร → ${displayName}`;
-  }
-
-  if (log.entityType === 'APPLICATION' && action === 'UPDATE' && payload) {
-    if (payload.status) {
-      const reason = payload.statusReason ? ` (${payload.statusReason})` : '';
-      return `เปลี่ยนสถานะใบสมัคร → ${payload.status}${reason}`;
-    }
-  }
-
-  switch (action) {
-    case 'CREATE':
-      return `สร้าง${entityLabel} ${displayName}`;
-    case 'UPDATE':
-      return `แก้ไข${entityLabel} ${displayName}`;
-    case 'DELETE':
-      return `ลบ${entityLabel} ${displayName}`;
-    default:
-      return `${action} ${entityLabel} ${displayName}`;
-  }
-}
+// buildDescription — ใช้ buildAuditDescription จาก lib/audit-log-display
+// (คง parsePayload ไว้ที่นี่เพราะต้องอ่าน log.payload จาก response)
 
 // =============================================================================
 // Page
@@ -511,16 +466,17 @@ export default function AuditLogsPage() {
   };
 
   const renderEntity = (log: AuditLog) => {
-    const name = resolveEntityName(log.entityType, log.entityId);
-    const typeLabel = ENTITY_LABEL[log.entityType] || log.entityType;
+    const resolved = resolveAuditEntity(log, resolveEntityName);
+    const typeLabel = getAuditEntityLabel(log.entityType);
+    const secondary = resolved?.secondary || typeLabel;
     return (
       <div className="flex flex-col gap-0.5">
         <span className="text-sm font-medium text-slate-900">
-          {name || shortId(log.entityId)}
+          {resolved?.primary || shortId(log.entityId)}
         </span>
         <span className="text-xs text-slate-500">
-          {typeLabel}
-          {!name && log.entityId && log.entityId !== 'BULK/NEW' && (
+          {secondary}
+          {!resolved && log.entityId && log.entityId !== 'BULK/NEW' && (
             <span className="ml-1 font-mono text-[10px] text-slate-400">
               ({log.entityId.slice(0, 8)}…)
             </span>
@@ -531,10 +487,7 @@ export default function AuditLogsPage() {
   };
 
   const renderActionBadge = (action: string) => {
-    const cfg = ACTION_CONFIG[action] || {
-      label: action,
-      className: 'bg-slate-100 text-slate-700 border-slate-200',
-    };
+    const cfg = getAuditActionConfig(action);
     return (
       <span
         className={cn(
@@ -608,7 +561,7 @@ export default function AuditLogsPage() {
                 onChange: handleActionFiltersChange,
                 options: ACTION_OPTIONS.map((a) => ({
                   value: a,
-                  label: ACTION_CONFIG[a]?.label || a,
+                  label: getAuditActionConfig(a).label,
                 })),
               },
             ]}
@@ -625,7 +578,7 @@ export default function AuditLogsPage() {
                 onChange: handleEntityFiltersChange,
                 options: ENTITY_OPTIONS.map((t) => ({
                   value: t,
-                  label: ENTITY_LABEL[t] || t,
+                  label: getAuditEntityLabel(t),
                 })),
               },
             ]}
@@ -693,7 +646,7 @@ export default function AuditLogsPage() {
               </TableHeader>
               <TableBody>
                 {items.map((log) => {
-                  const entityName = resolveEntityName(log.entityType, log.entityId);
+                  const resolved = resolveAuditEntity(log, resolveEntityName);
                   const adminEmail = resolveAdminEmail(log.adminId, lookup.ADMIN);
                   const payload = parsePayload(log.payload);
                   const hasChanges = hasChangeTracking(payload);
@@ -715,7 +668,7 @@ export default function AuditLogsPage() {
                       <TableCell>
                         <div className="flex flex-col gap-1">
                           <span className="text-sm text-slate-700">
-                            {buildDescription(log, entityName)}
+                            {buildAuditDescription(log, resolved, payload)}
                           </span>
                           {hasChanges && (
                             <div className="flex items-center gap-2">
@@ -775,11 +728,11 @@ export default function AuditLogsPage() {
                     {selectedLog.action === 'UPDATE' ? 'แก้ไข' : selectedLog.action === 'CREATE' ? 'สร้าง' : 'ลบ'}
                   </span>
                   <span className="font-medium">
-                    {ENTITY_LABEL[selectedLog.entityType] || selectedLog.entityType}
+                    {getAuditEntityLabel(selectedLog.entityType)}
                   </span>
                   <span className="text-slate-400">→</span>
                   <span className="font-medium">
-                    {resolveEntityName(selectedLog.entityType, selectedLog.entityId) || shortId(selectedLog.entityId)}
+                    {resolveAuditEntity(selectedLog, resolveEntityName)?.primary || shortId(selectedLog.entityId)}
                   </span>
                 </div>
 
