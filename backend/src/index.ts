@@ -52,7 +52,9 @@ app.use(
   cors({
     origin: '*',
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    // X-Attachment-Token: capability ลบไฟล์ของผู้สมัคร (FileUpload.tsx) —
+    // ถ้าไม่อยู่ใน list นี้ preflight ของ DELETE จะโดน browser บล็อก (NetworkError)
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Attachment-Token'],
     exposeHeaders: ['Content-Length', 'Content-Disposition', 'X-Pdf-Page-Count'],
   })
 );
