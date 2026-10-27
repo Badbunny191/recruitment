@@ -1776,6 +1776,7 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
   }
 
   // Validate round_code ถ้ามีการเปลี่ยน
+  let normalizedRoundCode: string | undefined;
   if (data.roundCode !== undefined && data.roundCode !== round.roundCode) {
     const codeResult = validateRoundCode(data.roundCode);
     if (!codeResult.valid) {
@@ -1786,9 +1787,13 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
         field: 'roundCode',
       }, 400);
     }
+    normalizedRoundCode = codeResult.normalized;
 
     // ตรวจ unique: round_code ซ้ำในปีเดียวกัน
-    const year = new Date(round.openDate as any).getUTCFullYear();
+    // R10 - ใช้ openDate ใหม่ถ้า request เปลี่ยนวันเปิดรับพร้อมกัน
+    // (เดิมใช้ปีของ openDate เดิม → เปลี่ยนวัน+รหัสพร้อมกันแอบเลี่ยงเช็คซ้ำได้)
+    const effectiveOpenDate = data.openDate !== undefined ? new Date(data.openDate * 1000) : round.openDate;
+    const year = new Date(effectiveOpenDate as any).getUTCFullYear();
     const conflict = await db
       .select({ id: recruitmentRounds.id, openDate: recruitmentRounds.openDate })
       .from(recruitmentRounds)
@@ -1835,27 +1840,44 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
   if (data.openDate !== undefined) updateValues.openDate = new Date(data.openDate * 1000);
   if (data.closeDate !== undefined) updateValues.closeDate = new Date(data.closeDate * 1000);
 
-  // NOTE: roundCode และ applicationPattern ถูก IGNORE จาก request เสมอ
-  // ใช้ค่าปัจจุบันจาก database เสมอ (immutable fields)
+  // ========================================================================
+  // R10 - roundCode + applicationPattern:
+  //   มีผู้สมัครแล้ว → 409 PATTERN_LOCKED / ROUND_CODE_LOCKED (ตรวจด้านบนแล้ว)
+  //   ยังไม่มีผู้สมัคร → validate + ตรวจความซ้ำแล้ว (ด้านบน) จึงบันทึกได้จริง
+  //   (เดิม PATCH ละทิ้ง field ทั้งสองเสมอ → UI แก้ได้แต่ไม่เคย save)
+  // ========================================================================
+  if (!hasApplications) {
+    if (normalizedRoundCode !== undefined) {
+      updateValues.roundCode = normalizedRoundCode;
+    }
+    if (data.applicationPattern !== undefined && data.applicationPattern !== round.applicationPattern) {
+      updateValues.applicationPattern = data.applicationPattern;
+    }
+  }
 
   // Compute changes for audit log
   const { computeChanges, buildAuditPayload } = await import('../lib/change-tracking');
   const changes = computeChanges(
-    { 
-      title: round.title, 
-      positionLevel: round.positionLevel, 
+    {
+      title: round.title,
+      positionLevel: round.positionLevel,
       status: round.status,
       openDate: round.openDate ? new Date(round.openDate as any).toLocaleDateString('th-TH') : null,
       closeDate: round.closeDate ? new Date(round.closeDate as any).toLocaleDateString('th-TH') : null,
+      // R10 - สะท้อนการเปลี่ยน numbering settings ใน audit (มี diff เมื่อ request ส่งค่ามา)
+      ...(data.roundCode !== undefined ? { roundCode: round.roundCode } : {}),
+      ...(data.applicationPattern !== undefined ? { applicationPattern: round.applicationPattern } : {}),
     },
-    { 
-      title: data.title, 
-      positionLevel: data.positionLevel, 
+    {
+      title: data.title,
+      positionLevel: data.positionLevel,
       status: data.status,
       // undefined (ไม่ได้ส่ง) ต้องผ่านเข้า computeChanges เป็น undefined ตรง ๆ —
       // coerce เป็น null แล้วจะกลายเป็น false diff "วันเดิม → (ว่าง)" ทุกครั้งที่ PATCH ไม่ส่งวันที่
       openDate: data.openDate == null ? data.openDate : new Date(data.openDate * 1000).toLocaleDateString('th-TH'),
       closeDate: data.closeDate == null ? data.closeDate : new Date(data.closeDate * 1000).toLocaleDateString('th-TH'),
+      ...(data.roundCode !== undefined ? { roundCode: normalizedRoundCode ?? data.roundCode } : {}),
+      ...(data.applicationPattern !== undefined ? { applicationPattern: data.applicationPattern } : {}),
     },
     'RECRUITMENT_ROUND'
   );
@@ -2814,13 +2836,40 @@ adminRoutes.get('/template-versions/:fromId/compare/:toId', async (c) => {
 });
 
 // =============================================================================
+// R10 - เสนอรหัสรอบใหม่ที่ยังไม่ถูกใช้ในปีที่กำหนด (CODE+A ... CODE+Z)
+// ใช้เป็นค่า default ให้ UI ช่อง "รหัสรอบใหม่" ตอน clone — backend ไม่เคยใช้เอง
+// =============================================================================
+async function suggestUniqueRoundCode(
+  db: ReturnType<typeof drizzle>,
+  baseCode: string,
+  year: number,
+): Promise<string | null> {
+  for (const suffix of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
+    const candidate = `${baseCode}${suffix}`;
+    if (!validateRoundCode(candidate).valid) continue; // base ยาวเกิน 20 → ต่อไม่ได้
+    const rows = await db
+      .select({ openDate: recruitmentRounds.openDate })
+      .from(recruitmentRounds)
+      .where(and(eq(recruitmentRounds.roundCode, candidate), isNull(recruitmentRounds.deletedAt)))
+      .all();
+    const sameYear = rows.some((r) => new Date(r.openDate as any).getUTCFullYear() === year);
+    if (!sameYear) return candidate;
+  }
+  return null;
+}
+
+// =============================================================================
 // FEATURE 3: Clone Round API
 // POST /admin/rounds/:id/clone
 // =============================================================================
 adminRoutes.post('/rounds/:id/clone', adminOnlyMiddleware, auditMiddleware('ROUND_CLONED'), async (c) => {
   const db = drizzle(c.env.DB);
   const roundId = c.req.param('id');
-  const { templateVersionId, title } = await c.req.json();
+  const body = await c.req.json().catch(() => ({}) as any);
+  const { templateVersionId, title } = body;
+  // R10 - รหัสรอบใหม่ (optional): รอบที่มี round_code ต้องระบุรหัสใหม่ที่ไม่ซ้ำในปีเดียวกัน
+  const requestedRoundCode =
+    typeof body?.roundCode === 'string' && body.roundCode.trim() ? body.roundCode : undefined;
   
   // Get original round
   const originalRound = await db
@@ -2861,9 +2910,59 @@ adminRoutes.post('/rounds/:id/clone', adminOnlyMiddleware, auditMiddleware('ROUN
   const appCount = Number(appCountResult?.count ?? 0);
 
   // ========================================================================
-  // Migration 019 - Clone round ใช้ round_code เดิม (Admin จะต้องเปลี่ยนเองทีหลังถ้าต้องการ)
-  // (Round code เป็น business data — clone ไม่ generate ใหม่)
+  // R10 - Round code integrity (แทนกติกา migration 019 เดิม "inherit เงียบ ๆ")
+  //   roundCode ใช้ render เลขที่ใบสมัคร ({ROUND_CODE}) และ unique ต่อปี —
+  //   clone เดิมคง roundCode เดิม + openDate เดิม (ปีเดียวกัน) จึงได้รอบที่
+  //   generate เลขที่ซ้ำกันข้ามรอบเสมอ ตอนนี้ต้องผ่าน validateRoundCode +
+  //   ตรวจความซ้ำ (กติกาเดียวกับ POST /rounds) ทุกครั้ง ห้ามสร้าง duplicate เงียบ ๆ
   // ========================================================================
+  const cloneYear = new Date(originalRound.openDate as any).getUTCFullYear();
+  let newRoundCode: string | null;
+
+  if (originalRound.roundCode == null) {
+    // Legacy round (ก่อน migration 019): ใช้ format APP-YYYY-NNNN ไม่อ้าง round_code
+    newRoundCode = null;
+  } else if (requestedRoundCode === undefined) {
+    const suggested = await suggestUniqueRoundCode(db, originalRound.roundCode, cloneYear);
+    return c.json({
+      error: `รอบใหม่จะได้รหัสรอบ "${originalRound.roundCode}" ปี ${cloneYear + 543} ซึ่งถูกใช้แล้ว กรุณาระบุรหัสรอบใหม่`,
+      reason: 'ROUND_CODE_REQUIRED',
+      suggestedRoundCode: suggested,
+    }, 409);
+  } else {
+    const codeResult = validateRoundCode(requestedRoundCode);
+    if (!codeResult.valid) {
+      return c.json({
+        error: 'รหัสรอบไม่ถูกต้อง',
+        reason: 'INVALID_ROUND_CODE',
+        details: codeResult.error,
+        field: 'roundCode',
+      }, 400);
+    }
+    newRoundCode = codeResult.normalized;
+
+    // ตรวจ unique: round_code ซ้ำ (active + draft ในปีเดียวกัน) — กติกาเดียวกับ POST /rounds
+    const conflict = await db
+      .select({ id: recruitmentRounds.id, openDate: recruitmentRounds.openDate })
+      .from(recruitmentRounds)
+      .where(
+        and(
+          eq(recruitmentRounds.roundCode, newRoundCode),
+          isNull(recruitmentRounds.deletedAt),
+        ),
+      )
+      .get();
+    if (conflict) {
+      const conflictYear = new Date(conflict.openDate as any).getUTCFullYear();
+      if (conflictYear === cloneYear) {
+        return c.json({
+          error: `รหัสรอบ "${newRoundCode}" ปี ${cloneYear + 543} ถูกใช้แล้ว`,
+          reason: 'ROUND_CODE_CONFLICT',
+          existingRoundId: conflict.id,
+        }, 409);
+      }
+    }
+  }
 
   // Create new round with DRAFT status
   const newRoundId = uuidv4();
@@ -2879,7 +2978,7 @@ adminRoutes.post('/rounds/:id/clone', adminOnlyMiddleware, auditMiddleware('ROUN
     status: 'DRAFT', // Always DRAFT for cloned round
     // Migration 019 - inherit pattern (ใช้ format เดียวกัน)
     applicationPattern: originalRound.applicationPattern,
-    roundCode: originalRound.roundCode,
+    roundCode: newRoundCode,
   });
 
   // Log the clone action with audit details
@@ -2900,7 +2999,7 @@ adminRoutes.post('/rounds/:id/clone', adminOnlyMiddleware, auditMiddleware('ROUN
         applicationCount: appCount,
         // Migration 019
         applicationPattern: originalRound.applicationPattern,
-        roundCode: originalRound.roundCode,
+        roundCode: newRoundCode,
       }),
     });
   }
@@ -2910,7 +3009,7 @@ adminRoutes.post('/rounds/:id/clone', adminOnlyMiddleware, auditMiddleware('ROUN
     id: newRoundId,
     message: `Cloned round "${newTitle}" with ${appCount} applications (not copied)`,
     // Migration 019
-    roundCode: originalRound.roundCode,
+    roundCode: newRoundCode,
     applicationPattern: originalRound.applicationPattern,
   }, 201);
 });
@@ -2994,6 +3093,11 @@ adminRoutes.get('/rounds/:id/clone-options', async (c) => {
     })
   );
   
+  // R10 - รหัสรอบปัจจุบัน + รหัสเสนอสำหรับรอบที่ clone (UI ใช้ prefill ช่องกรอก)
+  const suggestedRoundCode = round.roundCode
+    ? await suggestUniqueRoundCode(db, round.roundCode, new Date(round.openDate as any).getUTCFullYear())
+    : null;
+
   return c.json({
     data: {
       originalRound: {
@@ -3002,6 +3106,9 @@ adminRoutes.get('/rounds/:id/clone-options', async (c) => {
         status: round.status,
         currentVersionId: round.templateVersionId,
         currentVersionNumber: currentVersion?.versionNumber || 0,
+        // R10
+        roundCode: round.roundCode,
+        applicationPattern: round.applicationPattern,
       },
       template: template ? {
         id: template.id,
@@ -3009,6 +3116,8 @@ adminRoutes.get('/rounds/:id/clone-options', async (c) => {
       } : null,
       applicationCount: appCount,
       needsProtection: round.status === 'ACTIVE' && appCount > 0,
+      // R10 - null เมื่อรอบต้นทางไม่มี round_code (legacy) หรือหา candidate ไม่ได้
+      suggestedRoundCode,
       versionOptions,
     }
   });

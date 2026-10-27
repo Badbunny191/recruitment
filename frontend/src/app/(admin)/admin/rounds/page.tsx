@@ -17,6 +17,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { ActionMenu } from '@/components/ui/action-menu';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
 import { ApplicationPatternField } from '@/components/ApplicationPatternField';
+import { buildRoundPatchPayload } from '@/lib/round-form-payload';
 import { cn } from '@/lib/utils';
 import { useRole } from '@/lib/useRole';
 import {
@@ -580,27 +581,19 @@ export default function RoundsPage() {
     }
     setSubmitting(true);
     try {
-      // NOTE: เมื่อ editing mode - ไม่ส่ง roundCode และ applicationPattern
-      // เพราะเป็น immutable fields - backend จะใช้ค่าปัจจุบันจาก database
+      // R10 - โหมดแก้ไข: ส่ง roundCode/applicationPattern จริงเมื่อรอบยังไม่ล็อก
+      // (เดิมไม่เคยส่งเสมอ → UI แก้ได้แต่ backend ไม่เคย save)
       const url = editing
         ? `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${editing.id}`
         : `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds`;
       const method = editing ? 'PATCH' : 'POST';
 
       const payload: any = editing
-        ? {
-            title: form.title,
-            positionLevel: form.positionLevel,
-            openDate: toUnix(form.openDate),
-            closeDate: toUnix(form.closeDate),
-            status: form.status,
-            announcementTitle: form.announcementTitle || null,
-            announcementDescription: form.announcementDescription || null,
-            contactInformation: form.contactInformation || null,
-            remark: form.remark || null,
-            // templateVersionId: เปลี่ยนได้เฉพาะ DRAFT round
-            ...(form.templateVersionId ? { templateVersionId: form.templateVersionId } : {}),
-          }
+        ? buildRoundPatchPayload(form, {
+            isRoundLocked,
+            openDateUnix: toUnix(form.openDate),
+            closeDateUnix: toUnix(form.closeDate),
+          })
         : {
             title: form.title,
             positionLevel: form.positionLevel,

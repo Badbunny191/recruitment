@@ -25,6 +25,8 @@ interface CloneOptions {
     status: string;
     currentVersionId: string;
     currentVersionNumber: number;
+    /** R10 - รหัสรอบปัจจุบัน (null = legacy round ใช้ format APP-YYYY-NNNN) */
+    roundCode: string | null;
   };
   template: {
     id: string;
@@ -32,6 +34,8 @@ interface CloneOptions {
   } | null;
   applicationCount: number;
   needsProtection: boolean;
+  /** R10 - รหัสรอบใหม่ที่ backend เสนอ (ไม่ซ้ำในปีเดียวกัน) — null เมื่อรอบต้นทางไม่มีรหัส */
+  suggestedRoundCode: string | null;
   versionOptions: VersionOption[];
 }
 
@@ -53,6 +57,8 @@ export function CloneRoundModal({
   const [error, setError] = React.useState<string | null>(null);
   const [selectedVersionId, setSelectedVersionId] = React.useState<string>('');
   const [newTitle, setNewTitle] = React.useState('');
+  // R10 - รหัสรอบใหม่ (ต้องกรอกเมื่อรอบต้นทางมี round_code)
+  const [newRoundCode, setNewRoundCode] = React.useState('');
   const [submitting, setSubmitting] = React.useState(false);
   const [cloneError, setCloneError] = React.useState<string | null>(null);
 
@@ -92,6 +98,8 @@ export function CloneRoundModal({
         }
         // Auto-generate title
         setNewTitle(`${data.data.originalRound.title} (Copy)`);
+        // R10 - prefill รหัสรอบใหม่จากค่าที่ backend เสนอ (ไม่ซ้ำในปีเดียวกัน)
+        setNewRoundCode(data.data.suggestedRoundCode || data.data.originalRound.roundCode || '');
       }
     } catch (err) {
       setError('เกิดข้อผิดพลาดในการโหลดข้อมูล');
@@ -103,6 +111,14 @@ export function CloneRoundModal({
   const handleSubmit = async () => {
     if (!selectedVersionId) {
       setCloneError('กรุณาเลือก Template Version');
+      return;
+    }
+
+    // R10 - รอบต้นทางมี round_code → ต้องส่งรหัสใหม่ (backend จะตรวจซ้ำอีกชั้น)
+    const hasOriginalCode = !!options?.originalRound.roundCode;
+    const cleanedRoundCode = newRoundCode.trim().toUpperCase();
+    if (hasOriginalCode && !/^[A-Z0-9]{3,20}$/.test(cleanedRoundCode)) {
+      setCloneError('รหัสรอบต้องเป็นตัวอักษร A-Z และตัวเลข 0-9 เท่านั้น (3-20 ตัว)');
       return;
     }
 
@@ -120,12 +136,14 @@ export function CloneRoundModal({
           body: JSON.stringify({
             templateVersionId: selectedVersionId,
             title: newTitle,
+            ...(hasOriginalCode ? { roundCode: cleanedRoundCode } : {}),
           }),
         }
       );
       const data = await res.json();
       if (data.error) {
         setCloneError(data.error);
+        // คงค่าที่ admin พิมพ์ไว้ให้แก้ต่อได้ทันที
       } else {
         onOpenChange(false);
         onCloneSuccess?.();
@@ -216,6 +234,33 @@ export function CloneRoundModal({
                 placeholder="เช่น รอบใหม่ 2024"
               />
             </div>
+
+            {/* R10 - New Round Code (แสดงเมื่อรอบต้นทางมี round_code)
+                รอบที่ clone ได้ปีเดียวกันกับต้นทาง ห้ามใช้รหัสเดิม
+                เพราะเลขที่ใบสมัคร ({ROUND_CODE}) จะซ้ำกันข้ามรอบ */}
+            {options.originalRound.roundCode && (
+              <div className="space-y-2">
+                <Label htmlFor="newRoundCode">
+                  รหัสรอบใหม่ <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="newRoundCode"
+                  value={newRoundCode}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                    setNewRoundCode(cleaned);
+                  }}
+                  placeholder="เช่น CHM01A"
+                  className="font-mono"
+                  maxLength={20}
+                  minLength={3}
+                  required
+                />
+                <p className="text-[11px] text-slate-500">
+                  รหัสเดิม "{options.originalRound.roundCode}" ถูกใช้โดยรอบต้นทางแล้ว — A-Z และ 0-9 เท่านั้น (3-20 ตัว)
+                </p>
+              </div>
+            )}
 
             {/* Version Selection */}
             <div className="space-y-2">
