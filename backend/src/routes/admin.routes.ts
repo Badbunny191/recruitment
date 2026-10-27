@@ -1852,8 +1852,10 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
       title: data.title, 
       positionLevel: data.positionLevel, 
       status: data.status,
-      openDate: data.openDate ? new Date(data.openDate * 1000).toLocaleDateString('th-TH') : null,
-      closeDate: data.closeDate ? new Date(data.closeDate * 1000).toLocaleDateString('th-TH') : null,
+      // undefined (ไม่ได้ส่ง) ต้องผ่านเข้า computeChanges เป็น undefined ตรง ๆ —
+      // coerce เป็น null แล้วจะกลายเป็น false diff "วันเดิม → (ว่าง)" ทุกครั้งที่ PATCH ไม่ส่งวันที่
+      openDate: data.openDate == null ? data.openDate : new Date(data.openDate * 1000).toLocaleDateString('th-TH'),
+      closeDate: data.closeDate == null ? data.closeDate : new Date(data.closeDate * 1000).toLocaleDateString('th-TH'),
     },
     'RECRUITMENT_ROUND'
   );
@@ -4031,10 +4033,12 @@ adminRoutes.patch(
     }
 
     // Compute changes for audit log
+    // newValues ต้องเป็น "ค่าที่ผู้ใช้ส่งมา" (data.*) — ไม่ใช่ target.* (ค่าเดิม)
+    // ไม่งั้นเปลี่ยน email จริงแต่ audit ไม่มี diff (false negative)
     const { computeChanges, buildAuditPayload } = await import('../lib/change-tracking');
     const changes = computeChanges(
       { email: target.email, role: target.role, isActive: target.isActive },
-      { email: target.email, role: data.role, isActive: data.isActive },
+      { email: data.email, role: data.role, isActive: data.isActive },
       'ADMIN_USER'
     );
     const auditPayload = buildAuditPayload(changes);

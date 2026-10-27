@@ -196,13 +196,15 @@ export function computeChanges(
     
     const oldVal = oldValues[key];
     const newVal = newValues[key];
-    
-    // Skip if values are the same
+
+    // undefined = field not sent (partial PATCH) — never a change, no diff.
+    // null IS a value: X → null (or null → X) must still produce a diff,
+    // and false/0/'' are real values too — never skip them.
+    if (oldVal === undefined || newVal === undefined) continue;
+
+    // Skip if values are the same (also covers false===false, 0===0, ''==='')
     if (oldVal === newVal) continue;
-    
-    // Skip if both are null/undefined/empty
-    if ((!oldVal && !newVal) || (oldVal === '' && newVal === '')) continue;
-    
+
     changes.push({
       field: key,
       fieldLabel: getFieldLabel(entityType, key),
