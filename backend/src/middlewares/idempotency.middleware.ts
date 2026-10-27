@@ -25,6 +25,15 @@
  *          - Same body (e.g. `{ success: true, applicationNo: "APP-…" }`)
  *        This is the standard HTTP idempotency-key contract.
  *
+ *   2b. **Payload mismatch** — token in the store, `completed: true`, but
+ *       the request body's SHA-256 fingerprint (stable serialization,
+ *       token fields stripped) differs from the recorded one.
+ *       → Return HTTP 409 with
+ *           `{ success: false, code: "IDEMPOTENCY_PAYLOAD_MISMATCH", … }`
+ *       A token must only ever replay the response of the *same* payload;
+ *       a different body under an old token is almost certainly a bug or
+ *       an attempted replay, never a legitimate retry.
+ *
  *   3. **In-flight duplicate** — token in the store, `completed: false`.
  *      → Return HTTP 409 with
  *          `{ success: false, error: "Submission already processed" }`
@@ -71,6 +80,7 @@
 
 import { createMiddleware } from 'hono/factory';
 import { Bindings, AppVariables, envFlag, envInt } from '../types';
+import { computeRequestHash, IDEMPOTENCY_TOKEN_KEYS } from '../lib/request-hash';
 
 type IdempotencyEntry = {
   /** Recorded wall-clock ms (UTC) when the token was first seen. */
@@ -81,6 +91,13 @@ type IdempotencyEntry = {
   responseBody: unknown;
   /** Whether the request has been fully processed. */
   completed: boolean;
+  /**
+   * SHA-256 fingerprint of the original payload (token fields stripped),
+   * or `null` when no hashable body was available. Replays whose hash
+   * differs from the recorded one are rejected with 409
+   * IDEMPOTENCY_PAYLOAD_MISMATCH instead of being replayed.
+   */
+  requestHash: string | null;
 };
 
 /**
@@ -186,6 +203,11 @@ export const idempotencyMiddleware = () =>
       return;
     }
 
+    // Fingerprint the payload (token fields stripped) so a retry with the
+    // same token but a *different* payload can be detected. `null` means
+    // no hashable body — see the replay guard below for how nulls compare.
+    const requestHash = await computeRequestHash(body);
+
     const existing = tokenStore.get(token);
     if (existing) {
       // Replay the captured 2xx response if the first request has already
@@ -193,6 +215,25 @@ export const idempotencyMiddleware = () =>
       // we cannot replay — return 409 so the client knows to back off and
       // try again once the first request has settled.
       if (existing.completed) {
+        // Payload-mismatch guard: only when BOTH sides have a hash can we
+        // prove the payload changed. If either side is `null` (unhashable
+        // body, or a pre-hash entry from an old deploy) we fall back to the
+        // original replay behavior — replaying is safer than rejecting a
+        // legitimate retry of a request we cannot fingerprint.
+        if (
+          existing.requestHash !== null &&
+          requestHash !== null &&
+          existing.requestHash !== requestHash
+        ) {
+          return c.json(
+            {
+              success: false,
+              code: 'IDEMPOTENCY_PAYLOAD_MISMATCH',
+              message: 'Request payload does not match original submission',
+            },
+            409,
+          );
+        }
         return c.json(existing.responseBody as any, existing.responseStatus as any);
       }
       return c.json(
@@ -208,6 +249,7 @@ export const idempotencyMiddleware = () =>
       responseStatus: 0,
       responseBody: null,
       completed: false,
+      requestHash,
     });
 
     await next();
@@ -230,6 +272,7 @@ export const idempotencyMiddleware = () =>
           responseStatus: status,
           responseBody: body,
           completed: true,
+          requestHash,
         });
       } else {
         // Free the slot so the client can retry on transient errors.
