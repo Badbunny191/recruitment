@@ -66,6 +66,20 @@ export function SearchableDropdown({
     setHighlight(0);
   }, [query]);
 
+  // ✅ External clear — parent ล้างค่า (เช่นปุ่ม "ล้างข้อมูลทั้งหมด" ของหน้าสมัคร)
+  // ค่าที่เลือกหายไปแล้วเพราะ `value` เป็น null แต่ local state ของ component
+  // (open / query / highlight) ยังค้างอยู่ → ช่องค้นหาและรายการที่เปิดค้างไว้
+  // ยังแสดงข้อความเดิมหลัง reset ต้อง refresh เอง UI จึงสะอาด
+  //
+  // effect นี้ทำงานเฉพาะตอน `value` กลายเป็น null (dependency เป็น primitive
+  // → ไม่ re-run ระหว่างที่ผู้ใช้พิมพ์ค้นหา ขณะที่ยังไม่มีค่าเลือก)
+  useEffect(() => {
+    if (value !== null) return;
+    setOpen(false);
+    setQuery('');
+    setHighlight(0);
+  }, [value]);
+
   const handleSelect = (id: string) => {
     onChange(id);
     setOpen(false);

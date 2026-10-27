@@ -480,10 +480,14 @@ function FormInner() {
   const [draftRestored, setDraftRestored] = useState(false);
 
   // "ล้างข้อมูลทั้งหมด" — isResetting ครอบช่วงลบไฟล์ผ่าน backend (async);
-  // formResetCount เป็น React key ของ FileUpload ทุกตัว — bump แล้ว component
-  // ถูก remount ทั้งหมด ทำให้ local files state + error ของ FileUpload
-  // เคลียร์จริง แม้ผู้ใช้เคยแตะ component นั้น (userTouchedRef บล็อกการ
-  // adopt defaultFiles แล้ว) — การ reset ด้วย state อย่างเดียวไม่พอ
+  // formResetCount คือ "generation" ของฟอร์ม — ใช้ 2 ทาง:
+  //   1. เป็น React key ของ container ที่ห่อ field ทุกตัว → remount ทั้ง subtree
+  //      ทำให้ DOM value ของ input/textarea/select/radio/checkbox/file และ
+  //      local state ของ custom component (เช่น SearchableDropdown) กลับเป็น
+  //      ค่าเริ่มต้นจริง ไม่ใช่แค่ RHF state
+  //   2. เป็น key ของ FileUpload (เดิม) เพื่อความชัดเจนว่าไฟล์/error ค้างถูกทิ้ง
+  // reset ด้วย state อย่างเดียวไม่พอ (พิสูจน์จาก prod: ค่าบางส่วนยังอยู่จนต้อง
+  // refresh) เพราะ DOM value เป็นของ component ไม่ใช่ของ RHF
   const [isResetting, setIsResetting] = useState(false);
   const [formResetCount, setFormResetCount] = useState(0);
 
@@ -591,14 +595,22 @@ function FormInner() {
       // และต้อง refresh เอง UI จึงหาย)
       const metaSnapshot = attachmentMeta;
       setAttachmentMeta({});
-      // ✅ keepFieldsRef — RHF ต้อง "เขียนค่าว่างกลับลง DOM" ของทุก field ที่
-      // register ไว้ ไม่ใช่แค่ล้าง _formValues ภายใน
+      // ✅ reset RHF state — ค่าภายใน (getValues/watch/errors) ต้องว่างจริง
       //
-      // reset({}) ล้างแค่ state ภายในของ RHF — ค่าใน <input>/<select>/<textarea>
-      // ที่ผู้ใช้พิมพ์ไว้ยังอยู่ใน DOM (uncontrolled) → หลังกด "ล้างข้อมูลทั้งหมด"
-      // ฟอร์มยังโชว์ข้อมูลเก่า และตอนผู้ใช้แตะฟอร์มอีกครั้ง RHF จะ import
-      // ค่าเก่ากลับเข้ามา (getValues → draft → ส่งข้อมูลที่ "ล้าง" ไปแล้ว)
-      reset({}, { keepFieldsRef: true });
+      // ⚠️ reset() อย่างเดียว "ไม่พอ": ค่าใน DOM ของ <input>/<textarea>/<select>/
+      // <input type=radio|checkbox|file> เป็นของ component (uncontrolled) ไม่ใช่
+      // ของ RHF — reset({}) ล้างแค่ state ภายใน และ keepFieldsRef เขียนค่าว่าง
+      // กลับลง DOM ได้ไม่ครบทุก type (radio group / checkbox group / select /
+      // SearchableDropdown) จึงเหลือข้อความค้างจนต้อง refresh
+      //
+      // วิธีที่ deterministic: bump formResetCount แล้วให้ key ของทุก field
+      // subtree เปลี่ยน → React remount component จริง → DOM node ถูกสร้างใหม่
+      // (ว่างตาม markup เริ่มต้น) + local state ของ custom component หายไปด้วย
+      //
+      // ไม่ส่ง keepFieldsRef: true เพราะ ref เก่าจะค้างใน _fields/_f.refs หลัง
+      // remount (stale detached node) ทำให้ getValues/validation อ่านค่าผิด —
+      // ปล่อยให้ mount รอบใหม่ register ref ใหม่สะอาดกว่า
+      reset({});
       setBackError(null);
       setFormResetCount((c) => c + 1);
       // ลบไฟล์จาก R2/ledger + ล้าง draft/token — best-effort หลัง UI สะอาดแล้ว
@@ -1403,7 +1415,12 @@ function FormInner() {
             
             {/* Sprint 4: Hybrid Mode - sections[] + fallback to legacy fieldMaster.section */}
             {hasSchemaFields ? (
-              <div className="space-y-8">
+              /* ✅ formResetCount — key ของ field subtree ทั้งหมด
+                 "ล้างข้อมูลทั้งหมด" bump ค่านี้ → React remount ทุก field
+                 (input/textarea/select/radio/checkbox/file + SearchableDropdown)
+                 DOM value จึงกลับเป็นค่าเริ่มต้นจริง ไม่ใช่แค่ RHF state
+                 — reset({}) เดียวไม่พอ เพราะ DOM value เป็นของ component */
+              <div key={`apply-fields-${formResetCount}`} className="space-y-8">
                 {/* Ungrouped fields (sectionId = null, no legacy section) */}
                 {ungrouped.length > 0 && (
                   <div className="space-y-6">
