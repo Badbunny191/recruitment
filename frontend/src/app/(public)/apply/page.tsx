@@ -591,7 +591,14 @@ function FormInner() {
       // และต้อง refresh เอง UI จึงหาย)
       const metaSnapshot = attachmentMeta;
       setAttachmentMeta({});
-      reset({});
+      // ✅ keepFieldsRef — RHF ต้อง "เขียนค่าว่างกลับลง DOM" ของทุก field ที่
+      // register ไว้ ไม่ใช่แค่ล้าง _formValues ภายใน
+      //
+      // reset({}) ล้างแค่ state ภายในของ RHF — ค่าใน <input>/<select>/<textarea>
+      // ที่ผู้ใช้พิมพ์ไว้ยังอยู่ใน DOM (uncontrolled) → หลังกด "ล้างข้อมูลทั้งหมด"
+      // ฟอร์มยังโชว์ข้อมูลเก่า และตอนผู้ใช้แตะฟอร์มอีกครั้ง RHF จะ import
+      // ค่าเก่ากลับเข้ามา (getValues → draft → ส่งข้อมูลที่ "ล้าง" ไปแล้ว)
+      reset({}, { keepFieldsRef: true });
       setBackError(null);
       setFormResetCount((c) => c + 1);
       // ลบไฟล์จาก R2/ledger + ล้าง draft/token — best-effort หลัง UI สะอาดแล้ว
