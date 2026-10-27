@@ -376,7 +376,7 @@ async function insertApplicationWithRetry(
     formData: Record<string, unknown>;
     attachments?: Array<{ fieldId: string; fileUrl: string; filename?: string }>;
   },
-): Promise<{ ok: true; applicationNo: string } | { ok: false; reason: 'UNIQUE_COLLISION' | 'DB_ERROR' | 'ROUND_ERROR' | 'INVALID_PATTERN' }> {
+): Promise<{ ok: true; applicationNo: string } | { ok: false; reason: 'UNIQUE_COLLISION' | 'DB_ERROR' | 'ROUND_ERROR' | 'INVALID_PATTERN' | 'DUPLICATE_EMAIL' }> {
   // =========================================================================
   // Migration 019 - ตรวจสอบว่า round ใช้ pattern แบบไหน
   // - application_pattern = NULL  → ใช้ format เดิม (APP-YYYY-NNNN)
@@ -452,6 +452,12 @@ async function insertApplicationWithRetry(
         return { ok: true, applicationNo };
       } catch (err: any) {
         const msg = String(err?.message ?? err);
+        // TOCTOU backstop (Migration 030): duplicate check กับ insert ไม่ได้อยู่
+        // ใน lock เดียวกัน — submit คู่ขนานที่แทรกผ่านมาได้จะชน idx_apps_round_email
+        // ตอน insert ตรงนี้ ต้องคืน 400 ข้อความเดิม ไม่ใช่ปล่อยเป็น 500
+        if (/UNIQUE constraint failed/i.test(msg) && /idx_apps_round_email/i.test(msg)) {
+          return { ok: false, reason: 'DUPLICATE_EMAIL' };
+        }
         if (/UNIQUE constraint failed: applications\.application_no/.test(msg) && attempt < maxRetries - 1) {
           // Pattern service already issued the number — collision shouldn't happen normally
           // but if it does (rare race), fail
@@ -550,6 +556,12 @@ async function insertApplicationWithRetry(
       //   - `SqliteError: NOT NULL constraint failed: applications.email` → DB_ERROR
       // =========================================================================
       const message = String(err?.message ?? err);
+      // TOCTOU backstop (Migration 030) — ดูคำอธิบายที่ catch ของ Strategy B:
+      // unique จาก idx_apps_round_email = duplicate email จริง คืน DUPLICATE_EMAIL
+      // (400) ไม่ retry และไม่ใช่ DB_ERROR/500
+      if (/UNIQUE constraint failed/i.test(message) && /idx_apps_round_email/i.test(message)) {
+        return { ok: false, reason: 'DUPLICATE_EMAIL' };
+      }
       const isApplicationNoUniqueViolation =
         /UNIQUE constraint failed/i.test(message) &&
         /applications/i.test(message);
@@ -722,7 +734,11 @@ publicRoutes.post('/applications/submit',
     }
   }
 
-  // Check for duplicate application (same email + same round, not deleted, not CANCELED)
+  // Check for duplicate application — Business Rule (Migration 030):
+  // - ผู้สมัครมี active application ได้ 1 ใบต่อรอบ (active = ทุกสถานะยกเว้น CANCELED)
+  // - CANCELED สมัครใหม่ได้ / ARCHIVED (เก็บเข้าคลัง) สมัครใหม่ไม่ได้ / คนละรอบอิสระกัน
+  // - email เทียบ case-insensitive ด้วย lower() ให้ตรงกับ predicate ของ
+  //   idx_apps_round_email (migration 030) — ทั้งสองชั้นบังคับกฎเดียวกัน
   const existingApp = await db
     .select({
       id: applications.id,
@@ -733,7 +749,7 @@ publicRoutes.post('/applications/submit',
     .where(
       and(
         eq(applications.roundId, data.roundId),
-        eq(applications.email, email),
+        sql`lower(${applications.email}) = lower(${email})`,
         isNull(applications.deletedAt),
         ne(applications.status, 'CANCELED')
       )
@@ -771,6 +787,14 @@ publicRoutes.post('/applications/submit',
   });
 
   if (!insertResult.ok) {
+    // TOCTOU backstop (Migration 030): duplicate รอดจาก check มาโดยแข่งเวลา →
+    // ติด unique index ตอน insert — ตอบ 400 ข้อความเดียวกับ duplicate check
+    if (insertResult.reason === 'DUPLICATE_EMAIL') {
+      return c.json({
+        success: false,
+        error: 'ท่านได้สมัครรอบนี้แล้ว'
+      }, 400);
+    }
     if (insertResult.reason === 'UNIQUE_COLLISION') {
       return c.json({
         success: false,
