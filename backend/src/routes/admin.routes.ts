@@ -26,7 +26,7 @@ import {
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
 import { buildAuditLogWhere, parseMultiParam } from '../lib/audit-log-query';
-import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
+import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, BulkApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
 import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
 import { ensureNotLastSuperAdmin } from '../services/rbac.service';
 import templateDescriptorRoutes from './template-descriptor.routes';
@@ -2426,18 +2426,24 @@ adminRoutes.get('/applications/:id/history', async (c) => {
 });
 
 // POST /admin/applications/bulk-status - Bulk update application status
-adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddleware('APPLICATION'), async (c) => {
+adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddleware('APPLICATION', { action: 'UPDATE' }), async (c) => {
   const db = drizzle(c.env.DB);
-  const { ids, status, reason } = await c.req.json();
   const adminId = c.get('jwtPayload').id;
 
-  if (!ids || !Array.isArray(ids) || ids.length === 0) {
-    return c.json({ error: 'กรุณาเลือกอย่างน้อย 1 รายการ' }, 400);
+  const body = await c.req.json().catch(() => null);
+
+  // ห้ามดันสถานะกลับไป DRAFT ผ่าน bulk update (message เฉพาะเจาะจงเพื่อ audit ชัดเจน)
+  if (body && typeof body === 'object' && (body as any).status === 'DRAFT') {
+    return c.json({ success: false, message: 'DRAFT status is not allowed in bulk updates' }, 400);
   }
 
-  if (!status) {
-    return c.json({ error: 'กรุณาเลือกสถานะ' }, 400);
+  const parsed = BulkApplicationStatusUpdateSchema.safeParse(body);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message }));
+    return c.json({ success: false, message: issues[0]?.message || 'payload ไม่ถูกต้อง', issues }, 400);
   }
+
+  const { ids, status, reason } = parsed.data;
 
   // Require reason for REJECTED (ข้อมูลไม่ครบถ้วน) or CANCELED (ยกเลิกใบสมัคร) status
   if ((status === 'REJECTED' || status === 'CANCELED') && (!reason || !reason.trim())) {
@@ -2448,6 +2454,21 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
   const verifiedAtDate = new Date();
   
   try {
+    // สถานะเดิมของแต่ละใบ (เฉพาะที่ยังไม่ถูกลบ) — ไว้ทำ audit trail
+    const currentRows = await db
+      .select({ id: applications.id, status: applications.status })
+      .from(applications)
+      .where(
+        and(
+          isNull(applications.deletedAt),
+          inArray(applications.id, ids)
+        )
+      );
+    const previousStatus: Record<string, string | null> = {};
+    for (const row of currentRows) {
+      previousStatus[row.id] = row.status ?? null;
+    }
+
     // Update all applications with matching IDs (not deleted)
     await db
       .update(applications)
@@ -2463,6 +2484,17 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
           inArray(applications.id, ids)
         )
       );
+
+    // Audit payload ครบสำหรับการตรวจสอบย้อนหลัง (actor บันทึกแยกคอลัมน์ admin_id ด้วย)
+    setAuditPayload(c, JSON.stringify({
+      action: 'BULK_STATUS_UPDATE',
+      applicationIds: ids,
+      previousStatus,
+      newStatus: status,
+      reason: reason || null,
+      updatedCount: ids.length,
+      actor: adminId
+    }));
 
     return c.json({
       success: true,

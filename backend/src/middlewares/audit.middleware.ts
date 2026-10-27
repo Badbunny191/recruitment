@@ -4,7 +4,7 @@ import { auditLogs } from '../db/schema';
 import { v4 as uuidv4 } from 'uuid';
 import { Bindings, AppVariables } from '../types';
 
-export const auditMiddleware = (entityType: string) => createMiddleware<{ Bindings: Bindings; Variables: AppVariables }>(async (c, next) => {
+export const auditMiddleware = (entityType: string, options?: { action?: string }) => createMiddleware<{ Bindings: Bindings; Variables: AppVariables }>(async (c, next) => {
   await next();
   
   const method = c.req.method;
@@ -13,7 +13,9 @@ export const auditMiddleware = (entityType: string) => createMiddleware<{ Bindin
   const db = drizzle(c.env.DB);
   const user = c.get('jwtPayload');
   
-  let action = 'CREATE';
+  // Default action มาจาก HTTP method — POST /admin/applications/bulk-status
+  // เป็นการ "อัปเดตสถานะ" จึง override เป็น UPDATE เพื่อให้ audit ตรงความหมาย
+  let action = options?.action ?? 'CREATE';
   if (method === 'PUT' || method === 'PATCH') action = 'UPDATE';
   if (method === 'DELETE') action = 'DELETE';
 

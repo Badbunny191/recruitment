@@ -339,8 +339,24 @@ export const RecruitmentRoundUpdateSchema = z.object({
   return true;
 }, { message: "closeDate must be after openDate", path: ["closeDate"] });
 
+// Status ที่อนุญาตให้อัปเดตผ่าน API — derive จาก ApplicationStatusEnum
+// (single source of truth) โดยห้ามย้อนกลับไป DRAFT เสมอ
+export const UpdatableApplicationStatusEnum = ApplicationStatusEnum.exclude(['DRAFT']);
+
 export const ApplicationStatusUpdateSchema = z.object({
-  status: z.enum(['SUBMITTED', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED']),
+  status: UpdatableApplicationStatusEnum,
+  reason: z.string().optional(),
+});
+
+/**
+ * POST /admin/applications/bulk-status — อัปเดตสถานะหลายใบพร้อมกัน
+ * ids ต้องเป็น application id (UUID string) อย่างน้อย 1 รายการ
+ */
+export const BulkApplicationStatusUpdateSchema = z.object({
+  ids: z
+    .array(z.string().min(1, 'รายการ ID ไม่ถูกต้อง'), { message: 'กรุณาเลือกอย่างน้อย 1 รายการ' })
+    .min(1, 'กรุณาเลือกอย่างน้อย 1 รายการ'),
+  status: UpdatableApplicationStatusEnum,
   reason: z.string().optional(),
 });
 
