@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
+import { handleMustChangePasswordResponse } from '@/lib/must-change-password';
 
 const STORAGE_KEY = 'adminToken';
 const STORAGE_KEY_USER = 'adminUser';
@@ -151,6 +152,12 @@ export async function adminFetch(url: string, options: RequestInit = {}): Promis
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(STORAGE_KEY_USER);
     window.location.href = '/admin/login';
+  }
+
+  // R9: 403 MUST_CHANGE_PASSWORD → พาไปหน้าเปลี่ยนรหัสผ่าน ก่อน caller
+  // จะแสดง "โหลดข้อมูลไม่สำเร็จ" แทน security error
+  if (res.status === 403) {
+    await handleMustChangePasswordResponse(res);
   }
 
   return res;

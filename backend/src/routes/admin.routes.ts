@@ -28,6 +28,7 @@ import { adminUsers, fieldMaster, templates, templateVersions, templateFields, t
 import { buildAuditLogWhere, parseMultiParam } from '../lib/audit-log-query';
 import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, BulkApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
 import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
+import { mustChangePasswordGate } from '../middlewares/must-change-password.middleware';
 import { ensureNotLastSuperAdmin } from '../services/rbac.service';
 import templateDescriptorRoutes from './template-descriptor.routes';
 import { handleExcelExport, handleExcelExportSelected } from './excel-export.routes';
@@ -169,18 +170,23 @@ adminRoutes.post('/auth/login', rateLimitMiddleware({ keyPrefix: 'admin-login' }
 
 adminRoutes.use('/*', authMiddleware);
 
+// R9: บล็อกทุก endpoint ยกเว้น allowlist (change-password / auth/me)
+// เมื่อ must_change_password = true — ต้องวางหลัง authMiddleware
+adminRoutes.use('/*', mustChangePasswordGate);
+
 /**
  * POST /admin/auth/change-password
  * Changes the authenticated user's password.
  * Requires current password verification.
- * 
+ *
  * SECURITY:
  * - Verifies current password before allowing change
  * - Hashes new password with bcrypt BEFORE storing
  * - Resets mustChangePassword flag
  * - Never logs or stores plaintext passwords
+ * - Allowed while mustChangePassword=true (R9 allowlist)
  */
-adminRoutes.post('/auth/change-password', zValidator('json', ChangePasswordSchema), async (c) => {
+adminRoutes.post('/auth/change-password', auditMiddleware('ADMIN_USER', { action: 'CHANGE_PASSWORD' }), zValidator('json', ChangePasswordSchema), async (c) => {
   const currentUser = c.get('jwtPayload');
   if (!currentUser) {
     return c.json({ error: 'Unauthorized' }, 401);
@@ -227,7 +233,7 @@ adminRoutes.post('/auth/change-password', zValidator('json', ChangePasswordSchem
   
   // Update user password
   await db.update(adminUsers)
-    .set({ 
+    .set({
       passwordHash: hashedPassword,
       passwordMigrated: true,
       passwordChangedAt: new Date(),
@@ -235,10 +241,17 @@ adminRoutes.post('/auth/change-password', zValidator('json', ChangePasswordSchem
       failedLoginAttempts: 0,
     })
     .where(eq(adminUsers.id, currentUser.id));
-  
-  return c.json({ 
-    success: true, 
-    message: 'เปลี่ยนรหัสผ่านสำเร็จ' 
+
+  // R9: audit log — self change (actor = target = ผู้ใช้เอง)
+  setAuditPayload(c, JSON.stringify({
+    selfChange: true,
+    targetUserId: user.id,
+    targetEmail: user.email,
+  }));
+
+  return c.json({
+    success: true,
+    message: 'เปลี่ยนรหัสผ่านสำเร็จ'
   });
 });
 
@@ -4169,7 +4182,7 @@ adminRoutes.patch(
 adminRoutes.post(
   '/users/:id/reset-password',
   superAdminOnlyMiddleware,
-  auditMiddleware('ADMIN_USER'),
+  auditMiddleware('ADMIN_USER', { action: 'RESET_PASSWORD' }),
   async (c) => {
     const id = c.req.param('id');
     const db = drizzle(c.env.DB);
@@ -4198,6 +4211,13 @@ adminRoutes.post(
       } as any)
       .where(eq(adminUsers.id, id));
 
+    // R9: audit log — admin reset (actor = SUPER_ADMIN, target = เจ้าของบัญชี)
+    setAuditPayload(c, JSON.stringify({
+      selfChange: false,
+      targetUserId: target.id,
+      targetEmail: target.email,
+    }));
+
     return c.json({
       success: true,
       temporaryPassword,
@@ -4213,7 +4233,7 @@ adminRoutes.post(
 adminRoutes.post(
   '/users/:id/force-change-password',
   superAdminOnlyMiddleware,
-  auditMiddleware('ADMIN_USER'),
+  auditMiddleware('ADMIN_USER', { action: 'UPDATE' }),
   zValidator('json', ForceChangePasswordSchema),
   async (c) => {
     const id = c.req.param('id');
@@ -4229,6 +4249,15 @@ adminRoutes.post(
       .update(adminUsers)
       .set({ mustChangePassword } as any)
       .where(eq(adminUsers.id, id));
+
+    // R9: audit log — บันทึกว่า admin สั่ง/ยกเลิกการบังคับเปลี่ยนรหัสผ่าน
+    setAuditPayload(c, JSON.stringify({
+      selfChange: false,
+      targetUserId: target.id,
+      targetEmail: target.email,
+      forcedMustChangePassword: mustChangePassword,
+    }));
+
     return c.json({ success: true });
   },
 );

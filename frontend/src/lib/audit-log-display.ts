@@ -41,12 +41,15 @@ type ClientLookup = (entityType: string, entityId: string) => string | null;
 // CREATE/UPDATE/DELETE มาจาก auditMiddleware (HTTP method)
 // PDF_DOWNLOAD (admin.routes.ts) และ EXPORT_EXCEL (excel-export.service.ts)
 // บันทึกแบบ manual — publish/archive ของ template/round ถูกบันทึกเป็น UPDATE
+// CHANGE_PASSWORD/RESET_PASSWORD (R9): เปลี่ยนรหัสผ่านเอง / admin รีเซ็ตให้
 export const AUDIT_ACTION_CONFIG: Record<string, { label: string; className: string }> = {
   CREATE: { label: 'สร้าง', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   UPDATE: { label: 'แก้ไข', className: 'bg-amber-100 text-amber-700 border-amber-200' },
   DELETE: { label: 'ลบ', className: 'bg-red-100 text-red-700 border-red-200' },
   PDF_DOWNLOAD: { label: 'ดาวน์โหลด PDF', className: 'bg-sky-100 text-sky-700 border-sky-200' },
   EXPORT_EXCEL: { label: 'ส่งออก Excel', className: 'bg-teal-100 text-teal-700 border-teal-200' },
+  CHANGE_PASSWORD: { label: 'เปลี่ยนรหัสผ่าน', className: 'bg-violet-100 text-violet-700 border-violet-200' },
+  RESET_PASSWORD: { label: 'รีเซ็ตรหัสผ่าน', className: 'bg-orange-100 text-orange-700 border-orange-200' },
 };
 
 /** action ที่ไม่รู้จัก → แสดง raw string บน badge สีเทา (fallback) */
