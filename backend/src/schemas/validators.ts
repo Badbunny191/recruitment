@@ -341,7 +341,10 @@ export const RecruitmentRoundUpdateSchema = z.object({
 
 // Status ที่อนุญาตให้อัปเดตผ่าน API — derive จาก ApplicationStatusEnum
 // (single source of truth) โดยห้ามย้อนกลับไป DRAFT เสมอ
-export const UpdatableApplicationStatusEnum = ApplicationStatusEnum.exclude(['DRAFT']);
+// ARCHIVED = legacy-only (soft removal): แถวเดิมยังแสดง/ส่งออก/audit/PDF ได้
+// ครบ แต่ห้ามตั้งเป็นสถานะใหม่ผ่าน API ทุกช่องทาง — reject เป็น validation error
+// (ยังเปลี่ยนออกจาก ARCHIVED ไปสถานะอื่นได้ — escape hatch)
+export const UpdatableApplicationStatusEnum = ApplicationStatusEnum.exclude(['DRAFT', 'ARCHIVED']);
 
 export const ApplicationStatusUpdateSchema = z.object({
   status: UpdatableApplicationStatusEnum,

@@ -773,7 +773,6 @@ export default function ApplicationDetailClient() {
                   <option value="QUALIFIED">ผ่านการตรวจสอบ</option>
                   <option value="REJECTED">ข้อมูลไม่ครบถ้วน</option>
                   <option value="CANCELED">ยกเลิกใบสมัคร</option>
-                  <option value="ARCHIVED">เก็บเข้าคลัง</option>
                 </Select>
               </div>
               

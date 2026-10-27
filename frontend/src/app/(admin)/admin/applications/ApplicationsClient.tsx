@@ -94,7 +94,8 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   ARCHIVED: { label: 'เก็บเข้าคลัง', className: 'bg-purple-100 text-purple-700 border-purple-200' },
 };
 
-const BULK_STATUS_OPTIONS = ['SUBMITTED', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED'];
+// ARCHIVED (legacy-only): แถวเดิมยังแสดง/กรอง/ส่งออกได้ แต่ไม่รับตั้งใหม่ผ่าน UI
+const BULK_STATUS_OPTIONS = ['SUBMITTED', 'QUALIFIED', 'REJECTED', 'CANCELED'];
 
 const getErrorMessage = (data: any, fallback = 'เกิดข้อผิดพลาด'): string => {
   if (!data) return fallback;
@@ -1067,19 +1068,6 @@ export default function ApplicationsClient() {
             >
               เปลี่ยนสถานะ
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                if (confirm(`เก็บเข้าคลัง ${selectedIds.size} รายการ?`)) {
-                  setBulkStatus('ARCHIVED');
-                  setBulkReason('');
-                  setShowBulkModal(true);
-                }
-              }}
-            >
-              เก็บเข้าคลัง
-            </Button>
           </div>
         </div>
       )}
@@ -1372,7 +1360,6 @@ export default function ApplicationsClient() {
                   <option value="QUALIFIED">ผ่านการตรวจสอบ</option>
                   <option value="REJECTED">ข้อมูลไม่ครบถ้วน</option>
                   <option value="CANCELED">ยกเลิกใบสมัคร</option>
-                  <option value="ARCHIVED">เก็บเข้าคลัง</option>
                 </Select>
               </div>
 

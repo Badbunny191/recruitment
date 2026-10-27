@@ -2475,6 +2475,13 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
     return c.json({ success: false, message: 'DRAFT status is not allowed in bulk updates' }, 400);
   }
 
+  // ARCHIVED deprecated (legacy-only): zod (BulkApplicationStatusUpdateSchema)
+  // reject อยู่แล้ว — คง message เฉพาะเจาะจงแบบเดียวกับ DRAFT เพื่อให้ผู้ใช้
+  // เข้าใจเหตุผลโดยไม่ต้องอ่าน zod issues
+  if (body && typeof body === 'object' && (body as any).status === 'ARCHIVED') {
+    return c.json({ success: false, message: 'ARCHIVED status is deprecated and cannot be assigned to new updates' }, 400);
+  }
+
   const parsed = BulkApplicationStatusUpdateSchema.safeParse(body);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message }));

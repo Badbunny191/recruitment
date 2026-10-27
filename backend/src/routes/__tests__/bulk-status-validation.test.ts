@@ -26,6 +26,11 @@
  *   BS6.  REJECTED/CANCELED ไม่ระบุเหตุผล → 400 (behavior เดิมคงอยู่)
  *   BS7.  application ที่ถูกลบ (deletedAt) ไม่ถูกอัปเดต (behavior เดิม)
  *   BS8.  response รูปแบบเดิมครบ (success/updated/data) — ไม่ทำลาย contract
+ *         (ใช้ QUALIFIED — ARCHIVED เป็น legacy-only แล้ว)
+ *   BS9.  PATCH single status ARCHIVED → 400 (validation error, row ไม่เปลี่ยน)
+ *   BS10. bulk ARCHIVED → 400 message เฉพาะ (deprecated) + row ไม่เปลี่ยน
+ *   BS11. legacy: แถว ARCHIVED เดิมไม่ถูกแตะโดย operation อื่น +
+ *         เปลี่ยนออกจาก ARCHIVED ได้ (escape hatch)
  *
  * ใช้ข้อมูลสังเคราะห์ 100% — รัน route จริงบน Hono กับ D1 จำลอง (in-memory)
  * แบบเดียวกับ admin-login-lockout.test.ts ไม่ deploy ไม่แตะ D1 จริง
@@ -197,6 +202,27 @@ async function bulkRequest(body: string | object | undefined) {
   return { status: res.status, body: await res.json().catch(() => null) };
 }
 
+async function patchRequest(id: string, body: object) {
+  const token = await sign(
+    { id: ADMIN_ID, email: 'admin@test.local', role: 'ADMIN', exp: Math.floor(Date.now() / 1000) + 3600 },
+    TEST_JWT_SECRET
+  );
+  const res = await app.request(
+    `/api/v1/admin/applications/${id}/status`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'cf-connecting-ip': '198.51.100.9',
+      },
+      body: JSON.stringify(body),
+    },
+    env()
+  );
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -349,19 +375,62 @@ async function runAllTests() {
   });
 
   // ---- BS8: response contract เดิมครบ ----
+  // (ใช้ QUALIFIED — ARCHIVED เป็น legacy-only จึงไม่ใช้เป็นปลายทางใน contract test)
   await test('BS8: response รูปแบบเดิมครบ (success/updated/data) — ไม่ทำลาย contract', async () => {
     const id = insertApplication({ status: 'SUBMITTED' });
 
-    const res = await bulkRequest({ ids: [id], status: 'ARCHIVED' });
+    const res = await bulkRequest({ ids: [id], status: 'QUALIFIED' });
     assertEqual(res.status, 200, 'HTTP status');
 
     assertEqual(res.body.success, true, 'มี success');
     assertEqual(res.body.updated, 1, 'มี updated = จำนวน ids ที่ส่งมา');
     assertTrue(res.body.data && typeof res.body.data === 'object', 'มี data');
-    assertEqual(res.body.data.status, 'ARCHIVED', 'data.status');
+    assertEqual(res.body.data.status, 'QUALIFIED', 'data.status');
     assertEqual(res.body.data.reason, null, 'data.reason = null เมื่อไม่ส่ง');
     assertEqual(res.body.data.verifiedBy, ADMIN_ID, 'data.verifiedBy');
     assertTrue(typeof res.body.data.verifiedAt === 'number', 'data.verifiedAt เป็น unix timestamp');
+
+    sqlite.prepare('DELETE FROM audit_logs').run();
+  });
+
+  // ---- BS9: PATCH single status ARCHIVED → 400 (ARCHIVED legacy-only) ----
+  await test('BS9: PATCH single status ARCHIVED → 400 (validation error) + row ไม่เปลี่ยน + ไม่มี audit', async () => {
+    const id = insertApplication({ status: 'SUBMITTED' });
+
+    const res = await patchRequest(id, { status: 'ARCHIVED' });
+    assertEqual(res.status, 400, `HTTP status ต้องเป็น 400 (zod validation) ไม่ใช่ 200/500: ${res.status}`);
+    assertTrue(res.body && res.body.success === false, 'body.success = false');
+    assertEqual(appRow(id).status, 'SUBMITTED', 'สถานะต้องไม่เปลี่ยน');
+    assertEqual(auditRows().length, 0, 'ห้ามสร้าง audit ตอน reject');
+  });
+
+  // ---- BS10: bulk ARCHIVED → 400 message เฉพาะ (deprecated) ----
+  await test('BS10: bulk status ARCHIVED → 400 message deprecated + row ไม่เปลี่ยน + ไม่มี audit', async () => {
+    const id = insertApplication({ status: 'SUBMITTED' });
+
+    const res = await bulkRequest({ ids: [id], status: 'ARCHIVED' });
+    assertEqual(res.status, 400, 'HTTP status');
+    assertEqual(res.body.success, false, 'body.success');
+    assertEqual(res.body.message, 'ARCHIVED status is deprecated and cannot be assigned to new updates', 'message');
+    assertEqual(appRow(id).status, 'SUBMITTED', 'สถานะต้องไม่เปลี่ยน');
+    assertEqual(auditRows().length, 0, 'ห้ามสร้าง audit ตอน reject');
+  });
+
+  // ---- BS11: legacy ARCHIVED ยังทำงานครบ (soft removal ไม่แตะข้อมูลเดิม) ----
+  await test('BS11: legacy — แถว ARCHIVED เดิมไม่ถูกแตะโดย operation อื่น + เปลี่ยนออกจาก ARCHIVED ได้ (escape hatch)', async () => {
+    const archivedId = insertApplication({ status: 'ARCHIVED' });
+    const liveId = insertApplication({ status: 'SUBMITTED' });
+
+    // bulk update ใบอื่น (คนละผู้สมัคร) ต้องไม่กระทบแถว legacy
+    const res = await bulkRequest({ ids: [liveId], status: 'QUALIFIED' });
+    assertEqual(res.status, 200, 'HTTP status');
+    assertEqual(appRow(liveId).status, 'QUALIFIED', 'ใบปกติถูกอัปเดต');
+    assertEqual(appRow(archivedId).status, 'ARCHIVED', 'แถว legacy ต้องยังเป็น ARCHIVED');
+
+    // escape hatch: เปลี่ยนออกจาก ARCHIVED ไปสถานะอื่นได้ (ปลายทางห้ามเป็น ARCHIVED — zod คุมอยู่)
+    const res2 = await patchRequest(archivedId, { status: 'QUALIFIED' });
+    assertEqual(res2.status, 200, `escape hatch status=${res2.status} ${JSON.stringify(res2.body)}`);
+    assertEqual(appRow(archivedId).status, 'QUALIFIED', 'แถว legacy เปลี่ยนออกจาก ARCHIVED ได้');
 
     sqlite.prepare('DELETE FROM audit_logs').run();
   });
