@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { handleMustChangePasswordResponse } from '@/lib/must-change-password';
+import { handleAccountDisabledResponse, handleMustChangePasswordResponse } from '@/lib/account-state';
 
 const STORAGE_KEY = 'adminToken';
 const STORAGE_KEY_USER = 'adminUser';
@@ -157,7 +157,9 @@ export async function adminFetch(url: string, options: RequestInit = {}): Promis
   // R9: 403 MUST_CHANGE_PASSWORD → พาไปหน้าเปลี่ยนรหัสผ่าน ก่อน caller
   // จะแสดง "โหลดข้อมูลไม่สำเร็จ" แทน security error
   if (res.status === 403) {
-    await handleMustChangePasswordResponse(res);
+    // R9.1: ACCOUNT_DISABLED (ตรวจก่อน — policy แรงกว่า) → ล้าง session + login
+    const handled = await handleAccountDisabledResponse(res);
+    if (!handled) await handleMustChangePasswordResponse(res);
   }
 
   return res;

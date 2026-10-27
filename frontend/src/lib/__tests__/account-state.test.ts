@@ -1,6 +1,6 @@
 // @ts-nocheck — tsx run-time; keep simple, no project type plumbing
 /**
- * R9 Regression Tests — mustChangePassword frontend handling
+ * R9 + R9.1 Regression Tests — account state security responses
  * ===========================================================
  *
  * Backend ตอบ 403 + code MUST_CHANGE_PASSWORD เมื่อ flag เปิดอยู่
@@ -13,8 +13,10 @@
  *      response ที่ caller ได้ยังอ่านได้ครบ, install ซ้ำไม่ซ้อน, uninstall คืนเดิม
  *   E. flag helpers — set/remove localStorage key เดียวกับ login page
  *      ('mustChangePassword')
+ *   F. ACCOUNT_DISABLED (R9.1) — ล้าง session + redirect login, loop guard,
+ *      disable ชนะ must-change, interceptor เดียว dispatch ทั้งสอง code
  *
- * Run: tsx --tsconfig tsconfig.test.json src/lib/__tests__/must-change-password.test.ts
+ * Run: tsx --tsconfig tsconfig.test.json src/lib/__tests__/account-state.test.ts
  */
 
 // ทำให้เป็น ES module — ไม่งั้น top-level declarations ชนกับ test ไฟล์อื่น
@@ -79,7 +81,7 @@ function resetState(pathname = '/admin/dashboard') {
 
 async function runAllTests() {
   // lib โหลดหลัง fake window พร้อม (tsx CJS ห้าม top-level await)
-  const lib: any = await import('../must-change-password');
+  const lib: any = await import('../account-state');
 
   // ---------- A: isMustChangePasswordBody ----------
 
@@ -154,7 +156,7 @@ async function runAllTests() {
     });
     (globalThis as any).window.fetch = originalFetch;
 
-    const uninstall = lib.installMustChangePasswordFetchInterceptor();
+    const uninstall = lib.installAccountStateFetchInterceptor();
 
     const res = await (globalThis as any).window.fetch('http://test.local/api/v1/admin/fields');
     assertEqual(assignCalls.length, 1, 'D1 redirect ถูกเรียก');
@@ -173,9 +175,9 @@ async function runAllTests() {
     const originalFetch = async () => new Response('{}', { status: 200 });
     (globalThis as any).window.fetch = originalFetch;
 
-    const uninstall1 = lib.installMustChangePasswordFetchInterceptor();
+    const uninstall1 = lib.installAccountStateFetchInterceptor();
     const firstWrapper = (globalThis as any).window.fetch;
-    const uninstall2 = lib.installMustChangePasswordFetchInterceptor();
+    const uninstall2 = lib.installAccountStateFetchInterceptor();
 
     assertTrue((globalThis as any).window.fetch === firstWrapper, 'D2 fetch ไม่ถูก wrap ซ้ำ');
     uninstall2(); // noop
@@ -188,7 +190,7 @@ async function runAllTests() {
     const originalFetch = async () => new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 });
     (globalThis as any).window.fetch = originalFetch;
 
-    const uninstall = lib.installMustChangePasswordFetchInterceptor();
+    const uninstall = lib.installAccountStateFetchInterceptor();
     await (globalThis as any).window.fetch('http://test.local/api/v1/admin/users');
     assertEqual(assignCalls.length, 0, 'D3 403 อื่นไม่ redirect');
 
@@ -217,6 +219,98 @@ async function runAllTests() {
     resetState('/admin/change-password');
     lib.setMustChangePasswordFlag(true);
     assertTrue(lib.isOnChangePasswordPage(), 'E2 หน้า change-password ไม่ redirect (loop guard)');
+  });
+
+  // ---------- F (R9.1): ACCOUNT_DISABLED ----------
+
+  await test('F1: 403 ACCOUNT_DISABLED → ล้าง session (token/user/flag) + redirect /admin/login', async () => {
+    resetState();
+    fakeStorage.setItem('adminToken', 'tok-123');
+    fakeStorage.setItem('adminUser', '{"id":"u1"}');
+    fakeStorage.setItem('mustChangePassword', 'true');
+    const res = new Response(
+      JSON.stringify({ success: false, code: 'ACCOUNT_DISABLED', message: 'Account disabled' }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    );
+    const handled = await lib.handleAccountDisabledResponse(res);
+    assertTrue(handled, 'F1 ต้อง return true');
+    assertEqual(fakeStorage.getItem('adminToken'), null, 'F1 token ถูกล้าง');
+    assertEqual(fakeStorage.getItem('adminUser'), null, 'F1 user ถูกล้าง');
+    assertEqual(fakeStorage.getItem('mustChangePassword'), null, 'F1 flag ถูกล้าง');
+    assertEqual(assignCalls.length, 1, 'F1 redirect ครั้งเดียว');
+    assertEqual(assignCalls[0], '/admin/login', 'F1 ปลายทาง login');
+  });
+
+  await test('F2: อยู่หน้า /admin/login แล้ว → ไม่ redirect ซ้ำ (loop guard) แต่ยังล้าง session', async () => {
+    resetState('/admin/login');
+    fakeStorage.setItem('adminToken', 'tok-123');
+    const res = new Response(JSON.stringify({ code: 'ACCOUNT_DISABLED' }), { status: 403 });
+    const handled = await lib.handleAccountDisabledResponse(res);
+    assertFalse(handled, 'F2 ไม่ redirect');
+    assertEqual(assignCalls.length, 0, 'F2 ไม่มี assign call');
+    assertEqual(fakeStorage.getItem('adminToken'), null, 'F2 session ยังถูกล้าง');
+  });
+
+  await test('F3: 403 code อื่น → handleAccountDisabledResponse ไม่แตะ', async () => {
+    resetState();
+    fakeStorage.setItem('adminToken', 'tok-123');
+    const res = new Response(JSON.stringify({ code: 'FORBIDDEN' }), { status: 403 });
+    const handled = await lib.handleAccountDisabledResponse(res);
+    assertFalse(handled, 'F3 return false');
+    assertEqual(assignCalls.length, 0, 'F3 ไม่ redirect');
+    assertEqual(fakeStorage.getItem('adminToken'), 'tok-123', 'F3 session คงเดิม');
+  });
+
+  await test('F4: ACCOUNT_DISABLED ชนะ MUST_CHANGE_PASSWORD — บัญชีปิดแล้ว redirect login ไม่ใช่ change-password', async () => {
+    resetState();
+    fakeStorage.setItem('adminToken', 'tok-123');
+    fakeStorage.setItem('mustChangePassword', 'true');
+    const res = new Response(JSON.stringify({ code: 'ACCOUNT_DISABLED' }), { status: 403 });
+    const handledDisabled = await lib.handleAccountDisabledResponse(res);
+    assertTrue(handledDisabled, 'F4 disabled handled');
+    assertEqual(assignCalls[0], '/admin/login', 'F4 ปลายทางต้องเป็น login');
+    assertEqual(fakeStorage.getItem('mustChangePassword'), null, 'F4 flag ถูกล้าง');
+  });
+
+  await test('F5: interceptor เดียว dispatch ทั้งสอง code ตาม response จริง', async () => {
+    resetState();
+    fakeStorage.setItem('adminToken', 'tok-123');
+    fakeStorage.setItem('adminUser', '{"id":"u1"}');
+    let mode = 'disabled';
+    const originalFetch = async () => new Response(
+      JSON.stringify(mode === 'disabled'
+        ? { success: false, code: 'ACCOUNT_DISABLED', message: 'Account disabled' }
+        : { success: false, code: 'MUST_CHANGE_PASSWORD' }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    );
+    (globalThis as any).window.fetch = originalFetch;
+
+    const uninstall = lib.installAccountStateFetchInterceptor();
+
+    // รอบ 1: ACCOUNT_DISABLED → login + ล้าง session
+    await (globalThis as any).window.fetch('http://test.local/api/v1/admin/fields');
+    assertEqual(assignCalls[0], '/admin/login', 'F5 disabled → login');
+    assertEqual(fakeStorage.getItem('adminToken'), null, 'F5 session ถูกล้าง');
+
+    // รอบ 2: MUST_CHANGE_PASSWORD → change-password + set flag (session ไม่ถูกล้าง)
+    resetState('/admin/dashboard');
+    mode = 'must-change';
+    fakeStorage.setItem('adminToken', 'tok-456');
+    await (globalThis as any).window.fetch('http://test.local/api/v1/admin/fields');
+    assertEqual(assignCalls[0], '/admin/change-password', 'F5 must-change → change-password');
+    assertEqual(fakeStorage.getItem('adminToken'), 'tok-456', 'F5 session คงอยู่');
+    assertEqual(fakeStorage.getItem('mustChangePassword'), 'true', 'F5 flag ถูก set');
+
+    uninstall();
+  });
+
+  await test('F6: ACCOUNT_DISABLED บนหน้า change-password → ยังพาไป login (disable ไม่มี allowlist)', async () => {
+    resetState('/admin/change-password');
+    fakeStorage.setItem('adminToken', 'tok-123');
+    const res = new Response(JSON.stringify({ code: 'ACCOUNT_DISABLED' }), { status: 403 });
+    const handled = await lib.handleAccountDisabledResponse(res);
+    assertTrue(handled, 'F6 redirect');
+    assertEqual(assignCalls[0], '/admin/login', 'F6 ปลายทาง login');
   });
 
   // ---------- Summary ----------

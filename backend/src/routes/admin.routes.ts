@@ -28,7 +28,7 @@ import { adminUsers, fieldMaster, templates, templateVersions, templateFields, t
 import { buildAuditLogWhere, parseMultiParam } from '../lib/audit-log-query';
 import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, BulkApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
 import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
-import { mustChangePasswordGate } from '../middlewares/must-change-password.middleware';
+import { accountStateGate } from '../middlewares/account-state.middleware';
 import { ensureNotLastSuperAdmin } from '../services/rbac.service';
 import templateDescriptorRoutes from './template-descriptor.routes';
 import { handleExcelExport, handleExcelExportSelected } from './excel-export.routes';
@@ -170,9 +170,10 @@ adminRoutes.post('/auth/login', rateLimitMiddleware({ keyPrefix: 'admin-login' }
 
 adminRoutes.use('/*', authMiddleware);
 
-// R9: บล็อกทุก endpoint ยกเว้น allowlist (change-password / auth/me)
-// เมื่อ must_change_password = true — ต้องวางหลัง authMiddleware
-adminRoutes.use('/*', mustChangePasswordGate);
+// R9 + R9.1: ตรวจสถานะบัญชีจาก DB ทุก request — isActive=false → 403
+// ACCOUNT_DISABLED ทุก path; mustChangePassword=true → 403 MUST_CHANGE_PASSWORD
+// ยกเว้น allowlist (change-password / auth/me) — ต้องวางหลัง authMiddleware
+adminRoutes.use('/*', accountStateGate);
 
 /**
  * POST /admin/auth/change-password
@@ -4269,7 +4270,7 @@ adminRoutes.post(
 adminRoutes.post(
   '/users/:id/disable',
   superAdminOnlyMiddleware,
-  auditMiddleware('ADMIN_USER'),
+  auditMiddleware('ADMIN_USER', { action: 'UPDATE' }),
   zValidator('json', DisableUserSchema),
   async (c) => {
     const id = c.req.param('id');
@@ -4314,12 +4315,16 @@ adminRoutes.post(
         isActive: false,
         failedLoginAttempts: 0,
         lockedUntil: null,
-        // Persist reason in the audit log via payload capture. We also
-        // stash it on the user record briefly via a JSON-less side channel:
-        // the audit middleware already records the request body, so we
-        // don't need a column here.
       } as any)
       .where(eq(adminUsers.id, id));
+
+    // R9.1: audit log — บันทึกการปิดบัญชี (มีผลบังคับทันทีกับ JWT เดิม)
+    setAuditPayload(c, JSON.stringify({
+      selfChange: false,
+      targetUserId: target.id,
+      targetEmail: target.email,
+      reason,
+    }));
 
     return c.json({ success: true, disabledAt: now, reason });
   },
