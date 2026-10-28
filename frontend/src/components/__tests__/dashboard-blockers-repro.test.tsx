@@ -1,16 +1,23 @@
 // @ts-nocheck — tsx run-time; keep simple, no project type plumbing
 /**
- * Dashboard V1 — Blocker Reproduction Tests
- * =========================================
- * พิสูจน์ blocker 3 ข้อของ Executive Dashboard V1 บน component จริง
- * (ไม่ใช่แค่ pure logic) ด้วย happy-dom แบบเดียวกับ test อื่นในระบบ
+ * Dashboard V2 (single endpoint) — Blocker Reproduction Tests
+ * ===========================================================
+ * พิสูจน์ blocker ของ Executive Dashboard บน component จริง (happy-dom)
+ * คงเป้าหมายเดิมของ V1 ทั้งหมด แต่โครงสร้างข้อมูลเป็น endpoint เดียว
+ * GET /admin/dashboard/overview (แทน fan-out 5 endpoint)
  *
  *   1. Audit Log exposure — role ที่ไม่ใช่ SUPER_ADMIN ต้องไม่เห็นกิจกรรม
- *      และต้องไม่ยิง request ไป /admin/audit-logs เลย
+ *      (backend ส่ง activities: null ให้ role อื่นอยู่แล้ว) และไม่มี request
+ *      ใดไปยัง endpoint audit-logs อีกต่อไป
+ *   1b. Fan-out — โหลดหนึ่งครั้งต้องยิง request สด ๆ 1 request เท่านั้น
+ *      และห้ามยิง endpoint เก่าทั้ง 5 (regression ของการลด fan-out)
  *   2. 401 redirect behavior — endpoint ตอบ 401 → ต้องพาไป /admin/login
  *      (ล้าง session) ไม่ใช่แสดง "โหลดข้อมูลไม่สำเร็จ"
- *   3. KPI false-green state — ระหว่าง loading / เมื่อ error ต้องไม่แสดง
- *      ตัวเลข 0 หรือข้อความ "ทันสมัยทั้งหมด" ที่อ่านได้ว่า "ปกติ"
+ *   3. KPI false-green state — ระหว่าง loading / เมื่อ section ล้ม
+ *      (fail-soft: null + errors[]) ต้องไม่แสดง 0 หรือข้อความ
+ *      "ทันสมัยทั้งหมด" ที่อ่านได้ว่า "ปกติ"
+ *   4. Pending count — ต้องมาจาก backend.total (ชุดเต็ม) โดยไม่มีคำเตือน
+ *      "คำนวณจาก N ใบแรก" อีกต่อไป (server aggregate จากชุดเต็มทั้งหมด)
  *
  * Run: tsx --tsconfig tsconfig.test.json src/components/__tests__/dashboard-blockers-repro.test.tsx
  */
@@ -105,13 +112,28 @@ function assertEqual(actual: any, expected: any, msg = '') {
 // =============================================================================
 // JWT helper — สร้าง token ปลอมที่มี role ตามต้องการ (ไม่ต้องมี signature จริง)
 // useAdminAuth อ่าน payload จาก token โดยไม่ verify (backend verify อยู่แล้ว)
+// ปลายทาง stub ฝั่งล่าง decode payload ได้เพื่อจำลองพฤติกรรม backend ต่อ role
 // =============================================================================
 
+function encodeJwtPayload(payload: any): string {
+  return Buffer.from(JSON.stringify(payload)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function decodeJwtRole(authHeader: string | undefined): string | null {
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  const parts = authHeader.slice(7).split('.');
+  if (parts.length < 2) return null;
+  try {
+    const json = Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    return JSON.parse(json).role ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function makeToken(role: string, expOffsetSec = 3600): string {
-  const enc = (o: any) =>
-    Buffer.from(JSON.stringify(o)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const payload = { id: 'u1', email: 'a@b.c', role, exp: Math.floor(Date.now() / 1000) + expOffsetSec };
-  return `${enc({ alg: 'HS256', typ: 'JWT' })}.${enc(payload)}.sig`;
+  return `${encodeJwtPayload({ alg: 'HS256', typ: 'JWT' })}.${encodeJwtPayload(payload)}.sig`;
 }
 
 // =============================================================================
@@ -120,12 +142,12 @@ function makeToken(role: string, expOffsetSec = 3600): string {
 
 interface FetchCall { url: string; status?: number }
 
-function installFetch(handler: (url: string) => { status: number; body: any }) {
+function installFetch(handler: (url: string, init: any) => { status: number; body: any }) {
   const calls: FetchCall[] = [];
-  globalAny.fetch = async (url: string) => {
+  globalAny.fetch = async (url: string, init: any = {}) => {
     const u = String(url);
     calls.push({ url: u });
-    const { status, body } = handler(u);
+    const { status, body } = handler(u, init);
     return {
       ok: status >= 200 && status < 300,
       status,
@@ -136,48 +158,62 @@ function installFetch(handler: (url: string) => { status: number; body: any }) {
   return calls;
 }
 
-/** ตอบข้อมูลปกติครบทุก endpoint */
-function healthyHandler(url: string) {
-  if (url.includes('/admin/applications/summary')) {
-    return { status: 200, body: { data: { total: 10, byStatus: { SUBMITTED: 3, QUALIFIED: 7 } } } };
-  }
-  if (url.includes('/admin/applications?')) {
-    return {
-      status: 200,
-      body: {
-        data: [
-          { id: 'a1', applicationNo: 'APP-1', fullname: 'ก', status: 'SUBMITTED', submittedAt: Math.floor(Date.now() / 1000) - 86400 },
-        ],
-        pagination: { page: 1, pageSize: 200, total: 3, totalPages: 1 },
-      },
+/** payload ปกติที่ backend ควรตอบ (activities ตาม role — fail-soft ต่อ section) */
+function overviewBody(role: string | null, overrides: any = {}) {
+  const base: any = {
+    summary: { total: 10, byStatus: { SUBMITTED: 3, QUALIFIED: 7 } },
+    pending: {
+      total: 3,
+      overdueCount: 1,
+      oldestSubmittedAt: Math.floor(Date.now() / 1000) - 2 * 86400,
+      slaDays: 7,
+      items: [
+        {
+          id: 'a1',
+          applicationNo: 'APP-1',
+          fullname: 'ก',
+          status: 'SUBMITTED',
+          submittedAt: Math.floor(Date.now() / 1000) - 86400,
+        },
+      ],
+    },
+    rounds: [],
+    comparison: [],
+    activities: null,
+    errors: [],
+  };
+  if (role === 'SUPER_ADMIN') {
+    base.activities = {
+      items: [
+        {
+          id: 'l1',
+          action: 'PDF_DOWNLOAD',
+          entityType: 'APPLICATION',
+          entityId: 'e1',
+          createdAt: Math.floor(Date.now() / 1000) - 60,
+          display: { name: 'APP-2026-5012', secondary: 'นายสมชาย' },
+        },
+      ],
     };
   }
-  if (url.includes('/admin/rounds/comparison')) {
-    return { status: 200, body: { data: [] } };
-  }
-  if (url.includes('/admin/rounds')) {
-    return { status: 200, body: { data: [] } };
-  }
-  if (url.includes('/admin/audit-logs')) {
-    return {
-      status: 200,
-      body: {
-        items: [
-          {
-            id: 'l1',
-            action: 'PDF_DOWNLOAD',
-            entityType: 'APPLICATION',
-            entityId: 'e1',
-            createdAt: Math.floor(Date.now() / 1000) - 60,
-            display: { name: 'APP-2026-5012', secondary: 'นายสมชาย' },
-          },
-        ],
-        total: 1,
-      },
-    };
+  return { data: { ...base, ...overrides } };
+}
+
+/** ตอบข้อมูลปกติครบ (activities เฉพาะ SUPER_ADMIN — จำลอง backend จริง) */
+function healthyHandler(url: string, init: any) {
+  if (url.includes('/admin/dashboard/overview')) {
+    return { status: 200, body: overviewBody(decodeJwtRole(init?.headers?.Authorization)) };
   }
   return { status: 404, body: {} };
 }
+
+const LEGACY_ENDPOINTS = [
+  '/admin/applications/summary',
+  '/admin/applications?',
+  '/admin/rounds/comparison',
+  '/admin/rounds?',
+  '/admin/audit-logs',
+];
 
 // =============================================================================
 // Render helper
@@ -192,7 +228,7 @@ async function renderDashboard() {
   await act(async () => {
     root.render(React.createElement(DashboardPage));
   });
-  // ให้ promise ของ loader ทั้ง 5 ตัวได้ settle
+  // ให้ promise ของ loader ได้ settle
   await act(async () => {
     await new Promise((r) => setTimeout(r, 60));
   });
@@ -217,12 +253,15 @@ async function main() {
 
   console.log('\n── Blocker 1: Audit Log exposure ──');
 
-  await test('ADMIN: ไม่ยิง request ไป /admin/audit-logs เลย', async () => {
+  await test('ADMIN: ยิง request เดียวไป overview และไม่ยิง endpoint audit-logs/endpoint เก่าเลย', async () => {
     setSession('ADMIN');
     const calls = installFetch(healthyHandler);
     const ui = await renderDashboard();
-    const auditCalls = calls.filter((c) => c.url.includes('/admin/audit-logs'));
-    assertEqual(auditCalls.length, 0, 'ต้องไม่เรียก endpoint audit-logs');
+    assertEqual(calls.length, 1, 'ต้องยิง request เดียว (single endpoint)');
+    assert(calls[0].url.includes('/admin/dashboard/overview'), 'ต้องชี้ /admin/dashboard/overview');
+    for (const legacy of LEGACY_ENDPOINTS) {
+      assertEqual(calls.filter((c) => c.url.includes(legacy)).length, 0, `ห้ามยิง endpoint เก่า: ${legacy}`);
+    }
     await ui.unmount();
   });
 
@@ -237,13 +276,18 @@ async function main() {
     await ui.unmount();
   });
 
-  await test('VIEWER: ไม่เห็นกิจกรรมและไม่ยิง audit endpoint', async () => {
+  await test('VIEWER: ไม่เห็นกิจกรรมและ body ที่ server ส่งไม่มี audit (activities: null)', async () => {
     setSession('VIEWER');
-    const calls = installFetch(healthyHandler);
+    let sentBody: any = null;
+    installFetch((url, init) => {
+      const res = healthyHandler(url, init);
+      if (url.includes('/admin/dashboard/overview')) sentBody = res.body;
+      return res;
+    });
     const ui = await renderDashboard();
     const text = ui.text();
     assert(!text.includes('กิจกรรมล่าสุด'), 'VIEWER ต้องไม่เห็นกิจกรรม');
-    assertEqual(calls.filter((c) => c.url.includes('/admin/audit-logs')).length, 0);
+    assertEqual(sentBody?.data?.activities ?? null, null, 'backend ต้องส่ง activities: null ให้ VIEWER');
     await ui.unmount();
   });
 
@@ -254,7 +298,7 @@ async function main() {
     const text = ui.text();
     assert(text.includes('กิจกรรมล่าสุด'), 'SUPER_ADMIN ต้องยังเห็นหัวข้อ');
     assert(text.includes('APP-2026-5012'), 'SUPER_ADMIN ต้องยังเห็นข้อมูล');
-    assertEqual(calls.filter((c) => c.url.includes('/admin/audit-logs')).length, 1, 'ต้องเรียก 1 ครั้ง');
+    assertEqual(calls.filter((c) => c.url.includes('/admin/dashboard/overview')).length, 1, 'ต้องเรียก 1 ครั้ง');
     await ui.unmount();
   });
 
@@ -264,7 +308,7 @@ async function main() {
 
   console.log('\n── Blocker 2: 401 redirect ──');
 
-  await test('401 ทุก endpoint → ล้าง session และพาไป /admin/login', async () => {
+  await test('401 จาก overview → ล้าง session และพาไป /admin/login', async () => {
     setSession('SUPER_ADMIN');
     installFetch(() => ({ status: 401, body: { error: 'Invalid Token' } }));
     const ui = await renderDashboard();
@@ -297,42 +341,42 @@ async function main() {
 
   console.log('\n── Blocker 3: KPI false-green ──');
 
-  await test('comparison error → การ์ด Template ต้องไม่เขียว/ไม่บอก "ทันสมัยทั้งหมด"', async () => {
+  await test('fail-soft: comparison ล้ม (errors:["comparison"]) → การ์ด Template ต้องไม่เขียว/ไม่บอก "ทันสมัยทั้งหมด" และส่วนอื่นยังแสดง', async () => {
     setSession('SUPER_ADMIN');
-    installFetch((url) => {
-      if (url.includes('/admin/rounds/comparison')) return { status: 500, body: {} };
-      return healthyHandler(url);
+    installFetch((url, init) => {
+      if (url.includes('/admin/dashboard/overview')) {
+        return { status: 200, body: overviewBody('SUPER_ADMIN', { comparison: null, errors: ['comparison'] }) };
+      }
+      return { status: 404, body: {} };
     });
     const ui = await renderDashboard();
     const text = ui.text();
     assert(!text.includes('ทันสมัยทั้งหมด'), 'ต้องไม่บอกว่าทันสมัยเมื่อยังไม่รู้ผล');
-    assert(text.includes('โหลดข้อมูลไม่สำเร็จ'), 'ต้องแจ้งว่าโหลดไม่สำเร็จ');
+    assert(text.includes('โหลดข้อมูลไม่สำเร็จ'), 'ต้องแจ้งว่าโหลดไม่สำเร็จ (เฉพาะ section นั้น)');
+    assert(text.includes('รอบที่เปิดรับ'), 'ส่วนรอบที่เปิดรับต้องยังแสดง');
+    assert(text.includes('ภาพรวมใบสมัคร'), 'ส่วน KPI ต้องยังแสดง');
     await ui.unmount();
   });
 
-  await test('pending error → การ์ด "รอการตรวจสอบ" ต้องไม่แสดง 0', async () => {
+  await test('fail-soft: pending ล้ม (errors:["pending"]) → การ์ด "รอการตรวจสอบ" ต้องไม่แสดง 0', async () => {
     setSession('SUPER_ADMIN');
-    installFetch((url) => {
-      if (url.includes('/admin/applications?')) return { status: 500, body: {} };
-      return healthyHandler(url);
+    installFetch((url, init) => {
+      if (url.includes('/admin/dashboard/overview')) {
+        return { status: 200, body: overviewBody('SUPER_ADMIN', { pending: null, errors: ['pending'] }) };
+      }
+      return { status: 404, body: {} };
     });
     const ui = await renderDashboard();
     const text = ui.text();
     assert(!text.includes('ไม่มีงานค้าง'), 'ต้องไม่ยืนยันว่าไม่มีงานค้างเมื่อโหลดไม่สำเร็จ');
+    assert(text.includes('โหลดข้อมูลไม่สำเร็จ'), 'ต้องแจ้ง error ของ section');
     await ui.unmount();
   });
 
-  await test('pending ยังโหลดอยู่ (summary เสร็จแล้ว) → ต้องไม่แสดง 0 ก่อนข้อมูลมา', async () => {
+  await test('ยังโหลดอยู่ (fetch ไม่ resolve) → ต้องไม่แสดง 0 ก่อนข้อมูลมา', async () => {
     setSession('SUPER_ADMIN');
-    // applications ค้างตลอดไป → การ์ดต้องอยู่ใน loading state ไม่ใช่ 0
-    globalAny.fetch = async (url: string) => {
-      const u = String(url);
-      if (u.includes('/admin/applications?')) {
-        return new Promise(() => {}); // never resolves
-      }
-      const { status, body } = healthyHandler(u);
-      return { ok: true, status, json: async () => body, clone() { return this; } };
-    };
+    // overview ค้างตลอดไป → ทุกการ์ดต้องอยู่ใน loading state ไม่ใช่ 0
+    globalAny.fetch = async () => new Promise(() => {});
     const ui = await renderDashboard();
     const text = ui.text();
     assert(!text.includes('ไม่มีงานค้าง'), 'ระหว่าง loading ต้องไม่สรุปว่าไม่มีงานค้าง');
@@ -340,26 +384,28 @@ async function main() {
     await ui.unmount();
   });
 
-  await test('pending count มาจาก pagination.total (250) ไม่ใช่จำนวนแถวที่โหลดมา (1)', async () => {
+  await test('pending count มาจาก backend.total (250) — ไม่มีคำเตือน "จาก N ใบแรก" อีกต่อไป', async () => {
     setSession('SUPER_ADMIN');
-    installFetch((url) => {
-      if (url.includes('/admin/applications?')) {
-        return {
-          status: 200,
-          body: {
-            data: [
-              { id: 'a1', applicationNo: 'APP-1', fullname: 'ก', status: 'SUBMITTED', submittedAt: Math.floor(Date.now() / 1000) - 86400 },
-            ],
-            pagination: { page: 1, pageSize: 200, total: 250, totalPages: 2 },
-          },
+    installFetch((url, init) => {
+      if (url.includes('/admin/dashboard/overview')) {
+        const body = overviewBody('SUPER_ADMIN');
+        body.data.pending = {
+          total: 250,
+          overdueCount: 12,
+          oldestSubmittedAt: Math.floor(Date.now() / 1000) - 20 * 86400,
+          slaDays: 7,
+          items: [
+            { id: 'a1', applicationNo: 'APP-1', fullname: 'ก', status: 'SUBMITTED', submittedAt: Math.floor(Date.now() / 1000) - 86400 },
+          ],
         };
+        return { status: 200, body };
       }
-      return healthyHandler(url);
+      return { status: 404, body: {} };
     });
     const ui = await renderDashboard();
     const text = ui.text();
-    assert(text.includes('250'), 'ต้องแสดง 250 จาก pagination.total');
-    assert(text.includes('จาก 1 ใบแรก'), 'ต้องบอกว่าคำนวณจาก subset');
+    assert(text.includes('250'), 'ต้องแสดง 250 จาก backend.total');
+    assert(!text.includes('ใบแรก'), 'server aggregate จากชุดเต็ม — ต้องไม่มีคำเตือน subset');
     await ui.unmount();
   });
 

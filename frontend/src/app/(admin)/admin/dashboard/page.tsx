@@ -10,28 +10,25 @@ import { getAuditActionConfig, getAuditEntityLabel } from '@/lib/audit-log-displ
 import { redirectToLogin } from '@/lib/account-state';
 import { useRole } from '@/lib/useRole';
 import {
-  buildDashboardSnapshot,
-  type ApplicationListItem,
-  type ApplicationSummary,
+  buildDashboardSnapshotFromOverview,
   type AuditLogItem,
-  type RoundComparisonItem,
-  type RoundItem,
+  type DashboardOverviewPayload,
+  type PendingOverview,
 } from '@/lib/dashboard-overview';
 
 /**
- * Executive Dashboard — Level 1
+ * Executive Dashboard — V2 (single endpoint)
  * -----------------------------
- * ใช้ endpoint ที่มีอยู่แล้วเท่านั้น (ไม่มี backend endpoint ใหม่ / migration /
- * schema change) และไม่มีการทำ chart ตามข้อกำหนด
+ * เรียก GET /admin/dashboard/overview เพียง request เดียว แทน fan-out
+ * 5 endpoint ของ V1 (applications/summary, applications, rounds,
+ * rounds/comparison, audit-logs) — backend aggregate KPI ครบทุก section
+ * รวมถึงงานค้างที่ V1 ต้อง fetch แถวมากถึง 200 แถวมานับฝั่ง client
  *
- * Endpoint ที่เรียก:
- *   GET /admin/applications/summary                → KPI การ์ดสถานะ
- *   GET /admin/applications?status=SUBMITTED&...   → งานค้างที่ต้องตัดสิน
- *   GET /admin/rounds?view=active                  → รอบที่เปิดรับ
- *   GET /admin/audit-logs?pageSize=10              → กิจกรรมล่าสุด
- *   GET /admin/rounds/comparison                   → governance alert
+ * Response เป็น fail-soft ต่อ section: section ใดล้ม = null + ชื่อ section
+ * ใน errors[] — ส่วนอื่นยังแสดงได้ (คุณสมบัติ allSettled ของ V1 รักษาไว้)
+ * section ที่ล้ม → กล่อง "โหลดข้อมูลไม่สำเร็จ" ของส่วนนั้นเหมือนเดิม
  *
- * ทุกส่วนโหลดแยกกัน (Promise.allSettled) — endpoint ใดล้ม ส่วนอื่นยังแสดงได้
+ * UI/markup คงเดิมทุกส่วนจาก V1 — มีเพียงชั้นโหลดข้อมูลที่เปลี่ยน
  */
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
@@ -40,26 +37,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 // Types
 // =============================================================================
 
-interface SummaryResponse {
-  data?: ApplicationSummary;
-}
-
-interface ApplicationsResponse {
-  data?: ApplicationListItem[];
-  pagination?: { total?: number };
-}
-
-interface RoundsResponse {
-  data?: RoundItem[];
-}
-
-interface ComparisonResponse {
-  data?: RoundComparisonItem[];
-}
-
-interface AuditLogsResponse {
-  items?: AuditLogItem[];
-  total?: number;
+interface OverviewResponse {
+  data?: DashboardOverviewPayload;
 }
 
 /** สถานะการโหลดของแต่ละส่วน */
@@ -212,121 +191,75 @@ function KpiCard({
 export default function DashboardPage() {
   // Audit Log เปิดให้เฉพาะ SUPER_ADMIN (ตรงกับ RBAC ของหน้า /admin/audit-logs
   // และเมนู System) — role อื่นต้องไม่เห็นกิจกรรมเลย แม้แต่ใน dashboard
+  // (backend ส่ง activities เฉพาะ SUPER_ADMIN อยู่แล้ว — ชั้นนี้เป็น guard แสดงผล)
   const { isSuperAdmin } = useRole();
 
-  const [summary, setSummary] = useState<SectionState<ApplicationSummary>>(initialSection());
-  const [pending, setPending] = useState<SectionState<ApplicationListItem[]>>(initialSection());
-  const [pendingTotal, setPendingTotal] = useState<number | null>(null);
-  const [rounds, setRounds] = useState<SectionState<RoundItem[]>>(initialSection());
-  const [comparison, setComparison] = useState<SectionState<RoundComparisonItem[]>>(initialSection());
-  const [activities, setActivities] = useState<SectionState<AuditLogItem[]>>(initialSection());
+  // request เดียวรวมทุก section — สถานะ loading/error/error message ใช้ร่วมกัน
+  // แล้วแยกเป็นสถานะต่อ section ด้วย sectionOf ด้านล่าง
+  const [overview, setOverview] = useState<SectionState<DashboardOverviewPayload>>(
+    initialSection(),
+  );
 
-  // ── Loaders (แยกกัน เพื่อให้ส่วนที่เหลือแสดงได้แม้บาง endpoint ล้ม) ──
+  // ── Loader (request เดียว) ──
 
-  const loadSummary = useCallback(async () => {
-    setSummary((s) => ({ ...s, status: 'loading', error: null }));
+  const loadOverview = useCallback(async () => {
+    setOverview((s) => ({ ...s, status: 'loading', error: null }));
     try {
-      const res = await fetchJson<SummaryResponse>('/admin/applications/summary');
-      setSummary({ status: 'ready', data: res.data ?? { total: 0, byStatus: {} }, error: null });
+      const res = await fetchJson<OverviewResponse>('/admin/dashboard/overview');
+      setOverview({ status: 'ready', data: res.data ?? null, error: null });
     } catch (e) {
       // 401 → กำลังถูกพาไป login อยู่ ไม่ต้องแสดง error ปลอม
       if (e instanceof UnauthorizedError) return;
-      setSummary({ status: 'error', data: null, error: (e as Error).message });
+      setOverview({ status: 'error', data: null, error: (e as Error).message });
     }
   }, []);
-
-  const loadPending = useCallback(async () => {
-    setPending((s) => ({ ...s, status: 'loading', error: null }));
-    try {
-      // pageSize สูงสุดที่ backend ยอมรับ = 200 (APPLICATIONS_LIST_PAGE_SIZE_MAX)
-      const res = await fetchJson<ApplicationsResponse>(
-        '/admin/applications?status=SUBMITTED&page=1&pageSize=200',
-      );
-      // total = จำนวนงานค้างจริงทั้งระบบ (items ถูกจำกัดที่ 200 แถว)
-      setPendingTotal(typeof res.pagination?.total === 'number' ? res.pagination.total : null);
-      setPending({ status: 'ready', data: res.data ?? [], error: null });
-    } catch (e) {
-      if (e instanceof UnauthorizedError) return;
-      setPending({ status: 'error', data: null, error: (e as Error).message });
-    }
-  }, []);
-
-  const loadRounds = useCallback(async () => {
-    setRounds((s) => ({ ...s, status: 'loading', error: null }));
-    try {
-      const res = await fetchJson<RoundsResponse>('/admin/rounds?view=active');
-      setRounds({ status: 'ready', data: res.data ?? [], error: null });
-    } catch (e) {
-      if (e instanceof UnauthorizedError) return;
-      setRounds({ status: 'error', data: null, error: (e as Error).message });
-    }
-  }, []);
-
-  const loadComparison = useCallback(async () => {
-    setComparison((s) => ({ ...s, status: 'loading', error: null }));
-    try {
-      const res = await fetchJson<ComparisonResponse>('/admin/rounds/comparison');
-      setComparison({ status: 'ready', data: res.data ?? [], error: null });
-    } catch (e) {
-      if (e instanceof UnauthorizedError) return;
-      setComparison({ status: 'error', data: null, error: (e as Error).message });
-    }
-  }, []);
-
-  const loadActivities = useCallback(async () => {
-    // ไม่เรียก endpoint เลยถ้าไม่มีสิทธิ์ — ไม่ใช่เรียกแล้วซ่อนผล
-    if (!isSuperAdmin) {
-      setActivities({ status: 'ready', data: [], error: null });
-      return;
-    }
-    setActivities((s) => ({ ...s, status: 'loading', error: null }));
-    try {
-      const res = await fetchJson<AuditLogsResponse>('/admin/audit-logs?page=1&pageSize=10');
-      setActivities({ status: 'ready', data: res.items ?? [], error: null });
-    } catch (e) {
-      if (e instanceof UnauthorizedError) return;
-      setActivities({ status: 'error', data: null, error: (e as Error).message });
-    }
-  }, [isSuperAdmin]);
 
   useEffect(() => {
-    void loadSummary();
-    void loadPending();
-    void loadRounds();
-    void loadComparison();
-    void loadActivities();
-  }, [loadSummary, loadPending, loadRounds, loadComparison, loadActivities]);
+    void loadOverview();
+  }, [loadOverview]);
 
   const reloadAll = useCallback(() => {
-    void loadSummary();
-    void loadPending();
-    void loadRounds();
-    void loadComparison();
-    void loadActivities();
-  }, [loadSummary, loadPending, loadRounds, loadComparison, loadActivities]);
+    void loadOverview();
+  }, [loadOverview]);
+
+  // ── สถานะต่อ section (map จาก response เดียว → SectionState รูปทรงเดิม) ──
+  // fail-soft ฝั่ง backend: section ที่ query ล้มจะเป็น null + ชื่อใน errors[]
+  // → ส่วนนั้นแสดงกล่อง error ของตัวเอง ส่วนอื่นยังแสดงตามปกติ
+
+  const sectionOf = <T,>(key: string, value: T | null | undefined): SectionState<T> => {
+    if (overview.status === 'loading') return initialSection<T>();
+    if (overview.status === 'error') {
+      return { status: 'error', data: null, error: overview.error ?? 'ไม่ทราบสาเหตุ' };
+    }
+    if (value == null) {
+      return {
+        status: 'error',
+        data: null,
+        error: overview.data?.errors.includes(key)
+          ? 'เกิดข้อผิดพลาดจากเซิร์ฟเวอร์'
+          : 'รูปทรงข้อมูลไม่ถูกต้อง',
+      };
+    }
+    return { status: 'ready', data: value, error: null };
+  };
+
+  const summary = sectionOf('summary', overview.data?.summary ?? null);
+  const pending = sectionOf<PendingOverview>('pending', overview.data?.pending ?? null);
+  const rounds = sectionOf('rounds', overview.data?.rounds ?? null);
+  const comparison = sectionOf('comparison', overview.data?.comparison ?? null);
+  // role อื่น: server ไม่ส่ง activities มาตั้งแต่ต้น (ไม่ใช่ error) — แสดงเป็น "พร้อม, ว่าง"
+  const activities = !isSuperAdmin
+    ? ({ status: 'ready', data: [] as AuditLogItem[], error: null } as SectionState<AuditLogItem[]>)
+    : sectionOf<AuditLogItem[]>('activities', overview.data?.activities?.items ?? null);
 
   // ── Derived data (คำนวณผ่าน pure logic ที่เทสแล้ว) ──
 
   const snapshot = useMemo(
-    () =>
-      buildDashboardSnapshot({
-        summary: summary.data,
-        pendingItems: pending.data,
-        pendingTotal,
-        rounds: rounds.data,
-        comparison: comparison.data,
-        activities: activities.data,
-        activityLimit: 10,
-      }),
-    [summary.data, pending.data, pendingTotal, rounds.data, comparison.data, activities.data],
+    () => buildDashboardSnapshotFromOverview(overview.data),
+    [overview.data],
   );
 
-  const anyLoading =
-    summary.status === 'loading' ||
-    pending.status === 'loading' ||
-    rounds.status === 'loading' ||
-    comparison.status === 'loading' ||
-    activities.status === 'loading';
+  const anyLoading = overview.status === 'loading';
 
   const { total, cards, unaccounted } = snapshot.statusCards;
   const { pending: pendingInfo, rounds: activeRounds, alerts, activities: activityRows } = snapshot;
@@ -355,7 +288,7 @@ export default function DashboardPage() {
         </h2>
 
         {summary.status === 'error' ? (
-          <SectionError message={summary.error ?? 'ไม่ทราบสาเหตุ'} onRetry={loadSummary} />
+          <SectionError message={summary.error ?? 'ไม่ทราบสาเหตุ'} onRetry={reloadAll} />
         ) : (
           <>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -468,7 +401,7 @@ export default function DashboardPage() {
             <CardContent>
               {rounds.status === 'loading' && <SectionSkeleton rows={4} />}
               {rounds.status === 'error' && (
-                <SectionError message={rounds.error ?? 'ไม่ทราบสาเหตุ'} onRetry={loadRounds} />
+                <SectionError message={rounds.error ?? 'ไม่ทราบสาเหตุ'} onRetry={reloadAll} />
               )}
               {rounds.status === 'ready' && activeRounds.length === 0 && (
                 <EmptyRow text="ยังไม่มีรอบที่เปิดรับ" />
@@ -519,7 +452,7 @@ export default function DashboardPage() {
             <CardContent>
               {pending.status === 'loading' && <SectionSkeleton rows={4} />}
               {pending.status === 'error' && (
-                <SectionError message={pending.error ?? 'ไม่ทราบสาเหตุ'} onRetry={loadPending} />
+                <SectionError message={pending.error ?? 'ไม่ทราบสาเหตุ'} onRetry={reloadAll} />
               )}
               {pending.status === 'ready' && pendingInfo.count === 0 && (
                 <EmptyRow text="ไม่มีใบสมัครที่รอการตัดสิน" />
@@ -555,7 +488,7 @@ export default function DashboardPage() {
                     </p>
                   )}
                   <ul className="divide-y divide-slate-100">
-                    {(pending.data ?? []).slice(0, 5).map((a) => (
+                    {(pending.data?.items ?? []).slice(0, 5).map((a) => (
                       <li key={a.id} className="flex items-center justify-between gap-3 py-2 first:pt-0">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium text-slate-900">
@@ -596,7 +529,7 @@ export default function DashboardPage() {
             <CardContent>
               {activities.status === 'loading' && <SectionSkeleton rows={5} />}
               {activities.status === 'error' && (
-                <SectionError message={activities.error ?? 'ไม่ทราบสาเหตุ'} onRetry={loadActivities} />
+                <SectionError message={activities.error ?? 'ไม่ทราบสาเหตุ'} onRetry={reloadAll} />
               )}
               {activities.status === 'ready' && activityRows.length === 0 && (
                 <EmptyRow text="ยังไม่มีกิจกรรมที่บันทึกไว้" />
@@ -637,7 +570,7 @@ export default function DashboardPage() {
           <CardContent>
             {comparison.status === 'loading' && <SectionSkeleton rows={2} />}
             {comparison.status === 'error' && (
-              <SectionError message={comparison.error ?? 'ไม่ทราบสาเหตุ'} onRetry={loadComparison} />
+              <SectionError message={comparison.error ?? 'ไม่ทราบสาเหตุ'} onRetry={reloadAll} />
             )}
             {comparison.status === 'ready' && alerts.length === 0 && (
               <p className="py-4 text-sm text-emerald-700">

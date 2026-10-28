@@ -4,7 +4,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import { sign } from 'hono/jwt';
 import { v4 as uuidv4 } from 'uuid';
 import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc } from 'drizzle-orm';
-import { Bindings, AppVariables } from '../types';
+import { Bindings, AppVariables, isSuperAdmin } from '../types';
 import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middleware';
 import { auditMiddleware, setAuditPayload, writeLoginAudit } from '../middlewares/audit.middleware';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
@@ -17,6 +17,7 @@ import {
 } from '../lib/attachment-signing';
 import { extractR2KeyFromFileUrl } from '../utils/filename';
 import { resolveAuditEntityDisplays } from '../services/audit-display.service';
+import { buildDashboardOverview } from '../services/dashboard-overview.service';
 import {
   OTHER_OPTION_FIELD_TYPES,
   appendOtherOption,
@@ -3323,6 +3324,27 @@ adminRoutes.get('/audit-logs', superAdminOnlyMiddleware, async (c) => {
     pageSize,
     totalPages,
   });
+});
+
+// =============================================================================
+// Executive Dashboard — GET /admin/dashboard/overview
+// =============================================================================
+// รวม KPI ทั้งหมดของ Dashboard (V1 ยิง 5 endpoint: applications/summary,
+// applications, rounds, rounds/comparison, audit-logs) เป็น request เดียว
+// ลด fan-out 5 HTTP request → 1 และลด query ฝั่ง DB (นับ/aggregate ที่ server
+// แทนการ fetch แถวมานับฝั่ง client + ตัด N+1 ของ comparison) — logic อยู่ที่
+// services/dashboard-overview.service.ts
+//
+// RBAC: เข้าถึงได้ทุก role ที่ login (VIEWER/ADMIN/SUPER_ADMIN) เหมือน endpoint
+// องค์ประกอบส่วนใหญ่; ส่วน "activities" (audit log) ใส่เฉพาะ SUPER_ADMIN ตาม
+// policy ของ GET /admin/audit-logs และไม่ select payload → PII ไม่ออกจาก DB
+// Fail-soft: section ใดล้ม = null + ชื่อ section ใน errors[] (ส่วนอื่นยังแสดง)
+adminRoutes.get('/dashboard/overview', async (c) => {
+  const user = c.get('jwtPayload');
+  const data = await buildDashboardOverview(drizzle(c.env.DB), {
+    isSuperAdmin: isSuperAdmin(user?.role),
+  });
+  return c.json({ data });
 });
 
 // ============ Organization Master ============

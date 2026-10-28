@@ -1,13 +1,18 @@
 /**
  * Dashboard Overview — pure logic layer
  * -------------------------------------
- * ตรรกะทั้งหมดของ Executive Dashboard Level 1 ที่ไม่ต้องใช้ React
+ * ตรรกะทั้งหมดของ Executive Dashboard ที่ไม่ต้องใช้ React
  * แยกออกมาเพื่อให้เทสได้ด้วย node --import tsx (แบบเดียวกับ lib อื่นในระบบ)
  *
- * ⚠️ ขอบเขต Level 1: ใช้ endpoint ที่มีอยู่แล้วเท่านั้น
- *    ไม่มี backend endpoint ใหม่ / migration / schema change ในไฟล์นี้
+ * V2 (single endpoint): หน้า dashboard เรียก GET /admin/dashboard/overview
+ * เพียง request เดียว — backend aggregate ครบทุก section ให้ (นับ/หางานค้าง
+ * ที่ server แทนการ fetch แถวมานับฝั่ง client) แล้วหน้านี้ map ผลลัพธ์เข้า
+ * DashboardSnapshot รูปทรงเดิมผ่าน buildDashboardSnapshotFromOverview
  *
- * Endpoint ที่ไฟล์นี้อ้างถึง (ทั้งหมดมีอยู่จริงใน backend/src/routes/admin.routes.ts):
+ * ฟังก์ชันชุด buildDashboardSnapshot เดิม (จาก 5 endpoint) คงไว้เพื่อ
+ * backward compatibility และเป็นตัวอ้างอิง semantics ของแต่ละ KPI
+ *
+ * Endpoint แบบเก่า (คงใช้งานได้จากหน้าอื่น):
  *   GET /admin/applications/summary?roundId=      → { data: { total, byStatus } }
  *   GET /admin/applications?status=&page=&pageSize= → { data, pagination }
  *   GET /admin/rounds?view=active                 → { data: Round[] }
@@ -551,5 +556,93 @@ export function buildDashboardSnapshot(input: {
     overdueRounds: countOverdueRounds(rounds),
     alerts: buildGovernanceAlerts(input.comparison),
     activities: buildRecentActivities(input.activities, now, input.activityLimit ?? 10),
+  };
+}
+
+// =============================================================================
+// V2 — single endpoint: GET /admin/dashboard/overview
+// =============================================================================
+// Backend aggregate ครบทุก section ใน request เดียว (fail-soft ต่อ section —
+// section ใดล้ม = null + ชื่อ section ใน errors[]) แล้ว map เข้า
+// DashboardSnapshot รูปทรงเดิม เพื่อให้ UI คงเดิมทุกอย่าง
+
+/** งานค้างที่ backend คำนวณจากชุดเต็มแล้ว — UI ไม่ต้อง fetch แถวมานับเอง */
+export interface PendingOverview {
+  /** จำนวนงานค้างทั้งระบบ (COUNT จริงจาก backend) */
+  total: number;
+  /** จำนวนใบที่ค้างเกิน slaDays (คำนวณที่ backend จากชุดเต็ม) */
+  overdueCount: number;
+  /** submittedAt ของใบที่ค้างนานที่สุด — null เมื่อไม่มีงานค้าง */
+  oldestSubmittedAt: string | number | Date | null;
+  /** เกณฑ์ SLA ที่ backend ใช้คำนวณ overdueCount */
+  slaDays: number;
+  /** แถวตัวอย่าง ≤ 5 แถวล่าสุด (UI แสดง 5 แถวเท่านั้น) */
+  items: ApplicationListItem[];
+}
+
+/** รูปทรง response ของ GET /admin/dashboard/overview */
+export interface DashboardOverviewPayload {
+  summary: ApplicationSummary | null;
+  pending: PendingOverview | null;
+  rounds: RoundItem[] | null;
+  comparison: RoundComparisonItem[] | null;
+  /** null เมื่อผู้ขอไม่ใช่ SUPER_ADMIN (policy เดียวกับ /admin/audit-logs) */
+  activities: { items: AuditLogItem[] } | null;
+  /** ชื่อ section ที่ query ล้ม — [] เมื่อทุกส่วนปกติ */
+  errors: string[];
+}
+
+/**
+ * สรุปงานค้างจากค่าที่ backend aggregate มาแล้ว (แทน buildPendingDecisions)
+ *
+ * ต่างจาก V1: ไม่มี `truncated` — V1 ต้อง fetch ได้ถึง 200 แถวมาคำนวณ subset
+ * แล้วเตือนว่า "คำนวณจาก N ใบแรก"; V2 นับ/หาอายุที่ server จากชุดเต็มทั้งหมด
+ * จึงถูกต้องเสมอ (truncated = false ตลอด)
+ */
+export function pendingFromOverview(
+  pending: PendingOverview | null | undefined,
+  now: Date = new Date(),
+): PendingDecision {
+  const items = pending?.items ?? [];
+
+  const rawSla = Number(pending?.slaDays);
+  const slaDays = Number.isFinite(rawSla) && rawSla > 0 ? rawSla : DEFAULT_SLA_DAYS;
+
+  const parsedTotal = Number(pending?.total);
+  const total = pending != null && Number.isFinite(parsedTotal) && parsedTotal >= 0 ? parsedTotal : 0;
+
+  const rawOverdue = Number(pending?.overdueCount);
+  const overdueCount = Number.isFinite(rawOverdue) && rawOverdue >= 0 ? rawOverdue : 0;
+
+  return {
+    count: Math.max(total, items.length),
+    fetchedCount: items.length,
+    truncated: false,
+    oldestAgeDays: ageInDays(pending?.oldestSubmittedAt ?? null, now),
+    oldest: null,
+    overdueCount,
+    slaDays,
+  };
+}
+
+/**
+ * สร้าง DashboardSnapshot (รูปทรงเดิมที่ UI ใช้) จาก response ของ
+ * GET /admin/dashboard/overview — reuse helper เดิมทุกตัว
+ * (buildStatusCards / buildActiveRounds / buildGovernanceAlerts /
+ * buildRecentActivities) จึงได้ผลลัพธ์เหมือน V1 ยกเว้น pending ที่แม่นกว่า
+ */
+export function buildDashboardSnapshotFromOverview(
+  overview: DashboardOverviewPayload | null | undefined,
+  now: Date = new Date(),
+): DashboardSnapshot {
+  const rounds = buildActiveRounds(overview?.rounds, now);
+
+  return {
+    statusCards: buildStatusCards(overview?.summary),
+    pending: pendingFromOverview(overview?.pending, now),
+    rounds,
+    overdueRounds: countOverdueRounds(rounds),
+    alerts: buildGovernanceAlerts(overview?.comparison),
+    activities: buildRecentActivities(overview?.activities?.items, now, 10),
   };
 }

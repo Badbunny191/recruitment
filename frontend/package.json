@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "echo \"(no lint configured)\" && exit 0",
-    "test": "node --import tsx src/lib/__tests__/date.test.ts && node --import tsx src/lib/__tests__/filename.test.ts && node --import tsx src/lib/__tests__/pdf-download.test.ts && node --import tsx src/lib/__tests__/pdf-filename-pattern.test.ts && node --import tsx src/lib/__tests__/excel-export.test.ts && node --import tsx src/lib/__tests__/document-composer.test.ts && node --import tsx src/lib/__tests__/composer-block-operations.test.ts && npm run test:composer-render && npm run test:composer-workspace && npm run test:composer-workspace-render && npm run test:composer-preview-layout && npm run test:composer-page-settings && npm run test:composer-uat-round2 && npm run test:composer-page-break && npm run test:preview && npm run test:lookup && npm run test:apply-back && npm run test:textarea && npm run test:pdf-bulk && npm run test:applications-status && npm run test:review-attachment && npm run test:template-version-options && npm run test:apply-draft && npm run test:audit-log-display && npm run test:apply-reset && npm run test:dashboard && npm run test:dashboard-blockers && npm run test:round-payload && npm run test:account-state && npm run test:application-pattern && npm run test:apply-page-full && npm run test:apply-review-cross && npm run test:file-upload-reset",
+    "test": "node --import tsx src/lib/__tests__/date.test.ts && node --import tsx src/lib/__tests__/filename.test.ts && node --import tsx src/lib/__tests__/pdf-download.test.ts && node --import tsx src/lib/__tests__/pdf-filename-pattern.test.ts && node --import tsx src/lib/__tests__/excel-export.test.ts && node --import tsx src/lib/__tests__/document-composer.test.ts && node --import tsx src/lib/__tests__/composer-block-operations.test.ts && npm run test:composer-render && npm run test:composer-workspace && npm run test:composer-workspace-render && npm run test:composer-preview-layout && npm run test:composer-page-settings && npm run test:composer-uat-round2 && npm run test:composer-page-break && npm run test:preview && npm run test:lookup && npm run test:apply-back && npm run test:textarea && npm run test:pdf-bulk && npm run test:applications-status && npm run test:review-attachment && npm run test:template-version-options && npm run test:apply-draft && npm run test:audit-log-display && npm run test:apply-reset && npm run test:dashboard && npm run test:dashboard && npm run test:dashboard-blockers && npm run test:dashboard-endpoint && npm run test:round-payload && npm run test:account-state && npm run test:application-pattern && npm run test:apply-page-full && npm run test:apply-review-cross && npm run test:file-upload-reset",
     "test:round-payload": "node --import tsx src/lib/__tests__/round-form-payload.test.ts",
     "test:apply-draft": "node --import tsx src/lib/__tests__/apply-draft.test.ts",
     "test:audit-log-display": "node --import tsx src/lib/__tests__/audit-log-display.test.ts",
@@ -39,7 +39,8 @@
     "typecheck": "tsc --noEmit",
     "deploy": "npm run build && wrangler pages deploy out --project-name=sao-recruitment-frontend --commit-dirty=true",
     "test:account-state": "tsx --tsconfig tsconfig.test.json src/lib/__tests__/account-state.test.ts",
-    "test:dashboard-blockers": "tsx --tsconfig tsconfig.test.json src/components/__tests__/dashboard-blockers-repro.test.tsx"
+    "test:dashboard-blockers": "tsx --tsconfig tsconfig.test.json src/components/__tests__/dashboard-blockers-repro.test.tsx",
+    "test:dashboard-endpoint": "node --import tsx src/lib/__tests__/dashboard-overview-endpoint.test.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
