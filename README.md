@@ -19,11 +19,12 @@
 6. [Cloudflare Configuration](#6-cloudflare-configuration)
 7. [Frontend Deployment (แนะนำ)](#7-frontend-deployment-แนะนำ)
 8. [Manual Deployment](#8-manual-deployment)
-9. [Troubleshooting](#10-troubleshooting)
-10. [.gitignore ที่แนะนำ](#11-gitignore-ที่แนะนำ)
-11. [Deployment Checklist](#12-deployment-checklist)
-12. [Daily Workflow](#13-daily-workflow)
-13. [Recovery Guide](#14-recovery-guide)
+9. [Monitoring & Incident Response](#9-monitoring--incident-response)
+10. [Troubleshooting](#10-troubleshooting)
+11. [.gitignore ที่แนะนำ](#11-gitignore-ที่แนะนำ)
+12. [Deployment Checklist](#12-deployment-checklist)
+13. [Daily Workflow](#13-daily-workflow)
+14. [Recovery Guide](#14-recovery-guide)
 
 ---
 
@@ -334,7 +335,12 @@ head_sampling_rate = 1
 > `scripts/settings` — `logs.persist = true`, `invocation_logs = true`, sampling 100%)
 > ไม่ต้องไปกด Enable ใน dashboard อีก
 >
-> ⚠️ ห้าม log ข้อมูลอ่อนไหว (national_id, password, token) — ดูระเบียบ redaction ใน `backend/src/middlewares/`
+> ⚠️ ห้าม log ข้อมูลอ่อนไหว (national_id, password, token)
+>
+> **สถานะจริง:** ยังไม่มีฟังก์ชัน redaction อัตโนมัติในโค้ด — `audit_logs` ปลอดภัยเพราะ
+> entry type ไม่มี field สำหรับ password/hash/JWT ตั้งแต่ระดับ TypeScript
+> (`backend/src/middlewares/audit.middleware.ts`) แต่ `console.error` ยัง log ข้อมูลดิบ
+> ต้อง redact ด้วยมือก่อนแชร์ log ทุกครั้ง → [`docs/LOGS_AND_DEBUGGING.md`](docs/LOGS_AND_DEBUGGING.md) §6
 
 ### 6.2.1 Health Endpoints
 
@@ -494,6 +500,79 @@ npx wrangler deploy
 1. Build TypeScript
 2. Deploy ไปยัง `sao-recruitment-backend` Worker
 3. Apply environment variables จาก `wrangler.toml`
+
+---
+
+## 9. Monitoring & Incident Response
+
+ระบบมีสอง endpoint ที่แยกกันโดยเจตนา — **อย่า monitor ตัวเดียวแล้วคิดว่าครบ**
+
+| Endpoint | ชนิด | ตรวจอะไร | แตะ D1 | ใช้กับ monitor |
+|---|---|---|---|---|
+| `GET /health` | liveness | Worker ตอบได้ไหม | ❌ ไม่แตะ | ✅ primary |
+| `GET /health/ready` | readiness | D1 (`SELECT 1`) + `JWT_SECRET` | ✅ แตะ (อ่าน 0 rows) | ✅ secondary |
+
+### ⚠️ readiness ไม่ได้ตรวจทุกอย่าง
+
+`/health/ready` เขียว **ไม่ได้** แปลว่าระบบใช้งานได้ครบ สิ่งเหล่านี้พังได้โดย health ยังคืน `200`:
+
+- R2 binding (`R2_BUCKET`) → upload / ดาวน์โหลดไฟล์พัง
+- Cron GC (ลบ TEMP 7 วัน) → ไม่มีสัญญาณเลย รู้ตัวตอน R2 บวม
+- PDF generation pipeline
+- Frontend (Pages) — คนละ Worker ต้อง monitor แยก
+
+### UptimeRobot — ตั้ง 3 monitor
+
+| # | Monitor | URL | Type | Interval | Timeout |
+|---|---|---|---|---|---|
+| M1 | Backend liveness | `/health` | HTTP(s) | 5 นาที | ≥ 10 วิ |
+| M2 | Backend readiness | `/health/ready` | **Keyword** `"status":"ok"` | 10–15 นาที | ≥ 10 วิ |
+| M3 | Frontend | `https://sao-recruitment-frontend.pages.dev` | HTTP(s) | 5–10 นาที | ≥ 10 วิ |
+
+> ⚠️ **M2 ต้องเป็น Keyword monitor ไม่ใช่ HTTP(s)**
+> `/health/ready` คืน `503` โดยออกแบบเมื่อ D1 กระตุก ถ้าตั้งเป็น HTTP(s) ที่ถือว่า non-2xx = down
+> จะได้ alert ปลอมทุกครั้งที่ D1 มี blip แล้วทีมจะชินกับ alert จนพลาดของจริง
+>
+> ⚠️ **timeout ต้อง ≥ 10 วินาที** เพราะ `DB_PROBE_TIMEOUT_MS` = 3000 ms
+> ถ้าตัดเร็วกว่านั้นจะแยกไม่ออกว่า Worker ตายหรือ DB ค้าง
+
+รายละเอียดเต็ม (maintenance window, alert routing, สิ่งที่ไม่ควรทำ): [`docs/MONITORING_SETUP.md`](docs/MONITORING_SETUP.md)
+
+### `wrangler tail` — Quick Start
+
+ใช้ตอน **กำลังเกิดเหตุ** เท่านั้น (tail ไม่เห็น request ที่ผ่านไปแล้ว)
+
+```bash
+cd backend
+npx wrangler login          # ครั้งแรกเท่านั้น
+npx wrangler whoami         # ยืนยัน account ถูกตัว
+
+# เฉพาะ request ที่ error — ใช้บ่อยที่สุด
+npx wrangler tail sao-recruitment-backend --format pretty --status error
+
+# ค้น tag ที่ระบบเขียนไว้
+npx wrangler tail sao-recruitment-backend --format pretty --search "UNHANDLED_ERROR"
+npx wrangler tail sao-recruitment-backend --format pretty --search "HEALTH"
+npx wrangler tail sao-recruitment-backend --format pretty --search "AttachmentCleanup"
+```
+
+| อยากได้ | ใช้ |
+|---|---|
+| request สดที่ error | `wrangler tail --status error` |
+| เหตุการณ์ที่ผ่านไปแล้ว | Workers Logs บน dashboard (**ไม่ใช่ tail**) |
+| ใครทำอะไร | query `audit_logs` (**ไม่ใช่ request log**) |
+
+> ⚠️ **log ยังไม่มี redaction อัตโนมัติ** — `[UNHANDLED_ERROR]` log stack/cause เต็ม
+> และ `public.routes.ts:569` log error object ทั้งก้อน ซึ่งอาจมีข้อมูลผู้สมัครติดมา
+> **redact ก่อน copy ลง ticket/chat ทุกครั้ง** — ดู [`docs/LOGS_AND_DEBUGGING.md`](docs/LOGS_AND_DEBUGGING.md) §6
+
+### เอกสารที่เกี่ยวข้อง
+
+| เอกสาร | ใช้ตอน |
+|---|---|
+| [`docs/MONITORING_SETUP.md`](docs/MONITORING_SETUP.md) | ตั้ง monitor / UptimeRobot / alert routing |
+| [`docs/RUNBOOK_INCIDENT_RESPONSE.md`](docs/RUNBOOK_INCIDENT_RESPONSE.md) | ระบบมีปัญหาแล้ว — severity, decision tree, rollback |
+| [`docs/LOGS_AND_DEBUGGING.md`](docs/LOGS_AND_DEBUGGING.md) | หาสาเหตุจาก log + กฎ redaction |
 
 ---
 
@@ -984,5 +1063,5 @@ Internal use only — สำนักงานการตรวจเงิน�
 
 ---
 
-**Last Updated:** October 7, 2026
+**Last Updated:** October 28, 2026
 **Maintained by:** Development Team
