@@ -3,16 +3,11 @@
  * ------------
  * Handles password hashing, verification, and authentication logic.
  * 
- * Supports dual-mode migration:
- * - Legacy mode: plaintext password comparison (for existing users)
- * - Migrated mode: bcrypt comparison (for migrated users)
+ * bcrypt-only: ระบบเก็บ bcrypt hash เท่านั้น (migration 020 + 025)
+ * ไม่มี plaintext fallback — hash ที่ไม่ใช่ bcrypt ถือว่าไม่ถูกต้อง
  */
 
-import { hash, compare, genSalt } from 'bcryptjs';
-import { eq } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/d1';
-import { adminUsers } from '../db/schema';
-import type { Bindings } from '../types';
+import { hash, compare } from 'bcryptjs';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -36,56 +31,6 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
  */
 export function isBcryptHash(value: string): boolean {
   return /^\$2[aby]?\$\d{1,2}\$[./A-Za-z0-9]{53}$/.test(value);
-}
-
-/**
- * Verify password for login
- * Supports dual-mode:
- * - If passwordHash looks like bcrypt: use bcrypt.compare()
- * - If passwordHash is plaintext: return true only if exact match
- *   (will trigger migration on successful login)
- */
-export async function verifyPasswordForLogin(
-  password: string,
-  passwordHash: string,
-  isMigrated: boolean
-): Promise<{ valid: boolean; needsMigration: boolean }> {
-  // If user is marked as migrated, always use bcrypt
-  if (isMigrated || isBcryptHash(passwordHash)) {
-    const valid = await verifyPassword(password, passwordHash);
-    return { valid, needsMigration: false };
-  }
-
-  // Legacy mode: plaintext comparison (for migration period)
-  // This is only used when isMigrated = false AND passwordHash doesn't look like bcrypt
-  const valid = password === passwordHash;
-  // If plaintext match, flag for migration
-  return { valid, needsMigration: valid };
-}
-
-/**
- * Migrate a user's password from plaintext to bcrypt
- * Returns the new bcrypt hash
- */
-export async function migratePassword(
-  env: Bindings,
-  userId: string,
-  password: string
-): Promise<string> {
-  const db = drizzle(env.DB);
-  
-  // Hash the plaintext password
-  const newHash = await hashPassword(password);
-  
-  // Update in database
-  await db.update(adminUsers)
-    .set({ 
-      passwordHash: newHash,
-      passwordMigrated: true 
-    })
-    .where(eq(adminUsers.id, userId));
-  
-  return newHash;
 }
 
 /**
