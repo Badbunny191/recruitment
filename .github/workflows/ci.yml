@@ -1,0 +1,95 @@
+# CI ขั้นต่ำ — typecheck + backend tests เท่านั้น
+#
+# ขอบเขตที่ตั้งใจ (ห้ามเพิ่มโดยไม่ผ่าน review):
+#   - backend typecheck
+#   - frontend typecheck
+#   - backend tests
+#
+# ห้ามเด็ดขาดในไฟล์นี้:
+#   - wrangler deploy / wrangler pages deploy
+#   - migration / db:migrate / migration:check
+#   - publish / release
+#
+# เหตุผลที่ไม่มีการ deploy: workflow นี้รันบน push/PR ทุกครั้ง
+# และใช้ permissions ต่ำสุด (contents: read) จึงไม่มีสิทธิ์เขียนอะไรออกไปนอกรันเนอร์
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend — typecheck + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      # npm ci (ไม่ใช่ npm install) เพื่อให้ได้ dependency ตรงตาม lockfile ทุกครั้ง
+      # รวม devDependencies ด้วย เพราะ tsx/typescript/wrangler อยู่ในฝั่ง dev
+      - name: Install dependencies
+        run: npm ci
+
+      # หมายเหตุเรื่อง `npx wrangler types`:
+      #   ไม่จำเป็นใน CI — backend/worker-configuration.d.ts ถูก commit ไว้ใน repo แล้ว
+      #   (ยืนยันด้วย `git ls-files backend/worker-configuration.d.ts`)
+      #   และ `npx tsc --noEmit` ผ่านได้โดยไม่ต้อง generate ใหม่
+      #   การข้ามขั้นนี้ทำให้ CI ไม่ต้องเรียก network / Cloudflare API
+      #   ถ้าในอนาคตลบไฟล์ .d.ts ออกจาก repo หรือเปลี่ยน D1 binding
+      #   ค่อยเพิ่ม `npx wrangler types` ก่อนขั้น typecheck ด้านล่าง
+      - name: Typecheck (tsc --noEmit)
+        run: npm run typecheck
+
+      # รัน test suite ของ backend ทั้งหมดผ่าน `npm test`
+      # script นี้ chain ไฟล์เทสต์ด้วย && อยู่แล้ว → เทสต์ตัวใดตัวหนึ่งล้ม = exit code != 0 = job fail
+      - name: Tests
+        run: npm test
+
+  frontend:
+    name: Frontend — typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # เฉพาะ typecheck ตามขอบเขตที่กำหนด — ไม่รัน `next build`
+      # เพราะ next build จะ generate .next/types และใช้เวลามากโดยไม่เพิ่มสัญญาณ
+      # next-env.d.ts ถูก commit ไว้แล้ว tsconfig จึง resolve type ของ next/image ฯลฯ ได้
+      - name: Typecheck (tsc --noEmit)
+        run: npm run typecheck
