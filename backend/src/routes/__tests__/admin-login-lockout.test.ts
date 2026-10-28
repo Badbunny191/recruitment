@@ -191,6 +191,39 @@ function rowByEmail(email: string): any {
   return sqlite.prepare('SELECT * FROM admin_users WHERE email = ?').get(email);
 }
 
+// ── Login audit helpers ──────────────────────────────────────────────
+function auditRows(): any[] {
+  return sqlite.prepare('SELECT * FROM audit_logs ORDER BY created_at, id').all();
+}
+
+function loginAuditRows(action: string, adminId?: string): any[] {
+  const rows = auditRows().filter(
+    (r) => r.entity_type === 'ADMIN_USER' && r.action === action,
+  );
+  return adminId ? rows.filter((r) => r.admin_id === adminId) : rows;
+}
+
+// convention เดิมของระบบ: payload ถูก stringify แล้ว drizzle (mode: 'json')
+// อาจ stringify ซ้ำ → แกะได้ทั้งสองชั้น
+function parseAuditPayload(raw: string | null): any {
+  if (raw == null) return null;
+  const once = JSON.parse(raw);
+  return typeof once === 'string' ? JSON.parse(once) : once;
+}
+
+// adapter ที่ทำให้ INSERT INTO audit_logs ล้ม — ใช้พิสูจน์ fail-soft
+function createAuditFailingAdapter() {
+  return {
+    prepare: (sqlText: string) => {
+      if (/insert\s+into\s+["']?audit_logs/i.test(sqlText)) {
+        throw new Error('simulated audit_logs insert failure');
+      }
+      return d1.prepare(sqlText);
+    },
+    batch: d1.batch.bind(d1),
+  };
+}
+
 async function login(email: string, password: string, ip = '198.51.100.1') {
   const res = await app.request(
     '/api/v1/admin/auth/login',
@@ -537,6 +570,116 @@ async function runAllTests() {
     const loginAttempt = await login(email, PASSWORD, 'ip-i4b');
     assertEqual(loginAttempt.status, 403, 'I4 disabled user login ต้องได้ 403');
     assertTrue(!('token' in loginAttempt.body), 'I4 ต้องไม่ออก JWT');
+  });
+
+  // ---- L: Login audit events (LOGIN / LOGIN_FAILED / ACCOUNT_LOCKED) ----
+  await test('L1: login สำเร็จ → audit action LOGIN + entityType ADMIN_USER + payload มี email/IP ไม่มี credential', async () => {
+    __resetRateLimitStoreForTests();
+    const email = 'l1@sao-test.local';
+    const userId = await insertUser({ email });
+
+    const { status } = await login(email, PASSWORD, 'ip-l1');
+    assertEqual(status, 200, 'L1 status');
+
+    const rows = loginAuditRows('LOGIN', userId);
+    assertEqual(rows.length, 1, 'L1 ต้องมี LOGIN audit row 1 แถว');
+    assertEqual(rows[0].entity_id, userId, 'L1 entityId = adminId (ให้ display resolver หาเจอ)');
+    assertEqual(rows[0].ip_address, 'ip-l1', 'L1 ipAddress จาก cf-connecting-ip');
+
+    const payload = parseAuditPayload(rows[0].payload);
+    assertEqual(payload.email, email, 'L1 payload.email');
+
+    // ห้ามมี credential ใด ๆ ใน payload
+    const raw = JSON.stringify(payload).toLowerCase();
+    for (const forbidden of ['password', 'hash', 'token', 'jwt', 'temporary']) {
+      assertTrue(!raw.includes(forbidden), `L1 payload ห้ามมีคำว่า "${forbidden}"`);
+    }
+  });
+
+  await test('L2: รหัสผ่านผิด → audit action LOGIN_FAILED + failedAttempts ตรงกับ counter จริง', async () => {
+    __resetRateLimitStoreForTests();
+    const email = 'l2@sao-test.local';
+    const userId = await insertUser({ email });
+
+    await login(email, 'WrongP@ssw0rd!X', 'ip-l2');
+    await login(email, 'WrongP@ssw0rd!X', 'ip-l2');
+
+    const rows = loginAuditRows('LOGIN_FAILED', userId);
+    assertEqual(rows.length, 2, 'L2 ต้องมี LOGIN_FAILED 2 แถว');
+    // created_at เป็น unixepoch (วินาที) → หลายแถวในวินาทีเดียวกัน tie-break ด้วย uuid
+    // สุ่ม ลำดับจึงไม่คงที่ → เทียบเป็น set ไม่ใช่ตาม index
+    const attempts = rows.map((r) => parseAuditPayload(r.payload).failedAttempts).sort((a, b) => a - b);
+    assertEqual(JSON.stringify(attempts), JSON.stringify([1, 2]), 'L2 failedAttempts = 1 แล้ว 2');
+    assertEqual(rowByEmail(email).failed_login_attempts, 2, 'L2 counter จริง = 2 (atomic UPDATE ยังทำงานเดิม)');
+    assertEqual(loginAuditRows('ACCOUNT_LOCKED', userId).length, 0, 'L2 ยังไม่ล็อก → ไม่มี ACCOUNT_LOCKED');
+  });
+
+  await test('L3: ผิดครั้งที่ 5 → LOGIN_FAILED + ACCOUNT_LOCKED (lockReason + lockedUntil อนาคต)', async () => {
+    __resetRateLimitStoreForTests();
+    const email = 'l3@sao-test.local';
+    const userId = await insertUser({ email });
+
+    for (let i = 0; i < 5; i++) {
+      await login(email, 'WrongP@ssw0rd!X', 'ip-l3');
+    }
+
+    const failedRows = loginAuditRows('LOGIN_FAILED', userId);
+    assertEqual(failedRows.length, 5, 'L3 LOGIN_FAILED 5 แถว');
+    const attempts = failedRows
+      .map((r) => parseAuditPayload(r.payload).failedAttempts)
+      .sort((a, b) => a - b);
+    assertEqual(JSON.stringify(attempts), JSON.stringify([1, 2, 3, 4, 5]), 'L3 failedAttempts สะสม 1→5 ครบ');
+
+    const lockedRows = loginAuditRows('ACCOUNT_LOCKED', userId);
+    assertEqual(lockedRows.length, 1, 'L3 ACCOUNT_LOCKED 1 แถว (ครั้งที่ครบ threshold เท่านั้น)');
+
+    const payload = parseAuditPayload(lockedRows[0].payload);
+    assertEqual(payload.lockReason, 'MAX_FAILED_ATTEMPTS', 'L3 lockReason');
+    assertEqual(payload.failedAttempts, 5, 'L3 payload.failedAttempts');
+    assertTrue(typeof payload.lockedUntil === 'string', 'L3 lockedUntil เป็น ISO string');
+    assertTrue(new Date(payload.lockedUntil).getTime() > Date.now(), 'L3 lockedUntil เป็นอนาคต');
+
+    // atomicity เดิมต้องไม่ถูกกระทบ
+    const row = rowByEmail(email);
+    assertEqual(row.failed_login_attempts, 5, 'L3 counter = 5');
+    assertTrue(row.locked_until * 1000 > Date.now(), 'L3 locked_until เป็นอนาคต');
+  });
+
+  await test('L4: email ไม่มีในระบบ → 401 เหมือนเดิม แต่ไม่เขียน audit ใด ๆ', async () => {
+    __resetRateLimitStoreForTests();
+    const before = auditRows().length;
+
+    const { status, body } = await login('l4-ghost@sao-test.local', 'WrongP@ssw0rd!X', 'ip-l4');
+    assertEqual(status, 401, 'L4 status');
+    assertEqual(body.error, 'Invalid credentials', 'L4 generic body');
+
+    assertEqual(auditRows().length, before, 'L4 ต้องไม่มี audit row ใหม่เลย (skip ตามคำตัดสิน)');
+  });
+
+  await test('L5: audit insert ล้ม → login ยังสำเร็จ 200 + ออก JWT (fail-soft)', async () => {
+    __resetRateLimitStoreForTests();
+    const email = 'l5@sao-test.local';
+    await insertUser({ email });
+
+    const failingEnv = { DB: createAuditFailingAdapter(), JWT_SECRET: TEST_JWT_SECRET };
+    const res = await app.request(
+      '/api/v1/admin/auth/login',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': 'ip-l5' },
+        body: JSON.stringify({ email, password: PASSWORD }),
+      },
+      failingEnv,
+    );
+    const body = await res.json().catch(() => ({}));
+
+    assertEqual(res.status, 200, `L5 audit พังต้องไม่ทำให้ login พัง (ได้ ${res.status})`);
+    assertTrue(typeof body.token === 'string' && body.token.length > 0, 'L5 ต้องยังออก JWT');
+
+    // และ login ยังทำงานปกติเมื่อ audit กลับมาปกติ
+    __resetRateLimitStoreForTests();
+    const ok = await login(email, PASSWORD, 'ip-l5b');
+    assertEqual(ok.status, 200, 'L5 login ปกติยังทำงาน');
   });
 
   console.log('\n=== Summary ===\n');

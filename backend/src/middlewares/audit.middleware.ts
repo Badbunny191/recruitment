@@ -74,3 +74,55 @@ export const auditMiddleware = (entityType: string, options?: { action?: string 
 export function setAuditPayload(c: any, payload: string | null): void {
   c.set('auditPayload', payload);
 }
+
+// =============================================================================
+// Login audit (LOGIN / LOGIN_FAILED / ACCOUNT_LOCKED)
+// =============================================================================
+// ⚠️ POST /admin/auth/login อยู่ *ก่อน* authMiddleware → ไม่มี jwtPayload และ
+//    auditMiddleware ใช้ไม่ได้ (มัน return ทิ้งทุก response ที่ status >= 400
+//    ซึ่งคือ 401/423 ของ login พอดี) จึงเขียน audit ตรงใน handler
+//    ตาม pattern PDF_DOWNLOAD (admin.routes.ts) และ writeExportAudit
+//    (excel-export.service.ts)
+//
+// SECURITY: entry type ไม่มี field สำหรับ password / password hash / JWT /
+// token / temporary password เลยตั้งแต่ระดับ type — ใส่เข้ามาไม่ได้
+//
+// FAIL-SOFT: audit พังได้ แต่ login ห้ามพัง → กลืน error แล้ว log อย่างเดียว
+// =============================================================================
+
+export type LoginAuditAction = 'LOGIN' | 'LOGIN_FAILED' | 'ACCOUNT_LOCKED';
+
+export interface LoginAuditEntry {
+  action: LoginAuditAction;
+  /** ต้องเป็น admin_users.id ที่มีจริง — audit_logs.admin_id เป็น FK NOT NULL */
+  adminId: string;
+  email: string;
+  failedAttempts?: number;
+  lockReason?: string;
+  /** ISO 8601 */
+  lockedUntil?: string;
+}
+
+export async function writeLoginAudit(c: any, entry: LoginAuditEntry): Promise<void> {
+  try {
+    const db = drizzle(c.env.DB);
+
+    const payload: Record<string, unknown> = { email: entry.email };
+    if (entry.failedAttempts !== undefined) payload.failedAttempts = entry.failedAttempts;
+    if (entry.lockReason !== undefined) payload.lockReason = entry.lockReason;
+    if (entry.lockedUntil !== undefined) payload.lockedUntil = entry.lockedUntil;
+
+    await db.insert(auditLogs).values({
+      id: uuidv4(),
+      adminId: entry.adminId,
+      action: entry.action,
+      entityType: 'ADMIN_USER',
+      entityId: entry.adminId,
+      payload: JSON.stringify(payload),
+      ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
+    });
+  } catch (auditErr) {
+    // audit ล้มไม่ block login — ตาม pattern PDF_DOWNLOAD / writeExportAudit
+    console.error('[LOGIN_AUDIT] Failed to write audit log:', auditErr);
+  }
+}

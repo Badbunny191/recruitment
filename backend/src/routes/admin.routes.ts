@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc } from 'drizzle-orm';
 import { Bindings, AppVariables } from '../types';
 import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middleware';
-import { auditMiddleware, setAuditPayload } from '../middlewares/audit.middleware';
+import { auditMiddleware, setAuditPayload, writeLoginAudit } from '../middlewares/audit.middleware';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { handleApplicationStatusChange, buildAuditPayload } from '../lib/change-tracking';
 import { getApplicationPdf } from '../lib/pdf.service';
@@ -94,6 +94,11 @@ adminRoutes.post('/auth/login', rateLimitMiddleware({ keyPrefix: 'admin-login' }
   if (!user) {
     // เปลือกเวลา bcrypt เท่า path จริงเพื่อไม่เปิดเผยว่าอีเมลมีในระบบหรือไม่
     await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
+    // Login audit: ไม่บันทึก LOGIN_FAILED กรณี email ไม่มีในระบบ
+    // เหตุผล: audit_logs.admin_id เป็น NOT NULL + FK → admin_users(id)
+    // ON DELETE RESTRICT → ไม่มี adminId ที่ valid ให้อ้างอิง
+    // (จะบันทึกเฉพาะเมื่อพบ user จริงเท่านั้น — เคส ghost email ถูกคุมด้วย
+    //  rate limit 10/min/IP ที่ middleware ด้านบนอยู่แล้ว)
     return c.json({ error: 'Invalid credentials', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' }, 401);
   }
   
@@ -127,14 +132,63 @@ adminRoutes.post('/auth/login', rateLimitMiddleware({ keyPrefix: 'admin-login' }
       WHEN ${adminUsers.lockedUntil} IS NOT NULL AND ${adminUsers.lockedUntil} <= ${nowSec} THEN 1
       ELSE COALESCE(${adminUsers.failedLoginAttempts}, 0) + 1
     END`;
+    let counterUpdateOk = false;
     try {
       await db.update(adminUsers).set({
         failedLoginAttempts: nextAttempts,
         lockedUntil: sql`CASE WHEN ${nextAttempts} >= ${LOGIN_MAX_FAILED_ATTEMPTS} THEN ${lockUntilSec} ELSE NULL END`,
       }).where(eq(adminUsers.id, user.id));
+      counterUpdateOk = true;
     } catch (error) {
       console.error('[LOGIN_ATTEMPT_UPDATE_FAILED]', { userId: user.id });
     }
+
+    // ── Login audit: LOGIN_FAILED (+ ACCOUNT_LOCKED) ───────────────────────
+    // อ่านค่ากลับ 1 ครั้ง (read-only) เพื่อรายงาน counter จริง — ไม่คำนวณใน JS
+    // เพราะจะทำลาย atomicity ของ UPDATE เดียว (ดู comment หัวข้อ S2 ด้านบน)
+    // ทั้งบล็อกนี้ fail-soft: audit พังได้ แต่ 401 ต้องออกไปให้ได้
+    let failedAttempts: number | undefined;
+    let lockedUntilMs: number | null = null;
+    if (counterUpdateOk) {
+      try {
+        const after = await db
+          .select({
+            failedLoginAttempts: adminUsers.failedLoginAttempts,
+            lockedUntil: adminUsers.lockedUntil,
+          })
+          .from(adminUsers)
+          .where(eq(adminUsers.id, user.id))
+          .get();
+        if (after) {
+          failedAttempts = after.failedLoginAttempts ?? undefined;
+          if (after.lockedUntil) {
+            const ms = new Date(after.lockedUntil).getTime();
+            if (ms > Date.now()) lockedUntilMs = ms;
+          }
+        }
+      } catch (readErr) {
+        console.error('[LOGIN_AUDIT] Failed to read back lockout state:', readErr);
+      }
+    }
+
+    await writeLoginAudit(c, {
+      action: 'LOGIN_FAILED',
+      adminId: user.id,
+      email: user.email,
+      failedAttempts,
+    });
+
+    if (lockedUntilMs !== null) {
+      await writeLoginAudit(c, {
+        action: 'ACCOUNT_LOCKED',
+        adminId: user.id,
+        email: user.email,
+        failedAttempts,
+        lockReason: 'MAX_FAILED_ATTEMPTS',
+        lockedUntil: new Date(lockedUntilMs).toISOString(),
+      });
+    }
+
     return c.json({ error: 'Invalid credentials', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' }, 401);
   }
 
@@ -148,6 +202,13 @@ adminRoutes.post('/auth/login', rateLimitMiddleware({ keyPrefix: 'admin-login' }
     // Log error without exposing details to client
     console.error('[LAST_LOGIN_UPDATE_FAILED]', { userId: user.id });
   }
+
+  // Login audit: LOGIN (fail-soft — audit ล้มไม่ block การออก JWT)
+  await writeLoginAudit(c, {
+    action: 'LOGIN',
+    adminId: user.id,
+    email: user.email,
+  });
 
   // Generate JWT
   const token = await sign({ 
