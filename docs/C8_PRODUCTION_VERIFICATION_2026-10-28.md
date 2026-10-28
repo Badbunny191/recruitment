@@ -16,6 +16,7 @@
 | Migration ล่าสุด | `029_attachment_uploads_ledger.sql` — applied **2026-10-26 16:53:31 UTC** |
 | 029 apply แล้วหรือยัง | **แล้ว** ✅ (แถวล่าสุดของ ledger) |
 | 015_rollback ปรากฏหรือไม่ | **ปรากฏ** — `015_rollback.sql` applied 2026-10-14 14:48:40 UTC โดยมี `015_fix_template_fields_fk_target.sql` applied ก่อนหน้า 2 นาที (14:46:10) |
+| 015_rollback ยังอยู่ใน `backend/migrations/` ไหม | **ไม่อยู่** — ย้ายไป `backend/fixes/015_rollback.sql` แล้ว (28 ต.ค. 2569) ดูหมายเหตุด้านล่าง |
 
 ข้อสังเกตเพิ่มเติม (ไม่ block 030):
 
@@ -23,6 +24,23 @@
 - `020_auth_hardening.sql` และ `020_role_model_v1.sql` ถูก apply **ทั้งคู่** (2026-10-15) — เป็นเจตนาของ chain เดิม
 - คู่ 015: rollback apply หลัง fix → state จริงของ FK `template_fields` ต้องเช็คแยก (เป็นประเด็น known issue จาก audit เดิม) — **ไม่เกี่ยวกับ 030** ที่แตะเฉพาะตาราง `applications`
 - **ใน repo ยังไม่มีไฟล์ migration 030** (`backend/migrations/` ถึง 029 เท่านั้น) — ต้องเขียนก่อน
+
+### หมายเหตุ: การย้าย `015_rollback.sql` ออกจาก `backend/migrations/` (28 ต.ค. 2569)
+
+ไฟล์ `015_rollback.sql` ถูกย้ายไปที่ `backend/fixes/015_rollback.sql` เพื่อแก้ Finding #3 ของ
+[Migration Audit 2026](./MIGRATION_AUDIT_2026.md) (rollback file ปะปนใน migration folder)
+
+**ผลกระทบต่อ production ledger: ไม่มี** — ยืนยันจากกลไกของ Wrangler เอง:
+
+- Wrangler คำนวณ unapplied = (ไฟล์ `.sql` ใน migrations folder) − (ชื่อใน `d1_migrations`)
+  → ledger row ที่ไม่มีไฟล์ตรงกันจะถูก **ignore** (ไม่ error, ไม่ apply ซ้ำ)
+- ชื่อไฟล์ **ไม่ถูก rename** → `d1_migrations.name` ยังเป็น `'015_rollback.sql'` เดิม
+- ถ้าต้องการคืนไฟล์กลับเข้า `migrations/` ในอนาคต → ledger จะ match ชื่อเดิม → ยังไม่ถูก apply ซ้ำ
+- การกันย้ายกลับเข้า: `scripts/check-migrations.js` เพิ่ม check `ROLLBACK_IN_MIGRATIONS_DIR`
+  (ไม่มี legacy baseline exemption) → `npm run migration:check` จะ fail ทันที
+
+**ยังไม่ได้ทำ (ต้องทำก่อน apply migration ใหม่):** ตรวจ FK state จริงของ `template_fields`
+ใน production ตาม known issue ของคู่ 015 ด้านบน — การย้ายไฟล์ไม่ได้แก้ schema
 
 ## Section B — Schema State
 

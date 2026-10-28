@@ -70,7 +70,8 @@ const CARD_STYLE = {
 // @/lib/audit-log-display (ครบทุก action รวม PDF_DOWNLOAD, EXPORT_EXCEL)
 
 // รายการ Action ที่ใช้ใน Filter (ค่าคงที่ — ไม่ขึ้นกับ data เพราะ data มีแค่หน้าปัจจุบัน)
-const ACTION_OPTIONS = ['CREATE', 'UPDATE', 'DELETE', 'PDF_DOWNLOAD', 'EXPORT_EXCEL'] as const;
+// NOTE: CREATE_USER เพิ่มเข้ามา (P0 fix) — action เฉพาะของการสร้างผู้ใช้
+const ACTION_OPTIONS = ['CREATE', 'CREATE_USER', 'UPDATE', 'DELETE', 'PDF_DOWNLOAD', 'EXPORT_EXCEL'] as const;
 
 // รายการ Entity ทั้งหมด (จาก requirement)
 const ENTITY_OPTIONS = [

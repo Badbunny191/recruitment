@@ -71,7 +71,6 @@ const LEGACY_BASELINE = [
   '010_recover_negative_display_order.sql',
   '011_field_type_master_data.sql',
   '015_fix_template_fields_fk_target.sql',
-  '015_rollback.sql',
   '016_templates_deleted_at.sql',
   '017_audit_logs_performance_indexes.sql',
   '018_add_template_field_validation_message.sql',
@@ -85,6 +84,26 @@ const LEGACY_BASELINE = [
   '0001_applications_management.sql',
   '0002_audit_trail.sql',
 ];
+
+// ⚠️ NOTE: '015_rollback.sql' ถูก REMOVE ออกจาก LEGACY_BASELINE แล้ว
+//
+//    เหตุผล: ไฟล์นี้เป็น rollback script (ไม่ใช่ forward migration) — ผิด
+//    Wrangler Migration Semantics เพราะ Wrangler scan ทุกไฟล์ .sql ใน
+//    migrations/ แล้ว apply ตามลำดับชื่อไฟล์ โดยไม่สนใจ forward/rollback
+//    (ดู docs/MIGRATION_AUDIT_2026.md > Finding #3 "มี Rollback File ปะปนใน Migration Folder")
+//
+//    การย้ายไฟล์ออกจาก migrations/ **ไม่ทำให้ ledger เสีย**: Wrangler
+//    (getUnappliedMigrations) คำนวณ unapplied = (ไฟล์ใน folder) − (ledger)
+//    → ledger row ที่ไม่มีไฟล์ตรงกันจะถูก IGNORE ไม่ใช่ error
+//    และไม่ถูก apply ซ้ำ (ชื่อไฟล์ยังเป็นเดิม → ledger ยัง match ถ้ามีไฟล์คืนมา)
+//
+//    production ledger มี record '015_rollback.sql' อยู่แล้ว (applied 2026-10-14)
+//    → ไฟล์ถูกย้ายไปที่ backend/fixes/015_rollback.sql แล้ว ตาม Rollback Policy
+//    ใน docs/MIGRATION_GOVERNANCE.md มาตรา 4 ("ห้ามวางใน backend/migrations/")
+//
+//    ผลข้างเคียง: ถ้ามีใครย้ายไฟล์นี้กลับเข้า migrations/ → จะถูก
+//    FORBIDDEN_KEYWORD check จับได้ทันที (เพราะถูกถอดออกจาก baseline แล้ว)
+//    → กลับมาอยู่ในโหมด "ตรวจเข้มขึ้น" แทนที่จะผ่านเงียบ ๆ
 
 const LEGACY_BASELINE_SET = new Set(LEGACY_BASELINE);
 
@@ -284,6 +303,42 @@ function checkForbiddenKeywords(files) {
   return errors;
 }
 
+/**
+ * 🚨 HARD RULE: ไม่มี rollback / fix / down / revert / drop script อยู่ใน migrations/
+ * เด็ดขาด — ไม่ว่าจะอยู่ใน LEGACY_BASELINE หรือไม่
+ *
+ * เหตุผล (เพิ่มเติมจาก FORBIDDEN_KEYWORD ปกติ):
+ *   FORBIDDEN_KEYWORD check ข้ามไฟล์ใน LEGACY_BASELINE → ถ้าไฟล์ rollback
+ *   ตัวเก่า (เช่น 015_rollback.sql) ถูกย้ายออกไปแล้ว แต่มี dev ย้ายกลับมา
+ *   → จะผ่าน linter เงียบ ๆ แล้วกลับไป apply โดยไม่ตั้งใจ
+ *
+ *   check นี้ไม่มี baseline exemption → จับได้เสมอ
+ *
+ * ดู: docs/MIGRATION_GOVERNANCE.md มาตรา 4 (Rollback Policy)
+ *      docs/MIGRATION_AUDIT_2026.md Finding #3
+ */
+function checkNoRollbackFilesEver(files) {
+  const errors = [];
+  const ROLLBACK_MARKERS = ['rollback', 'down', 'revert'];
+
+  for (const file of files) {
+    const lowerFile = file.toLowerCase();
+    const hit = ROLLBACK_MARKERS.find((m) => lowerFile.includes(m));
+    if (hit) {
+      errors.push({
+        file,
+        rule: 'ROLLBACK_IN_MIGRATIONS_DIR',
+        message: `พบ rollback script "${file}" อยู่ใน backend/migrations/`,
+        details: `Wrangler scan ทุกไฟล์ .sql ใน migrations/ แล้ว apply ตามลำดับชื่อไฟล์ โดยไม่สนใจ forward/rollback → apply rollback script โดยไม่ตั้งใจ = reverse schema`,
+        suggestion: `ย้ายไฟล์ไปที่ backend/fixes/ แล้ว apply ด้วย: wrangler d1 execute sao-db --remote --file=./fixes/${file}`,
+        reason: 'Rollback Policy (docs/MIGRATION_GOVERNANCE.md มาตรา 4): เก็บ rollback script ไว้ใน backend/fixes/ เท่านั้น',
+      });
+    }
+  }
+
+  return errors;
+}
+
 // ============================================================
 // Report Functions
 // ============================================================
@@ -389,6 +444,8 @@ function main() {
     ...checkDuplicatePrefix(files),
     ...checkPrefixContinuity(files),
     ...checkForbiddenKeywords(files),
+    // 🚨 HARD RULE — ไม่มี baseline exemption
+    ...checkNoRollbackFilesEver(files),
   ];
 
   if (allErrors.length === 0) {

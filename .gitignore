@@ -45,3 +45,5 @@ backend/backups/*.sql
 backend/test-*.sql
 
 docs/*.html
+
+.perch/

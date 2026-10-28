@@ -31,25 +31,43 @@ backend/
 
 > **Migration ที่สร้าง/apply ก่อนวันที่ 25 ตุลาคม 2569 ถือเป็น "Legacy Baseline" และได้รับการยกเว้นจากกฎ Naming Convention**
 
-### ไฟล์ที่อยู่ใน Legacy Baseline (26 ไฟล์ — ตรงกับ `LEGACY_BASELINE` ใน `scripts/check-migrations.js`)
+### ไฟล์ที่อยู่ใน Legacy Baseline (25 ไฟล์ — ตรงกับ `LEGACY_BASELINE` ใน `scripts/check-migrations.js`)
 
-**3-digit prefix (23 ไฟล์) — ผิด naming convention แต่ห้าม rename (production ledger อ้างอิงชื่อเดิม):**
+**3-digit prefix (22 ไฟล์) — ผิด naming convention แต่ห้าม rename (production ledger อ้างอิงชื่อเดิม):**
 
 ```
 002_field_master_enhancement.sql          015_fix_template_fields_fk_target.sql
-003_validation_required_fix.sql           015_rollback.sql          ← duplicate prefix (documented exception)
-004_field_master_enhancement_phase0.sql   016_templates_deleted_at.sql
-005_organizations.sql                     017_audit_logs_performance_indexes.sql
-006_sprint1_announcement_metadata.sql     018_add_template_field_validation_message.sql
-007_organizations_display_order.sql       019_application_number_pattern.sql
-008_position_masters.sql                  020_auth_hardening.sql    ← duplicate prefix (documented exception)
-009_template_sections.sql                 020_role_model_v1.sql     ← duplicate prefix (documented exception)
-010_recover_negative_display_order.sql    022_template_versions_descriptor.sql
-011_field_type_master_data.sql            023_admin_users_last_login_at.sql
-                                         024_role_migration.sql
+003_validation_required_fix.sql           016_templates_deleted_at.sql
+004_field_master_enhancement_phase0.sql   017_audit_logs_performance_indexes.sql
+005_organizations.sql                     018_add_template_field_validation_message.sql
+006_sprint1_announcement_metadata.sql     019_application_number_pattern.sql
+007_organizations_display_order.sql       020_auth_hardening.sql    ← duplicate prefix (documented exception)
+008_position_masters.sql                  020_role_model_v1.sql     ← duplicate prefix (documented exception)
+009_template_sections.sql                 022_template_versions_descriptor.sql
+010_recover_negative_display_order.sql    023_admin_users_last_login_at.sql
+011_field_type_master_data.sql            024_role_migration.sql
                                          025_user_management_reconciliation.sql
                                          026_other_option_support.sql
 ```
+
+> ⚠️ **`015_rollback.sql` ถูกย้ายออกจาก `backend/migrations/` แล้ว (28 ต.ค. 2569)**
+>
+> เป็นการแก้ Finding #3 ของ [Migration Audit 2026](./MIGRATION_AUDIT_2026.md) (Rollback file ปะปนใน migration folder)
+> — ไฟล์นี้เป็น **rollback script** ไม่ใช่ forward migration จึงผิด Wrangler Migration Semantics
+> (Wrangler scan ทุกไฟล์ `.sql` ใน `migrations/` แล้ว apply ตามลำดับชื่อไฟล์ โดยไม่สนใจ forward/rollback)
+>
+> **ย้ายไปที่:** `backend/fixes/015_rollback.sql` · **Apply ด้วย:** `wrangler d1 execute sao-db --remote --file=./fixes/015_rollback.sql`
+>
+> **ทำไมถึงปลอดภัยต่อ production ledger:**
+> - Wrangler คำนวณ unapplied = (ไฟล์ `.sql` ใน folder) − (ชื่อใน `d1_migrations`)
+>   → ledger row ที่ไม่มีไฟล์ตรงกันจะถูก **ignore** (ไม่ error, ไม่ apply ซ้ำ)
+> - ชื่อไฟล์ไม่ถูก rename → `d1_migrations.name` ยังเป็น `'015_rollback.sql'` เดิม
+> - production ledger มี record นี้อยู่แล้ว (applied 2026-10-14 14:48:40 UTC) — ดู
+>   [C8 Production Verification](./C8_PRODUCTION_VERIFICATION_2026-10-28.md)
+>
+> **หลังจากย้าย กลไกการกันกลับเข้ามาเพิ่มขึ้น:** `015_rollback.sql` ถูกถอดออกจาก `LEGACY_BASELINE`
+> และเพิ่ม check `ROLLBACK_IN_MIGRATIONS_DIR` ใน `scripts/check-migrations.js` ซึ่ง **ไม่มี baseline exemption**
+> → ถ้ามีใครย้ายไฟล์ rollback กลับเข้า `migrations/` จะถูก `npm run migration:check` block ทันที
 
 **4-digit prefix (3 ไฟล์) — apply production แล้วก่อน governance adoption:**
 
@@ -185,10 +203,24 @@ NNN_description.sql
 
 ### ไฟล์ `.rollback.sql` หรือ `.down.sql`
 
-- ห้ามวางใน `backend/migrations/`
+- ห้ามวางใน `backend/migrations/` — **บังคับใช้ (hard rule ไม่มีข้อยกเว้น)**
 - เก็บใน `backend/fixes/` เท่านั้น
 - ห้าม apply ผ่าน `wrangler d1 migrations apply`
 - ใช้สำหรับ emergency recovery เท่านั้น และต้องมี incident postmortem ภายใน 48 ชม.
+
+#### Enforcement (บังคับใช้อัตโนมัติ — 28 ต.ค. 2569)
+
+`scripts/check-migrations.js` มี **2 ชั้น** ที่ป้องกัน rollback script ไม่ให้อยู่ใน `migrations/`:
+
+| Check | ขอบเขต | จับไฟล์ |
+|---|---|---|
+| `FORBIDDEN_KEYWORD` | เฉพาะ migration **ใหม่** (ข้าม `LEGACY_BASELINE`) | ชื่อที่มี `rollback`/`down`/`revert`/`fix`/`drop` |
+| `ROLLBACK_IN_MIGRATIONS_DIR` | **ทุกไฟล์** (ไม่มี baseline exemption) | ชื่อที่มี `rollback`/`down`/`revert` |
+
+เหตุผลที่ต้องมีชั้นที่ 2: check แรกข้ามไฟล์ใน `LEGACY_BASELINE` → ถ้าไฟล์ rollback ตัวเก่า
+(เช่น `015_rollback.sql` ที่เพิ่งย้ายออก) ถูกย้ายกลับมา จะผ่าน linter เงียบ ๆ แล้วกลับไป apply โดยไม่ตั้งใจ
+
+**ตรวจสอบด้วย:** `npm run migration:check` (exit code 1 + รายละเอียดวิธีแก้)
 
 ### Emergency Rollback Procedure
 
@@ -354,18 +386,24 @@ curl https://api.example.com/v1/healthz
 ## 9. CI Validation
 
 ไฟล์ CI อยู่ที่ `.github/workflows/migration-validation.yml`
+(ปัจจุบัน repo **ยังไม่มี** workflow นี้ — logic อยู่ใน `scripts/check-migrations.js`
+ซึ่งรันผ่าน `npm run migration:check`)
 
 **ตรวจอัตโนมัติ:**
 
 1. **Filename format** — ต้อง match regex `^[0-9]{3,4}_[a-z0-9_]+\.sql$` (ไฟล์ใหม่ = สามหลักต่อเนื่องจากเลขสูงสุดจริง; สี่หลักยอมเฉพาะ legacy 0000–0002)
 2. **Duplicate prefix** — ตรวจว่าไม่มี prefix ซ้ำใน folder
-3. **No rollback file** — ตรวจว่าไม่มีไฟล์ที่มีคำว่า rollback/down/revert ในชื่อ
-4. **No new file in drizzle/** — ตรวจว่าไม่มี migration ใหม่ใน `backend/drizzle/`
+3. **Prefix continuity** — เลขของ migration ใหม่ต้องต่อจากเลขสูงสุดจริง (ห้ามข้ามเลข)
+4. **No rollback file** — ตรวจว่าไม่มีไฟล์ที่มีคำว่า rollback/down/revert ในชื่อ
+5. **No rollback file (hard rule)** — `ROLLBACK_IN_MIGRATIONS_DIR` — ตรวจ **ทุกไฟล์** ใน `migrations/`
+   (ไม่มี baseline exemption) ว่าไม่มีชื่อ rollback/down/revert
+6. **No new file in drizzle/** — ตรวจว่าไม่มี migration ใหม่ใน `backend/drizzle/`
 
 **CI จะ fail ทันทีถ้า:**
 - มีไฟล์ migration ใหม่ที่ชื่อผิด format
 - มี duplicate prefix
-- มี rollback file ใน `backend/migrations/`
+- เลข prefix ของ migration ใหม่ข้ามเลข
+- มี rollback file ใน `backend/migrations/` (**ทุกไฟล์** — ไม่ว่าจะอยู่ใน legacy baseline หรือไม่)
 - มีการแก้ไขไฟล์ใน `backend/drizzle/`
 
 ---

@@ -96,12 +96,18 @@
 > (duplicate 020×2 เป็น documented exception เช่นเดียวกับ 015×2) —
 > รายละเอียดดู `docs/MIGRATION_GOVERNANCE.md` มาตรา 2 (ฉบับ 25 ต.ค. 2569)
 > ปัญหาคงเหลือจาก Finding นี้: ไฟล์ `015_rollback.sql` ยังอยู่ใน migrations/ (ตามห้าม rename) — ดู Finding #3
+>
+> **อัปเดต 28 ตุลาคม 2569 — Finding #3 RESOLVED:**
+> `015_rollback.sql` ถูกย้ายไป `backend/fixes/015_rollback.sql` แล้ว (ชื่อไฟล์ไม่ถูก rename
+> → ledger ปลอดภัย) พร้อมเพิ่ม check `ROLLBACK_IN_MIGRATIONS_DIR` ใน linter เพื่อกันย้ายกลับ
 
 ---
 
 ### 3. มี Rollback File ปะปนใน Migration Folder
 
-**รายละเอียด:**
+**สถานะ: ✅ แก้แล้ว (28 ต.ค. 2569)** — ย้าย `015_rollback.sql` ไป `backend/fixes/015_rollback.sql`
+
+**รายละเอียด (ตอนตรวจพบ — ปัจจุบันแก้แล้ว):**
 
 ไฟล์ `backend/migrations/015_rollback.sql` เป็น rollback script ที่:
 
@@ -114,7 +120,23 @@
 - Wrangler apply rollback script โดยไม่ตั้งใจ → reverse schema
 - หรือถ้า rename ไฟล์ migration หลักแต่ลืม rename rollback → ledger desync
 
-**ความเสี่ยง:** 🔴 CRITICAL
+**ความเสี่ยง:** 🔴 CRITICAL → **✅ Resolved**
+
+**วิธีแก้ที่ใช้:**
+
+1. `git mv backend/migrations/015_rollback.sql backend/fixes/015_rollback.sql` (ชื่อไฟล์ไม่ถูก rename)
+2. ถอด `'015_rollback.sql'` ออกจาก `LEGACY_BASELINE` ใน `scripts/check-migrations.js`
+3. เพิ่ม check `ROLLBACK_IN_MIGRATIONS_DIR` — สแกนทุกไฟล์ใน `migrations/` (ไม่มี baseline
+   exemption) → กันไม่ให้ rollback script กลับเข้ามาโดยไม่ตั้งใจ
+4. อัปเดตเอกสาร governance ทั้ง 4 ไฟล์ (ดู Phase 1 checklist ด้านล่าง)
+
+**ผลกระทบต่อ production ledger: ไม่มี** — Wrangler คำนวณ
+unapplied = (ไฟล์ `.sql` ใน folder) − (ชื่อใน `d1_migrations`) → ledger row ที่ไม่มีไฟล์ตรงกัน
+จะถูก ignore (ไม่ error, ไม่ apply ซ้ำ) และชื่อไฟล์ไม่ถูก rename → ledger ยังเป็น `'015_rollback.sql'`
+เดิม (ดู [C8 Production Verification](./C8_PRODUCTION_VERIFICATION_2026-10-28.md))
+
+**หมายเหตุ:** การย้ายไฟล์ **ไม่ได้แก้ schema** — ประเด็น known issue ของคู่ 015
+(rollback ถูก apply หลัง fix) ยังต้องตรวจ FK state จริงของ `template_fields` ใน production
 
 ---
 
@@ -221,7 +243,14 @@ Migration ที่ deploy ไปยัง production แล้ว จะถู�
 
 - [ ] **Verify production ledger** — เปรียบเทียบ `d1_migrations` table กับไฟล์ใน `backend/migrations/`
 - [ ] **Backfill ledger** — ถ้าพบ migration ที่ schema apply แล้วแต่ไม่มีใน ledger → INSERT row เข้า `d1_migrations`
-- [ ] **Move `015_rollback.sql` ไป `backend/fixes/`** — ห้าม apply ผ่าน `migrations apply`
+- [x] **Move `015_rollback.sql` ไป `backend/fixes/`** — เสร็จ 28 ต.ค. 2569
+  (`git mv backend/migrations/015_rollback.sql backend/fixes/015_rollback.sql`)
+  - ถอดออกจาก `LEGACY_BASELINE` ใน `scripts/check-migrations.js`
+  - เพิ่ม check `ROLLBACK_IN_MIGRATIONS_DIR` (ไม่มี baseline exemption) → กันย้ายกลับเข้า
+  - ledger ปลอดภัย: Wrangler คำนวณ unapplied = (ไฟล์ใน folder) − (ชื่อใน `d1_migrations`)
+    → row ที่ไม่มีไฟล์ตรงกันจะถูก ignore; ชื่อไฟล์ไม่ถูก rename → ledger ยัง `'015_rollback.sql'`
+  - อัปเดตเอกสาร: `docs/MIGRATION_GOVERNANCE.md` (มาตรา 1.1, 4, 9),
+    `backend/migrations/README.md` (กฎข้อ 6), `backend/fixes/README.md`
 - [ ] **Lock `backend/drizzle/` folder** — เพิ่ม `.gitignore` rule หรือเปลี่ยนเป็น read-only
 
 ### Phase 2 — Medium-term (2-4 สัปดาห์)

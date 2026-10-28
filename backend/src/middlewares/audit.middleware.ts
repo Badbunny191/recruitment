@@ -42,15 +42,29 @@ export const auditMiddleware = (entityType: string, options?: { action?: string 
   // Use custom payload if provided (e.g., change tracking data)
   const finalPayload = customPayload || (payload ? JSON.stringify(payload) : null);
 
-  await db.insert(auditLogs).values({
-    id: uuidv4(),
-    adminId: user.id,
-    action,
-    entityType,
-    entityId,
-    payload: finalPayload,
-    ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
-  });
+  // ── Audit insert ต้อง fail-soft ────────────────────────────────────────────
+  // ⚠️ `await next()` ทำงานไปแล้ว (business operation สำเร็จ) ถ้า insert audit
+  //    โยน error ตรงนี้ → ขึ้น app.onError → client ได้ 500 ทั้งที่งานจริงสำเร็จ
+  //    (admin จะเห็น "เกิดข้อผิดพลาด" แล้วกด retry → งานซ้ำ)
+  //
+  //    ตัวอย่างที่ทำให้เกิดได้จริง: audit_logs.admin_id เป็น FK → admin_users(id)
+  //    ON DELETE RESTRICT → ถ้า adminId ไม่มีใน admin_users insert จะ fail
+  //
+  //    Pattern เดียวกับ PDF_DOWNLOAD (admin.routes.ts) และ writeExportAudit
+  //    (excel-export.service.ts): log error → ไม่ block response
+  try {
+    await db.insert(auditLogs).values({
+      id: uuidv4(),
+      adminId: user.id,
+      action,
+      entityType,
+      entityId,
+      payload: finalPayload,
+      ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
+    });
+  } catch (auditErr) {
+    console.error('[AUDIT_MIDDLEWARE] Failed to write audit log:', auditErr);
+  }
 });
 
 /**

@@ -320,7 +320,21 @@ name = "sao-recruitment-backend"
 main = "src/index.ts"
 compatibility_date = "2026-10-07"
 compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
 ```
+
+> **Observability:** backend เปิด Workers Logs ไว้ (เหมือน frontend) เพื่อให้เห็น invocation/trace
+> logs ของ request ที่เกิดปัญหา — `audit_logs` ครอบคลุมแค่ action ที่ระบบบันทึก
+> ไม่ครอบคลุม error/latency ของ request ทั่วไป
+>
+> ⚠️ ต้องเปิดที่ Cloudflare Dashboard ด้วย:
+> Workers & Pages → `sao-recruitment-backend` → Settings → Observability → Enable
+> (config ในไฟล์เป็นแค่ฝั่ง client-side — Workers จะไม่ส่ง log จนกว่าจะเปิดใน dashboard)
+>
+> ⚠️ ห้าม log ข้อมูลอ่อนไหว (national_id, password, token) — ดูระเบียบ redaction ใน `backend/src/middlewares/`
 
 ### 6.3 D1 Database
 

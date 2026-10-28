@@ -22,6 +22,19 @@
 - แต่ถ้า dev ย้ายไฟล์จาก `fixes/` ไป `migrations/` แล้ว apply → จะเกิด double-apply หรือ reverse schema
 - ไฟล์เหล่านี้ต้อง apply ด้วย `wrangler d1 execute --file=` เท่านั้น
 
+### 🚨 ย้ายกลับเข้า `migrations/` ไม่ได้ — Linter จะ block
+
+`npm run migration:check` มี check ชื่อ `ROLLBACK_IN_MIGRATIONS_DIR` ที่สแกน **ทุกไฟล์**
+ใน `backend/migrations/` (ไม่มี legacy baseline exemption) และจะ **fail** ถ้าพบชื่อที่มี
+`rollback` / `down` / `revert` — พร้อมข้อความบอกวิธีย้ายกลับมาที่ `fixes/`
+
+> **ข้อยกเว้นของข้อยกเว้น:** `015_rollback.sql` เคยอยู่ใน `migrations/` (apply production แล้ว
+> เมื่อ 2026-10-14) และถูกย้ายมาที่ `fixes/` เมื่อ 28 ต.ค. 2569 เพื่อแก้ Finding #3 ของ
+> [Migration Audit 2026](../../docs/MIGRATION_AUDIT_2026.md) — การย้ายนี้ **ไม่ทำให้ ledger เสีย**
+> เพราะ Wrangler คำนวณ unapplied = (ไฟล์ใน folder) − (ชื่อใน `d1_migrations`) →
+> ledger row ที่ไม่มีไฟล์ตรงกันจะถูก ignore (ไม่ error, ไม่ apply ซ้ำ)
+> และชื่อไฟล์ไม่ถูก rename → `d1_migrations.name` ยังเป็น `'015_rollback.sql'` เดิม
+
 ### วิธี Apply ที่ถูกต้อง
 
 ```bash
@@ -41,6 +54,7 @@ wrangler d1 migrations apply sao-db --remote  # จะ scan เฉพาะ back
 | `cleanup_backup.sql` | ลบ backup table ที่เหลือจาก migration ก่อนหน้า | `wrangler d1 execute --file=` |
 | `fix_field_master_constraint.sql` | แก้ check constraint ของ `field_master` table | `wrangler d1 execute --file=` |
 | `rollback.sql` | Rollback schema สำหรับ fix ที่ apply ไปก่อนหน้า | `wrangler d1 execute --file=` |
+| `015_rollback.sql` | Rollback สำหรับ migration `015_fix_template_fields_fk_target.sql` (ย้ายมาจาก `migrations/` เมื่อ 28 ต.ค. 2569) | `wrangler d1 execute --file=` |
 | `verify_constraint.sql` | Verify ว่า constraint ถูกต้องหลัง apply fix | `wrangler d1 execute --file=` |
 
 ---

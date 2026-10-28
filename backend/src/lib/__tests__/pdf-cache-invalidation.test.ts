@@ -31,6 +31,7 @@ import { Hono } from 'hono';
 import { sign } from 'hono/jwt';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { eq } from 'drizzle-orm';
 import * as schema from '../../db/schema';
@@ -399,9 +400,15 @@ async function runAllTests() {
   });
 
   await test('C-lock: Composer source ต้องไม่มี STATUS token / ไม่อ่าน application.status', () => {
+    // ⚠️ Path resolution ต้องใช้ path.resolve/path.join เท่านั้น
+    //   — ห้าม replace ด้วย string literal ที่มี '/' เพราะบน Windows
+    //   fileURLToPath() คืนค่าด้วย '\' → replace ไม่ match → อ่านไฟล์ผิด
+    //   (เคยทำให้ test นี้ fail ปลอม ๆ เพราะอ่าน "ตัวเอง" แล้วเจอคำว่า STATUS_REASON
+    //    ใน regex ของ assertion → รายงานว่า composer มี STATUS token ทั้งที่ไม่มี)
     const here = fileURLToPath(import.meta.url);
+    const libDir = path.resolve(path.dirname(here), '..');
     const readSrc = (rel) =>
-      readFileSync(here.replace('__tests__/pdf-cache-invalidation.test.ts', `document-composer/${rel}`), 'utf8');
+      readFileSync(path.join(libDir, 'document-composer', rel), 'utf8');
 
     // ถ้า test นี้ fail ในอนาคต = มีการเพิ่ม STATUS เข้า composer
     // → ต้องกลับมาเพิ่ม invalidation จากการเปลี่ยนสถานะด้วย
@@ -426,7 +433,7 @@ async function runAllTests() {
     // getApplicationPdf ต้องใช้ composer path เท่านั้น (ไม่ใช่ legacy renderer
     // ตัวเดิมที่มี statusLabel — pdf-renderer.service.ts ไม่ถูก production import)
     const pdfServiceSrc = readFileSync(
-      here.replace('__tests__/pdf-cache-invalidation.test.ts', 'pdf.service.ts'),
+      path.join(libDir, 'pdf.service.ts'),
       'utf8'
     );
     assertTrue(

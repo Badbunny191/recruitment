@@ -44,6 +44,23 @@ wrangler d1 migrations apply sao-db --remote
 - ห้าม generate migration ใหม่ด้วย `drizzle-kit generate`
 - ทุก schema change ต้องเขียนด้วยมือเป็นไฟล์ใหม่ในโฟลเดอร์นี้
 
+### 6. ห้ามวาง Rollback Script ในโฟลเดอร์นี้ (hard rule — ไม่มีข้อยกเว้น)
+
+- Wrangler scan ทุกไฟล์ `.sql` ในโฟลเดอร์นี้แล้ว apply ตามลำดับชื่อไฟล์
+  **โดยไม่สนใจว่าเป็น forward หรือ rollback** → rollback script ที่หลุดมาจะถูก apply
+  โดยไม่ตั้งใจ = reverse schema
+- Rollback / emergency fix script ต้องอยู่ใน `backend/fixes/` เท่านั้น
+- `npm run migration:check` มี check `ROLLBACK_IN_MIGRATIONS_DIR` ที่สแกน **ทุกไฟล์**
+  (ไม่มี legacy baseline exemption) → จะ fail ทันทีพร้อมวิธีแก้
+
+> `015_rollback.sql` เคยอยู่ในโฟลเดอร์นี้ (apply production แล้ว 2026-10-14) และถูกย้ายไป
+> `backend/fixes/015_rollback.sql` เมื่อ 28 ต.ค. 2569 — การย้ายไม่ทำให้ ledger เสีย
+> (Wrangler คำนวณ unapplied = ไฟล์ใน folder − ชื่อใน `d1_migrations` → row ที่ไม่มีไฟล์
+> ตรงกันจะถูก ignore) และชื่อไฟล์ไม่ถูก rename → ledger ยังเป็น `'015_rollback.sql'` เดิม
+>
+> ดู: [Rollback Policy](../../docs/MIGRATION_GOVERNANCE.md#4-rollback-policy) ·
+> [Migration Audit 2026 — Finding #3](../../docs/MIGRATION_AUDIT_2026.md)
+
 ---
 
 ## ✅ วิธีสร้าง Migration ใหม่

@@ -42,8 +42,11 @@ type ClientLookup = (entityType: string, entityId: string) => string | null;
 // PDF_DOWNLOAD (admin.routes.ts) และ EXPORT_EXCEL (excel-export.service.ts)
 // บันทึกแบบ manual — publish/archive ของ template/round ถูกบันทึกเป็น UPDATE
 // CHANGE_PASSWORD/RESET_PASSWORD (R9): เปลี่ยนรหัสผ่านเอง / admin รีเซ็ตให้
+// CREATE_USER (P0 fix): POST /admin/users — action เฉพาะเพราะ entityId เป็น
+//   'BULK/NEW' (ไม่มี :id ใน path) → ต้องแยกจาก CREATE ของ entity อื่น
 export const AUDIT_ACTION_CONFIG: Record<string, { label: string; className: string }> = {
   CREATE: { label: 'สร้าง', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  CREATE_USER: { label: 'สร้างผู้ใช้', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   UPDATE: { label: 'แก้ไข', className: 'bg-amber-100 text-amber-700 border-amber-200' },
   DELETE: { label: 'ลบ', className: 'bg-red-100 text-red-700 border-red-200' },
   PDF_DOWNLOAD: { label: 'ดาวน์โหลด PDF', className: 'bg-sky-100 text-sky-700 border-sky-200' },
@@ -137,6 +140,20 @@ export function buildAuditDescription(
   }
   if (log.entityType === 'ROUND_CLONED') {
     return `คัดลอกรอบรับสมัคร → ${display.primary}`;
+  }
+  // CREATE_USER — entityId = 'BULK/NEW' (ไม่มี :id ใน path) จึง resolve ไม่ได้
+  // → ใช้ targetEmail/targetUserId จาก payload แทน
+  if (log.action === 'CREATE_USER') {
+    const targetEmail =
+      payload && typeof payload === 'object' && typeof payload.targetEmail === 'string'
+        ? payload.targetEmail
+        : null;
+    const role =
+      payload && typeof payload === 'object' && typeof payload.role === 'string'
+        ? payload.role
+        : null;
+    const who = targetEmail ?? display.primary;
+    return role ? `สร้างผู้ใช้ ${who} (${role})` : `สร้างผู้ใช้ ${who}`;
   }
   if (
     log.entityType === 'APPLICATION' &&

@@ -4041,7 +4041,7 @@ function generateTempPassword(): string {
 adminRoutes.post(
   '/users',
   superAdminOnlyMiddleware,
-  auditMiddleware('ADMIN_USER'),
+  auditMiddleware('ADMIN_USER', { action: 'CREATE_USER' }),
   zValidator('json', CreateUserSchema),
   async (c) => {
     const data = c.req.valid('json') as { email: string; role: 'ADMIN' | 'VIEWER'; mustChangePassword?: boolean };
@@ -4077,6 +4077,21 @@ adminRoutes.post(
       lockedUntil: null,
       passwordMigrated: true, // Always true since we're storing bcrypt hash
     } as any);
+
+    // R9: audit log — สร้างผู้ใช้ (actor = SUPER_ADMIN, target = ผู้ใช้ใหม่)
+    // ⚠️ entityId ของ route นี้คือ 'BULK/NEW' (ไม่มี :id ใน path) ซึ่งทำให้
+    //    audit-display resolver ข้าม (ไม่แสดงชื่อผู้ใช้ที่ถูกสร้าง)
+    //    → ต้องบันทึก targetUserId/targetEmail/role ใน payload เพื่อให้
+    //    ตอบคำถาม "ใครสร้างผู้ใช้คนนี้" ได้จากหน้า Audit Logs
+    // ⚠️ ห้ามบันทึก temporaryPassword ใน audit (ไม่เก็บ plaintext ในที่ใด)
+    setAuditPayload(c, JSON.stringify({
+      selfChange: false,
+      targetUserId: id,
+      targetEmail: data.email,
+      role: data.role,
+      mustChangePassword: data.mustChangePassword ?? true,
+      issuedTemporaryPassword: true,
+    }));
 
     return c.json(
       {

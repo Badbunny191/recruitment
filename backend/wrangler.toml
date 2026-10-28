@@ -30,6 +30,35 @@ database_id = "3c2afb74-3a5d-4adb-8f58-d2077e4b462f"
 binding = "R2_BUCKET"
 bucket_name = "sao-storage"
 
+# =============================================================================
+# Observability (Workers Logs)
+# =============================================================================
+# เปิด Workers Logs ให้ backend — เดียวกับ frontend (frontend/wrangler.jsonc)
+#
+# เหตุผล: audit เคยพบว่าไม่มี visibility ของ backend runtime เลย
+#   - audit_logs เก็บเฉพาะ action ที่ระบบบันทึก (ไม่ครอบคลุม error/latency)
+#   - เกิดเหตุการณ์จริงใน production เมื่อ 2026-10-28 (เช่น PDF / upload)
+#     ไม่มีทางย้อนดู log ของ request ที่เกี่ยวข้อง
+#
+# ตัวเลือก:
+#   enabled = true
+#     → เปิดทั้ง invocation logs + trace logs (Worker traces)
+#   head_sampling_rate = 1
+#     → เก็บ 100% ของ request (ค่า default ของ Cloudflare)
+#       ปรับเป็น 0.1 (10%) ถ้า volume สูงเกินจนอยากลด log retention cost
+#
+# ⚠️ ข้อควรระวัง: Workers Logs จะเก็บ request metadata + console output
+#    ห้าม log ข้อมูลอ่อนไหว (national_id, password, token) — ดู
+#    backend/src/lib/logger.ts และระเบียบ redaction ใน backend/src/middlewares/
+#
+# ⚠️ ต้อง enable ที่ Cloudflare Dashboard ด้วย:
+#    Workers & Pages → sao-recruitment-backend → Settings → Observability → Enable
+#    (Logs จะไม่ส่งจนกว่าจะเปิดทั้งใน config และ dashboard)
+# =============================================================================
+[observability]
+enabled = true
+head_sampling_rate = 1
+
 # ===========================================
 # OPTIONAL: Cloudflare Queue (ปิดไว้ชั่วคราว)
 # หากต้องการเปิดใช้งาน Queue สำหรับ PDF Generation:

@@ -76,12 +76,14 @@ function assertEqual(actual, expected, msg) {
 test('A: ACTION_CONFIG ครบทุก action ที่ระบบบันทึกจริง พร้อม label ไทย', () => {
   // CREATE/UPDATE/DELETE มาจาก auditMiddleware, PDF_DOWNLOAD/EXPORT_EXCEL
   // บันทึกแบบ manual — ไม่มี action อื่นในระบบ (publish/archive = UPDATE)
-  for (const action of ['CREATE', 'UPDATE', 'DELETE', 'PDF_DOWNLOAD', 'EXPORT_EXCEL']) {
+  // CREATE_USER (P0 fix): POST /admin/users — action เฉพาะ
+  for (const action of ['CREATE', 'CREATE_USER', 'UPDATE', 'DELETE', 'PDF_DOWNLOAD', 'EXPORT_EXCEL']) {
     assertTrue(AUDIT_ACTION_CONFIG[action], `ต้องมี config ของ ${action}`);
     assertTrue(AUDIT_ACTION_CONFIG[action].label !== action, `${action} ต้องมี label ที่คนอ่าน`);
   }
   assertEqual(AUDIT_ACTION_CONFIG.PDF_DOWNLOAD.label, 'ดาวน์โหลด PDF', 'label PDF_DOWNLOAD');
   assertEqual(AUDIT_ACTION_CONFIG.EXPORT_EXCEL.label, 'ส่งออก Excel', 'label EXPORT_EXCEL');
+  assertEqual(AUDIT_ACTION_CONFIG.CREATE_USER.label, 'สร้างผู้ใช้', 'label CREATE_USER');
 });
 
 test('B: action ไม่รู้จัก → fallback raw string (badge สีเทา)', () => {
@@ -242,6 +244,45 @@ test('L: resolve ไม่ได้ → fallback UUID ย่อใน descriptio
     'ส่งออก Excel 5a7c…47eb',
     'EXPORT_EXCEL fallback UUID',
   );
+});
+
+// =========================================================
+//  N. CREATE_USER — ต้องอ่านออกว่าสร้างผู้ใช้คนไหน (P0 fix)
+// =========================================================
+
+test('N: CREATE_USER → "สร้างผู้ใช้ <email> (<role>)" จาก payload', () => {
+  // entityId = 'BULK/NEW' (route ไม่มี :id) → resolve ไม่ได้
+  // → ต้องดึง targetEmail + role จาก payload
+  const log = {
+    action: 'CREATE_USER',
+    entityType: 'ADMIN_USER',
+    entityId: 'BULK/NEW',
+  };
+  assertEqual(
+    buildAuditDescription(log, null, { targetEmail: 'newuser@test.local', role: 'ADMIN' }),
+    'สร้างผู้ใช้ newuser@test.local (ADMIN)',
+    'ต้องโชว์อีเมล + role ของผู้ใช้ที่ถูกสร้าง',
+  );
+});
+
+test('N2: CREATE_USER ไม่มี payload → fallback ไม่ crash', () => {
+  const log = {
+    action: 'CREATE_USER',
+    entityType: 'ADMIN_USER',
+    entityId: 'BULK/NEW',
+  };
+  const desc = buildAuditDescription(log, null, null);
+  assertTrue(desc.includes('สร้างผู้ใช้'), 'ต้องยังบอกว่าเป็นการสร้างผู้ใช้');
+});
+
+test('N3: CREATE_USER ที่มี role แต่ไม่มี email → ไม่ crash', () => {
+  const log = {
+    action: 'CREATE_USER',
+    entityType: 'ADMIN_USER',
+    entityId: 'BULK/NEW',
+  };
+  const desc = buildAuditDescription(log, null, { role: 'VIEWER' });
+  assertTrue(desc.includes('สร้างผู้ใช้'), 'ต้องยังบอกว่าเป็นการสร้างผู้ใช้');
 });
 
 // =========================================================
