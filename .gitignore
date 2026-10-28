@@ -47,3 +47,16 @@ backend/test-*.sql
 docs/*.html
 
 .perch/
+
+# ── Data dumps / DB artifacts (PII risk) ──────────────────────────
+# ห้าม commit ไฟล์ backup/dump ที่มีข้อมูลจริง
+
+backend/full_backup.sql
+backend/backups/*.sql
+
+backend/.wrangler/
+**/.wrangler/state/
+
+*.sqlite
+*.sqlite3
+*.db
