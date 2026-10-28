@@ -26,6 +26,11 @@ import {
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
 import { buildAuditLogWhere, parseMultiParam } from '../lib/audit-log-query';
+import {
+  APPLICATION_LIST_COLUMNS,
+  buildApplicationsListWhere,
+  parseApplicationsListPagination,
+} from '../lib/applications-list-query';
 import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, BulkApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
 import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
 import { accountStateGate } from '../middlewares/account-state.middleware';
@@ -2075,41 +2080,91 @@ adminRoutes.delete('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITM
   return c.json({ success: true, deletedId: id });
 });
 
+// GET /admin/applications — รายชื่อใบสมัคร (ไม่รวม formData)
+// Phase 1-3 (feature/applications-server-pagination):
+//   - select เฉพาะคอลัมน์ที่หน้ารายชื่อใช้ (ตัด form_data ก้อนใหญ่ทิ้ง)
+//   - pagination แบบ optional: ไม่ส่ง ?page = behavior เดิม (คืนทุกแถว)
+//     ส่ง ?page=1&pageSize=50 → คืน { data, pagination }
+//   - sort default = submittedAt DESC + tie-break id ASC (ลำดับนิ่งระหว่างหน้า)
+//   - where builder กลาง (buildApplicationsListWhere) ใช้ร่วมกับ /applications/ids
 adminRoutes.get('/applications', async (c) => {
   const db = drizzle(c.env.DB);
-  const roundId = c.req.query('roundId');
-  const status = c.req.query('status');
-  const search = c.req.query('search');
+  const whereClause = buildApplicationsListWhere({
+    roundId: c.req.query('roundId'),
+    status: c.req.query('status'),
+    search: c.req.query('search'),
+  });
 
-  let whereClause = isNull(applications.deletedAt);
-
-  if (roundId) {
-    whereClause = and(whereClause, eq(applications.roundId, roundId))!;
+  const pagination = parseApplicationsListPagination(
+    c.req.query('page'),
+    c.req.query('pageSize'),
+  );
+  if ('error' in pagination) {
+    return c.json({ error: pagination.error }, 400);
   }
 
-  if (status) {
-    whereClause = and(whereClause, eq(applications.status, status))!;
+  // orderBy: submittedAt DESC (default ตาม spec), id ASC เป็น tie-break
+  const orderByClause = [desc(applications.submittedAt), asc(applications.id)];
+
+  if (!pagination.paginated) {
+    // ไม่ส่ง page = contract เดิม: คืนทุกแถว ไม่มี pagination ใน response
+    const results = await db
+      .select(APPLICATION_LIST_COLUMNS)
+      .from(applications)
+      .where(whereClause)
+      .orderBy(...orderByClause);
+
+    return c.json({ data: results });
   }
 
-  if (search) {
-    const searchLower = `%${search.toLowerCase()}%`;
-    whereClause = and(
-      whereClause,
-      or(
-        like(applications.applicationNo, searchLower),
-        like(applications.fullname, searchLower),
-        like(applications.email, searchLower)
-      )
-    )!;
-  }
+  const { page, pageSize, offset } = pagination;
+
+  const [results, totalRow] = await Promise.all([
+    db
+      .select(APPLICATION_LIST_COLUMNS)
+      .from(applications)
+      .where(whereClause)
+      .orderBy(...orderByClause)
+      .limit(pageSize)
+      .offset(offset),
+    db
+      .select({ total: count() })
+      .from(applications)
+      .where(whereClause)
+      .get(),
+  ]);
+
+  const total = Number(totalRow?.total ?? 0);
+
+  return c.json({
+    data: results,
+    pagination: {
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    },
+  });
+});
+
+// GET /admin/applications/ids — id ล้วนตามตัวกรองเดียวกัน (ไม่มี pagination)
+// ใช้สำหรับ "เลือกทั้งหมดข้ามหน้า" ฝั่ง frontend โดยไม่ต้องโหลดรายชื่อทั้งชุด
+// ⚠️ ต้อง register ก่อน /applications/:id ไม่งั้น "ids" จะถูกจับเป็น :id
+adminRoutes.get('/applications/ids', async (c) => {
+  const db = drizzle(c.env.DB);
+  const whereClause = buildApplicationsListWhere({
+    roundId: c.req.query('roundId'),
+    status: c.req.query('status'),
+    search: c.req.query('search'),
+  });
 
   const results = await db
-    .select()
+    .select({ id: applications.id })
     .from(applications)
     .where(whereClause)
-    .orderBy(applications.submittedAt);
+    .orderBy(desc(applications.submittedAt), asc(applications.id));
 
-  return c.json({ data: results });
+  return c.json({ data: results.map((r) => r.id) });
 });
 
 // GET /admin/rounds/:id/applications — Search applications by round for Document Composer picker
