@@ -1,12 +1,17 @@
 /**
- * Seed script สำหรับ Demo
+ * Seed script สำหรับ Demo (ข้อมูล master data เท่านั้น)
  * รันด้วย: wrangler d1 execute sao-db --local --file=./seed.sql
+ *
+ * ⚠️ ไฟล์นี้ไม่สร้าง admin user
+ *    admin ต้องสร้างผ่าน backend/scripts/seed-users.ts (สร้าง bcrypt hash + รหัสสุ่ม)
+ *    เหตุผล: ไม่ให้มีรหัสผ่านอยู่ใน git และไม่ให้มี default credential ที่เดาได้
  */
 
--- สร้าง admin user (password: admin123)
--- NOTE: RBAC v1 — ใช้ role 'ADMIN' (legacy 'HR_ADMIN' ถูก migrate แล้วใน migration 020)
-INSERT INTO admin_users (id, email, password_hash, role) VALUES 
-  ('seed-admin-001', 'admin@recruitment.go.th', 'admin123', 'ADMIN');
+-- ── Admin user: สร้างด้วย script แยก ────────────────────────────────────
+--   cd backend && npx tsx scripts/seed-users.ts
+--   script จะพิมพ์ SQL พร้อม bcrypt hash + รหัสสุ่ม (แสดงครั้งเดียว)
+--
+--   ห้ามเพิ่ม INSERT INTO admin_users ในไฟล์นี้
 
 -- สร้าง field_master (ชนิดฟิลด์สำหรับฟอร์ม)
 INSERT INTO field_master (id, field_type, label_th, default_options, pdf_mapping_key, is_active) VALUES 
