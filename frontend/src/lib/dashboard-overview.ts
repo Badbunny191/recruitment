@@ -210,7 +210,18 @@ export function pendingCount(summary: ApplicationSummary | null | undefined): nu
 // =============================================================================
 
 export interface PendingDecision {
+  /**
+   * จำนวนงานค้างทั้งหมด — มาจาก `pagination.total` ของ backend เมื่อมี
+   * (ไม่ใช่จำนวนแถวที่โหลดมา ซึ่งถูกจำกัดด้วย pageSize)
+   */
   count: number;
+  /** จำนวนแถวที่โหลดมาจริงในหน้านี้ (≤ pageSize) */
+  fetchedCount: number;
+  /**
+   * true เมื่อ count > fetchedCount — ข้อมูลที่โหลดมาไม่ครบทั้งชุด
+   * อายุ/overdue ที่คำนวณได้จึงเป็นค่าจาก subset เท่านั้น (ต้องบอกผู้ใช้)
+   */
+  truncated: boolean;
   /** อายุของใบที่ค้างนานที่สุด (วัน) — null เมื่อไม่มีใบค้าง */
   oldestAgeDays: number | null;
   /** ใบที่ค้างนานที่สุด (ใช้โชว์ตัวอย่าง) */
@@ -227,11 +238,16 @@ export const DEFAULT_SLA_DAYS = 7;
 /**
  * สรุปงานค้างจากรายการใบสมัคร (กรอง SUBMITTED ฝั่ง client)
  * ใช้ endpoint /admin/applications?status=SUBMITTED&pageSize=200 ที่มีอยู่แล้ว
+ *
+ * ⚠️ count ต้องมาจาก `pagination.total` ของ backend ไม่ใช่ items.length
+ * เพราะ items ถูกจำกัดด้วย pageSize — ถ้าใบค้างเกิน 200 ใบ การนับจาก items
+ * จะรายงานต่ำกว่าความจริง (และ KPI จะดู "เขียว" ทั้งที่มีงานค้างค้างอยู่)
  */
 export function buildPendingDecisions(
   items: readonly ApplicationListItem[] | null | undefined,
   now: Date = new Date(),
   slaDays: number = DEFAULT_SLA_DAYS,
+  total?: number | null,
 ): PendingDecision {
   const pending = (items ?? []).filter(
     (a) => a && typeof a.status === 'string' && PENDING_STATUSES.includes(a.status as ApplicationStatus),
@@ -251,7 +267,23 @@ export function buildPendingDecisions(
     if (age > slaDays) overdueCount += 1;
   }
 
-  return { count: pending.length, oldestAgeDays, oldest, overdueCount, slaDays };
+  const fetchedCount = pending.length;
+  // total จาก backend เป็น source of truth; ไม่มี/ค่าเสีย → ใช้จำนวนที่โหลดมา
+  const parsedTotal = Number(total);
+  const count =
+    total != null && Number.isFinite(parsedTotal) && parsedTotal >= fetchedCount
+      ? parsedTotal
+      : fetchedCount;
+
+  return {
+    count,
+    fetchedCount,
+    truncated: count > fetchedCount,
+    oldestAgeDays,
+    oldest,
+    overdueCount,
+    slaDays,
+  };
 }
 
 // =============================================================================
@@ -495,6 +527,8 @@ export interface DashboardSnapshot {
 export function buildDashboardSnapshot(input: {
   summary?: ApplicationSummary | null;
   pendingItems?: readonly ApplicationListItem[] | null;
+  /** จำนวนงานค้างทั้งหมดจาก pagination.total (ไม่ใช่จำนวนแถวที่โหลดมา) */
+  pendingTotal?: number | null;
   rounds?: readonly RoundItem[] | null;
   comparison?: readonly RoundComparisonItem[] | null;
   activities?: readonly AuditLogItem[] | null;
@@ -507,7 +541,12 @@ export function buildDashboardSnapshot(input: {
 
   return {
     statusCards: buildStatusCards(input.summary),
-    pending: buildPendingDecisions(input.pendingItems, now, input.slaDays ?? DEFAULT_SLA_DAYS),
+    pending: buildPendingDecisions(
+      input.pendingItems,
+      now,
+      input.slaDays ?? DEFAULT_SLA_DAYS,
+      input.pendingTotal,
+    ),
     rounds,
     overdueRounds: countOverdueRounds(rounds),
     alerts: buildGovernanceAlerts(input.comparison),

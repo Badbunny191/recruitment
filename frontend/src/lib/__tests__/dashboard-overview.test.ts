@@ -274,6 +274,60 @@ test('buildPendingDecisions: ใบที่ไม่มี submittedAt ถู�
   assertEqual(result.oldest?.id, 'b');
 });
 
+// ========== Pending count จาก pagination.total (Blocker: KPI false-green) ==========
+// items ถูกจำกัดด้วย pageSize — ถ้านับจาก items.length ตัวเลขจะต่ำกว่าจริง
+// และ KPI จะดู "เขียว" ทั้งที่ยังมีงานค้างอยู่
+
+test('buildPendingDecisions: ใช้ pagination.total เป็น count (ไม่ใช่จำนวนแถวที่โหลดมา)', () => {
+  // โหลดมาได้ 3 แถว แต่ backend บอกว่ามีทั้งหมด 250 ใบ
+  const items = [
+    app({ id: 'a', submittedAt: NOW_SEC - 2 * 86400 }),
+    app({ id: 'b', submittedAt: NOW_SEC - 4 * 86400 }),
+    app({ id: 'c', submittedAt: NOW_SEC - 6 * 86400 }),
+  ];
+  const result = buildPendingDecisions(items, NOW, DEFAULT_SLA_DAYS, 250);
+  assertEqual(result.count, 250, 'count ต้องมาจาก total');
+  assertEqual(result.fetchedCount, 3, 'fetchedCount คือแถวที่โหลดมาจริง');
+  assertTrue(result.truncated, 'ต้องรู้ว่าข้อมูลไม่ครบ');
+});
+
+test('buildPendingDecisions: total เท่ากับจำนวนที่โหลดมา → ไม่ truncated', () => {
+  const items = [app({ id: 'a' }), app({ id: 'b' })];
+  const result = buildPendingDecisions(items, NOW, DEFAULT_SLA_DAYS, 2);
+  assertEqual(result.count, 2);
+  assertEqual(result.fetchedCount, 2);
+  assertEqual(result.truncated, false);
+});
+
+test('buildPendingDecisions: ไม่ส่ง total → fallback เป็นจำนวนที่โหลดมา', () => {
+  const items = [app({ id: 'a' }), app({ id: 'b' })];
+  const result = buildPendingDecisions(items, NOW);
+  assertEqual(result.count, 2);
+  assertEqual(result.truncated, false);
+});
+
+test('buildPendingDecisions: total ที่ต่ำกว่าแถวที่โหลดมา (ค่าเสีย) → ไม่ทำให้ count หาย', () => {
+  const items = [app({ id: 'a' }), app({ id: 'b' }), app({ id: 'c' })];
+  const result = buildPendingDecisions(items, NOW, DEFAULT_SLA_DAYS, 1);
+  assertEqual(result.count, 3, 'ต้องไม่รายงานต่ำกว่าข้อมูลที่เห็นจริง');
+  assertEqual(result.truncated, false);
+});
+
+test('buildPendingDecisions: total เป็น null / NaN → fallback ปลอดภัย', () => {
+  const items = [app({ id: 'a' })];
+  assertEqual(buildPendingDecisions(items, NOW, DEFAULT_SLA_DAYS, null).count, 1);
+  assertEqual(buildPendingDecisions(items, NOW, DEFAULT_SLA_DAYS, NaN).count, 1);
+});
+
+test('buildPendingDecisions: total > 0 แต่โหลดมา 0 แถว → count ยังตรงกับ total', () => {
+  // เคสจริง: page=1 หลุด หรือกรองฝั่ง client แล้วไม่เหลือแถว
+  const result = buildPendingDecisions([], NOW, DEFAULT_SLA_DAYS, 42);
+  assertEqual(result.count, 42);
+  assertEqual(result.fetchedCount, 0);
+  assertTrue(result.truncated);
+  assertNull(result.oldestAgeDays, 'ไม่มีข้อมูลให้คำนวณอายุ');
+});
+
 // ========== buildActiveRounds ==========
 
 const round = (over: any = {}) => ({

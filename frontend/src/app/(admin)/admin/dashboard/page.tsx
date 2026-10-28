@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { formatDateThai } from '@/lib/date';
 import { getAuditActionConfig, getAuditEntityLabel } from '@/lib/audit-log-display';
+import { redirectToLogin } from '@/lib/account-state';
+import { useRole } from '@/lib/useRole';
 import {
   buildDashboardSnapshot,
   type ApplicationListItem,
@@ -75,6 +77,18 @@ const initialSection = <T,>(): SectionState<T> => ({ status: 'loading', data: nu
 // Fetch helper
 // =============================================================================
 
+/**
+ * 401 = session หมดอายุ/ถูกเพิกถอน — ต้องพาไป login ไม่ใช่แสดง
+ * "โหลดข้อมูลไม่สำเร็จ" (ซึ่งทำให้ผู้ใช้เข้าใจว่าข้อมูลพัง ทั้งที่แค่ต้อง login ใหม่)
+ * แยกเป็น error ชนิดของตัวเองเพื่อให้ caller ตัดสินใจได้โดยไม่ต้องอ่าน string
+ */
+class UnauthorizedError extends Error {
+  constructor() {
+    super('Unauthorized');
+    this.name = 'UnauthorizedError';
+  }
+}
+
 async function fetchJson<T>(path: string): Promise<T> {
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('adminToken') : null;
@@ -82,6 +96,12 @@ async function fetchJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
+
+  if (res.status === 401) {
+    // ใช้ helper เดิมของระบบ (ล้าง session + hard navigation + loop guard)
+    redirectToLogin();
+    throw new UnauthorizedError();
+  }
 
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}`);
@@ -142,19 +162,25 @@ function KpiCard({
   hint,
   tone = 'neutral',
   loading,
+  unavailable,
 }: {
   title: string;
   value: string | number;
   hint?: string;
   tone?: 'neutral' | 'warning' | 'danger' | 'good';
   loading?: boolean;
+  /** โหลดไม่สำเร็จ — ห้ามแสดง 0 หรือข้อความ "ปกติ" แทนข้อมูลที่ยังไม่รู้ */
+  unavailable?: boolean;
 }) {
+  // ระหว่าง loading/unavailable ต้องไม่สื่อสถานะ "เขียว/ปกติ" จากข้อมูลที่ยังไม่มี
+  const effectiveTone = loading || unavailable ? 'neutral' : tone;
+
   const toneClass = {
     neutral: 'text-slate-900',
     warning: 'text-amber-600',
     danger: 'text-red-600',
     good: 'text-emerald-600',
-  }[tone];
+  }[effectiveTone];
 
   return (
     <Card>
@@ -164,10 +190,16 @@ function KpiCard({
       <CardContent>
         {loading ? (
           <div className="h-8 w-16 animate-pulse rounded bg-slate-100" />
+        ) : unavailable ? (
+          <div className="text-3xl font-bold tabular-nums text-slate-400">–</div>
         ) : (
           <div className={cn('text-3xl font-bold tabular-nums', toneClass)}>{value}</div>
         )}
-        {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+        {/* hint อธิบายค่าที่แสดง — ระหว่าง loading ยังไม่มีค่า จึงต้องไม่แสดง */}
+        {hint && !loading && !unavailable && (
+          <p className="mt-1 text-xs text-slate-500">{hint}</p>
+        )}
+        {unavailable && <p className="mt-1 text-xs text-slate-500">โหลดข้อมูลไม่สำเร็จ</p>}
       </CardContent>
     </Card>
   );
@@ -178,8 +210,13 @@ function KpiCard({
 // =============================================================================
 
 export default function DashboardPage() {
+  // Audit Log เปิดให้เฉพาะ SUPER_ADMIN (ตรงกับ RBAC ของหน้า /admin/audit-logs
+  // และเมนู System) — role อื่นต้องไม่เห็นกิจกรรมเลย แม้แต่ใน dashboard
+  const { isSuperAdmin } = useRole();
+
   const [summary, setSummary] = useState<SectionState<ApplicationSummary>>(initialSection());
   const [pending, setPending] = useState<SectionState<ApplicationListItem[]>>(initialSection());
+  const [pendingTotal, setPendingTotal] = useState<number | null>(null);
   const [rounds, setRounds] = useState<SectionState<RoundItem[]>>(initialSection());
   const [comparison, setComparison] = useState<SectionState<RoundComparisonItem[]>>(initialSection());
   const [activities, setActivities] = useState<SectionState<AuditLogItem[]>>(initialSection());
@@ -192,6 +229,8 @@ export default function DashboardPage() {
       const res = await fetchJson<SummaryResponse>('/admin/applications/summary');
       setSummary({ status: 'ready', data: res.data ?? { total: 0, byStatus: {} }, error: null });
     } catch (e) {
+      // 401 → กำลังถูกพาไป login อยู่ ไม่ต้องแสดง error ปลอม
+      if (e instanceof UnauthorizedError) return;
       setSummary({ status: 'error', data: null, error: (e as Error).message });
     }
   }, []);
@@ -203,8 +242,11 @@ export default function DashboardPage() {
       const res = await fetchJson<ApplicationsResponse>(
         '/admin/applications?status=SUBMITTED&page=1&pageSize=200',
       );
+      // total = จำนวนงานค้างจริงทั้งระบบ (items ถูกจำกัดที่ 200 แถว)
+      setPendingTotal(typeof res.pagination?.total === 'number' ? res.pagination.total : null);
       setPending({ status: 'ready', data: res.data ?? [], error: null });
     } catch (e) {
+      if (e instanceof UnauthorizedError) return;
       setPending({ status: 'error', data: null, error: (e as Error).message });
     }
   }, []);
@@ -215,6 +257,7 @@ export default function DashboardPage() {
       const res = await fetchJson<RoundsResponse>('/admin/rounds?view=active');
       setRounds({ status: 'ready', data: res.data ?? [], error: null });
     } catch (e) {
+      if (e instanceof UnauthorizedError) return;
       setRounds({ status: 'error', data: null, error: (e as Error).message });
     }
   }, []);
@@ -225,19 +268,26 @@ export default function DashboardPage() {
       const res = await fetchJson<ComparisonResponse>('/admin/rounds/comparison');
       setComparison({ status: 'ready', data: res.data ?? [], error: null });
     } catch (e) {
+      if (e instanceof UnauthorizedError) return;
       setComparison({ status: 'error', data: null, error: (e as Error).message });
     }
   }, []);
 
   const loadActivities = useCallback(async () => {
+    // ไม่เรียก endpoint เลยถ้าไม่มีสิทธิ์ — ไม่ใช่เรียกแล้วซ่อนผล
+    if (!isSuperAdmin) {
+      setActivities({ status: 'ready', data: [], error: null });
+      return;
+    }
     setActivities((s) => ({ ...s, status: 'loading', error: null }));
     try {
       const res = await fetchJson<AuditLogsResponse>('/admin/audit-logs?page=1&pageSize=10');
       setActivities({ status: 'ready', data: res.items ?? [], error: null });
     } catch (e) {
+      if (e instanceof UnauthorizedError) return;
       setActivities({ status: 'error', data: null, error: (e as Error).message });
     }
-  }, []);
+  }, [isSuperAdmin]);
 
   useEffect(() => {
     void loadSummary();
@@ -262,12 +312,13 @@ export default function DashboardPage() {
       buildDashboardSnapshot({
         summary: summary.data,
         pendingItems: pending.data,
+        pendingTotal,
         rounds: rounds.data,
         comparison: comparison.data,
         activities: activities.data,
         activityLimit: 10,
       }),
-    [summary.data, pending.data, rounds.data, comparison.data, activities.data],
+    [summary.data, pending.data, pendingTotal, rounds.data, comparison.data, activities.data],
   );
 
   const anyLoading =
@@ -319,11 +370,15 @@ export default function DashboardPage() {
                 value={pendingInfo.count}
                 hint={
                   pendingInfo.oldestAgeDays != null
-                    ? `ค้างนานสุด ${pendingInfo.oldestAgeDays} วัน`
+                    ? pendingInfo.truncated
+                      ? `ค้างนานสุด ${pendingInfo.oldestAgeDays} วัน (จาก ${pendingInfo.fetchedCount} ใบแรก)`
+                      : `ค้างนานสุด ${pendingInfo.oldestAgeDays} วัน`
                     : 'ไม่มีงานค้าง'
                 }
                 tone={pendingInfo.overdueCount > 0 ? 'warning' : 'neutral'}
-                loading={pending.status === 'loading' && summary.status === 'loading'}
+                // ต้องรอทั้งสองส่วน: count มาจาก pending, แต่การ์ดอยู่ในบล็อก summary
+                loading={pending.status === 'loading' || summary.status === 'loading'}
+                unavailable={pending.status === 'error'}
               />
               <KpiCard
                 title="รอบที่เปิดรับ"
@@ -339,6 +394,7 @@ export default function DashboardPage() {
                 }
                 tone={snapshot.overdueRounds > 0 ? 'danger' : 'neutral'}
                 loading={rounds.status === 'loading'}
+                unavailable={rounds.status === 'error'}
               />
               <KpiCard
                 title="Template ต้องอัปเดต"
@@ -346,6 +402,7 @@ export default function DashboardPage() {
                 hint={alerts.length > 0 ? `พบทั้งหมด ${alerts.length} รายการ` : 'ทันสมัยทั้งหมด'}
                 tone={highAlerts > 0 ? 'warning' : 'good'}
                 loading={comparison.status === 'loading'}
+                unavailable={comparison.status === 'error'}
               />
             </div>
 
@@ -491,6 +548,12 @@ export default function DashboardPage() {
                       />
                     )}
                   </div>
+                  {pendingInfo.truncated && (
+                    <p className="mb-2 text-xs text-slate-500">
+                      อายุและจำนวนเกินกำหนดคำนวณจาก {pendingInfo.fetchedCount} ใบแรกจากทั้งหมด{' '}
+                      {pendingInfo.count} ใบ
+                    </p>
+                  )}
                   <ul className="divide-y divide-slate-100">
                     {(pending.data ?? []).slice(0, 5).map((a) => (
                       <li key={a.id} className="flex items-center justify-between gap-3 py-2 first:pt-0">
@@ -518,48 +581,50 @@ export default function DashboardPage() {
         </section>
       </div>
 
-      {/* ── 4. Recent activities ── */}
-      <section aria-labelledby="activity-heading">
-        <Card>
-          <CardHeader className="!flex-row items-center justify-between space-y-0 pb-3">
-            <CardTitle id="activity-heading" className="text-base font-semibold">
-              กิจกรรมล่าสุด
-            </CardTitle>
-            <Link href="/admin/audit-logs" className="text-sm text-blue-600 hover:underline">
-              ดู Audit Log
-            </Link>
-          </CardHeader>
-          <CardContent>
-            {activities.status === 'loading' && <SectionSkeleton rows={5} />}
-            {activities.status === 'error' && (
-              <SectionError message={activities.error ?? 'ไม่ทราบสาเหตุ'} onRetry={loadActivities} />
-            )}
-            {activities.status === 'ready' && activityRows.length === 0 && (
-              <EmptyRow text="ยังไม่มีกิจกรรมที่บันทึกไว้" />
-            )}
-            {activities.status === 'ready' && activityRows.length > 0 && (
-              <ul className="divide-y divide-slate-100">
-                {activityRows.map((log) => {
-                  const actionCfg = getAuditActionConfig(log.action);
-                  return (
-                    <li key={log.id} className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <Pill label={actionCfg.label} className={actionCfg.className} />
-                        <span className="truncate text-sm text-slate-700">
-                          {getAuditEntityLabel(log.entityType)}
-                          {log.primary ? ` · ${log.primary}` : ''}
-                          {log.secondary ? ` (${log.secondary})` : ''}
-                        </span>
-                      </div>
-                      <span className="shrink-0 text-xs text-slate-500">{log.relative}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-      </section>
+      {/* ── 4. Recent activities — SUPER_ADMIN เท่านั้น (RBAC เดียวกับ /admin/audit-logs) ── */}
+      {isSuperAdmin && (
+        <section aria-labelledby="activity-heading">
+          <Card>
+            <CardHeader className="!flex-row items-center justify-between space-y-0 pb-3">
+              <CardTitle id="activity-heading" className="text-base font-semibold">
+                กิจกรรมล่าสุด
+              </CardTitle>
+              <Link href="/admin/audit-logs" className="text-sm text-blue-600 hover:underline">
+                ดู Audit Log
+              </Link>
+            </CardHeader>
+            <CardContent>
+              {activities.status === 'loading' && <SectionSkeleton rows={5} />}
+              {activities.status === 'error' && (
+                <SectionError message={activities.error ?? 'ไม่ทราบสาเหตุ'} onRetry={loadActivities} />
+              )}
+              {activities.status === 'ready' && activityRows.length === 0 && (
+                <EmptyRow text="ยังไม่มีกิจกรรมที่บันทึกไว้" />
+              )}
+              {activities.status === 'ready' && activityRows.length > 0 && (
+                <ul className="divide-y divide-slate-100">
+                  {activityRows.map((log) => {
+                    const actionCfg = getAuditActionConfig(log.action);
+                    return (
+                      <li key={log.id} className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Pill label={actionCfg.label} className={actionCfg.className} />
+                          <span className="truncate text-sm text-slate-700">
+                            {getAuditEntityLabel(log.entityType)}
+                            {log.primary ? ` · ${log.primary}` : ''}
+                            {log.secondary ? ` (${log.secondary})` : ''}
+                          </span>
+                        </div>
+                        <span className="shrink-0 text-xs text-slate-500">{log.relative}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </section>
+      )}
 
       {/* ── 5. Template governance alerts ── */}
       <section aria-labelledby="governance-heading">
