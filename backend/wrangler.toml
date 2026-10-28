@@ -48,12 +48,12 @@ bucket_name = "sao-storage"
 #       ปรับเป็น 0.1 (10%) ถ้า volume สูงเกินจนอยากลด log retention cost
 #
 # ⚠️ ข้อควรระวัง: Workers Logs จะเก็บ request metadata + console output
-#    ห้าม log ข้อมูลอ่อนไหว (national_id, password, token) — ดู
-#    backend/src/lib/logger.ts และระเบียบ redaction ใน backend/src/middlewares/
+#    ห้าม log ข้อมูลอ่อนไหว (national_id, password, token) — ดูระเบียบ redaction
+#    ใน backend/src/middlewares/ (audit.middleware.ts, auth.middleware.ts)
 #
-# ⚠️ ต้อง enable ที่ Cloudflare Dashboard ด้วย:
-#    Workers & Pages → sao-recruitment-backend → Settings → Observability → Enable
-#    (Logs จะไม่ส่งจนกว่าจะเปิดทั้งใน config และ dashboard)
+# ✅ สถานะ: เปิดแล้วทั้งใน config นี้และฝั่ง dashboard
+#    (ยืนยันจาก Cloudflare API scripts/settings — logs.persist = true)
+#    ไม่ต้องไปกด Enable ที่ dashboard อีก
 # =============================================================================
 [observability]
 enabled = true

@@ -7,6 +7,7 @@ import { Bindings } from './types';
 import { publicRoutes } from './routes/public.routes';
 import { adminRoutes } from './routes/admin.routes';
 import { uploadRoutes } from './routes/upload.routes';
+import { healthRoutes } from './routes/health.routes';
 import { cleanupExpiredTempAttachments } from './lib/attachment-cleanup';
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -63,6 +64,12 @@ app.use(
 app.route('/api/v1/public/uploads', uploadRoutes);
 app.route('/api/v1/public', publicRoutes);
 app.route('/api/v1/admin', adminRoutes);
+
+// ── Health ──
+// /health       liveness  — ไม่แตะ DB ตอบเร็ว ใช้กับ uptime monitor ชั้นนอก
+// /health/ready readiness — ตรวจ D1 จริง (SELECT 1) + secret ที่จำเป็น
+// ดูเหตุผลที่แยกสองตัวใน src/routes/health.routes.ts
+app.route('/health', healthRoutes);
 
 app.get('/health', (c) =>
   c.json({

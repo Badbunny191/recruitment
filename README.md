@@ -330,11 +330,46 @@ head_sampling_rate = 1
 > logs ของ request ที่เกิดปัญหา — `audit_logs` ครอบคลุมแค่ action ที่ระบบบันทึก
 > ไม่ครอบคลุม error/latency ของ request ทั่วไป
 >
-> ⚠️ ต้องเปิดที่ Cloudflare Dashboard ด้วย:
-> Workers & Pages → `sao-recruitment-backend` → Settings → Observability → Enable
-> (config ในไฟล์เป็นแค่ฝั่ง client-side — Workers จะไม่ส่ง log จนกว่าจะเปิดใน dashboard)
+> ✅ **สถานะปัจจุบัน: เปิดแล้วทั้ง config และฝั่ง dashboard** (ยืนยันจาก Cloudflare API
+> `scripts/settings` — `logs.persist = true`, `invocation_logs = true`, sampling 100%)
+> ไม่ต้องไปกด Enable ใน dashboard อีก
 >
 > ⚠️ ห้าม log ข้อมูลอ่อนไหว (national_id, password, token) — ดูระเบียบ redaction ใน `backend/src/middlewares/`
+
+### 6.2.1 Health Endpoints
+
+แยกสอง endpoint โดยเจตนา — อย่ารวมเป็นตัวเดียว
+
+| Endpoint | ชนิด | ตรวจอะไร | แตะ DB |
+|---|---|---|---|
+| `GET /health` | liveness | Worker ตอบได้ไหม | ❌ ไม่แตะ |
+| `GET /health/ready` | readiness | D1 (`SELECT 1`) + `JWT_SECRET` | ✅ แตะ (อ่าน 0 rows) |
+
+**ทำไมต้องแยก:** ถ้า uptime monitor ยิง endpoint ที่พึ่ง D1 ทุกนาที แล้ว D1 มี blip
+2 วินาที จะได้ alert ปลอมทันที จนทีมชินกับ alert และพลาดของจริง
+liveness ที่นิ่งช่วยแยก "Worker ตาย" (ดู deploy/rollback) ออกจาก "D1 มีปัญหา" (ดู Cloudflare status)
+
+**Response ของ `/health/ready`**
+
+```jsonc
+// 200 — พร้อมรับ traffic
+{ "status": "ok", "checks": { "db": "ok", "jwt_secret": "ok" }, "latency_ms": 1, "timestamp": 1793195560 }
+
+// 503 — dependency ไม่พร้อม
+{ "status": "degraded", "checks": { "db": "timeout", "jwt_secret": "ok" }, "latency_ms": 3001, "timestamp": 1793195560 }
+```
+
+ค่าที่เป็นไปได้ใน `checks.*` — `ok` · `error` · `timeout` · `missing`
+
+**ข้อควรระวัง**
+
+- endpoint นี้ **public ไม่ต้อง auth** (monitor ต้องเรียกได้) → response คืนแค่สถานะระดับหมวด
+  ห้ามเพิ่ม error message / stack / SQL ลง response เด็ดขาด รายละเอียดจริงอยู่ใน Workers Logs
+- probe มี timeout 3 วินาที (`DB_PROBE_TIMEOUT_MS`) — D1 ปกติใช้ ~0.1 ms จึงเหลือ margin มหาศาล
+  และยังต่ำกว่า timeout ของ uptime monitor (10-15 วิ) พอที่จะได้ 503 กลับก่อน
+- **ห้ามเปลี่ยน `SELECT 1` เป็น `COUNT(*)`** — จะกลายเป็น full table scan และกิน D1 quota
+  ตามจำนวนแถวจริงทุกครั้งที่ monitor ยิง
+- ใช้ `503` ไม่ใช่ `500` — 503 บอก "ยังไม่พร้อม" ตรงกว่า และ monitor ตีความเป็น down ถูกต้องอยู่แล้ว
 
 ### 6.3 D1 Database
 
@@ -695,7 +730,9 @@ yarn-debug.log*
 
 - [ ] **ทดสอบหลัง Deploy**
   - เปิด <https://sao-recruitment-frontend.pages.dev>
-  - ตรวจ API ที่ <https://sao-recruitment-backend.hrmsao.workers.dev/health>
+  - ตรวจ API liveness ที่ <https://sao-recruitment-backend.hrmsao.workers.dev/health>
+  - ตรวจ API readiness (D1) ที่ <https://sao-recruitment-backend.hrmsao.workers.dev/health/ready>
+    → ต้องได้ 200 และ `checks.db = "ok"` ถ้าได้ 503 แปลว่า D1 หรือ secret มีปัญหา
   - ทดสอบ login admin
   - ทดสอบ submit application
 
@@ -896,9 +933,14 @@ npm run deploy
 ### Step 9: ทดสอบ Production
 
 ```bash
-# Test backend
+# Test backend — liveness (ไม่แตะ DB)
 curl https://sao-recruitment-backend.hrmsao.workers.dev/health
 # ตอบ: {"status":"ok","timestamp":...}
+
+# Test backend — readiness (ตรวจ D1 จริง)
+curl -i https://sao-recruitment-backend.hrmsao.workers.dev/health/ready
+# ตอบ 200: {"status":"ok","checks":{"db":"ok","jwt_secret":"ok"},"latency_ms":1,"timestamp":...}
+# ตอบ 503: {"status":"degraded","checks":{"db":"error",...},...}  ← D1 มีปัญหา
 
 # Test frontend
 curl -I https://sao-recruitment-frontend.pages.dev
