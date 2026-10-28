@@ -3260,7 +3260,10 @@ adminRoutes.get('/rounds/:id/clone-options', async (c) => {
   });
 });
 
-adminRoutes.get('/audit-logs', async (c) => {
+// RBAC v1: audit logs มีข้อมูลอ่อนไหว (email/IP ของผู้ใช้ระบบใน payload)
+// เข้าถึงได้เฉพาะ SUPER_ADMIN — ตรงกับ frontend หน้า /admin/audit-logs
+// (frontend guard ไม่ใช่ security control จึงต้อง enforce ที่นี่ด้วย)
+adminRoutes.get('/audit-logs', superAdminOnlyMiddleware, async (c) => {
   const db = drizzle(c.env.DB);
 
   // ---------- Pagination params ----------
