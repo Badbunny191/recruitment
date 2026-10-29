@@ -2257,6 +2257,14 @@ adminRoutes.get(
 );
 
 // GET /admin/applications/summary - Get application counts by status
+//
+// PERFORMANCE (Phase 1.2): เดิมยิง 2 query เรียงกันบนตารางเดียวกัน
+//   1) SELECT count(*) ... WHERE <where>
+//   2) SELECT status, count(*) ... WHERE <where> GROUP BY status
+// query (1) ซ้ำซ้อน — GROUP BY จัดทุกแถวเข้า group ครบแล้ว (แถว status NULL
+// ก็เป็น group ของตัวเอง) ดังนั้น count(*) ≡ ผลบวกของทุก group เสมอ
+// ตัด (1) ทิ้ง → 1 round trip แทน 2, ผลลัพธ์เท่าเดิมทุกกรณี
+// (มี parity test ยืนยันทั้งกรณีมี/ไม่มี roundId และกรณีมี status แปลก/NULL)
 adminRoutes.get('/applications/summary', async (c) => {
   const db = drizzle(c.env.DB);
   const roundId = c.req.query('roundId');
@@ -2264,11 +2272,6 @@ adminRoutes.get('/applications/summary', async (c) => {
   const whereClause = roundId
     ? and(isNull(applications.deletedAt), eq(applications.roundId, roundId))
     : isNull(applications.deletedAt);
-
-  const [totalResult] = await db
-    .select({ count: count() })
-    .from(applications)
-    .where(whereClause);
 
   const statusGroups = await db
     .select({
@@ -2287,15 +2290,20 @@ adminRoutes.get('/applications/summary', async (c) => {
     ARCHIVED: 0
   };
 
+  // total = ผลบวกทุก group (รวม status ที่ไม่รู้จัก/NULL ที่ไม่ลง byStatus)
+  // — เท่ากับ count(*) ของ query เดิมเป๊ะ ๆ
+  let total = 0;
   statusGroups.forEach(group => {
+    const n = Number(group.count ?? 0);
+    total += n;
     if (group.status && byStatus.hasOwnProperty(group.status)) {
-      byStatus[group.status] = Number(group.count);
+      byStatus[group.status] = n;
     }
   });
 
   return c.json({
     data: {
-      total: Number(totalResult?.count ?? 0),
+      total,
       byStatus
     }
   });

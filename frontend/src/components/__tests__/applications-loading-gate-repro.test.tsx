@@ -320,6 +320,74 @@ async function main() {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
+  // Phase 1.2: summary ต้องไม่เป็นประตูของตาราง
+  // เดิม: fetchData ยิง list + summary ใน Promise.all เดียว และ setLoading(false)
+  // อยู่ใน finally หลังทั้งคู่ → summary (ช้ากว่า ~3 เท่า) เป็นตัวกำหนดว่า
+  // ตารางจะขึ้นเมื่อไหร่ ทั้งที่มันเป็นแค่ตัวเลข KPI
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log('\n── Phase 1.2: summary แยกจาก loading gate ──');
+
+  await test('summary ค้างตลอดไป → ตารางต้องแสดงแถวได้ (ไม่ถูก gate)', async () => {
+    setSession();
+    installFetch((url) => {
+      if (url.includes('/admin/rounds')) return { status: 200, body: { data: [ROUND] } };
+      if (url.includes('/admin/applications/summary')) return 'PENDING'; // ค้างไม่รู้จบ
+      if (url.includes('/admin/applications')) {
+        return {
+          status: 200,
+          body: { data: [APP_ROW], pagination: { page: 1, pageSize: 10, total: 1, totalPages: 1 } },
+        };
+      }
+      return { status: 404, body: {} };
+    });
+    const ui = await renderApplications();
+    const text = ui.text();
+    assert(text.includes('APP-2026-0001'), 'ตารางต้องแสดงแถวได้แม้ summary ยังไม่กลับ');
+    assert(!text.includes(SPINNER_TEXT), 'ต้องไม่ค้าง spinner เพราะรอ summary');
+    await ui.unmount();
+  });
+
+  await test('summary ตอบ 500 → ตารางยังแสดงได้ + KPI ไม่ทำให้หน้าล้ม', async () => {
+    setSession();
+    installFetch((url) => {
+      if (url.includes('/admin/rounds')) return { status: 200, body: { data: [ROUND] } };
+      if (url.includes('/admin/applications/summary')) return { status: 500, body: { error: 'boom' } };
+      if (url.includes('/admin/applications')) {
+        return {
+          status: 200,
+          body: { data: [APP_ROW], pagination: { page: 1, pageSize: 10, total: 1, totalPages: 1 } },
+        };
+      }
+      return { status: 404, body: {} };
+    });
+    const ui = await renderApplications();
+    const text = ui.text();
+    assert(text.includes('APP-2026-0001'), 'summary ล้มต้องไม่ลากตารางล้มไปด้วย');
+    assert(!text.includes(SPINNER_TEXT), 'ต้องไม่ค้าง spinner');
+    await ui.unmount();
+  });
+
+  await test('summary ยิงครั้งเดียวต่อรอบ — เปลี่ยนหน้า/เรียง/ค้นหาไม่ทำให้ยิงซ้ำ', async () => {
+    setSession();
+    const calls = installFetch(healthyHandler());
+    const ui = await renderApplications();
+
+    const summaryCallsAfterMount = calls.filter((c) => c.url.includes('/admin/applications/summary')).length;
+    assertEqual(summaryCallsAfterMount, 1, 'mount → summary 1 ครั้ง');
+
+    // เปลี่ยนหน้า: กดปุ่ม pagination ถ้ามี (ข้อมูลมี 1 หน้า → อาจไม่มีปุ่ม)
+    // จึงยืนยันด้วยการนับรวม: summary ต้องไม่โตตามจำนวน list call
+    const listCalls = calls.filter((c) => c.url.includes('/admin/applications?')).length;
+    assertEqual(listCalls, 1, 'list 1 ครั้ง');
+    assertEqual(
+      calls.filter((c) => c.url.includes('/admin/applications/summary')).length,
+      1,
+      'summary ต้องไม่ถูกยิงซ้ำเมื่อไม่มีอะไรเปลี่ยน',
+    );
+    await ui.unmount();
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
   console.log('\n' + '='.repeat(50));
   console.log(`Results: ${passed} passed, ${failed} failed`);
   if (failed > 0) {

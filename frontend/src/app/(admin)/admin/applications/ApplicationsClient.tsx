@@ -774,25 +774,21 @@ export default function ApplicationsClient() {
         pageSize,
       });
 
-      const [appsRes, summaryRes] = await Promise.all([
-        fetch(`${API_URL}/admin/applications?${params}`, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        }),
-        fetch(`${API_URL}/admin/applications/summary?roundId=${selectedRoundId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        })
-      ]);
+      // Phase 1.2: list เท่านั้น — summary แยก effect ของตัวเอง (ดู fetchSummary)
+      // เดิม: Promise.all([list, summary]) → loading ผูกกับทั้งคู่ ทำให้ตาราง
+      // รอ KPI ที่ช้ากว่า ~3 เท่า และ summary ถูกยิงซ้ำทุกครั้งที่ filter/page เปลี่ยน
+      // ทั้งที่มันขึ้นกับ roundId ตัวเดียว
+      const appsRes = await fetch(`${API_URL}/admin/applications?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
 
       const appsData = await appsRes.json();
-      const summaryData = await summaryRes.json();
 
       if (!guard.isCurrent(requestKey)) return; // มี request ใหม่กว่าแล้ว — ทิ้งผลนี้
 
       setApps(appsData.data || []);
       setPagination(readPagination(appsData, currentPage, pageSize));
-      setSummary(summaryData.data || { total: 0, byStatus: {} });
     } catch (error) {
       // abort = ผู้ใช้เปลี่ยนตัวกรอง/หน้าเร็ว ๆ — ไม่ใช่ error ที่ต้องรายงาน
       if (controller.signal.aborted) return;
@@ -806,8 +802,48 @@ export default function ApplicationsClient() {
     }
   }, [selectedRoundId, search, statusFilter, sortId, currentPage, pageSize, API_URL]);
 
+  // ── summary: แยกจาก list โดยสิ้นเชิง (Phase 1.2) ──────────────────────────
+  // summary ขึ้นกับ roundId ตัวเดียว (ไม่สนใจ search/status/sort/page) และไม่ใช่
+  // ข้อมูลของตาราง — จึงไม่ควร (1) บล็อก loading ของตาราง (2) ถูกยิงซ้ำทุกครั้ง
+  // ที่ผู้ใช้พิมพ์ค้นหา/เปลี่ยนหน้า/เปลี่ยนการเรียง
+  // ⚠️ ไม่แตะ API contract: ยิง URL เดิม response เดิม เก็บลง state เดิม
+  const summaryAbortRef = useRef<AbortController | null>(null);
+  const fetchSummary = useCallback(async () => {
+    if (!selectedRoundId) {
+      setSummary({ total: 0, byStatus: {} });
+      return;
+    }
+
+    summaryAbortRef.current?.abort();
+    const controller = new AbortController();
+    summaryAbortRef.current = controller;
+
+    try {
+      const res = await fetch(`${API_URL}/admin/applications/summary?roundId=${selectedRoundId}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (controller.signal.aborted) return;
+      setSummary(data.data || { total: 0, byStatus: {} });
+    } catch (error) {
+      // abort = เปลี่ยนรอบใหม่ระหว่างรอ — ไม่ใช่ error
+      if (controller.signal.aborted) return;
+      // fail-soft: KPI คงค่าเดิม ไม่ล้มทั้งหน้า (ตารางไม่เกี่ยวกับ summary)
+      console.error('Error fetching summary:', error);
+    }
+  }, [selectedRoundId, API_URL]);
+
+  // ยิง summary ใหม่เมื่อ "รอบ" เปลี่ยนเท่านั้น
+  useEffect(() => {
+    fetchSummary();
+  }, [fetchSummary]);
+
   // ยกเลิก request ที่ค้างอยู่ตอน unmount — กัน setState บน component ที่ถูกล้าง
-  useEffect(() => () => listAbortRef.current?.abort(), []);
+  useEffect(() => () => {
+    listAbortRef.current?.abort();
+    summaryAbortRef.current?.abort();
+  }, []);
 
   // Reset กลับหน้า 1 เมื่อตัวกรอง/รอบ/การเรียงเปลี่ยน
   // Phase 1.1: กฎทั้งหมดมาจาก applications-list-state (isPageResettingChange /
@@ -891,6 +927,9 @@ export default function ApplicationsClient() {
       if (res.ok && data.success) {
         setShowStatusModal(false);
         fetchData();
+        // สถานะเปลี่ยน = ตัวเลข KPI เปลี่ยน → summary ต้องรีเฟรชด้วย
+        // (เดิม summary มาพร้อม fetchData ใน Promise.all จึงอัปเดตเอง)
+        fetchSummary();
       } else {
         alert(getErrorMessage(data, 'เกิดข้อผิดพลาด'));
       }
@@ -946,6 +985,8 @@ export default function ApplicationsClient() {
         // จึงต้องล้างที่จุดนี้จุดเดียว — ไม่ใช่ทุก refetch (page/sort ยังคง selection)
         setSelection(clearSelection());
         fetchData();
+        // bulk status เปลี่ยนสถานะหลายใบ = ตัวเลข KPI เปลี่ยน → รีเฟรช summary ด้วย
+        fetchSummary();
         alert(`อัปเดตสถานะสำเร็จ ${data.updated} รายการ`);
       } else {
         alert(getErrorMessage(data, 'เกิดข้อผิดพลาด'));
