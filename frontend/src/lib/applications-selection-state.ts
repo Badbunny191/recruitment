@@ -27,7 +27,9 @@
  * Phase 1.1 — รวม module: ไฟล์นี้เป็น "ที่เดียว" ของ selection ทั้งหมด
  *   (เดิมมี applications-selection.ts ของ Phase 2 ประกบคู่กันและ export ชื่อซ้ำ
  *    canSubmitSelection / SelectionState / ApplicationsSelector)
- *   - type + buildApplicationsSelector + payload builders ย้ายมาอยู่ที่นี่
+ *   - type + buildApplicationsSelector ย้ายมาอยู่ที่นี่
+ *     (payload builders ถูกลบใน Phase 1.1 dead-code resolution — ไม่มี consumer;
+ *      ApplicationsClient ประกอบ body เองตามรูป legacy ที่ API รับจริง)
  *   - excludeIds gate ถูกถอด: backend รองรับ excludeIds แล้ว
  *     (MAX_SELECTOR_EXCLUDE_IDS = 80 ใน backend/src/lib/applications-selector.ts
  *      + zod + notInArray + เทสต์ BS23/BS25) → client ไม่ต้อง fail closed อีก
@@ -377,46 +379,16 @@ export function canSubmitSelection(
   return buildSelectionSelector(selection, filter) !== null;
 }
 
-// ── Payload builders (bulk-status / export-selected) ───────────────────────
-
-/**
- * Body ของ POST /admin/applications/bulk-status
- *
- * - explicit     → { selector: { kind: 'ids', ids }, status, reason? }
- * - all-filtered → { selector: { kind: 'filter', ... }, status, reason? }
- *
- * คืน null เมื่อไม่มีอะไรจะอัปเดต (idle / ยังไม่พร้อม)
- */
-export function buildBulkStatusPayload(
-  selection: ApplicationsSelection,
-  filter: SelectionFilterContext,
-  status: string,
-  reason?: string,
-): Record<string, unknown> | null {
-  const selector = buildSelectionSelector(selection, filter);
-  if (!selector) return null;
-
-  const payload: Record<string, unknown> = { selector, status };
-  if (reason && reason.trim()) payload.reason = reason.trim();
-  return payload;
-}
-
-/**
- * Body ของ POST /admin/applications/export-selected
- * roundId ส่งเสมอ (ใช้สร้างชื่อไฟล์) — selector.filter.roundId ต้องตรงกัน
- */
-export function buildExportSelectedPayload(
-  selection: ApplicationsSelection,
-  filter: SelectionFilterContext,
-): Record<string, unknown> | null {
-  const selector = buildSelectionSelector(selection, filter);
-  if (!selector) return null;
-
-  const roundId = trimmedRoundId(filter);
-  if (!roundId) return null;
-
-  return { roundId, selector };
-}
+// ── Payload builders — ถอดออก (Phase 1.1 dead-code resolution) ──────────────
+//
+// เคยมี buildBulkStatusPayload / buildExportSelectedPayload อยู่ตรงนี้ แต่ไม่มี
+// consumer จริง: ApplicationsClient ประกอบ body เองแบบ legacy-compatible
+//   bulk-status    → kind 'ids' ส่ง { ids }        (ไม่ใช่ { selector })
+//   export-selected→ kind 'ids' ส่ง { applicationIds } (ไม่ใช่ { selector })
+// ตัว builder ส่ง { selector } เสมอ → ถ้า adopt เข้า production จะเปลี่ยนรูป
+// request ที่ยิงขึ้น server จริง ซึ่งเกินขอบเขตของเฟสนี้ (ห้ามแก้ API contract)
+// จึงลบทิ้งแทนการ adopt — เหลือ buildSelectionSelector เป็นจุดตัดสินใจเดียว
+// (selector หรือ null) และให้ component เป็นเจ้าของรูป body
 
 // ── Display ─────────────────────────────────────────────────────────────────
 

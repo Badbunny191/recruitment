@@ -184,8 +184,6 @@ export interface RequestGuard {
   begin(state: ApplicationsListState): string;
   /** response ของ key นี้ยังเป็นของล่าสุดอยู่ไหม */
   isCurrent(key: string): boolean;
-  /** key ล่าสุดที่เริ่มไป (null = ยังไม่เคยเริ่ม) */
-  current(): string | null;
 }
 
 /**
@@ -202,9 +200,6 @@ export function createRequestGuard(): RequestGuard {
     },
     isCurrent(key) {
       return latest !== null && key === latest;
-    },
-    current() {
-      return latest;
     },
   };
 }

@@ -339,12 +339,10 @@ test('guard: request เดียวกัน (ยิงซ้ำ) ยังถ�
   const guard = createRequestGuard();
   const k = guard.begin(base({ page: 1 }));
   ok(guard.isCurrent(k), 'key ที่เพิ่งเริ่มต้อง current');
-  eq(guard.current(), k);
 });
 
 test('guard: ยังไม่เริ่ม request → ไม่มี key ใด current', () => {
   const guard = createRequestGuard();
-  eq(guard.current(), null);
   ok(!guard.isCurrent('anything'), 'ก่อนเริ่ม ต้องไม่มี key current');
 });
 
