@@ -21,20 +21,61 @@
  *      ผ่าน normalizeSelection() — ไม่ปล่อยให้ invariant พังเงียบ ๆ
  *   3. จำนวนที่เลือกของ all-filtered ต้องมาจาก "ยอดรวมจริงจาก server"
  *      (pagination.total) ไม่ใช่จำนวนแถวที่โหลดมา — client ไม่มีทางรู้เอง
- *   4. selector ที่ยังส่งขึ้น server ไม่ได้ (all-filtered + excludeIds) → null
- *      พร้อมเหตุผล (fail closed) ไม่ใช่ส่งชุดที่ผิด
+ *   4. selector ที่ยังส่งขึ้น server ไม่ได้ (idle / all-filtered ที่ไม่มี roundId)
+ *      → null พร้อมเหตุผล (fail closed) ไม่ใช่ส่งชุดที่ผิด
+ *
+ * Phase 1.1 — รวม module: ไฟล์นี้เป็น "ที่เดียว" ของ selection ทั้งหมด
+ *   (เดิมมี applications-selection.ts ของ Phase 2 ประกบคู่กันและ export ชื่อซ้ำ
+ *    canSubmitSelection / SelectionState / ApplicationsSelector)
+ *   - type + buildApplicationsSelector + payload builders ย้ายมาอยู่ที่นี่
+ *   - excludeIds gate ถูกถอด: backend รองรับ excludeIds แล้ว
+ *     (MAX_SELECTOR_EXCLUDE_IDS = 80 ใน backend/src/lib/applications-selector.ts
+ *      + zod + notInArray + เทสต์ BS23/BS25) → client ไม่ต้อง fail closed อีก
  *
  * อ้างอิง: docs/PHASE_3_APPLICATIONS_PAGINATION.md, docs/PHASE_2_APPLICATIONS_SELECTOR.md
  */
 
-import {
-  buildApplicationsSelector,
-  type ApplicationsSelector,
-  type SelectionFilterContext,
-  type SelectionState,
-} from './applications-selection';
+import type { StatusFilterValue } from './applications-status-filter';
+import { statusFilterToExportStatusParam } from './applications-status-filter';
 
-export type { ApplicationsSelector, SelectionFilterContext, SelectionState };
+// ── Selector types (payload ที่ส่งขึ้น server) ──────────────────────────────
+
+export type SelectionState = 'idle' | 'explicit' | 'all-filtered';
+
+export interface ApplicationsSelectorIds {
+  kind: 'ids';
+  ids: string[];
+}
+
+export interface ApplicationsSelectorFilter {
+  kind: 'filter';
+  roundId: string;
+  status?: string | null;
+  search?: string | null;
+  /**
+   * id ที่ผู้ใช้ "เอาออก" จากทั้งชุด (ติ๊กทั้งหมดแล้วยกเลิกบางใบ)
+   * backend รองรับแล้ว (NOT IN) — ต้องไม่เกิน MAX_SELECTION_EXCLUDE_IDS
+   */
+  excludeIds?: string[];
+}
+
+export type ApplicationsSelector = ApplicationsSelectorIds | ApplicationsSelectorFilter;
+
+/** ตัวกรองปัจจุบันของหน้ารายชื่อ (เฉพาะส่วนที่ selector ต้องใช้) */
+export interface SelectionFilterContext {
+  roundId: string;
+  statusFilter: StatusFilterValue;
+  search: string;
+}
+
+/**
+ * จำนวน excludeIds สูงสุดที่ client ยอมส่ง
+ *
+ * ต้องตรงกับ MAX_SELECTOR_EXCLUDE_IDS ฝั่ง backend (80) — เกินกว่านั้น backend
+ * จะ reject 400 (bind limit ของ D1) จึงตัดที่ client ก่อนเพื่อไม่ให้ผู้ใช้
+ * ติ๊กไปเรื่อย ๆ แล้วเจอ error ตอนกดปุ่ม
+ */
+export const MAX_SELECTION_EXCLUDE_IDS = 80;
 
 // ── Model ───────────────────────────────────────────────────────────────────
 
@@ -248,12 +289,57 @@ export function toggleHeader(
 
 // ── Selector (ส่งขึ้น server) ───────────────────────────────────────────────
 
+/** roundId ที่ trim แล้วไม่ว่าง → ค่านั้น, ไม่อย่างนั้น → null */
+function trimmedRoundId(filter: SelectionFilterContext): string | null {
+  const roundId = (filter.roundId ?? '').trim();
+  return roundId ? roundId : null;
+}
+
+/**
+ * สร้าง selector จาก state + ตัวกรองปัจจุบัน
+ *
+ * idle → null (ไม่มีอะไรจะทำ — caller ต้อง disable ปุ่ม)
+ * explicit → { kind: 'ids', ids }
+ * all-filtered → { kind: 'filter', roundId, status, search, excludeIds? }
+ *                ต้องมี roundId เสมอ ถ้าไม่มี → null (ยิง request ไม่ได้)
+ *
+ * selector อธิบาย "ชุดเดียวกับที่ผู้ใช้เห็น": filter ที่ส่งไปคือ filter เดียวกับ
+ * ที่ใช้ยิง GET /admin/applications (roundId/status/search) — ไม่มี page/pageSize
+ * และไม่มี sort (selector นิยามชุด ไม่ใช่ลำดับ)
+ */
+export function buildApplicationsSelector(
+  selection: ApplicationsSelection,
+  filter: SelectionFilterContext,
+): ApplicationsSelector | null {
+  const sel = normalizeSelection(selection);
+  if (sel.state === 'idle') return null;
+
+  if (sel.state === 'all-filtered') {
+    const roundId = trimmedRoundId(filter);
+    if (!roundId) return null;
+    const selector: ApplicationsSelectorFilter = {
+      kind: 'filter',
+      roundId,
+      status: statusFilterToExportStatusParam(filter.statusFilter),
+      search: filter.search.trim() ? filter.search.trim() : null,
+    };
+    // ส่ง excludeIds เฉพาะเมื่อมีจริง — array ว่างไม่ต้องมี key
+    if (sel.excludeIds.length > 0) {
+      selector.excludeIds = [...sel.excludeIds];
+    }
+    return selector;
+  }
+
+  if (sel.ids.length === 0) return null;
+  return { kind: 'ids', ids: [...sel.ids] };
+}
+
 /**
  * เหตุผลที่ selection นี้ยังแปลงเป็น selector ไม่ได้ (null = แปลงได้)
  *
- * ข้อจำกัดที่รู้อยู่: backend ยังไม่มีแนวคิด excludeIds ใน selector
- * (Phase 2 รองรับแค่ kind 'ids' และ kind 'filter') → all-filtered ที่มี
- * excludeIds ต้องรอ Phase ถัดไป ห้ามเดาส่งชุดที่ผิด
+ * Phase 1.1: ถอด gate "backend ยังไม่รองรับ excludeIds" ออกแล้ว
+ * backend รองรับ excludeIds (NOT IN, cap 80) → all-filtered + excludeIds
+ * ส่งขึ้น server ได้ตามปกติ
  */
 export function describeSelectionBlocker(
   selection: ApplicationsSelection,
@@ -262,9 +348,9 @@ export function describeSelectionBlocker(
   const sel = normalizeSelection(selection);
   if (sel.state === 'idle') return 'ยังไม่ได้เลือกรายการ';
   if (sel.state === 'all-filtered') {
-    if (!(filter.roundId ?? '').trim()) return 'ยังไม่ได้เลือกรอบรับสมัคร';
-    if (sel.excludeIds.length > 0) {
-      return 'ลบรายการออกจาก "เลือกทั้งหมด" แล้ว — backend ยังไม่รองรับ excludeIds';
+    if (!trimmedRoundId(filter)) return 'ยังไม่ได้เลือกรอบรับสมัคร';
+    if (sel.excludeIds.length > MAX_SELECTION_EXCLUDE_IDS) {
+      return `ลบรายการออกจาก "เลือกทั้งหมด" ได้สูงสุด ${MAX_SELECTION_EXCLUDE_IDS} รายการต่อครั้ง`;
     }
   }
   return null;
@@ -273,18 +359,14 @@ export function describeSelectionBlocker(
 /**
  * แปลง selection → ApplicationsSelector ที่ส่งขึ้น server ได้
  * คืน null เมื่อยังไม่พร้อม (idle / all-filtered ที่ไม่มี roundId /
- * all-filtered ที่มี excludeIds) — caller ต้อง disable ปุ่ม
- *
- * ใช้ buildApplicationsSelector ของ Phase 2 เป็นตัวสร้างจริง เพื่อไม่ให้
- * รูป payload สองที่เพี้ยนจากกัน
+ * all-filtered ที่ excludeIds เกิน cap) — caller ต้อง disable ปุ่ม
  */
 export function buildSelectionSelector(
   selection: ApplicationsSelection,
   filter: SelectionFilterContext,
 ): ApplicationsSelector | null {
   if (describeSelectionBlocker(selection, filter) !== null) return null;
-  const sel = normalizeSelection(selection);
-  return buildApplicationsSelector(sel.state, new Set(sel.ids), filter);
+  return buildApplicationsSelector(selection, filter);
 }
 
 /** ปุ่มที่เกี่ยวกับ selection ควรกดได้ไหม */
@@ -293,6 +375,47 @@ export function canSubmitSelection(
   filter: SelectionFilterContext,
 ): boolean {
   return buildSelectionSelector(selection, filter) !== null;
+}
+
+// ── Payload builders (bulk-status / export-selected) ───────────────────────
+
+/**
+ * Body ของ POST /admin/applications/bulk-status
+ *
+ * - explicit     → { selector: { kind: 'ids', ids }, status, reason? }
+ * - all-filtered → { selector: { kind: 'filter', ... }, status, reason? }
+ *
+ * คืน null เมื่อไม่มีอะไรจะอัปเดต (idle / ยังไม่พร้อม)
+ */
+export function buildBulkStatusPayload(
+  selection: ApplicationsSelection,
+  filter: SelectionFilterContext,
+  status: string,
+  reason?: string,
+): Record<string, unknown> | null {
+  const selector = buildSelectionSelector(selection, filter);
+  if (!selector) return null;
+
+  const payload: Record<string, unknown> = { selector, status };
+  if (reason && reason.trim()) payload.reason = reason.trim();
+  return payload;
+}
+
+/**
+ * Body ของ POST /admin/applications/export-selected
+ * roundId ส่งเสมอ (ใช้สร้างชื่อไฟล์) — selector.filter.roundId ต้องตรงกัน
+ */
+export function buildExportSelectedPayload(
+  selection: ApplicationsSelection,
+  filter: SelectionFilterContext,
+): Record<string, unknown> | null {
+  const selector = buildSelectionSelector(selection, filter);
+  if (!selector) return null;
+
+  const roundId = trimmedRoundId(filter);
+  if (!roundId) return null;
+
+  return { roundId, selector };
 }
 
 // ── Display ─────────────────────────────────────────────────────────────────

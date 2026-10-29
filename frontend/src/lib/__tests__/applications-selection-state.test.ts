@@ -17,6 +17,9 @@
 
 // @ts-nocheck — tsx run-time
 import {
+  buildApplicationsSelector,
+  buildBulkStatusPayload,
+  buildExportSelectedPayload,
   buildSelectionSelector,
   canSubmitSelection,
   clearSelection,
@@ -26,6 +29,7 @@ import {
   isHeaderChecked,
   isHeaderIndeterminate,
   isRowSelected,
+  MAX_SELECTION_EXCLUDE_IDS,
   normalizeSelection,
   resolveSelectedCount,
   selectAllFiltered,
@@ -362,18 +366,47 @@ test('P4-8d: all-filtered ที่ไม่มี roundId → null (ยิง�
   );
 });
 
-test('P4-8e: all-filtered ที่มี excludeIds → null พร้อมเหตุผล (backend ยังไม่รองรับ)', () => {
+test('P4-8e: all-filtered ที่มี excludeIds → ส่ง selector พร้อม excludeIds (backend รองรับแล้ว)', () => {
   const sel = toggleRow(selectAllFiltered(TOTAL), 'app-2', TOTAL);
+  // Phase 1.1: ถอด gate เดิมออก — backend รองรับ excludeIds (NOT IN, cap 80)
+  assertEqual(buildSelectionSelector(sel, FILTER), {
+    kind: 'filter',
+    roundId: 'round-1',
+    status: null,
+    search: null,
+    excludeIds: ['app-2'],
+  });
+  assertEqual(canSubmitSelection(sel, FILTER), true, 'ต้องกดได้');
+  assertEqual(describeSelectionBlocker(sel, FILTER), null, 'ไม่มี blocker');
+});
+
+test('P4-8e2: excludeIds เกิน cap → fail closed พร้อมเหตุผล', () => {
+  // 81 ใบ (TOTAL ต้องมากพอให้ไม่กลายเป็น idle ก่อน)
+  let sel = selectAllFiltered(200);
+  for (let i = 0; i < MAX_SELECTION_EXCLUDE_IDS + 1; i++) {
+    sel = toggleRow(sel, `x-${i}`, 200);
+  }
   assertEqual(buildSelectionSelector(sel, FILTER), null, 'fail closed');
   assertEqual(canSubmitSelection(sel, FILTER), false);
   const reason = describeSelectionBlocker(sel, FILTER);
-  assertTrue(reason && reason.includes('excludeIds'), `ต้องบอกเหตุผล: ${reason}`);
+  assertTrue(reason && reason.includes(String(MAX_SELECTION_EXCLUDE_IDS)), `ต้องบอกเพดาน: ${reason}`);
 });
 
-test('P4-8f: selector ที่สร้างได้ต้องตรงกับ buildApplicationsSelector ของ Phase 2', () => {
-  // ยืนยันว่า Phase 4 ไม่ได้สร้างรูป payload ใหม่ที่เพี้ยนจาก Phase 2
+test('P4-8e3: excludeIds ไม่เกิน cap → ส่งได้ตามปกติ', () => {
+  let sel = selectAllFiltered(200);
+  for (let i = 0; i < MAX_SELECTION_EXCLUDE_IDS; i++) {
+    sel = toggleRow(sel, `x-${i}`, 200);
+  }
+  const built = buildSelectionSelector(sel, FILTER);
+  assertTrue(built !== null, 'ที่เพดานพอดีต้องยังส่งได้');
+  assertEqual(built.excludeIds.length, MAX_SELECTION_EXCLUDE_IDS);
+});
+
+test('P4-8f: buildSelectionSelector ใช้ buildApplicationsSelector ตัวเดียวกัน (ไม่มีรูปที่สอง)', () => {
+  // ยืนยันว่า Phase 4 ไม่ได้สร้างรูป payload ใหม่ที่เพี้ยนจากตัวกลาง
   const sel = toggleRow(createSelection(), 'a1');
   assertEqual(buildSelectionSelector(sel, FILTER), { kind: 'ids', ids: ['a1'] });
+  assertEqual(buildSelectionSelector(sel, FILTER), buildApplicationsSelector(sel, FILTER));
   assertEqual(
     buildSelectionSelector(selectAllFiltered(TOTAL), FILTER),
     { kind: 'filter', roundId: 'round-1', status: null, search: null },

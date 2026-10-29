@@ -38,19 +38,23 @@ import {
   type StatusFilterValue,
 } from '@/lib/applications-status-filter';
 import {
+  buildApplicationsListParams,
   APPLICATIONS_PAGE_SIZE_OPTIONS,
   APPLICATIONS_SORT_OPTIONS,
-  buildApplicationsListParams,
-  clampPage,
   normalizeSortId,
-  parsePage,
-  parsePageSize,
   readPagination,
   type ApplicationsPagination,
   type ApplicationsSortId,
 } from '@/lib/applications-list-params';
 import {
+  applyListStatePatch,
+  buildListStateUrlPatch,
   createRequestGuard,
+  hydrateListState,
+  isInitialRoundHydration,
+  isPageResettingChange,
+  resolvePageAfterResponse,
+  shouldClearSelection,
   type ApplicationsListState,
 } from '@/lib/applications-list-state';
 import {
@@ -134,24 +138,6 @@ const getErrorMessage = (data: any, fallback = 'เกิดข้อผิด�
   if (typeof data.error === 'string') return data.error;
   if (typeof data.details === 'string') return data.details;
   return fallback;
-};
-
-/**
- * แยก sortId ที่อยู่ใน URL (format "<field>-<direction>") เป็น field/direction
- * ค่าที่ไม่รู้จัก → fallback submittedAt-desc (ตรงกับ sortOptions ใน component)
- */
-const parseSortId = (sortId: string): { field: string; direction: 'asc' | 'desc' } => {
-  const idx = sortId.lastIndexOf('-');
-  if (idx <= 0) return { field: 'submittedAt', direction: 'desc' };
-  const field = sortId.slice(0, idx);
-  const direction = sortId.slice(idx + 1);
-  if (
-    (field === 'submittedAt' || field === 'fullname') &&
-    (direction === 'asc' || direction === 'desc')
-  ) {
-    return { field, direction };
-  }
-  return { field: 'submittedAt', direction: 'desc' };
 };
 
 // ============================================
@@ -256,18 +242,19 @@ export default function ApplicationsClient() {
   // ── List state (page/search/status/sort) อยู่ใน URL ทั้งหมด ────────────────
   // เปิดรายละเอียดแล้วกด Back (router.back) → component remount
   // → อ่านค่ากลับจาก URL จึงกลับมาตำแหน่งเดิมได้ (หน้าที่จากไป, search, filter, sort, view)
-  const urlRoundId = searchParams.get('round') || '';
+  //
+  // Phase 1.1: hydrate ผ่าน hydrateListState() ตัวเดียว (applications-list-state)
+  // — parse/normalize ของทั้ง 6 มิติอยู่ที่เดียว ไม่กระจายใน component
+  // — ?archived=1 ไม่ใช่ส่วนของ list state (เป็นตัวคุมขอบเขตของ dropdown รอบ)
+  //   จึงยังอ่านตรงจาก searchParams
   const showArchived = searchParams.get('archived') === '1';
-  const urlSearch = searchParams.get('q') || '';
-  // Status filter: ?status=pending|approved|incomplete|cancelled|archived
-  // ค่า default "ทั้งหมด" ไม่เขียนลง URL + ยังอ่าน legacy ?view= (all|active|archived) เดิม
-  const urlStatusFilter = parseStatusFilter(
-    searchParams.get('status'),
-    searchParams.get('view'),
-  );
-  const urlSortId = normalizeSortId(searchParams.get('sort'));
-  const urlPage = parsePage(searchParams.get('page'));
-  const urlPageSize = parsePageSize(searchParams.get('pageSize'));
+  const urlListState = hydrateListState(new URLSearchParams(searchParams.toString()));
+  const urlRoundId = urlListState.roundId;
+  const urlSearch = urlListState.search;
+  const urlStatusFilter = urlListState.status;
+  const urlSortId = urlListState.sort;
+  const urlPage = urlListState.page;
+  const urlPageSize = urlListState.pageSize;
 
   // Helper: อัปเดต URL (ไม่ trigger re-mount)
   // ⚠️ ถือ "แผนที่ params ของตัวเอง" ใน ref ไม่อ่านจาก window.location / searchParams
@@ -298,35 +285,62 @@ export default function ApplicationsClient() {
 
   // ── List state setters — ทุกการเปลี่ยนแนบลง URL ทันที ──────────────────────
   // (Back จากหน้ารายละเอียด → remount → hydrate จาก URL → ได้ตำแหน่งเดิม)
+  //
+  // Phase 1.1: URL patch ทุกตัวมาจาก buildListStateUrlPatch() (applications-list-state)
+  // — "ค่า default ไม่เขียนลง URL" เป็นกฎเดียว ไม่ใช่ if ซ้ำในทุก setter
+  // — setter พวกนี้ไม่แตะ page เอง: กฎ page reset อยู่ใน effect ตัวเดียว (ด้านล่าง)
+  //   ซึ่งใช้ isPageResettingChange() ตัวเดียวกับที่เทสต์ไว้
+
+  /** เขียนเฉพาะ key ที่ patch มีค่า (undefined = ไม่แตะ) */
+  const updateUrlFromState = useCallback(
+    (patch: Record<string, string | null | undefined>) => {
+      const defined: Record<string, string | null> = {};
+      for (const [key, value] of Object.entries(patch)) {
+        if (value !== undefined) defined[key] = value;
+      }
+      updateUrl(defined);
+    },
+    [updateUrl],
+  );
+
+  /** เขียน list state ลง useState ทุกตัว + URL (ที่เดียว) */
+  const commitListState = useCallback(
+    (next: ApplicationsListState) => {
+      setSearch(next.search);
+      setStatusFilter(next.status);
+      setSortId(next.sort);
+      setCurrentPage(next.page);
+      setPageSize(next.pageSize);
+      // roundId เป็นของ effect รอบ (sync URL + localStorage) — ไม่เขียนทับที่นี่
+      const { round: _round, ...urlPatch } = buildListStateUrlPatch(next);
+      updateUrlFromState(urlPatch);
+    },
+    [updateUrlFromState],
+  );
+
   const handleSearchChange = useCallback((value: string) => {
-    setSearch(value);
-    updateUrl({ q: value.trim() ? value : null });
-  }, [updateUrl]);
+    commitListState(applyListStatePatch(listStateRef.current, { search: value }));
+  }, [commitListState]);
 
   const handleStatusFilterChange = useCallback((next: StatusFilterValue) => {
-    setStatusFilter(next);
+    commitListState(applyListStatePatch(listStateRef.current, { status: next }));
     // ALL = ค่า default → ลบ param ทิ้ง + เคลียร์ legacy ?view= ทิ้งด้วยกันทีเดียว
-    // (reset กลับหน้า 1 ดูแลโดย effect เดียวกับ search/sort เมื่อ filter เปลี่ยน)
-    updateUrl({ status: statusFilterToParam(next), view: null });
-  }, [updateUrl]);
+    updateUrlFromState({ view: null });
+  }, [commitListState, updateUrlFromState]);
 
   const handleSortChange = useCallback((id: string, field: string, direction?: 'asc' | 'desc' | null) => {
     // Phase 1: sort ทำที่ server — เก็บแค่ sortId แล้วให้ fetchData ส่งขึ้นไป
-    setSortId(id);
-    updateUrl({ sort: id === 'submittedAt-desc' ? null : id });
-  }, [updateUrl]);
+    commitListState(applyListStatePatch(listStateRef.current, { sort: normalizeSortId(id) }));
+  }, [commitListState]);
 
   const handlePageChange = useCallback((page: number) => {
-    setCurrentPage(page);
-    updateUrl({ page: page <= 1 ? null : String(page) });
-  }, [updateUrl]);
+    commitListState(applyListStatePatch(listStateRef.current, { page }));
+  }, [commitListState]);
 
-  // เปลี่ยน page size → reset กลับหน้า 1 เสมอ + บันทึกลง URL (ค่า default ไม่เขียนลง URL)
+  // เปลี่ยน page size → reset กลับหน้า 1 เสมอ (กฎอยู่ใน applyListStatePatch)
   const handlePageSizeChange = useCallback((size: number) => {
-    setPageSize(size);
-    setCurrentPage(1);
-    updateUrl({ pageSize: size === 10 ? null : String(size), page: null });
-  }, [updateUrl]);
+    commitListState(applyListStatePatch(listStateRef.current, { pageSize: size }));
+  }, [commitListState]);
 
   // State
   const [rounds, setRounds] = useState<Round[]>([]);
@@ -355,6 +369,20 @@ export default function ApplicationsClient() {
   // Pagination state — hydrate หน้า/page size จาก URL
   const [currentPage, setCurrentPage] = useState(urlPage);
   const [pageSize, setPageSize] = useState(urlPageSize);
+
+  // List state รวม 6 มิติ — รูปเดียวกับที่ applications-list-state ใช้ตัดสินกฎ
+  // (page reset / selection clear / request key) จึงไม่ต้องประกอบเองหลายที่
+  const listState: ApplicationsListState = {
+    roundId: selectedRoundId,
+    search,
+    status: statusFilter,
+    sort: normalizeSortId(sortId),
+    page: currentPage,
+    pageSize,
+  };
+  // mirror ค่าล่าสุดสำหรับอ่านใน setter/effect ที่ไม่ depend บนทุกมิติ
+  const listStateRef = useRef<ApplicationsListState>(listState);
+  listStateRef.current = listState;
 
   // Selection state — Phase 4 state model (idle / explicit / all-filtered + excludeIds)
   // เก็บเป็น SelectionState ไม่ใช่ Set<string> เพราะ "เลือกทั้งหมดตามตัวกรอง"
@@ -737,41 +765,36 @@ export default function ApplicationsClient() {
   useEffect(() => () => listAbortRef.current?.abort(), []);
 
   // Reset กลับหน้า 1 เมื่อตัวกรอง/รอบ/การเรียงเปลี่ยน
+  // Phase 1.1: กฎทั้งหมดมาจาก applications-list-state (isPageResettingChange /
+  // isInitialRoundHydration) — ไม่ประกาศซ้ำใน component อีก
   // ⚠️ mount แรก (prev === null) ต้อง "ไม่ reset" — หน้าปัจจุบันเพิ่ง restore จาก URL
   // ⚠️ roundId จาก '' → รอบแรกที่โหลดเสร็จ ก็เป็นการ "init" หลัง restore เช่นกัน
   //   (กด Back กลับมา selectedRoundId เริ่มจาก '' แล้วค่อย set จาก URL ทีหลัง
   //    ถ้าถือเป็นการเปลี่ยนรอบ → จะเคลียร์ page ที่ restore มาทิ้ง = กลับหน้า 1 เสมอ)
-  const prevListStateRef = useRef<{
-    roundId: string;
-    search: string;
-    sortId: string;
-    statusFilter: string;
-  } | null>(null);
+  const prevListStateRef = useRef<ApplicationsListState | null>(null);
   useEffect(() => {
     const prev = prevListStateRef.current;
-    prevListStateRef.current = { roundId: selectedRoundId, search, sortId, statusFilter };
+    prevListStateRef.current = listState;
     if (!prev) return;
-    const roundInitialized = prev.roundId === '';
-    const roundChanged = !roundInitialized && prev.roundId !== selectedRoundId;
-    const filterChanged =
-      prev.search !== search || prev.sortId !== sortId || prev.statusFilter !== statusFilter;
-    if (roundInitialized && !filterChanged) return;
-    if (!roundChanged && !filterChanged) return;
+    // init หลัง restore จาก URL ไม่ใช่การเปลี่ยนตัวกรองของผู้ใช้ → ห้าม reset page
+    if (isInitialRoundHydration(prev, listState)) return;
+    if (!isPageResettingChange(prev, listState)) return;
     setCurrentPage(1);
-    updateUrl({ page: null });
-  }, [selectedRoundId, search, sortId, statusFilter, updateUrl]);
+    updateUrlFromState(buildListStateUrlPatch({ ...listState, page: 1 }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRoundId, search, sortId, statusFilter, updateUrlFromState]);
 
   // Policy การเลือก: selection คงอยู่ข้ามหน้า/การเรียงลำดับ แต่ถูกล้างเมื่อ
   // เปลี่ยนรอบรับสมัคร (เสมอ) หรือเปลี่ยนตัวกรอง search/สถานะ — พร้อมแจ้งเหตุผล
+  // Phase 1.1: ตัดสินด้วย shouldClearSelection() ตัวเดียวกับที่เทสต์ไว้
   // (ต้องประกาศก่อน effect เรียก fetchData เพื่อให้ล้าง+แจ้งก่อน reset ใน fetch)
-  const prevFilterStateRef = useRef<{ roundId: string; search: string; statusFilter: string } | null>(null);
+  const prevFilterStateRef = useRef<ApplicationsListState | null>(null);
   useEffect(() => {
     const prev = prevFilterStateRef.current;
-    prevFilterStateRef.current = { roundId: selectedRoundId, search, statusFilter };
+    prevFilterStateRef.current = listState;
     if (!prev) return; // render แรกหลัง mount ยังไม่มีตัวกรองเดิมให้เทียบ
+    if (!shouldClearSelection(prev, listState)) return;
     const roundChanged = prev.roundId !== selectedRoundId;
-    const filterChanged = prev.search !== search || prev.statusFilter !== statusFilter;
-    if (!roundChanged && !filterChanged) return;
     const size = resolveSelectedCount(selectionRef.current, pagination.total);
     if (size === 0) return;
     setSelection(clearSelection());
@@ -870,6 +893,13 @@ export default function ApplicationsClient() {
         setShowBulkModal(false);
         setBulkStatus('');
         setBulkReason('');
+        // Phase 1.1 — behavior ที่เลือก: "ล้าง selection หลัง bulk status สำเร็จ"
+        // เหตุผล: ชุดที่เพิ่งเปลี่ยนสถานะอาจหลุดออกจากตัวกรองปัจจุบัน (เช่นกรอง
+        // SUBMITTED แล้วเปลี่ยนเป็น QUALIFIED) → ถ้าคง selection ไว้ ผู้ใช้กดซ้ำ
+        // จะยิงชุดเดิมที่มองไม่เห็นแล้ว. เดิม (ก่อน Phase 1) พฤติกรรมนี้เกิดจาก
+        // setSelectedIds(new Set()) ใน fetchData; ตอนนี้ fetchData ไม่ล้างแล้ว
+        // จึงต้องล้างที่จุดนี้จุดเดียว — ไม่ใช่ทุก refetch (page/sort ยังคง selection)
+        setSelection(clearSelection());
         fetchData();
         alert(`อัปเดตสถานะสำเร็จ ${data.updated} รายการ`);
       } else {
@@ -930,7 +960,9 @@ export default function ApplicationsClient() {
   // ⚠️ ใช้ totalPages จาก server (ไม่คำนวณจาก apps.length ซึ่งเป็นแค่หน้าปัจจุบัน)
   useEffect(() => {
     if (loading) return;
-    const target = clampPage(currentPage, totalPages);
+    // Phase 1.1: resolvePageAfterResponse = clampPage ของ applications-list-params
+    // (ชื่อสื่อความหมายของงาน: "หลังได้ totalPages จาก server") — กฎเดียว ไม่ประกาศซ้ำ
+    const target = resolvePageAfterResponse(currentPage, totalPages);
     if (target !== null) handlePageChange(target);
   }, [loading, totalPages, currentPage, handlePageChange]);
 

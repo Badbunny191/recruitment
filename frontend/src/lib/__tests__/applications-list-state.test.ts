@@ -29,6 +29,17 @@ import {
   shouldClearSelection,
   type ApplicationsListState,
 } from '../applications-list-state';
+import {
+  buildSelectionSelector,
+  clearSelection,
+  createSelection,
+  isHeaderChecked,
+  isHeaderIndeterminate,
+  isRowSelected,
+  resolveSelectedCount,
+  selectAllFiltered,
+  toggleRow,
+} from '../applications-selection-state';
 
 let passed = 0;
 let failed = 0;
@@ -344,6 +355,66 @@ test('guard: จำลอง race — filter เปลี่ยนแล้ว p
   const fresh = guard.begin(base({ page: 1, status: 'QUALIFIED' }));
   ok(!guard.isCurrent(stale), 'response ของหน้า 3 ต้องถูกทิ้ง');
   ok(guard.isCurrent(fresh), 'response ของหน้า 1 ต้องถูกใช้');
+});
+
+// ============================================================
+// LS7 — bulk status success: selection ถูกล้าง
+// ============================================================
+//
+// Phase 1.1 — behavior ที่เลือก: "bulk status สำเร็จ → ล้าง selection"
+//
+// ก่อน Phase 1 พฤติกรรมนี้เกิดโดยบังเอิญจาก setSelectedIds(new Set()) ที่อยู่ใน
+// fetchData (ทุก refetch ล้างหมด). Phase 1 ย้ายการล้างออกจาก fetchData เพื่อให้
+// page/sort/pageSize คง selection ได้ → ต้องมีที่ล้างที่ชัดเจนจุดเดียวคือ
+// หลัง bulk status สำเร็จ
+//
+// เทสต์ชุดนี้ล็อกสัญญา 3 ข้อ:
+//   LS7a. ตัวสร้าง selection หลังสำเร็จ = idle (ไม่เหลือ id / excludeIds)
+//   LS7b. จำนวนที่เลือกกลับเป็น 0 → ปุ่ม bulk/export ถูก disable
+//   LS7c. การล้างนี้ไม่ปนกับ refetch ปกติ (page/sort ยังคง selection)
+
+test('LS7a: หลัง bulk status สำเร็จ → selection = idle (ids/excludeIds ว่าง)', () => {
+  // explicit: เลือก 3 ใบ
+  let sel = createSelection();
+  for (const id of ['app-1', 'app-2', 'app-3']) sel = toggleRow(sel, id, 13);
+  eq(sel.state, 'explicit');
+  eq(sel.ids.length, 3);
+
+  // bulk status สำเร็จ → clearSelection()
+  const after = clearSelection();
+  eq(after, { state: 'idle', ids: [], excludeIds: [] });
+});
+
+test('LS7a: all-filtered + excludeIds ก็ถูกล้างทั้งก้อน', () => {
+  let sel = selectAllFiltered(13);
+  sel = toggleRow(sel, 'app-2', 13);
+  eq(sel.state, 'all-filtered');
+  eq(sel.excludeIds.length, 1);
+
+  const after = clearSelection();
+  eq(after, { state: 'idle', ids: [], excludeIds: [] });
+});
+
+test('LS7b: หลังล้าง → selectedCount = 0 และ header ไม่ checked/indeterminate', () => {
+  const after = clearSelection();
+  const pageIds = ['app-1', 'app-2'];
+  eq(resolveSelectedCount(after, 13), 0, 'count ต้องกลับเป็น 0');
+  ok(!isHeaderChecked(after, pageIds, 13), 'header ต้องไม่ checked');
+  ok(!isHeaderIndeterminate(after, pageIds, 13), 'header ต้องไม่ indeterminate');
+  ok(!isRowSelected(after, 'app-1'), 'แถวต้องไม่ถูกเลือก');
+  eq(buildSelectionSelector(after, { roundId: 'round-1', statusFilter: 'ALL', search: '' }), null,
+    'selector ต้องเป็น null → ปุ่ม bulk/export disable');
+});
+
+test('LS7c: การล้างเกิดเฉพาะหลัง bulk สำเร็จ — refetch ปกติ (page/sort) ไม่ล้าง', () => {
+  // page change / sort change / pageSize change ไม่ใช่เหตุล้าง selection
+  const prev = base({ page: 1 });
+  for (const patch of [{ page: 2 }, { sort: 'fullname-asc' as const }, { pageSize: 50 }]) {
+    const next = applyListStatePatch(prev, patch);
+    ok(!shouldClearSelection(prev, next), `refetch จาก ${JSON.stringify(patch)} ต้องไม่ล้าง`);
+  }
+  // แต่การเปลี่ยนตัวกรอง/รอบยังล้างเหมือนเดิม
+  ok(shouldClearSelection(prev, applyListStatePatch(prev, { status: 'QUALIFIED' })), 'status เปลี่ยน → ล้าง');
 });
 
 console.log('\n=================================================');
