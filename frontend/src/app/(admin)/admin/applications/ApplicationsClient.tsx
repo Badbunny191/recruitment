@@ -50,7 +50,12 @@ import {
   parsePageSize,
   readPagination,
   type ApplicationsPagination,
+  type ApplicationsSortId,
 } from '@/lib/applications-list-params';
+import {
+  createRequestGuard,
+  type ApplicationsListState,
+} from '@/lib/applications-list-state';
 
 interface Round {
   id: string;
@@ -622,14 +627,34 @@ export default function ApplicationsClient() {
   //   - total/totalPages มาจาก response (pagination) ไม่ใช่ apps.length
   //   - ⚠️ ห้ามล้าง selection ที่นี่ — เปลี่ยนหน้า/เรียง/รีเฟรช ต้องคง selection
   //     เดิม (การล้างเกิดเฉพาะตอน filter/รอบเปลี่ยน ซึ่งมี effect แยกอยู่แล้ว)
-  //   - ⚠️ stale guard: เปลี่ยน filter แล้ว page reset เป็น 1 ใน effect ถัดไป →
+  //   - ⚠️ stale guard (Phase 3): request key = { roundId, q, status, sort, page,
+  //     pageSize } เปลี่ยน filter แล้ว page reset เป็น 1 ใน effect ถัดไป →
   //     มีได้ 2 request พร้อมกัน (หน้าเก่า + หน้า 1) response ที่กลับมาทีหลัง
   //     อาจเป็นของ request เก่า → ต้องทิ้ง ไม่ให้ทับ state ของ request ล่าสุด
-  const fetchSeqRef = useRef(0);
+  //     ใช้ทั้ง request guard (ตัดสินว่าจะเขียน state ไหม) และ AbortController
+  //     (ยกเลิก network ของ request ที่ตกยุคไปแล้ว)
+  const requestGuardRef = useRef(createRequestGuard());
+  const listAbortRef = useRef<AbortController | null>(null);
   const fetchData = useCallback(async () => {
     if (!selectedRoundId) return;
 
-    const seq = ++fetchSeqRef.current;
+    const requestState: ApplicationsListState = {
+      roundId: selectedRoundId,
+      search,
+      status: statusFilter,
+      sort: sortId as ApplicationsSortId,
+      page: currentPage,
+      pageSize,
+    };
+    const guard = requestGuardRef.current;
+    const requestKey = guard.begin(requestState);
+
+    // ยกเลิก request ก่อนหน้าที่ค้างอยู่ — ไม่ให้เสีย bandwidth และไม่ให้
+    // response เก่าแวบเข้ามาเขียน state ก่อน guard จะได้ตัดสิน
+    listAbortRef.current?.abort();
+    const controller = new AbortController();
+    listAbortRef.current = controller;
+
     setLoading(true);
     const token = localStorage.getItem('adminToken');
 
@@ -645,28 +670,35 @@ export default function ApplicationsClient() {
 
       const [appsRes, summaryRes] = await Promise.all([
         fetch(`${API_URL}/admin/applications?${params}`, {
-          headers: { Authorization: `Bearer ${token}` }
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
         }),
         fetch(`${API_URL}/admin/applications/summary?roundId=${selectedRoundId}`, {
-          headers: { Authorization: `Bearer ${token}` }
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
         })
       ]);
 
       const appsData = await appsRes.json();
       const summaryData = await summaryRes.json();
 
-      if (seq !== fetchSeqRef.current) return; // มี request ใหม่กว่าแล้ว — ทิ้งผลนี้
+      if (!guard.isCurrent(requestKey)) return; // มี request ใหม่กว่าแล้ว — ทิ้งผลนี้
 
       setApps(appsData.data || []);
       setPagination(readPagination(appsData, currentPage, pageSize));
       setSummary(summaryData.data || { total: 0, byStatus: {} });
     } catch (error) {
-      if (seq !== fetchSeqRef.current) return;
+      // abort = ผู้ใช้เปลี่ยนตัวกรอง/หน้าเร็ว ๆ — ไม่ใช่ error ที่ต้องรายงาน
+      if (controller.signal.aborted) return;
+      if (!guard.isCurrent(requestKey)) return;
       console.error('Error fetching data:', error);
     } finally {
-      if (seq === fetchSeqRef.current) setLoading(false);
+      if (guard.isCurrent(requestKey)) setLoading(false);
     }
   }, [selectedRoundId, search, statusFilter, sortId, currentPage, pageSize, API_URL]);
+
+  // ยกเลิก request ที่ค้างอยู่ตอน unmount — กัน setState บน component ที่ถูกล้าง
+  useEffect(() => () => listAbortRef.current?.abort(), []);
 
   // Reset กลับหน้า 1 เมื่อตัวกรอง/รอบ/การเรียงเปลี่ยน
   // ⚠️ mount แรก (prev === null) ต้อง "ไม่ reset" — หน้าปัจจุบันเพิ่ง restore จาก URL
