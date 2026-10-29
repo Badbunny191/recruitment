@@ -154,16 +154,21 @@ const CARD_STYLE = {
 // ============================================
 
 /** KPI Card - Smart Family Style (คัดลอกจาก Recruitment Rounds) */
+// Phase 1.2: KPI มี loading state ของตัวเอง (skeleton) — ไม่ผูกกับ loading ของตาราง
+// ⚠️ skeleton ต้องกินพื้นที่เท่าค่าจริง (h-... เท่ากับ text-3xl) ไม่งั้นการ์ดจะกระโดด
+//   ตอนตัวเลขมาถึง
 function KpiCard({
   icon,
   value,
   label,
-  variant = 'default'
+  variant = 'default',
+  loading = false,
 }: {
   icon: string;
   value: number | string;
   label: string;
   variant?: 'default' | 'success' | 'muted' | 'warning' | 'danger' | 'info';
+  loading?: boolean;
 }) {
   const valueColor = {
     default: 'text-slate-900',
@@ -175,12 +180,26 @@ function KpiCard({
   }[variant];
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4">
+    <div
+      className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4"
+      data-testid="kpi-card"
+      data-kpi-loading={loading ? 'true' : 'false'}
+      aria-busy={loading || undefined}
+    >
       <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center text-2xl shrink-0">
         {icon}
       </div>
       <div className="flex flex-col">
-        <span className={cn("text-3xl font-bold tabular-nums leading-none", valueColor)}>{value}</span>
+        {loading ? (
+          // skeleton: ความสูงเท่า text-3xl (leading-none) + ความกว้างพอ ๆ กับตัวเลขจริง
+          <span
+            data-testid="kpi-skeleton"
+            className="block h-8 w-16 rounded-md bg-slate-200 animate-pulse"
+            aria-hidden
+          />
+        ) : (
+          <span className={cn("text-3xl font-bold tabular-nums leading-none", valueColor)}>{value}</span>
+        )}
         <span className="text-sm text-slate-500 mt-1.5">{label}</span>
       </div>
     </div>
@@ -347,6 +366,10 @@ export default function ApplicationsClient() {
   const [selectedRoundId, setSelectedRoundId] = useState<string>('');
   const [apps, setApps] = useState<Application[]>([]);
   const [summary, setSummary] = useState<Summary>({ total: 0, byStatus: {} });
+  // Phase 1.2: loading ของ KPI แยกจาก loading ของตารางโดยสิ้นเชิง
+  //   loading        = กำลังโหลด "แถว" ของตาราง (list)
+  //   summaryLoading = กำลังโหลด "ตัวเลข KPI" (summary) — ไม่บล็อกตาราง
+  const [summaryLoading, setSummaryLoading] = useState(true);
   const [loading, setLoading] = useState(true);
 
   // สถานะของ "การโหลดรอบรับสมัคร" — ประตูของทั้งหน้า
@@ -811,6 +834,8 @@ export default function ApplicationsClient() {
   const fetchSummary = useCallback(async () => {
     if (!selectedRoundId) {
       setSummary({ total: 0, byStatus: {} });
+      // ไม่มีรอบ = ไม่มีอะไรให้รอ → ต้องปลด summaryLoading (ไม่งั้น skeleton ค้าง)
+      setSummaryLoading(false);
       return;
     }
 
@@ -818,6 +843,7 @@ export default function ApplicationsClient() {
     const controller = new AbortController();
     summaryAbortRef.current = controller;
 
+    setSummaryLoading(true);
     try {
       const res = await fetch(`${API_URL}/admin/applications/summary?roundId=${selectedRoundId}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
@@ -831,6 +857,10 @@ export default function ApplicationsClient() {
       if (controller.signal.aborted) return;
       // fail-soft: KPI คงค่าเดิม ไม่ล้มทั้งหน้า (ตารางไม่เกี่ยวกับ summary)
       console.error('Error fetching summary:', error);
+    } finally {
+      // ปลดเฉพาะเมื่อ request นี้ยังเป็นตัวล่าสุด — request ที่ถูก abort
+      // ไม่มีสิทธิ์ปลด skeleton ของรอบใหม่ที่กำลังโหลดอยู่
+      if (!controller.signal.aborted) setSummaryLoading(false);
     }
   }, [selectedRoundId, API_URL]);
 
@@ -1089,6 +1119,13 @@ export default function ApplicationsClient() {
     setSelection(toggleRow(selection, id, totalItems));
   };
 
+  // KPI กำลังโหลดเมื่อ: summary ยังไม่กลับ "หรือ" ยังไม่รู้ว่าจะดูรอบไหน
+  // ⚠️ ระหว่างที่ rounds ยังโหลด selectedRoundId ว่าง → fetchSummary early-return
+  //   และปลด summaryLoading ทันที ถ้าใช้ summaryLoading เดี่ยว ๆ skeleton จะวูบ
+  //   หายไปหนึ่งเฟรมแล้วโผล่กลับมา (ตัวเลข KPI ยังไม่รู้ได้จนกว่ารู้รอบ)
+  //   ค่านี้เป็น derived ล้วน — ไม่เพิ่ม dependency ให้ effect ของ summary
+  const kpiLoading = summaryLoading || roundsStatus === 'loading';
+
   // จำนวนต่อ chip ตามสถานะ (จาก summary ของรอบปัจจุบัน — ไม่ขึ้นกับ search)
   const statusCounts: Record<StatusFilterValue, number> = {
     ALL: summary.total,
@@ -1276,13 +1313,15 @@ export default function ApplicationsClient() {
       {/* ============================================ */}
       {/* 2. KPI CARDS - Status Summary */}
       {/* ============================================ */}
+      {/* Phase 1.2: KPI ใช้ summaryLoading ของตัวเอง — ไม่ขึ้นกับ loading ของตาราง
+          ตารางจึงขึ้นได้ก่อนที่ตัวเลข KPI จะมาถึง */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
-        <KpiCard icon="📊" value={summary.total} label="ทั้งหมด" />
-        <KpiCard icon="📥" value={summary.byStatus.SUBMITTED || 0} label="รอการตรวจสอบ" variant="info" />
-        <KpiCard icon="✅" value={summary.byStatus.QUALIFIED || 0} label="ผ่านการตรวจสอบ" variant="success" />
-        <KpiCard icon="⚠️" value={summary.byStatus.REJECTED || 0} label="ข้อมูลไม่ครบถ้วน" variant="danger" />
-        <KpiCard icon="🚫" value={summary.byStatus.CANCELED || 0} label="ยกเลิกใบสมัคร" variant="muted" />
-        <KpiCard icon="📦" value={summary.byStatus.ARCHIVED || 0} label="เก็บเข้าคลัง" variant="muted" />
+        <KpiCard icon="📊" value={summary.total} label="ทั้งหมด" loading={kpiLoading} />
+        <KpiCard icon="📥" value={summary.byStatus.SUBMITTED || 0} label="รอการตรวจสอบ" variant="info" loading={kpiLoading} />
+        <KpiCard icon="✅" value={summary.byStatus.QUALIFIED || 0} label="ผ่านการตรวจสอบ" variant="success" loading={kpiLoading} />
+        <KpiCard icon="⚠️" value={summary.byStatus.REJECTED || 0} label="ข้อมูลไม่ครบถ้วน" variant="danger" loading={kpiLoading} />
+        <KpiCard icon="🚫" value={summary.byStatus.CANCELED || 0} label="ยกเลิกใบสมัคร" variant="muted" loading={kpiLoading} />
+        <KpiCard icon="📦" value={summary.byStatus.ARCHIVED || 0} label="เก็บเข้าคลัง" variant="muted" loading={kpiLoading} />
       </div>
 
       {/* Bulk Action Bar */}
@@ -1370,7 +1409,9 @@ export default function ApplicationsClient() {
                   label={option.label}
                   isActive={statusFilter === option.value}
                   onClick={() => handleStatusFilterChange(option.value)}
-                  count={statusCounts[option.value]}
+                  // ระหว่างโหลด summary ตัวเลขยังไม่จริง → ไม่โชว์ "0" หลอก ๆ
+                  // (undefined = FilterPill ไม่ render badge เลย)
+                  count={kpiLoading ? undefined : statusCounts[option.value]}
                 />
               ))}
             </div>
