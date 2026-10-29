@@ -18,9 +18,6 @@ import { useRole } from '@/lib/useRole';
 import {
   parseContentDispositionFilename,
   DEFAULT_EXPORT_FILENAME,
-  areAllFilteredSelected,
-  isFilteredPartiallySelected,
-  toggleAllFilteredSelection,
 } from '@/lib/excel-export';
 import {
   BULK_PDF_LIMIT,
@@ -56,6 +53,21 @@ import {
   createRequestGuard,
   type ApplicationsListState,
 } from '@/lib/applications-list-state';
+import {
+  buildSelectionSelector,
+  canSubmitSelection,
+  clearSelection,
+  createSelection,
+  describeSelectionBlocker,
+  describeSelectionCount,
+  isHeaderChecked,
+  isHeaderIndeterminate,
+  isRowSelected,
+  resolveSelectedCount,
+  toggleHeader,
+  toggleRow,
+  type ApplicationsSelection,
+} from '@/lib/applications-selection-state';
 
 interface Round {
   id: string;
@@ -344,11 +356,13 @@ export default function ApplicationsClient() {
   const [currentPage, setCurrentPage] = useState(urlPage);
   const [pageSize, setPageSize] = useState(urlPageSize);
 
-  // Selection state — เก็บเป็น Set ของ ID จึงคงอยู่ข้ามหน้า (pagination)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  // mirror ค่าล่าสุดสำหรับอ่านใน effect ที่ไม่ depend บน selectedIds
-  const selectedIdsRef = useRef<Set<string>>(selectedIds);
-  selectedIdsRef.current = selectedIds;
+  // Selection state — Phase 4 state model (idle / explicit / all-filtered + excludeIds)
+  // เก็บเป็น SelectionState ไม่ใช่ Set<string> เพราะ "เลือกทั้งหมดตามตัวกรอง"
+  // ไม่มี id ครบในมือ (server-side pagination) → เก็บเป็น "ทั้งหมด ยกเว้นบางใบ"
+  const [selection, setSelection] = useState<ApplicationsSelection>(createSelection);
+  // mirror ค่าล่าสุดสำหรับอ่านใน effect ที่ไม่ depend บน selection
+  const selectionRef = useRef<ApplicationsSelection>(selection);
+  selectionRef.current = selection;
 
   // Status update modal (single)
   const [showStatusModal, setShowStatusModal] = useState(false);
@@ -424,10 +438,16 @@ export default function ApplicationsClient() {
     }
   };
 
-  // Export Excel (โหมดรายการที่เลือก) — POST applicationIds ทั้งหมดที่เลือก
-  // selection อยู่ข้ามหน้าได้ → ส่ง ID ทุกหน้า ไม่ใช่เฉพาะหน้าปัจจุบัน
+  // Export Excel (โหมดรายการที่เลือก) — Phase 4
+  // selection อยู่ข้ามหน้าได้ → explicit ส่ง applicationIds, all-filtered ส่ง selector
+  // (backend รองรับ selector ตั้งแต่ Phase 2 — ไม่มีการแก้ API ในเฟสนี้)
   const handleExportSelected = async () => {
-    if (!selectedRoundId || selectedIds.size === 0 || exporting || exportingSelected) return;
+    const selector = buildSelectionSelector(selection, {
+      roundId: selectedRoundId,
+      statusFilter,
+      search,
+    });
+    if (!selectedRoundId || !selector || exporting || exportingSelected) return;
     setExportingSelected(true);
     try {
       const res = await fetch(`${API_URL}/admin/applications/export-selected`, {
@@ -436,10 +456,11 @@ export default function ApplicationsClient() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
         },
-        body: JSON.stringify({
-          roundId: selectedRoundId,
-          applicationIds: Array.from(selectedIds),
-        }),
+        body: JSON.stringify(
+          selector.kind === 'ids'
+            ? { roundId: selectedRoundId, applicationIds: selector.ids }
+            : { roundId: selectedRoundId, selector },
+        ),
       });
 
       if (!res.ok) {
@@ -510,9 +531,16 @@ export default function ApplicationsClient() {
   const startPdfBulkDownload = async () => {
     if (!pdfBulkDialog || pdfBulkPhase === 'running') return;
 
+    // Phase 4: mode 'selected' แยกตาม state
+    //   explicit     → ใช้ bulkTargets ที่สะสมไว้ (id ครบในมือ)
+    //   all-filtered → ต้องดึง id ตามตัวกรองก่อน แล้วตัด excludeIds ออก
     // mode 'filtered' ต้องรู้ target ครบทุกหน้า — ดึงก่อนแล้วค่อย resolve
+    const needsFilteredIds =
+      pdfBulkDialog === 'filtered' ||
+      (pdfBulkDialog === 'selected' && selection.state === 'all-filtered');
+
     let targets = bulkTargets;
-    if (pdfBulkDialog === 'filtered') {
+    if (needsFilteredIds) {
       try {
         targets = await fetchFilteredTargets();
       } catch (error) {
@@ -522,11 +550,19 @@ export default function ApplicationsClient() {
       }
     }
 
-    const resolved = resolveBulkTarget(
-      pdfBulkDialog,
-      targets,
-      pdfBulkDialog === 'selected' ? selectedIds : new Set(targets.map((t) => t.id)),
-    );
+    // ชุด id ที่จะดาวน์โหลดจริง
+    let selectedIdSet: Set<string>;
+    if (pdfBulkDialog === 'filtered') {
+      selectedIdSet = new Set(targets.map((t) => t.id));
+    } else if (selection.state === 'all-filtered') {
+      selectedIdSet = new Set(
+        targets.map((t) => t.id).filter((id) => isRowSelected(selection, id)),
+      );
+    } else {
+      selectedIdSet = new Set(selection.ids);
+    }
+
+    const resolved = resolveBulkTarget(pdfBulkDialog, targets, selectedIdSet);
     if (!resolved.ok) return; // dialog จะ disable ปุ่มไว้ก่อนแล้ว
 
     setPdfBulkPhase('running');
@@ -736,9 +772,9 @@ export default function ApplicationsClient() {
     const roundChanged = prev.roundId !== selectedRoundId;
     const filterChanged = prev.search !== search || prev.statusFilter !== statusFilter;
     if (!roundChanged && !filterChanged) return;
-    const size = selectedIdsRef.current.size;
+    const size = resolveSelectedCount(selectionRef.current, pagination.total);
     if (size === 0) return;
-    setSelectedIds(new Set());
+    setSelection(clearSelection());
     setSelectionNotice(
       `ล้างการเลือก ${size} รายการ เนื่องจาก${roundChanged ? 'เปลี่ยนรอบรับสมัคร' : 'ตัวกรอง (ค้นหา/สถานะ) เปลี่ยน'}`,
     );
@@ -798,9 +834,15 @@ export default function ApplicationsClient() {
     }
   };
 
-  // Bulk status update
+  // Bulk status update — Phase 4
+  // explicit → ส่ง ids (รูปเดิม), all-filtered → ส่ง selector (backend รองรับตั้งแต่ Phase 2)
   const handleBulkStatusUpdate = async () => {
-    if (!bulkStatus || selectedIds.size === 0) return;
+    const selector = buildSelectionSelector(selection, {
+      roundId: selectedRoundId,
+      statusFilter,
+      search,
+    });
+    if (!bulkStatus || !selector) return;
 
     if ((bulkStatus === 'REJECTED' || bulkStatus === 'CANCELED') && !bulkReason.trim()) {
       alert('กรุณาระบุเหตุผล');
@@ -816,7 +858,7 @@ export default function ApplicationsClient() {
           Authorization: `Bearer ${localStorage.getItem('adminToken')}`
         },
         body: JSON.stringify({
-          ids: Array.from(selectedIds),
+          ...(selector.kind === 'ids' ? { ids: selector.ids } : { selector }),
           status: bulkStatus,
           reason: (bulkStatus === 'REJECTED' || bulkStatus === 'CANCELED') ? bulkReason.trim() : undefined
         })
@@ -892,11 +934,10 @@ export default function ApplicationsClient() {
     if (target !== null) handlePageChange(target);
   }, [loading, totalPages, currentPage, handlePageChange]);
 
-  // Selection handlers — Header Checkbox "เลือกทั้งหมด"
-  // Phase 1 (server-side): หน้านี้เห็นแค่แถวของหน้าปัจจุบัน → "เลือกทั้งหมด"
-  // หมายถึงทุกแถวของ "หน้านี้" (พฤติกรรมที่ผู้ใช้เห็นจริง) ส่วน selection ที่ติ๊ก
-  // ไว้จากหน้าอื่นยังคงอยู่ใน selectedIds และไม่ถูกแตะ
-  // ⚠️ Phase 2 (all-filtered) จะเปลี่ยนให้ครอบทุกหน้า — ยังไม่อยู่ใน scope นี้
+  // Selection handlers — Phase 4 state model
+  // Header checkbox = "เลือกทั้งหมดตามตัวกรอง" (ทุกหน้า ไม่ใช่แค่หน้านี้)
+  // หลัง Phase 3 หน้านี้เห็นแค่แถวของหน้าปัจจุบัน → all-filtered เก็บเป็น
+  // "ทั้งหมด ยกเว้น excludeIds" ไม่ต้องมี id ครบในมือ
   const pageIds = useMemo(() => apps.map((app) => app.id), [apps]);
 
   // Bulk PDF (Browser ZIP) — target ตามลำดับที่แสดงบนจอ, แนบ applicationNo
@@ -911,21 +952,23 @@ export default function ApplicationsClient() {
     }
     return Array.from(map.values());
   }, [apps]);
-  const allFilteredSelected = areAllFilteredSelected(pageIds, selectedIds);
-  const someFilteredSelected = isFilteredPartiallySelected(pageIds, selectedIds);
+
+  // ยอดรวมตามตัวกรองจาก server — ใช้เป็นฐานของ all-filtered (client ไม่มี id ครบ)
+  const selectedCount = resolveSelectedCount(selection, totalItems);
+  const allFilteredSelected = isHeaderChecked(selection, pageIds, totalItems);
+  const someFilteredSelected = isHeaderIndeterminate(selection, pageIds, totalItems);
+  const selectionBlocker = describeSelectionBlocker(selection, {
+    roundId: selectedRoundId,
+    statusFilter,
+    search,
+  });
 
   const toggleSelectAll = () => {
-    setSelectedIds(toggleAllFilteredSelection(pageIds, selectedIds));
+    setSelection(toggleHeader(selection, pageIds, totalItems));
   };
 
   const toggleSelect = (id: string) => {
-    const newSet = new Set(selectedIds);
-    if (newSet.has(id)) {
-      newSet.delete(id);
-    } else {
-      newSet.add(id);
-    }
-    setSelectedIds(newSet);
+    setSelection(toggleRow(selection, id, totalItems));
   };
 
   // จำนวนต่อ chip ตามสถานะ (จาก summary ของรอบปัจจุบัน — ไม่ขึ้นกับ search)
@@ -1125,14 +1168,14 @@ export default function ApplicationsClient() {
       </div>
 
       {/* Bulk Action Bar */}
-      {selectedIds.size > 0 && canWrite && (
+      {selectedCount > 0 && canWrite && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <span className="text-sm text-slate-700">
-              เลือกแล้ว <span className="font-semibold">{selectedIds.size}</span> รายการตามตัวกรอง
+              {describeSelectionCount(selection, totalItems)}
             </span>
             <button
-              onClick={() => setSelectedIds(new Set())}
+              onClick={() => setSelection(clearSelection())}
               className="text-[11px] text-slate-500 hover:text-slate-700 underline"
             >
               ยกเลิก
@@ -1143,6 +1186,12 @@ export default function ApplicationsClient() {
               variant="outline"
               size="sm"
               onClick={openBulkModal}
+              disabled={!canSubmitSelection(selection, {
+                roundId: selectedRoundId,
+                statusFilter,
+                search,
+              })}
+              title={selectionBlocker ?? undefined}
             >
               เปลี่ยนสถานะ
             </Button>
@@ -1224,11 +1273,11 @@ export default function ApplicationsClient() {
                     variant="outline"
                     size="sm"
                     onClick={handleExportSelected}
-                    disabled={selectedIds.size === 0 || exporting || exportingSelected || !selectedRoundId}
-                    title="ส่งออกเฉพาะใบสมัครที่เลือก (รวมทุกหน้า) เป็นไฟล์ Excel"
+                    disabled={selectedCount === 0 || exporting || exportingSelected || !selectedRoundId || !canSubmitSelection(selection, { roundId: selectedRoundId, statusFilter, search })}
+                    title={selectionBlocker ?? 'ส่งออกเฉพาะใบสมัครที่เลือก (รวมทุกหน้า) เป็นไฟล์ Excel'}
                   >
                     <span aria-hidden>📑</span>
-                    {exportingSelected ? 'กำลังสร้าง Excel...' : `Export ที่เลือก (${selectedIds.size})`}
+                    {exportingSelected ? 'กำลังสร้าง Excel...' : `Export ที่เลือก (${selectedCount})`}
                   </Button>
                 </>
               )}
@@ -1237,11 +1286,11 @@ export default function ApplicationsClient() {
                 variant="outline"
                 size="sm"
                 onClick={() => openPdfBulkDialog('selected')}
-                disabled={selectedIds.size === 0 || pdfBulkDialog !== null}
+                disabled={selectedCount === 0 || pdfBulkDialog !== null}
                 title="ดาวน์โหลด PDF เฉพาะใบสมัครที่เลือก (รวมทุกหน้า) เป็นไฟล์ ZIP"
               >
                 <span aria-hidden>📄</span>
-                ดาวน์โหลด PDF ที่เลือก ({selectedIds.size})
+                ดาวน์โหลด PDF ที่เลือก ({selectedCount})
               </Button>
               <Button
                 variant="outline"
@@ -1324,7 +1373,7 @@ export default function ApplicationsClient() {
                       <TableCell className="py-3 align-top" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
-                          checked={selectedIds.has(app.id)}
+                          checked={isRowSelected(selection, app.id)}
                           onChange={() => toggleSelect(app.id)}
                           aria-label={`เลือกใบสมัคร ${app.applicationNo}`}
                           className="w-4 h-4 rounded border-slate-300 cursor-pointer"
@@ -1480,7 +1529,7 @@ export default function ApplicationsClient() {
       {showBulkModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg p-6 w-full max-w-md">
-            <h2 className="text-lg font-bold mb-4 flex items-center gap-2">📝 เปลี่ยนสถานะ ({selectedIds.size} รายการ)</h2>
+            <h2 className="text-lg font-bold mb-4 flex items-center gap-2">📝 เปลี่ยนสถานะ ({selectedCount} รายการ)</h2>
 
             <div className="space-y-4">
               <div>
@@ -1536,11 +1585,11 @@ export default function ApplicationsClient() {
       {/* 6. MODAL - Bulk PDF Download (Browser ZIP) */}
       {/* ============================================ */}
       {pdfBulkDialog && (() => {
-        // Phase 1: mode 'filtered' = ทุกแถวที่ตรง filter (total จาก server)
-        // ไม่ใช่จำนวนแถวที่โหลดมาบนหน้าปัจจุบัน; mode 'selected' = จำนวนที่ติ๊กจริง
+        // Phase 4: mode 'filtered' = ทุกแถวที่ตรง filter (total จาก server)
+        // mode 'selected' = จำนวนที่เลือกจริง (all-filtered หัก excludeIds แล้ว)
         const count = pdfBulkDialog === 'filtered'
           ? totalItems
-          : selectedIds.size;
+          : selectedCount;
         const overLimit = count > BULK_PDF_LIMIT;
         return (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
