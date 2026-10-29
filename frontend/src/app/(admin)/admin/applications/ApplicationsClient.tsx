@@ -349,6 +349,15 @@ export default function ApplicationsClient() {
   const [summary, setSummary] = useState<Summary>({ total: 0, byStatus: {} });
   const [loading, setLoading] = useState(true);
 
+  // สถานะของ "การโหลดรอบรับสมัคร" — ประตูของทั้งหน้า
+  // ⚠️ loading เริ่มที่ true และ fetchData จะไม่รันเลยถ้า selectedRoundId ว่าง
+  //   ดังนั้นถ้า rounds fetch ไม่จบ spinner จะค้างตลอดกาล → ต้องมี state ที่จบได้เสมอ
+  //   'loading' = ยังไม่รู้ผล, 'ready' = ได้ลิสต์แล้ว (อาจว่าง), 'error' = ล้มเหลว
+  const [roundsStatus, setRoundsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [roundsError, setRoundsError] = useState<string | null>(null);
+  // ตัวนับสำหรับ "ลองอีกครั้ง" — ใส่ใน dep ของ effect โหลดรอบ
+  const [roundsReloadKey, setRoundsReloadKey] = useState(0);
+
   // Pagination ที่ server คืนมา — source of truth ของ total/totalPages
   // (Phase 1: list เป็น server-side แล้ว ห้ามคำนวณ total จาก apps.length)
   const [pagination, setPagination] = useState<ApplicationsPagination>({
@@ -636,14 +645,28 @@ export default function ApplicationsClient() {
   };
 
   // Fetch rounds
+  // ⚠️ ทุกเส้นทางต้องจบที่ setRoundsStatus('ready' | 'error') — ห้ามมีทางที่ค้าง 'loading'
+  //   (เดิม: ไม่มี .catch() เลย → 401/403/network error ทำให้ selectedRoundId ว่างตลอด
+  //    และ fetchData early-return → loading ค้าง true → "กำลังโหลด..." ไม่มีวันหาย)
   useEffect(() => {
     const view = showArchived ? 'all' : 'active';
-    fetch(`${API_URL}/admin/rounds?view=${view}`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` }
-    })
-      .then(res => res.json())
-      .then(res => {
-        const roundList = res.data || [];
+    let cancelled = false;
+
+    setRoundsStatus('loading');
+    setRoundsError(null);
+
+    const loadRounds = async () => {
+      try {
+        const res = await fetch(`${API_URL}/admin/rounds?view=${view}`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` }
+        });
+        if (!res.ok) {
+          throw new Error(`โหลดรอบรับสมัครไม่สำเร็จ (HTTP ${res.status})`);
+        }
+        const res2 = await res.json();
+        if (cancelled) return;
+
+        const roundList: Round[] = Array.isArray(res2?.data) ? res2.data : [];
         setRounds(roundList);
 
         // ลำดับการเลือก Round:
@@ -671,9 +694,23 @@ export default function ApplicationsClient() {
           }
           localStorage.setItem('applications:lastRoundId', chosen.id);
         }
-      });
+        // ไม่มีรอบให้เลือก = จบแล้ว (ไม่ใช่ loading) — หน้าจะแสดง empty state
+        setRoundsStatus('ready');
+      } catch (error) {
+        if (cancelled) return;
+        console.error('Error fetching rounds:', error);
+        setRounds([]);
+        setSelectedRoundId('');
+        setRoundsError(error instanceof Error ? error.message : 'โหลดรอบรับสมัครไม่สำเร็จ');
+        setRoundsStatus('error');
+      }
+    };
+
+    loadRounds();
+
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showArchived]);
+  }, [showArchived, roundsReloadKey]);
 
   // Sync URL เมื่อผู้ใช้เปลี่ยน Round
   useEffect(() => {
@@ -700,7 +737,12 @@ export default function ApplicationsClient() {
   const requestGuardRef = useRef(createRequestGuard());
   const listAbortRef = useRef<AbortController | null>(null);
   const fetchData = useCallback(async () => {
-    if (!selectedRoundId) return;
+    // ไม่มีรอบให้ยิง = ไม่มีอะไรให้โหลด → ต้องปลด loading เสมอ
+    // (เดิม return เฉย ๆ → loading ค้าง true ตลอดกาล เพราะ setLoading(false) อยู่หลังจุดนี้)
+    if (!selectedRoundId) {
+      setLoading(false);
+      return;
+    }
 
     const requestState: ApplicationsListState = {
       roundId: selectedRoundId,
@@ -757,6 +799,9 @@ export default function ApplicationsClient() {
       if (!guard.isCurrent(requestKey)) return;
       console.error('Error fetching data:', error);
     } finally {
+      // ⚠️ ปลด loading เสมอเมื่อ request นี้ยังเป็นตัวล่าสุด
+      //   (เดิม: ถ้า response เก่ากลับมาทีหลัง guard จะไม่ปลด loading ของ request นั้น
+      //    ซึ่งถูกต้องเพราะมี request ใหม่กว่าเป็นเจ้าของ loading อยู่แล้ว)
       if (guard.isCurrent(requestKey)) setLoading(false);
     }
   }, [selectedRoundId, search, statusFilter, sortId, currentPage, pageSize, API_URL]);
@@ -1366,7 +1411,37 @@ export default function ApplicationsClient() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading ? (
+              {roundsStatus === 'error' ? (
+                // rounds ล้มเหลว → บอกให้ชัด + ทางลองใหม่ (ห้ามค้าง spinner)
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center py-8">
+                    <div className="flex flex-col items-center justify-center gap-2 text-slate-600">
+                      <span className="text-sm font-medium">โหลดรายการรอบรับสมัครไม่สำเร็จ</span>
+                      <span className="text-xs text-slate-500">{roundsError}</span>
+                      <button
+                        type="button"
+                        onClick={() => setRoundsReloadKey((k) => k + 1)}
+                        className="mt-1 text-xs font-medium text-blue-600 hover:text-blue-800 underline"
+                      >
+                        ลองอีกครั้ง
+                      </button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : roundsStatus === 'ready' && !selectedRoundId ? (
+                // โหลดรอบจบแล้วแต่ไม่มีรอบให้เลือก → จบ ไม่ใช่ loading
+                <TableRow>
+                  <TableCell colSpan={7} className="py-0">
+                    <NoDataEmptyState
+                      title="ไม่พบรอบรับสมัคร"
+                      description={showArchived
+                        ? 'ยังไม่มีรอบรับสมัครในระบบ'
+                        : 'ยังไม่มีรอบรับสมัครที่เปิดใช้งาน — ลองเปิด "แสดงรอบที่จัดเก็บแล้ว"'}
+                    />
+                  </TableCell>
+                </TableRow>
+              ) : loading || roundsStatus === 'loading' ? (
+                // loading ของ list หรือ "ยังรอ rounds อยู่" → spinner (ยังไม่รู้ผล ห้ามสรุปว่าว่าง)
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-8">
                     <div className="flex items-center justify-center gap-2 text-slate-500">
