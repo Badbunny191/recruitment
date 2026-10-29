@@ -16,12 +16,16 @@
  *      ไม่มี pagination ใน response) → backward compatible
  *   4. sort default = submittedAt DESC, tie-break ด้วย id ASC เพื่อให้
  *      ลำดับนิ่ง (deterministic) ระหว่างหน้า
+ *   5. sort whitelist 4 ค่า (Phase 1) — ตรงกับ SortDropdown เดิมของ
+ *      ApplicationsClient ทุกประการ และ tie-break ถูกออกแบบให้ได้ลำดับ
+ *      เดียวกับ client sort เดิม (stable sort บน array ที่เรียง
+ *      submittedAt DESC, id ASC อยู่แล้ว) → ข้ามหน้าแล้วแถวไม่สลับ/ไม่ซ้ำ
  *
  * หมายเหตุ: endpoint นี้ "ไม่มี" DRAFT default แบบ excel-export
  * (buildExportWhere) — semantics เดิมของ GET /admin/applications ไม่กรอง
  * status นอกจากส่ง ?status มา จึงคงไว้ตามเดิม
  */
-import { and, eq, isNull, like, or, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, like, or, sql, type SQL } from 'drizzle-orm';
 import { applications } from '../db/schema';
 
 // ── Filters + where builder ────────────────────────────────────────────────
@@ -145,3 +149,76 @@ export function parseApplicationsListPagination(
 
   return { paginated: true, page, pageSize, offset: (page - 1) * pageSize };
 }
+
+// ── Sort (Phase 1: server-side sort) ───────────────────────────────────────
+
+/**
+ * Sort id ที่รับได้ — ตรงกับ SortDropdown ของ ApplicationsClient 4 ตัวเดิม:
+ *   submittedAt-desc (default) | submittedAt-asc | fullname-asc | fullname-desc
+ */
+export const APPLICATIONS_LIST_SORT_IDS = [
+  'submittedAt-desc',
+  'submittedAt-asc',
+  'fullname-asc',
+  'fullname-desc',
+] as const;
+
+export type ApplicationsListSortId = (typeof APPLICATIONS_LIST_SORT_IDS)[number];
+
+export const APPLICATIONS_LIST_SORT_DEFAULT: ApplicationsListSortId = 'submittedAt-desc';
+
+export interface ApplicationsListSort {
+  field: 'submittedAt' | 'fullname';
+  direction: 'asc' | 'desc';
+}
+
+/**
+ * แปลง sort id → field/direction
+ * ค่าที่ไม่รู้จัก/ไม่ส่งมา → default (submittedAt-desc) ตรงกับ parseSortId
+ * ฝั่ง client เดิม — ไม่ throw เพื่อให้ endpoint ยัง backward compatible
+ * กับ caller เก่าที่ไม่ส่ง sort เลย
+ */
+export function parseApplicationsListSort(rawSort?: string | null): ApplicationsListSort {
+  const id = (rawSort ?? '').trim();
+  if (!(APPLICATIONS_LIST_SORT_IDS as readonly string[]).includes(id)) {
+    return { field: 'submittedAt', direction: 'desc' };
+  }
+  const idx = id.lastIndexOf('-');
+  return {
+    field: id.slice(0, idx) as 'submittedAt' | 'fullname',
+    direction: id.slice(idx + 1) as 'asc' | 'desc',
+  };
+}
+
+/**
+ * ORDER BY ตาม sort ที่เลือก — tie-break 3 ชั้นเพื่อให้ลำดับ deterministic
+ * ระหว่างหน้า (ถ้า tie-break ไม่ครบ แถวจะสลับ/ซ้ำเมื่อข้ามหน้า)
+ *
+ * ทำไม tie-break ต้องเป็นชุดนี้:
+ *   client sort เดิม (ApplicationsClient) เป็น stable sort บน array ที่ API
+ *   ส่งมาเรียง submittedAt DESC, id ASC อยู่แล้ว → เมื่อค่า sort หลักเท่ากัน
+ *   ลำดับที่ตาเห็นคือ submittedAt DESC, id ASC ต้องคงไว้ให้เหมือนเดิมเป๊ะ
+ *
+ * NULL: client เดิมคำนวณ submittedAt เป็น NaN แล้วจัดไว้ท้ายเสมอทั้ง asc/desc
+ * → ใส่ `submitted_at IS NULL` เป็น key แรก (0 มาก่อน 1) ให้ null อยู่ท้าย
+ * ทั้งสองทิศทางเหมือนกัน
+ *
+ * COLLATE NOCASE: แทน toLowerCase() เดิมของ client — พับเฉพาะ ASCII
+ * (อักษรไทยไม่ถูกพับทั้งสองฝั่ง) จึงได้ลำดับอักษรไทยแบบ code-point เหมือนเดิม
+ */
+export function buildApplicationsListOrderBy(sort: ApplicationsListSort): SQL[] {
+  const nullsLast = sql`${applications.submittedAt} IS NULL ASC`;
+
+  if (sort.field === 'fullname') {
+    const nameExpr =
+      sort.direction === 'asc'
+        ? sql`${applications.fullname} COLLATE NOCASE ASC`
+        : sql`${applications.fullname} COLLATE NOCASE DESC`;
+    return [nameExpr, nullsLast, desc(applications.submittedAt), asc(applications.id)];
+  }
+
+  return sort.direction === 'asc'
+    ? [nullsLast, asc(applications.submittedAt), asc(applications.id)]
+    : [nullsLast, desc(applications.submittedAt), asc(applications.id)];
+}
+

@@ -35,12 +35,22 @@ import {
 } from '@/lib/pdf-bulk-download';
 import {
   STATUS_FILTER_OPTIONS,
-  filterByStatus,
   parseStatusFilter,
   statusFilterToExportStatusParam,
   statusFilterToParam,
   type StatusFilterValue,
 } from '@/lib/applications-status-filter';
+import {
+  APPLICATIONS_PAGE_SIZE_OPTIONS,
+  APPLICATIONS_SORT_OPTIONS,
+  buildApplicationsListParams,
+  clampPage,
+  normalizeSortId,
+  parsePage,
+  parsePageSize,
+  readPagination,
+  type ApplicationsPagination,
+} from '@/lib/applications-list-params';
 
 interface Round {
   id: string;
@@ -216,7 +226,8 @@ function FilterPill({
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
 // ตัวเลือกจำนวนรายการต่อหน้า — ค่า default คือ 10 (ไม่เขียนลง URL)
-const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+// ค่าจริงอยู่ใน lib/applications-list-params (ใช้ร่วมกับ parsePageSize)
+const PAGE_SIZE_OPTIONS = [...APPLICATIONS_PAGE_SIZE_OPTIONS];
 
 export default function ApplicationsClient() {
   const router = useRouter();
@@ -237,10 +248,9 @@ export default function ApplicationsClient() {
     searchParams.get('status'),
     searchParams.get('view'),
   );
-  const urlSortId = searchParams.get('sort') || 'submittedAt-desc';
-  const urlPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
-  const urlPageSizeRaw = parseInt(searchParams.get('pageSize') || '10', 10) || 10;
-  const urlPageSize = PAGE_SIZE_OPTIONS.includes(urlPageSizeRaw) ? urlPageSizeRaw : 10;
+  const urlSortId = normalizeSortId(searchParams.get('sort'));
+  const urlPage = parsePage(searchParams.get('page'));
+  const urlPageSize = parsePageSize(searchParams.get('pageSize'));
 
   // Helper: อัปเดต URL (ไม่ trigger re-mount)
   // ⚠️ ถือ "แผนที่ params ของตัวเอง" ใน ref ไม่อ่านจาก window.location / searchParams
@@ -284,9 +294,8 @@ export default function ApplicationsClient() {
   }, [updateUrl]);
 
   const handleSortChange = useCallback((id: string, field: string, direction?: 'asc' | 'desc' | null) => {
+    // Phase 1: sort ทำที่ server — เก็บแค่ sortId แล้วให้ fetchData ส่งขึ้นไป
     setSortId(id);
-    setSortField(field);
-    if (direction) setSortDirection(direction);
     updateUrl({ sort: id === 'submittedAt-desc' ? null : id });
   }, [updateUrl]);
 
@@ -309,16 +318,22 @@ export default function ApplicationsClient() {
   const [summary, setSummary] = useState<Summary>({ total: 0, byStatus: {} });
   const [loading, setLoading] = useState(true);
 
+  // Pagination ที่ server คืนมา — source of truth ของ total/totalPages
+  // (Phase 1: list เป็น server-side แล้ว ห้ามคำนวณ total จาก apps.length)
+  const [pagination, setPagination] = useState<ApplicationsPagination>({
+    page: urlPage,
+    pageSize: urlPageSize,
+    total: 0,
+    totalPages: 1,
+  });
+
   // Status filter: ALL | SUBMITTED | QUALIFIED | REJECTED | CANCELED | ARCHIVED — hydrate จาก URL
   const [statusFilter, setStatusFilter] = useState<StatusFilterValue>(urlStatusFilter);
 
   // Search & Sort state — hydrate จาก URL (sortId format: "<field>-<direction>")
+  // Phase 1: sort ถูกส่งขึ้น server แล้ว จึงเก็บแค่ sortId (ไม่ต้องแยก field/direction)
   const [search, setSearch] = useState(urlSearch);
   const [sortId, setSortId] = useState<string>(urlSortId);
-  const [sortField, setSortField] = useState<string>(parseSortId(urlSortId).field);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(
-    parseSortId(urlSortId).direction
-  );
 
   // Pagination state — hydrate หน้า/page size จาก URL
   const [currentPage, setCurrentPage] = useState(urlPage);
@@ -441,7 +456,38 @@ export default function ApplicationsClient() {
   // ใช้ endpoint เดิม GET /admin/applications/:id/pdf ทีละใบ (Concurrency = 2)
   // รวมเป็น ZIP ฝั่งเบราว์เซอร์ — backend ไม่ถูกแตะ, ชื่อไฟล์ต่อใบมาจาก
   // Content-Disposition (backend Source of Truth) เหมือนดาวน์โหลดรายคน
-  // (bulkTargets/selectedBulkTargets ประกาศหลัง sortedApps เพื่อเลี่ยง TDZ)
+  //
+  // Phase 1 (server-side list): หน่วยความจำมีแค่แถวของหน้าปัจจุบัน →
+  //   - mode 'selected'  : ใช้ bulkTargets ที่สะสมไว้ (ครบทุกหน้าที่เคยเห็น)
+  //   - mode 'filtered'  : ต้องดึง id + applicationNo ของ "ทุกแถวที่ตรง filter"
+  //     จาก GET /applications/ids ตอนกดเริ่ม (ไม่ใช่ตอน render) แล้วค่อยรวมกับ
+  //     bulkTargets ที่มี applicationNo อยู่แล้ว
+  //   (Phase 2 จะเปลี่ยนไปใช้ pdf-targets endpoint — ยังไม่อยู่ใน scope นี้)
+
+  /** ดึง id ทั้งหมดตาม filter ปัจจุบัน แล้ว map เป็น target (applicationNo ถ้ารู้) */
+  const fetchFilteredTargets = async (): Promise<PdfBulkTarget[]> => {
+    const params = buildApplicationsListParams({
+      roundId: selectedRoundId,
+      search,
+      status: statusFilterToExportStatusParam(statusFilter),
+      sort: sortId,
+      page: 1,
+      pageSize,
+    });
+    // endpoint /ids ไม่รับ page/pageSize — ส่งเฉพาะ filter + sort
+    params.delete('page');
+    params.delete('pageSize');
+
+    const res = await fetch(`${API_URL}/admin/applications/ids?${params}`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
+    });
+    if (!res.ok) throw new Error('ดึงรายการตามตัวกรองไม่สำเร็จ');
+    const body = await res.json().catch(() => ({}));
+    const ids: string[] = Array.isArray(body.data) ? body.data : [];
+
+    const known = seenTargetsRef.current;
+    return ids.map((id) => known.get(id) ?? { id, applicationNo: null });
+  };
 
   const openPdfBulkDialog = (mode: BulkDownloadMode) => {
     setPdfBulkDialog(mode);
@@ -458,10 +504,23 @@ export default function ApplicationsClient() {
 
   const startPdfBulkDownload = async () => {
     if (!pdfBulkDialog || pdfBulkPhase === 'running') return;
+
+    // mode 'filtered' ต้องรู้ target ครบทุกหน้า — ดึงก่อนแล้วค่อย resolve
+    let targets = bulkTargets;
+    if (pdfBulkDialog === 'filtered') {
+      try {
+        targets = await fetchFilteredTargets();
+      } catch (error) {
+        console.error('Bulk PDF filtered targets error:', error);
+        alert(error instanceof Error ? error.message : 'ดึงรายการตามตัวกรองไม่สำเร็จ');
+        return;
+      }
+    }
+
     const resolved = resolveBulkTarget(
       pdfBulkDialog,
-      bulkTargets,
-      pdfBulkDialog === 'selected' ? selectedIds : new Set(bulkTargets.map((t) => t.id)),
+      targets,
+      pdfBulkDialog === 'selected' ? selectedIds : new Set(targets.map((t) => t.id)),
     );
     if (!resolved.ok) return; // dialog จะ disable ปุ่มไว้ก่อนแล้ว
 
@@ -557,18 +616,32 @@ export default function ApplicationsClient() {
   }, [selectedRoundId]);
 
   // Fetch applications and summary
+  // Phase 1 (server-side pagination):
+  //   - ส่ง roundId/search/status/sort/page/pageSize ขึ้น server ทุกครั้ง
+  //   - status filter ย้ายไป server (ไม่กรองฝั่ง client แล้ว)
+  //   - total/totalPages มาจาก response (pagination) ไม่ใช่ apps.length
+  //   - ⚠️ ห้ามล้าง selection ที่นี่ — เปลี่ยนหน้า/เรียง/รีเฟรช ต้องคง selection
+  //     เดิม (การล้างเกิดเฉพาะตอน filter/รอบเปลี่ยน ซึ่งมี effect แยกอยู่แล้ว)
+  //   - ⚠️ stale guard: เปลี่ยน filter แล้ว page reset เป็น 1 ใน effect ถัดไป →
+  //     มีได้ 2 request พร้อมกัน (หน้าเก่า + หน้า 1) response ที่กลับมาทีหลัง
+  //     อาจเป็นของ request เก่า → ต้องทิ้ง ไม่ให้ทับ state ของ request ล่าสุด
+  const fetchSeqRef = useRef(0);
   const fetchData = useCallback(async () => {
     if (!selectedRoundId) return;
 
+    const seq = ++fetchSeqRef.current;
     setLoading(true);
-    setSelectedIds(new Set()); // Reset selection
     const token = localStorage.getItem('adminToken');
 
     try {
-      // Fetch applications with filters
-      const params = new URLSearchParams();
-      params.append('roundId', selectedRoundId);
-      if (search) params.append('search', search);
+      const params = buildApplicationsListParams({
+        roundId: selectedRoundId,
+        search,
+        status: statusFilterToExportStatusParam(statusFilter),
+        sort: sortId,
+        page: currentPage,
+        pageSize,
+      });
 
       const [appsRes, summaryRes] = await Promise.all([
         fetch(`${API_URL}/admin/applications?${params}`, {
@@ -582,19 +655,18 @@ export default function ApplicationsClient() {
       const appsData = await appsRes.json();
       const summaryData = await summaryRes.json();
 
-      let appsList = appsData.data || [];
+      if (seq !== fetchSeqRef.current) return; // มี request ใหม่กว่าแล้ว — ทิ้งผลนี้
 
-      // Filter by status (client-side เหมือนเดิม — ALL = ทุกสถานะ)
-      appsList = filterByStatus(appsList, statusFilter);
-
-      setApps(appsList);
+      setApps(appsData.data || []);
+      setPagination(readPagination(appsData, currentPage, pageSize));
       setSummary(summaryData.data || { total: 0, byStatus: {} });
     } catch (error) {
+      if (seq !== fetchSeqRef.current) return;
       console.error('Error fetching data:', error);
     } finally {
-      setLoading(false);
+      if (seq === fetchSeqRef.current) setLoading(false);
     }
-  }, [selectedRoundId, search, statusFilter, API_URL]);
+  }, [selectedRoundId, search, statusFilter, sortId, currentPage, pageSize, API_URL]);
 
   // Reset กลับหน้า 1 เมื่อตัวกรอง/รอบ/การเรียงเปลี่ยน
   // ⚠️ mount แรก (prev === null) ต้อง "ไม่ reset" — หน้าปัจจุบันเพิ่ง restore จาก URL
@@ -769,75 +841,49 @@ export default function ApplicationsClient() {
     });
   };
 
-  // Sort options
-  const sortOptions = [
-    { id: 'submittedAt-desc', field: 'submittedAt', label: 'ล่าสุด', direction: 'desc' as const },
-    { id: 'submittedAt-asc', field: 'submittedAt', label: 'เก่าสุด', direction: 'asc' as const },
-    { id: 'fullname-asc', field: 'fullname', label: 'ชื่อ A-Z', direction: 'asc' as const },
-    { id: 'fullname-desc', field: 'fullname', label: 'ชื่อ Z-A', direction: 'desc' as const },
-  ];
+  // Sort options — 4 ตัวเดิม (ย้ายไป lib เพื่อให้ parse/normalize อยู่ที่เดียว)
+  const sortOptions = [...APPLICATIONS_SORT_OPTIONS];
 
-  // Sort + Paginate
-  const sortedApps = useMemo(() => {
-    const result = [...apps];
-    result.sort((a, b) => {
-      let aVal: any, bVal: any;
-      if (sortField === 'submittedAt') {
-        aVal = typeof a.submittedAt === 'number'
-          ? (a.submittedAt < 1e12 ? a.submittedAt * 1000 : a.submittedAt)
-          : new Date(a.submittedAt).getTime();
-        bVal = typeof b.submittedAt === 'number'
-          ? (b.submittedAt < 1e12 ? b.submittedAt * 1000 : b.submittedAt)
-          : new Date(b.submittedAt).getTime();
-      } else if (sortField === 'fullname') {
-        aVal = (a.fullname || '').toLowerCase();
-        bVal = (b.fullname || '').toLowerCase();
-      } else {
-        return 0;
-      }
-      if (isNaN(aVal) && isNaN(bVal)) return 0;
-      if (isNaN(aVal)) return 1;
-      if (isNaN(bVal)) return -1;
-
-      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
-      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
-      return 0;
-    });
-    return result;
-  }, [apps, sortField, sortDirection]);
-
-  const totalItems = sortedApps.length;
-  const paginatedApps = sortedApps.slice(
-    (currentPage - 1) * pageSize,
-    currentPage * pageSize
-  );
+  // Phase 1: sort + pagination ทำที่ server แล้ว
+  // `apps` = แถวของหน้าปัจจุบันตามลำดับที่ server ส่งมา (ห้าม sort/slice ซ้ำฝั่ง client
+  // ไม่งั้นลำดับจะไม่ตรงกับ server และข้ามหน้าจะมีแถวซ้ำ/หาย)
+  const pageApps = apps;
+  const totalItems = pagination.total;
+  const totalPages = pagination.totalPages;
 
   // กันหน้าเกินช่วงจริง (เช่น page ใน URL มากกว่าจำนวนหน้าหลังข้อมูลเปลี่ยน)
   // ⚠️ ข้ามตอน loading — ยังไม่มีข้อมูลชุดใหม่ ห้าม clamp ด้วยข้อมูลเก่า
+  // ⚠️ ใช้ totalPages จาก server (ไม่คำนวณจาก apps.length ซึ่งเป็นแค่หน้าปัจจุบัน)
   useEffect(() => {
     if (loading) return;
-    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
-    if (currentPage > totalPages) {
-      handlePageChange(totalPages);
-    }
-  }, [loading, totalItems, pageSize, currentPage, handlePageChange]);
+    const target = clampPage(currentPage, totalPages);
+    if (target !== null) handlePageChange(target);
+  }, [loading, totalPages, currentPage, handlePageChange]);
 
-  // Selection handlers — Header Checkbox "เลือกทั้งหมด" ทำงานกับผลลัพธ์ตาม
-  // ตัวกรองปัจจุบัน "ทุกหน้า" (sortedApps = หลัง round + search + view + sort
-  // ก่อนทำ pagination แบ่งหน้า) ไม่ใช่เฉพาะหน้าปัจจุบัน
-  const allFilteredIds = useMemo(() => sortedApps.map((app) => app.id), [sortedApps]);
+  // Selection handlers — Header Checkbox "เลือกทั้งหมด"
+  // Phase 1 (server-side): หน้านี้เห็นแค่แถวของหน้าปัจจุบัน → "เลือกทั้งหมด"
+  // หมายถึงทุกแถวของ "หน้านี้" (พฤติกรรมที่ผู้ใช้เห็นจริง) ส่วน selection ที่ติ๊ก
+  // ไว้จากหน้าอื่นยังคงอยู่ใน selectedIds และไม่ถูกแตะ
+  // ⚠️ Phase 2 (all-filtered) จะเปลี่ยนให้ครอบทุกหน้า — ยังไม่อยู่ใน scope นี้
+  const pageIds = useMemo(() => apps.map((app) => app.id), [apps]);
 
   // Bulk PDF (Browser ZIP) — target ตามลำดับที่แสดงบนจอ, แนบ applicationNo
   // เพื่อให้ fallback ชื่อไฟล์ต่อใบตรงกับดาวน์โหลดรายคนพอดี
-  const bulkTargets = useMemo<PdfBulkTarget[]>(
-    () => sortedApps.map((app) => ({ id: app.id, applicationNo: app.applicationNo })),
-    [sortedApps]
-  );
-  const allFilteredSelected = areAllFilteredSelected(allFilteredIds, selectedIds);
-  const someFilteredSelected = isFilteredPartiallySelected(allFilteredIds, selectedIds);
+  // Phase 1: ต้องสะสม applicationNo ของแถวที่เคยเห็น (ข้ามหน้า) ไว้ด้วย
+  // ไม่งั้นใบที่เลือกจากหน้าอื่นจะตกไปใช้ fallback ชื่อ = id
+  const seenTargetsRef = useRef<Map<string, PdfBulkTarget>>(new Map());
+  const bulkTargets = useMemo<PdfBulkTarget[]>(() => {
+    const map = seenTargetsRef.current;
+    for (const app of apps) {
+      map.set(app.id, { id: app.id, applicationNo: app.applicationNo });
+    }
+    return Array.from(map.values());
+  }, [apps]);
+  const allFilteredSelected = areAllFilteredSelected(pageIds, selectedIds);
+  const someFilteredSelected = isFilteredPartiallySelected(pageIds, selectedIds);
 
   const toggleSelectAll = () => {
-    setSelectedIds(toggleAllFilteredSelection(allFilteredIds, selectedIds));
+    setSelectedIds(toggleAllFilteredSelection(pageIds, selectedIds));
   };
 
   const toggleSelect = (id: string) => {
@@ -1235,7 +1281,7 @@ export default function ApplicationsClient() {
                   </TableCell>
                 </TableRow>
               ) : (
-                paginatedApps.map((app) => {
+                pageApps.map((app) => {
                   const status = STATUS_CONFIG[app.status] || STATUS_CONFIG.SUBMITTED;
                   return (
                     <TableRow
@@ -1458,13 +1504,12 @@ export default function ApplicationsClient() {
       {/* 6. MODAL - Bulk PDF Download (Browser ZIP) */}
       {/* ============================================ */}
       {pdfBulkDialog && (() => {
-        const resolved = resolveBulkTarget(
-          pdfBulkDialog,
-          bulkTargets,
-          pdfBulkDialog === 'selected' ? selectedIds : new Set(bulkTargets.map((t) => t.id)),
-        );
-        const count = resolved.ok ? resolved.targets.length : resolved.count;
-        const overLimit = !resolved.ok && resolved.reason === 'over-limit';
+        // Phase 1: mode 'filtered' = ทุกแถวที่ตรง filter (total จาก server)
+        // ไม่ใช่จำนวนแถวที่โหลดมาบนหน้าปัจจุบัน; mode 'selected' = จำนวนที่ติ๊กจริง
+        const count = pdfBulkDialog === 'filtered'
+          ? totalItems
+          : selectedIds.size;
+        const overLimit = count > BULK_PDF_LIMIT;
         return (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-lg p-6 w-full max-w-md">
@@ -1503,7 +1548,7 @@ export default function ApplicationsClient() {
                     <Button variant="outline" onClick={closePdfBulkDialog}>
                       ยกเลิก
                     </Button>
-                    <Button onClick={startPdfBulkDownload} disabled={!resolved.ok}>
+                    <Button onClick={startPdfBulkDownload} disabled={count === 0 || overLimit}>
                       เริ่มดาวน์โหลด
                     </Button>
                   </div>

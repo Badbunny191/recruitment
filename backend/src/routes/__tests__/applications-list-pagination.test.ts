@@ -193,6 +193,32 @@ const r2 = {
 const deletedId = insertApplication({ status: 'SUBMITTED', deleted: true });
 const draftId = insertApplication({ status: 'DRAFT' });
 
+// ── round-3: ชุดทดสอบ server-side sort (Phase 1) ───────────────────────────
+// ตั้งใจให้ชื่อเป็น ASCII ที่ case ต่างกัน → พิสูจน์ว่า COLLATE NOCASE ทำงาน
+// (ถ้าเป็น BINARY collation ลำดับจะเพี้ยนเป็น Bravo, Delta, alpha, charlie)
+// และมีชื่อซ้ำ (echo/ECHO) → พิสูจน์ tie-break submittedAt DESC, id ASC
+const r3 = {
+  alpha: insertApplication({ roundId: 'round-3', fullname: 'alpha', submittedAt: 1760001000 }),
+  bravo: insertApplication({ roundId: 'round-3', fullname: 'Bravo', submittedAt: 1760002000 }),
+  charlie: insertApplication({ roundId: 'round-3', fullname: 'charlie', submittedAt: 1760003000 }),
+  delta: insertApplication({ roundId: 'round-3', fullname: 'Delta', submittedAt: 1760004000 }),
+  dupOld: insertApplication({ roundId: 'round-3', fullname: 'echo', submittedAt: 1760005000 }),
+  dupNew: insertApplication({ roundId: 'round-3', fullname: 'ECHO', submittedAt: 1760006000 }),
+};
+
+// แถว submittedAt = NULL — client เดิมคำนวณเป็น NaN แล้วจัดไว้ "ท้าย" เสมอ
+// ทั้ง asc และ desc; server ต้องให้ผลเหมือนกัน (nulls last)
+appSeq++;
+const r3Null = `app-list-${String(appSeq).padStart(4, '0')}`;
+sqlite
+  .prepare(
+    `INSERT INTO applications
+       (id, application_no, round_id, email, fullname, national_id, status,
+        form_data, submitted_at, deleted_at, year, round_code, seq_in_round)
+     VALUES (?, ?, 'round-3', ?, 'zzz-null', '1234567890129', 'SUBMITTED', '{}', NULL, NULL, 2569, 'R1', ?)`
+  )
+  .run(r3Null, `APP-2569-${String(appSeq).padStart(4, '0')}`, `applicant${appSeq}@test.local`, appSeq);
+
 async function getToken() {
   return sign(
     { id: ADMIN_ID, email: 'admin@test.local', role: 'ADMIN', exp: Math.floor(Date.now() / 1000) + 3600 },
@@ -371,6 +397,114 @@ async function runAllTests() {
       getJson('/api/v1/admin/applications/ids'),
     ]);
     assertDeepEqual(ids.body.data, list.body.data.map((r) => r.id), 'ids = list ids (ลำดับเดียวกัน)');
+  });
+
+  // ===========================================================================
+  // Phase 1: server-side sort
+  // ===========================================================================
+
+  // ---- PG12: sort=submittedAt-asc ----
+  await test('PG12: sort=submittedAt-asc → ลำดับเก่า→ใหม่ + tie-break id ASC', async () => {
+    const res = await getJson('/api/v1/admin/applications?roundId=round-1&sort=submittedAt-asc');
+    assertEqual(res.status, 200, 'HTTP status');
+    assertDeepEqual(
+      res.body.data.map((r) => r.id),
+      [...ROUND1_DESC].reverse(),
+      'ลำดับกลับจาก default (submittedAt ASC, id ASC)',
+    );
+  });
+
+  // ---- PG13: sort=fullname-asc (NOCASE) ----
+  await test('PG13: sort=fullname-asc → A-Z แบบ case-insensitive + tie-break', async () => {
+    const res = await getJson('/api/v1/admin/applications?roundId=round-3&sort=fullname-asc');
+    assertEqual(res.status, 200, 'HTTP status');
+    assertDeepEqual(
+      res.body.data.map((r) => r.id),
+      // alpha, Bravo, charlie, Delta (NOCASE) → echo/ECHO เท่ากัน →
+      // tie-break submittedAt DESC → dupNew (ใหม่กว่า) มาก่อน dupOld → null ท้ายสุด
+      [r3.alpha, r3.bravo, r3.charlie, r3.delta, r3.dupNew, r3.dupOld, r3Null],
+      'NOCASE asc + tie-break submittedAt DESC, id ASC + null ท้าย',
+    );
+  });
+
+  // ---- PG14: sort=fullname-desc (NOCASE) ----
+  await test('PG14: sort=fullname-desc → Z-A แบบ case-insensitive + tie-break', async () => {
+    const res = await getJson('/api/v1/admin/applications?roundId=round-3&sort=fullname-desc');
+    assertEqual(res.status, 200, 'HTTP status');
+    assertDeepEqual(
+      res.body.data.map((r) => r.id),
+      // zzz-null มาก่อน (ชื่อมากที่สุด) → echo/ECHO เท่ากัน → tie-break
+      // submittedAt DESC → dupNew ก่อน dupOld → แล้วจึง Delta, charlie, Bravo, alpha
+      [r3Null, r3.dupNew, r3.dupOld, r3.delta, r3.charlie, r3.bravo, r3.alpha],
+      'NOCASE desc + tie-break',
+    );
+  });
+
+  // ---- PG15: sort ที่ไม่รู้จัก → default (ไม่ 400) ----
+  await test('PG15: sort ที่ไม่รู้จัก/ว่าง → fallback default submittedAt-desc', async () => {
+    for (const qs of ['sort=', 'sort=unknown', 'sort=fullname', 'sort=id-asc', 'sort=submittedAt']) {
+      const res = await getJson(`/api/v1/admin/applications?roundId=round-1&${qs}`);
+      assertEqual(res.status, 200, `?${qs} → 200 (ไม่ throw)`);
+      assertDeepEqual(
+        res.body.data.map((r) => r.id),
+        ROUND1_DESC,
+        `?${qs} → ลำดับ default`,
+      );
+    }
+  });
+
+  // ---- PG16: sort + pagination ต่อเนื่อง ไม่ซ้ำ ไม่หาย ----
+  await test('PG16: sort ทุกค่า + page 1..N → union = ชุดเต็ม ไม่ซ้ำ ไม่หาย', async () => {
+    for (const sort of ['submittedAt-desc', 'submittedAt-asc', 'fullname-asc', 'fullname-desc']) {
+      const full = await getJson(`/api/v1/admin/applications?roundId=round-3&sort=${sort}`);
+      const expected = full.body.data.map((r) => r.id);
+
+      const collected = [];
+      for (let page = 1; page <= 3; page++) {
+        const res = await getJson(
+          `/api/v1/admin/applications?roundId=round-3&sort=${sort}&page=${page}&pageSize=3`,
+        );
+        collected.push(...res.body.data.map((r) => r.id));
+      }
+      assertDeepEqual(collected, expected, `sort=${sort}: รวมทุกหน้า = ชุดเต็มเรียงเดิม`);
+      assertEqual(new Set(collected).size, collected.length, `sort=${sort}: ไม่มี id ซ้ำ`);
+    }
+  });
+
+  // ---- PG17: /ids รับ sort เดียวกัน ----
+  await test('PG17: /applications/ids รับ ?sort= และลำดับตรงกับ list', async () => {
+    for (const sort of ['submittedAt-desc', 'submittedAt-asc', 'fullname-asc', 'fullname-desc']) {
+      const [list, ids] = await Promise.all([
+        getJson(`/api/v1/admin/applications?roundId=round-3&sort=${sort}`),
+        getJson(`/api/v1/admin/applications/ids?roundId=round-3&sort=${sort}`),
+      ]);
+      assertDeepEqual(
+        ids.body.data,
+        list.body.data.map((r) => r.id),
+        `sort=${sort}: ids = list ids`,
+      );
+    }
+  });
+
+  // ---- PG18: sort + filter + pagination ทำงานร่วมกัน ----
+  await test('PG18: sort + status filter + pagination ทำงานร่วมกัน', async () => {
+    const res = await getJson(
+      '/api/v1/admin/applications?roundId=round-1&status=SUBMITTED&sort=fullname-asc&page=1&pageSize=2',
+    );
+    assertEqual(res.status, 200, 'HTTP status');
+    assertEqual(res.body.pagination.total, 4, 'total ของ SUBMITTED ใน round-1');
+    assertEqual(res.body.data.length, 2, 'data = pageSize');
+    assertTrue(
+      res.body.data.every((r) => r.status === 'SUBMITTED'),
+      'ทุกแถวเป็น SUBMITTED',
+    );
+    // ลำดับต้องเป็น fullname asc จริง (เทียบกับชุดเต็มที่ sort เดียวกัน)
+    const full = await getJson('/api/v1/admin/applications?roundId=round-1&status=SUBMITTED&sort=fullname-asc');
+    assertDeepEqual(
+      res.body.data.map((r) => r.id),
+      full.body.data.slice(0, 2).map((r) => r.id),
+      'หน้า 1 = 2 อันดับแรกของชุดที่ sort แล้ว',
+    );
   });
 
   // ── สรุป ──

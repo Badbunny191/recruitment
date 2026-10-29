@@ -29,8 +29,10 @@ import { adminUsers, fieldMaster, templates, templateVersions, templateFields, t
 import { buildAuditLogWhere, parseMultiParam } from '../lib/audit-log-query';
 import {
   APPLICATION_LIST_COLUMNS,
+  buildApplicationsListOrderBy,
   buildApplicationsListWhere,
   parseApplicationsListPagination,
+  parseApplicationsListSort,
 } from '../lib/applications-list-query';
 import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, BulkApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
 import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
@@ -2088,6 +2090,10 @@ adminRoutes.delete('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITM
 //     ส่ง ?page=1&pageSize=50 → คืน { data, pagination }
 //   - sort default = submittedAt DESC + tie-break id ASC (ลำดับนิ่งระหว่างหน้า)
 //   - where builder กลาง (buildApplicationsListWhere) ใช้ร่วมกับ /applications/ids
+// Phase 1 (server-side sort):
+//   - ?sort= whitelist 4 ค่า (submittedAt-desc|submittedAt-asc|fullname-asc|fullname-desc)
+//     ค่าที่ไม่รู้จัก/ไม่ส่ง → default submittedAt-desc (ไม่ 400 — backward compatible)
+//   - orderBy มาจาก buildApplicationsListOrderBy ตัวเดียว ใช้ร่วมกับ /applications/ids
 adminRoutes.get('/applications', async (c) => {
   const db = drizzle(c.env.DB);
   const whereClause = buildApplicationsListWhere({
@@ -2104,8 +2110,9 @@ adminRoutes.get('/applications', async (c) => {
     return c.json({ error: pagination.error }, 400);
   }
 
-  // orderBy: submittedAt DESC (default ตาม spec), id ASC เป็น tie-break
-  const orderByClause = [desc(applications.submittedAt), asc(applications.id)];
+  const orderByClause = buildApplicationsListOrderBy(
+    parseApplicationsListSort(c.req.query('sort')),
+  );
 
   if (!pagination.paginated) {
     // ไม่ส่ง page = contract เดิม: คืนทุกแถว ไม่มี pagination ใน response
@@ -2151,6 +2158,7 @@ adminRoutes.get('/applications', async (c) => {
 // GET /admin/applications/ids — id ล้วนตามตัวกรองเดียวกัน (ไม่มี pagination)
 // ใช้สำหรับ "เลือกทั้งหมดข้ามหน้า" ฝั่ง frontend โดยไม่ต้องโหลดรายชื่อทั้งชุด
 // ⚠️ ต้อง register ก่อน /applications/:id ไม่งั้น "ids" จะถูกจับเป็น :id
+// Phase 1: รับ ?sort= ตัวเดียวกับ list เพื่อให้ลำดับ id ตรงกับลำดับที่ตาเห็น
 adminRoutes.get('/applications/ids', async (c) => {
   const db = drizzle(c.env.DB);
   const whereClause = buildApplicationsListWhere({
@@ -2163,7 +2171,9 @@ adminRoutes.get('/applications/ids', async (c) => {
     .select({ id: applications.id })
     .from(applications)
     .where(whereClause)
-    .orderBy(desc(applications.submittedAt), asc(applications.id));
+    .orderBy(
+      ...buildApplicationsListOrderBy(parseApplicationsListSort(c.req.query('sort'))),
+    );
 
   return c.json({ data: results.map((r) => r.id) });
 });
