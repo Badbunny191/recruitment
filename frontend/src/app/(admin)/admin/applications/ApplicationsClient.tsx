@@ -1676,11 +1676,15 @@ export default function ApplicationsClient() {
         {/* 3.3 PAGINATION */}
         <div className={cn(CARD_STYLE.header, "flex items-center justify-between")}>
           <span className="text-[11px] text-slate-500">
-            {search.trim()
-              ? `พบ ${totalItems} รายการ`
-              : totalItems === 0
-                ? 'ไม่พบรายการ'
-                : `แสดง ${(currentPage - 1) * pageSize + 1}-${Math.min(currentPage * pageSize, totalItems)} จาก ${totalItems} รายการ`}
+            {/* requirement 5: ยังไม่รู้ผล list → ห้ามสรุป "ไม่พบรายการ" (ข้อมูลเท็จ)
+                ระหว่างโหลดให้แสดงสถานะกลาง ๆ แทนการเดาว่าว่าง */}
+            {loading || roundsStatus === 'loading'
+              ? 'กำลังโหลด...'
+              : search.trim()
+                ? `พบ ${totalItems} รายการ`
+                : totalItems === 0
+                  ? 'ไม่พบรายการ'
+                  : `แสดง ${(currentPage - 1) * pageSize + 1}-${Math.min(currentPage * pageSize, totalItems)} จาก ${totalItems} รายการ`}
           </span>
           <Pagination
             currentPage={currentPage}

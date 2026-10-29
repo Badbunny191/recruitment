@@ -593,6 +593,26 @@ async function main() {
     await ui.unmount();
   });
 
+  // ── 8. requirement 5: ห้ามสรุป "ไม่พบรายการ" ก่อนรู้ผลจริง ────────────────
+  await test('ระหว่าง list ยังโหลด → footer ต้องไม่สรุป "ไม่พบรายการ"', async () => {
+    setSession();
+    installFetch((url) => {
+      if (isRounds(url)) return { status: 200, body: { data: [ROUND_1] } };
+      if (isSummary(url)) return { status: 200, body: SUMMARY_BODY };
+      if (isList(url)) return 'PENDING'; // list ยังไม่กลับ
+      return { status: 404, body: {} };
+    });
+    const ui = await renderApplications();
+
+    const text = ui.text();
+    assert(text.includes('กำลังโหลด'), 'ตารางต้องแสดง loading ระหว่างรอ list');
+    assert(
+      !text.includes('ไม่พบรายการ'),
+      'ห้ามสรุป "ไม่พบรายการ" ก่อน list กลับมา (นี่คือข้อมูลเท็จ)',
+    );
+    await ui.unmount();
+  });
+
   // ───────────────────────────────────────────────────────────────────────────
   console.log('\n' + '='.repeat(50));
   console.log(`Results: ${passed} passed, ${failed} failed`);
