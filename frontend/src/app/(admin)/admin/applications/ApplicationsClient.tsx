@@ -163,12 +163,14 @@ function KpiCard({
   label,
   variant = 'default',
   loading = false,
+  error = false,
 }: {
   icon: string;
   value: number | string;
   label: string;
   variant?: 'default' | 'success' | 'muted' | 'warning' | 'danger' | 'info';
   loading?: boolean;
+  error?: boolean;
 }) {
   const valueColor = {
     default: 'text-slate-900',
@@ -184,6 +186,7 @@ function KpiCard({
       className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4"
       data-testid="kpi-card"
       data-kpi-loading={loading ? 'true' : 'false'}
+      data-kpi-error={error ? 'true' : 'false'}
       aria-busy={loading || undefined}
     >
       <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center text-2xl shrink-0">
@@ -197,6 +200,15 @@ function KpiCard({
             className="block h-8 w-16 rounded-md bg-slate-200 animate-pulse"
             aria-hidden
           />
+        ) : error ? (
+          // summary ล้ม → โชว์ขีดแทนตัวเลข (ห้ามโชว์ 0 หลอก)
+          <span
+            data-testid="kpi-error"
+            className="text-3xl font-bold leading-none text-slate-300"
+            aria-label="โหลดสถิติไม่สำเร็จ"
+          >
+            —
+          </span>
         ) : (
           <span className={cn("text-3xl font-bold tabular-nums leading-none", valueColor)}>{value}</span>
         )}
@@ -370,6 +382,9 @@ export default function ApplicationsClient() {
   //   loading        = กำลังโหลด "แถว" ของตาราง (list)
   //   summaryLoading = กำลังโหลด "ตัวเลข KPI" (summary) — ไม่บล็อกตาราง
   const [summaryLoading, setSummaryLoading] = useState(true);
+  // Phase 1.2: summary ล้ม (เช่น HTTP 500) → KPI แสดง error ของตัวเอง
+  //   ตารางไม่เกี่ยว — ยังโหลด/ใช้งานได้ปกติ (fail-soft)
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   // สถานะของ "การโหลดรอบรับสมัคร" — ประตูของทั้งหน้า
@@ -834,6 +849,7 @@ export default function ApplicationsClient() {
   const fetchSummary = useCallback(async () => {
     if (!selectedRoundId) {
       setSummary({ total: 0, byStatus: {} });
+      setSummaryError(null);
       // ไม่มีรอบ = ไม่มีอะไรให้รอ → ต้องปลด summaryLoading (ไม่งั้น skeleton ค้าง)
       setSummaryLoading(false);
       return;
@@ -844,11 +860,20 @@ export default function ApplicationsClient() {
     summaryAbortRef.current = controller;
 
     setSummaryLoading(true);
+    setSummaryError(null);
     try {
       const res = await fetch(`${API_URL}/admin/applications/summary?roundId=${selectedRoundId}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
         signal: controller.signal,
       });
+      if (!res.ok) {
+        // HTTP error (เช่น 500) — เดิม json() แล้ว setSummary(data.data || ...)
+        // ซึ่งทำให้ 500 กลายเป็น "summary ว่าง" เงียบ ๆ → KPI โชว์ 0 หลอก
+        // ตอนนี้: เก็บ error ไว้แสดงที่ KPI, ไม่แตะ summary เดิม, ตารางไม่กระทบ
+        if (controller.signal.aborted) return;
+        setSummaryError(`โหลดสถิติไม่สำเร็จ (HTTP ${res.status})`);
+        return;
+      }
       const data = await res.json();
       if (controller.signal.aborted) return;
       setSummary(data.data || { total: 0, byStatus: {} });
@@ -856,6 +881,7 @@ export default function ApplicationsClient() {
       // abort = เปลี่ยนรอบใหม่ระหว่างรอ — ไม่ใช่ error
       if (controller.signal.aborted) return;
       // fail-soft: KPI คงค่าเดิม ไม่ล้มทั้งหน้า (ตารางไม่เกี่ยวกับ summary)
+      setSummaryError('โหลดสถิติไม่สำเร็จ');
       console.error('Error fetching summary:', error);
     } finally {
       // ปลดเฉพาะเมื่อ request นี้ยังเป็นตัวล่าสุด — request ที่ถูก abort
@@ -1315,13 +1341,29 @@ export default function ApplicationsClient() {
       {/* ============================================ */}
       {/* Phase 1.2: KPI ใช้ summaryLoading ของตัวเอง — ไม่ขึ้นกับ loading ของตาราง
           ตารางจึงขึ้นได้ก่อนที่ตัวเลข KPI จะมาถึง */}
+      {summaryError && (
+        <div
+          data-testid="kpi-error-banner"
+          className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center justify-between gap-2"
+        >
+          <span className="text-sm text-amber-800">
+            ⚠️ {summaryError} — ตารางยังใช้งานได้ตามปกติ
+          </span>
+          <button
+            onClick={() => fetchSummary()}
+            className="text-[11px] text-amber-700 hover:text-amber-900 underline whitespace-nowrap"
+          >
+            ลองอีกครั้ง
+          </button>
+        </div>
+      )}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
-        <KpiCard icon="📊" value={summary.total} label="ทั้งหมด" loading={kpiLoading} />
-        <KpiCard icon="📥" value={summary.byStatus.SUBMITTED || 0} label="รอการตรวจสอบ" variant="info" loading={kpiLoading} />
-        <KpiCard icon="✅" value={summary.byStatus.QUALIFIED || 0} label="ผ่านการตรวจสอบ" variant="success" loading={kpiLoading} />
-        <KpiCard icon="⚠️" value={summary.byStatus.REJECTED || 0} label="ข้อมูลไม่ครบถ้วน" variant="danger" loading={kpiLoading} />
-        <KpiCard icon="🚫" value={summary.byStatus.CANCELED || 0} label="ยกเลิกใบสมัคร" variant="muted" loading={kpiLoading} />
-        <KpiCard icon="📦" value={summary.byStatus.ARCHIVED || 0} label="เก็บเข้าคลัง" variant="muted" loading={kpiLoading} />
+        <KpiCard icon="📊" value={summary.total} label="ทั้งหมด" loading={kpiLoading} error={!!summaryError} />
+        <KpiCard icon="📥" value={summary.byStatus.SUBMITTED || 0} label="รอการตรวจสอบ" variant="info" loading={kpiLoading} error={!!summaryError} />
+        <KpiCard icon="✅" value={summary.byStatus.QUALIFIED || 0} label="ผ่านการตรวจสอบ" variant="success" loading={kpiLoading} error={!!summaryError} />
+        <KpiCard icon="⚠️" value={summary.byStatus.REJECTED || 0} label="ข้อมูลไม่ครบถ้วน" variant="danger" loading={kpiLoading} error={!!summaryError} />
+        <KpiCard icon="🚫" value={summary.byStatus.CANCELED || 0} label="ยกเลิกใบสมัคร" variant="muted" loading={kpiLoading} error={!!summaryError} />
+        <KpiCard icon="📦" value={summary.byStatus.ARCHIVED || 0} label="เก็บเข้าคลัง" variant="muted" loading={kpiLoading} error={!!summaryError} />
       </div>
 
       {/* Bulk Action Bar */}
@@ -1410,8 +1452,8 @@ export default function ApplicationsClient() {
                   isActive={statusFilter === option.value}
                   onClick={() => handleStatusFilterChange(option.value)}
                   // ระหว่างโหลด summary ตัวเลขยังไม่จริง → ไม่โชว์ "0" หลอก ๆ
-                  // (undefined = FilterPill ไม่ render badge เลย)
-                  count={kpiLoading ? undefined : statusCounts[option.value]}
+                  // (undefined = FilterPill ไม่ render badge เลย) — เช่นเดียวกับตอน summary error
+                  count={kpiLoading || summaryError ? undefined : statusCounts[option.value]}
                 />
               ))}
             </div>

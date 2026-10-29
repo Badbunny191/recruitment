@@ -519,6 +519,80 @@ async function main() {
     await ui.unmount();
   });
 
+  // ── 7. summary 500 → KPI error, table ยังใช้งานได้ ────────────────────────
+  await test('summary 500 → KPI แสดง error และ table ยัง render/ใช้งานได้', async () => {
+    setSession();
+    const net = installFetch((url) => {
+      if (isRounds(url)) return { status: 200, body: { data: [ROUND_1, ROUND_2] } };
+      if (isSummary(url)) return { status: 500, body: { message: 'Internal Server Error' } };
+      if (isList(url)) {
+        return {
+          status: 200,
+          body: { data: [ROW_1, ROW_2], pagination: { page: 1, pageSize: 10, total: 42, totalPages: 5 } },
+        };
+      }
+      return { status: 404, body: {} };
+    });
+    const ui = await renderApplications();
+
+    // KPI ต้องเป็น error state — ไม่ใช่ skeleton ค้าง และไม่ใช่เลข 0 หลอก
+    const cards = Array.from(win.document.querySelectorAll('[data-testid="kpi-card"]'));
+    assertEqual(cards.length, 6, 'ต้องมี KPI 6 ใบ');
+    cards.forEach((c: any) => {
+      assertEqual(c.getAttribute('data-kpi-error'), 'true', 'การ์ดต้องอยู่ใน error state');
+      assertEqual(c.getAttribute('data-kpi-loading'), 'false', 'summary จบแล้ว (500) ต้องไม่ค้าง loading');
+    });
+    const errors = win.document.querySelectorAll('[data-testid="kpi-error"]');
+    assertEqual(errors.length, 6, 'ทุกการ์ดต้องแสดงเครื่องหมาย error แทนตัวเลข');
+    assert(!!win.document.querySelector('[data-testid="kpi-error-banner"]'), 'ต้องมี banner แจ้ง error');
+
+    // ตารางต้องไม่เกี่ยว — ยัง render ครบ และ pagination ยังกดได้
+    const text = ui.text();
+    assert(text.includes(ROW_1.applicationNo), 'ตารางต้องแสดงแถวแม้ summary 500');
+    assert(text.includes(ROW_2.applicationNo), 'ตารางต้องแสดงครบทุกแถว');
+    assert(!text.includes('กำลังโหลด...'), 'ตารางต้องไม่ค้าง spinner เพราะ summary ล้ม');
+
+    const listBefore = net.listCalls().length;
+    await clickPageNumber(2);
+    assert(net.listCalls().length > listBefore, 'ตารางยังเปลี่ยนหน้าได้แม้ summary error');
+    assertEqual(net.summaryCalls().length, 1, 'เปลี่ยนหน้าต้องไม่ยิง summary ซ้ำ (แม้ครั้งก่อนจะ 500)');
+    await ui.unmount();
+  });
+
+  await test('กด "ลองอีกครั้ง" ที่ KPI error → ยิง summary ใหม่และหาย error เมื่อสำเร็จ', async () => {
+    setSession();
+    let summaryShouldFail = true;
+    const net = installFetch((url) => {
+      if (isRounds(url)) return { status: 200, body: { data: [ROUND_1] } };
+      if (isSummary(url)) {
+        return summaryShouldFail
+          ? { status: 500, body: { message: 'Internal Server Error' } }
+          : { status: 200, body: SUMMARY_BODY };
+      }
+      if (isList(url)) {
+        return {
+          status: 200,
+          body: { data: [ROW_1], pagination: { page: 1, pageSize: 10, total: 42, totalPages: 5 } },
+        };
+      }
+      return { status: 404, body: {} };
+    });
+    const ui = await renderApplications();
+    assert(!!win.document.querySelector('[data-testid="kpi-error-banner"]'), 'เริ่มด้วย error banner');
+
+    summaryShouldFail = false;
+    const retry = allButtons().find((b) => (b.textContent || '').trim() === 'ลองอีกครั้ง');
+    assert(retry, 'ต้องมีปุ่มลองอีกครั้งใน banner');
+    await act(async () => { retry.click(); });
+    await settle();
+
+    assertEqual(net.summaryCalls().length, 2, 'กดลองอีกครั้ง → summary ต้องยิงใหม่');
+    assert(!win.document.querySelector('[data-testid="kpi-error-banner"]'), 'สำเร็จแล้ว banner ต้องหาย');
+    assertEqual(win.document.querySelectorAll('[data-testid="kpi-error"]').length, 0, 'ต้องไม่มี error mark เหลือ');
+    assert(ui.text().includes('42'), 'KPI ต้องแสดงตัวเลขจริงหลัง retry สำเร็จ');
+    await ui.unmount();
+  });
+
   // ───────────────────────────────────────────────────────────────────────────
   console.log('\n' + '='.repeat(50));
   console.log(`Results: ${passed} passed, ${failed} failed`);
