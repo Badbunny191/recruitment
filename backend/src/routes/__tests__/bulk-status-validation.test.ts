@@ -435,6 +435,157 @@ async function runAllTests() {
     sqlite.prepare('DELETE FROM audit_logs').run();
   });
 
+  // =========================================================================
+  // Phase 2: SELECTOR SUITE — POST /bulk-status รับ { selector } ด้วย
+  // =========================================================================
+
+  // ---- BS12: selector kind 'ids' = { ids } เดิม เป๊ะ ----
+  await test('BS12: selector kind ids ให้ผลเท่ากับ { ids } เดิม (equivalence)', async () => {
+    const id1 = insertApplication({ status: 'SUBMITTED' });
+    const id2 = insertApplication({ status: 'SUBMITTED' });
+
+    const viaIds = await bulkRequest({ ids: [id1, id2], status: 'QUALIFIED' });
+    assertEqual(viaIds.status, 200, 'legacy ids → 200');
+    assertEqual(viaIds.body.updated, 2, 'legacy ids updated');
+    assertEqual(appRow(id1).status, 'QUALIFIED', 'legacy id1');
+    assertEqual(appRow(id2).status, 'QUALIFIED', 'legacy id2');
+
+    // reset กลับเป็น SUBMITTED แล้วยิงด้วย selector
+    sqlite.prepare(`UPDATE applications SET status='SUBMITTED' WHERE id IN (?,?)`).run(id1, id2);
+    sqlite.prepare('DELETE FROM audit_logs').run();
+
+    const viaSelector = await bulkRequest({
+      selector: { kind: 'ids', ids: [id1, id2] },
+      status: 'QUALIFIED',
+    });
+    assertEqual(viaSelector.status, 200, 'selector ids → 200');
+    assertEqual(viaSelector.body.updated, 2, 'selector ids updated เท่ากับ legacy');
+    assertEqual(appRow(id1).status, 'QUALIFIED', 'selector id1');
+    assertEqual(appRow(id2).status, 'QUALIFIED', 'selector id2');
+
+    sqlite.prepare('DELETE FROM audit_logs').run();
+  });
+
+  // ---- BS13: selector kind 'filter' → อัปเดตทุกใบที่ตรงตัวกรอง ----
+  await test('BS13: selector kind filter → อัปเดตทุกใบที่ตรงตัวกรอง (ไม่ต้องส่ง id)', async () => {
+    sqlite.prepare('DELETE FROM applications').run();
+    sqlite.prepare('DELETE FROM audit_logs').run();
+    appSeq = 0;
+
+    const a = insertApplication({ status: 'SUBMITTED' });
+    const b = insertApplication({ status: 'SUBMITTED' });
+    const c = insertApplication({ status: 'QUALIFIED' });
+    const del = insertApplication({ status: 'SUBMITTED', deleted: true });
+
+    const res = await bulkRequest({
+      selector: { kind: 'filter', roundId: 'round-1', status: 'SUBMITTED' },
+      status: 'QUALIFIED',
+    });
+
+    assertEqual(res.status, 200, `HTTP status ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.success, true, 'success');
+    assertEqual(res.body.updated, 2, 'updated = เฉพาะ SUBMITTED ที่ยังไม่ถูกลบ');
+    assertEqual(appRow(a).status, 'QUALIFIED', 'a ถูกอัปเดต');
+    assertEqual(appRow(b).status, 'QUALIFIED', 'b ถูกอัปเดต');
+    assertEqual(appRow(c).status, 'QUALIFIED', 'c เดิม QUALIFIED อยู่แล้ว');
+    assertEqual(appRow(del).status, 'SUBMITTED', 'แถวถูกลบต้องไม่ถูกแตะ');
+
+    sqlite.prepare('DELETE FROM audit_logs').run();
+  });
+
+  // ---- BS14: filter ที่ไม่ตรงใคร → 400 ไม่เขียน DB ----
+  await test('BS14: selector filter ที่ไม่ตรงใคร → 400 + ไม่แตะ DB + ไม่มี audit', async () => {
+    sqlite.prepare('DELETE FROM applications').run();
+    sqlite.prepare('DELETE FROM audit_logs').run();
+    appSeq = 0;
+
+    const a = insertApplication({ status: 'SUBMITTED' });
+
+    const res = await bulkRequest({
+      selector: { kind: 'filter', roundId: 'round-1', status: 'REJECTED' },
+      status: 'QUALIFIED',
+    });
+
+    assertEqual(res.status, 400, 'HTTP status');
+    assertEqual(res.body.success, false, 'success=false');
+    assertEqual(res.body.updated, 0, 'updated = 0');
+    assertEqual(appRow(a).status, 'SUBMITTED', 'ไม่มีแถวถูกแตะ');
+    assertEqual(auditRows().length, 0, 'ไม่สร้าง audit');
+  });
+
+  // ---- BS15: filter ต้องมี roundId ----
+  await test('BS15: selector filter ไม่มี roundId → 400', async () => {
+    const id = insertApplication({ status: 'SUBMITTED' });
+    const res = await bulkRequest({
+      selector: { kind: 'filter' },
+      status: 'QUALIFIED',
+    });
+    assertEqual(res.status, 400, 'HTTP status');
+    assertEqual(appRow(id).status, 'SUBMITTED', 'ไม่แตะ DB');
+  });
+
+  // ---- BS16: ส่ง selector + ids พร้อมกัน → 400 (fail closed) ----
+  await test('BS16: ส่ง selector พร้อม ids → 400 (กำกวม ไม่เดา)', async () => {
+    const id = insertApplication({ status: 'SUBMITTED' });
+    const res = await bulkRequest({
+      ids: [id],
+      selector: { kind: 'ids', ids: [id] },
+      status: 'QUALIFIED',
+    });
+    assertEqual(res.status, 400, 'HTTP status');
+    assertEqual(appRow(id).status, 'SUBMITTED', 'ไม่แตะ DB');
+  });
+
+  // ---- BS17: DRAFT/ARCHIVED ยังถูก reject แม้ใช้ selector ----
+  await test('BS17: DRAFT/ARCHIVED ยังถูก reject แม้ส่งมาทาง selector', async () => {
+    const id = insertApplication({ status: 'SUBMITTED' });
+
+    const draft = await bulkRequest({
+      selector: { kind: 'ids', ids: [id] },
+      status: 'DRAFT',
+    });
+    assertEqual(draft.status, 400, 'DRAFT → 400');
+    assertEqual(draft.body.message, 'DRAFT status is not allowed in bulk updates', 'DRAFT message');
+
+    const archived = await bulkRequest({
+      selector: { kind: 'ids', ids: [id] },
+      status: 'ARCHIVED',
+    });
+    assertEqual(archived.status, 400, 'ARCHIVED → 400');
+    assertEqual(
+      archived.body.message,
+      'ARCHIVED status is deprecated and cannot be assigned to new updates',
+      'ARCHIVED message',
+    );
+    assertEqual(appRow(id).status, 'SUBMITTED', 'ไม่แตะ DB');
+  });
+
+  // ---- BS18: audit ของ selector ไม่เก็บ id ทั้งก้อน (filter) ----
+  await test('BS18: audit ของ selector filter เก็บ describe (ไม่มี id array)', async () => {
+    sqlite.prepare('DELETE FROM applications').run();
+    sqlite.prepare('DELETE FROM audit_logs').run();
+    appSeq = 0;
+
+    insertApplication({ status: 'SUBMITTED' });
+    insertApplication({ status: 'SUBMITTED' });
+
+    const res = await bulkRequest({
+      selector: { kind: 'filter', roundId: 'round-1', status: 'SUBMITTED' },
+      status: 'QUALIFIED',
+    });
+    assertEqual(res.status, 200, 'HTTP status');
+
+    const audits = auditRows();
+    assertEqual(audits.length, 1, 'audit 1 รายการ');
+    const payload = JSON.parse(JSON.parse(audits[0].payload));
+    assertEqual(payload.selector.kind, 'filter', 'audit.selector.kind');
+    assertEqual(payload.selector.roundId, 'round-1', 'audit.selector.roundId');
+    assertEqual(payload.selector.status, 'SUBMITTED', 'audit.selector.status');
+    assertEqual(payload.updatedCount, 2, 'audit.updatedCount');
+
+    sqlite.prepare('DELETE FROM audit_logs').run();
+  });
+
   console.log('');
   if (failed > 0) {
     console.log(`FAILED: ${failed}/${passed + failed}`);

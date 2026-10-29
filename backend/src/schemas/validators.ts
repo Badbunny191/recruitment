@@ -354,6 +354,10 @@ export const ApplicationStatusUpdateSchema = z.object({
 /**
  * POST /admin/applications/bulk-status — อัปเดตสถานะหลายใบพร้อมกัน
  * ids ต้องเป็น application id (UUID string) อย่างน้อย 1 รายการ
+ *
+ * ⚠️ Phase 2: schema นี้คงไว้เป็น legacy contract (payload { ids })
+ *    — handler ใช้ normalizeSelectorInput() เพื่อรับ selector ได้ด้วย
+ *    โดยไม่ทำให้ payload เดิมเปลี่ยนความหมาย
  */
 export const BulkApplicationStatusUpdateSchema = z.object({
   ids: z
@@ -362,6 +366,68 @@ export const BulkApplicationStatusUpdateSchema = z.object({
   status: UpdatableApplicationStatusEnum,
   reason: z.string().optional(),
 });
+
+// =============================================================================
+// FEATURE: Applications Selector (Phase 2)
+// =============================================================================
+//
+// Selector = "สิ่งที่ผู้ใช้เลือก" ที่ส่งขึ้น server แทนการส่ง id ทั้งชุด
+// ใช้ร่วมกันระหว่าง bulk-status และ export-selected
+//
+//   kind 'ids'    → { kind: 'ids', ids: string[] }
+//   kind 'filter' → { kind: 'filter', roundId, status?, search? }
+//
+// เหตุผลที่ต้องมี: "เลือกทั้งหมดตามตัวกรอง" ที่มี 1,000+ แถว ถ้าส่ง id
+// ทั้งชุดจะเกิน body/URL limit และไม่ตรงกับสิ่งที่ผู้ใช้เห็นจริง
+//
+// หมายเหตุ: legacy schema (BulkApplicationStatusUpdateSchema /
+// ExcelExportSelectedSchema) ยังอยู่ครบและยังใช้ได้เหมือนเดิม
+
+/** selector kind 'ids' — รายการที่ระบุชัดเจน */
+export const ApplicationsSelectorIdsSchema = z.object({
+  kind: z.literal('ids'),
+  ids: z
+    .array(z.string().min(1, 'รายการ ID ไม่ถูกต้อง'), { message: 'กรุณาเลือกอย่างน้อย 1 รายการ' })
+    .min(1, 'กรุณาเลือกอย่างน้อย 1 รายการ'),
+});
+
+/**
+ * selector kind 'filter' — ทั้งหมดตามตัวกรอง
+ * roundId บังคับเสมอ (กันการเลือกข้ามรอบโดยไม่ตั้งใจ)
+ * status รับได้ทั้งค่า enum เดี่ยว และ comma-separated (เหมือน export GET)
+ */
+export const ApplicationsSelectorFilterSchema = z.object({
+  kind: z.literal('filter'),
+  roundId: z.string().min(1, 'กรุณาระบุรอบรับสมัคร (roundId)'),
+  status: z.string().nullable().optional(),
+  search: z.string().nullable().optional(),
+});
+
+export const ApplicationsSelectorSchema = z.discriminatedUnion('kind', [
+  ApplicationsSelectorIdsSchema,
+  ApplicationsSelectorFilterSchema,
+]);
+
+/**
+ * Body ของ bulk-status (Phase 2) — รับได้ทั้ง selector และ ids เดิม
+ * ใช้ refine เพื่อบังคับ "ต้องมีอย่างใดอย่างหนึ่ง และห้ามมีทั้งคู่"
+ * (การแปลงเป็น selector จริงทำที่ normalizeSelectorInput ใน handler
+ *  เพื่อให้ message ตรงกับที่ handler สร้าง)
+ */
+export const BulkApplicationStatusSelectorSchema = z
+  .object({
+    ids: z
+      .array(z.string().min(1, 'รายการ ID ไม่ถูกต้อง'), { message: 'กรุณาเลือกอย่างน้อย 1 รายการ' })
+      .min(1, 'กรุณาเลือกอย่างน้อย 1 รายการ')
+      .optional(),
+    selector: ApplicationsSelectorSchema.optional(),
+    status: UpdatableApplicationStatusEnum,
+    reason: z.string().optional(),
+  })
+  .refine((d) => (d.selector !== undefined) !== (d.ids !== undefined), {
+    message: 'กรุณาระบุ selector หรือ ids อย่างใดอย่างหนึ่ง',
+    path: ['selector'],
+  });
 
 // =============================================================================
 // FEATURE: Archive / Restore / Permanent Delete

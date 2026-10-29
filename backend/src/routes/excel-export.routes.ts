@@ -29,6 +29,7 @@ import {
   exportSelectedApplicationsExcel,
   MAX_EXPORT_ROWS,
 } from '../services/excel-export.service';
+import { ApplicationsSelectorSchema } from '../schemas/validators';
 import { Bindings, AppVariables } from '../types';
 
 export const XLSX_CONTENT_TYPE =
@@ -37,25 +38,35 @@ export const XLSX_CONTENT_TYPE =
 /**
  * Body contract ของ POST /applications/export-selected:
  *   - roundId บังคับ
- *   - applicationIds: array ต้องมีอย่างน้อย 1 ไม่เกิน 1,000 รายการ
+ *   - applicationIds: array ต้องมีอย่างน้อย 1 ไม่เกิน 1,000 รายการ  (legacy)
+ *   - selector: { kind: 'ids' | 'filter', ... }                     (Phase 2)
  *   - ID ซ้ำไม่ reject — service จะ deduplicate
+ *
+ * ⚠️ ต้องมี applicationIds หรือ selector อย่างใดอย่างหนึ่ง (ห้ามมีทั้งคู่)
+ *    legacy payload { roundId, applicationIds } ยังผ่านเหมือนเดิมทุกประการ
  */
-export const ExcelExportSelectedSchema = z.object({
-  roundId: z
-    .string({ required_error: 'กรุณาระบุรอบรับสมัคร (roundId)' })
-    .min(1, 'กรุณาระบุรอบรับสมัคร (roundId)'),
-  applicationIds: z
-    .array(
-      z.string({ invalid_type_error: 'รหัสใบสมัครต้องเป็นข้อความ' })
-        .min(1, 'รหัสใบสมัครต้องไม่เป็นค่าว่าง'),
-      {
-        required_error: 'กรุณาระบุรายการที่เลือก (applicationIds)',
-        invalid_type_error: 'applicationIds ต้องเป็น array',
-      },
-    )
-    .min(1, 'ต้องเลือกใบสมัครอย่างน้อย 1 รายการ')
-    .max(MAX_EXPORT_ROWS, `เลือกได้สูงสุด ${MAX_EXPORT_ROWS} รายการต่อการ export หนึ่งครั้ง`),
-});
+export const ExcelExportSelectedSchema = z
+  .object({
+    roundId: z
+      .string({ required_error: 'กรุณาระบุรอบรับสมัคร (roundId)' })
+      .min(1, 'กรุณาระบุรอบรับสมัคร (roundId)'),
+    applicationIds: z
+      .array(
+        z.string({ invalid_type_error: 'รหัสใบสมัครต้องเป็นข้อความ' })
+          .min(1, 'รหัสใบสมัครต้องไม่เป็นค่าว่าง'),
+        {
+          invalid_type_error: 'applicationIds ต้องเป็น array',
+        },
+      )
+      .min(1, 'ต้องเลือกใบสมัครอย่างน้อย 1 รายการ')
+      .max(MAX_EXPORT_ROWS, `เลือกได้สูงสุด ${MAX_EXPORT_ROWS} รายการต่อการ export หนึ่งครั้ง`)
+      .optional(),
+    selector: ApplicationsSelectorSchema.optional(),
+  })
+  .refine((d) => (d.selector !== undefined) !== (d.applicationIds !== undefined), {
+    message: 'กรุณาระบุ selector หรือ applicationIds อย่างใดอย่างหนึ่ง',
+    path: ['selector'],
+  });
 
 // ── Content-Disposition helper ──────────────────────────────────────────────
 // filename= เป็น ASCII fallback (client เก่า), filename*= เป็นชื่อจริงตาม
@@ -151,7 +162,11 @@ export async function handleExcelExportSelected(
 
   const result = await exportSelectedApplicationsExcel(
     c.env,
-    parsed.data,
+    {
+      roundId: parsed.data.roundId,
+      applicationIds: parsed.data.applicationIds,
+      selector: parsed.data.selector,
+    },
     user?.id ?? 'unknown',
     c.req.header('cf-connecting-ip') ?? null,
   );

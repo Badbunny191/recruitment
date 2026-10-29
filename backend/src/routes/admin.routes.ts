@@ -34,7 +34,12 @@ import {
   parseApplicationsListPagination,
   parseApplicationsListSort,
 } from '../lib/applications-list-query';
-import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, BulkApplicationStatusUpdateSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
+import {
+  describeSelector,
+  normalizeSelectorInput,
+  resolveSelectorWhere,
+} from '../lib/applications-selector';
+import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, TemplateCreateSchema, TemplateUpdateSchema, TemplateVersionCreateSchema, TemplateVersionUpdateSchema, TemplateSectionCreateSchema, TemplateSectionUpdateSchema, TemplateSectionReorderSchema, TemplateFieldReorderSchema, TemplateFieldSectionAssignSchema, RecruitmentRoundCreateSchema, RecruitmentRoundUpdateSchema, ApplicationStatusUpdateSchema, BulkApplicationStatusSelectorSchema, CreateUserSchema, UpdateUserSchema, ForceChangePasswordSchema, DisableUserSchema } from '../schemas/validators';
 import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
 import { accountStateGate } from '../middlewares/account-state.middleware';
 import { ensureNotLastSuperAdmin } from '../services/rbac.service';
@@ -2591,6 +2596,11 @@ adminRoutes.get('/applications/:id/history', async (c) => {
 });
 
 // POST /admin/applications/bulk-status - Bulk update application status
+// Phase 2: รับได้ทั้ง { ids } เดิม และ { selector } ใหม่
+//   - { ids: [...] }                    → behavior เดิมทุกประการ
+//   - { selector: { kind: 'ids', ... } } → เหมือน { ids } เป๊ะ
+//   - { selector: { kind: 'filter', ... } } → ทุกใบที่ตรงตัวกรอง ณ เวลาที่กด
+//     (resolve ที่ server — ไม่รับ id ทั้งชุดจาก client)
 adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddleware('APPLICATION', { action: 'UPDATE' }), async (c) => {
   const db = drizzle(c.env.DB);
   const adminId = c.get('jwtPayload').id;
@@ -2602,20 +2612,28 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
     return c.json({ success: false, message: 'DRAFT status is not allowed in bulk updates' }, 400);
   }
 
-  // ARCHIVED deprecated (legacy-only): zod (BulkApplicationStatusUpdateSchema)
-  // reject อยู่แล้ว — คง message เฉพาะเจาะจงแบบเดียวกับ DRAFT เพื่อให้ผู้ใช้
+  // ARCHIVED deprecated (legacy-only): zod (BulkApplicationStatusSelectorSchema
+  // → ApplicationsSelectorSchema / UpdatableApplicationStatusEnum) reject อยู่แล้ว
+  // — คง message เฉพาะเจาะจงแบบเดียวกับ DRAFT เพื่อให้ผู้ใช้
   // เข้าใจเหตุผลโดยไม่ต้องอ่าน zod issues
   if (body && typeof body === 'object' && (body as any).status === 'ARCHIVED') {
     return c.json({ success: false, message: 'ARCHIVED status is deprecated and cannot be assigned to new updates' }, 400);
   }
 
-  const parsed = BulkApplicationStatusUpdateSchema.safeParse(body);
+  const parsed = BulkApplicationStatusSelectorSchema.safeParse(body);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message }));
     return c.json({ success: false, message: issues[0]?.message || 'payload ไม่ถูกต้อง', issues }, 400);
   }
 
-  const { ids, status, reason } = parsed.data;
+  const { status, reason } = parsed.data;
+
+  // แปลง payload (selector หรือ ids เดิม) → selector เดียว
+  const normalized = normalizeSelectorInput(body, 'ids');
+  if (!normalized.ok || !normalized.selector) {
+    return c.json({ success: false, message: normalized.error || 'payload ไม่ถูกต้อง' }, 400);
+  }
+  const selector = normalized.selector;
 
   // Require reason for REJECTED (ข้อมูลไม่ครบถ้วน) or CANCELED (ยกเลิกใบสมัคร) status
   if ((status === 'REJECTED' || status === 'CANCELED') && (!reason || !reason.trim())) {
@@ -2624,24 +2642,65 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
 
   // Drizzle expects Date object for timestamp fields
   const verifiedAtDate = new Date();
-  
+
   try {
+    // ปลายทางของ selector — resolve เป็น where clause ก้อนเดียว
+    // (kind 'ids' → deletedAt IS NULL AND id IN (...)
+    //  kind 'filter' → ตัวกรองเดียวกับหน้ารายชื่อ + deletedAt IS NULL)
+    const targetWhere = resolveSelectorWhere(selector);
+
     // สถานะเดิมของแต่ละใบ (เฉพาะที่ยังไม่ถูกลบ) — ไว้ทำ audit trail
     const currentRows = await db
       .select({ id: applications.id, status: applications.status })
       .from(applications)
-      .where(
-        and(
-          isNull(applications.deletedAt),
-          inArray(applications.id, ids)
-        )
-      );
+      .where(targetWhere);
     const previousStatus: Record<string, string | null> = {};
     for (const row of currentRows) {
       previousStatus[row.id] = row.status ?? null;
     }
 
-    // Update all applications with matching IDs (not deleted)
+    // ไม่มีแถวใดตรง selector → ไม่เขียน DB, ไม่สร้าง audit
+    const targetIds = currentRows.map((row) => row.id);
+
+    // นับ "updated" ให้ตรง contract เดิมของแต่ละ kind:
+    //   kind 'ids'    → จำนวน id ที่ client ส่งมา (เดิมเป็น ids.length ตรง ๆ
+    //                   แม้บาง id ไม่มีอยู่จริง — คงไว้เพื่อไม่ทำลาย contract)
+    //   kind 'filter' → จำนวนแถวที่ตรงตัวกรองจริง ณ เวลาที่กด
+    const updatedCount = selector.kind === 'ids' ? selector.ids.length : targetIds.length;
+
+    if (targetIds.length === 0) {
+      if (selector.kind === 'filter') {
+        return c.json({
+          success: false,
+          message: 'ไม่พบใบสมัครที่ตรงกับตัวกรองที่เลือก',
+          updated: 0,
+        }, 400);
+      }
+      // kind 'ids' — คง behavior เดิม: update 0 แถว แต่ตอบ updated = จำนวน id
+      // ที่ส่งมา (contract เดิมของ endpoint นี้)
+      setAuditPayload(c, JSON.stringify({
+        action: 'BULK_STATUS_UPDATE',
+        applicationIds: selector.ids,
+        previousStatus,
+        newStatus: status,
+        reason: reason || null,
+        updatedCount,
+        selector: describeSelector(selector),
+        actor: adminId
+      }));
+      return c.json({
+        success: true,
+        updated: updatedCount,
+        data: {
+          status,
+          reason: reason || null,
+          verifiedBy: adminId,
+          verifiedAt: nowUnix()
+        }
+      });
+    }
+
+    // Update all applications matching the selector (not deleted)
     await db
       .update(applications)
       .set({
@@ -2650,27 +2709,23 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
         verifiedBy: adminId,
         verifiedAt: verifiedAtDate
       })
-      .where(
-        and(
-          isNull(applications.deletedAt),
-          inArray(applications.id, ids)
-        )
-      );
+      .where(targetWhere);
 
     // Audit payload ครบสำหรับการตรวจสอบย้อนหลัง (actor บันทึกแยกคอลัมน์ admin_id ด้วย)
     setAuditPayload(c, JSON.stringify({
       action: 'BULK_STATUS_UPDATE',
-      applicationIds: ids,
+      applicationIds: selector.kind === 'ids' ? selector.ids : targetIds,
       previousStatus,
       newStatus: status,
       reason: reason || null,
-      updatedCount: ids.length,
+      updatedCount,
+      selector: describeSelector(selector),
       actor: adminId
     }));
 
     return c.json({
       success: true,
-      updated: ids.length,
+      updated: updatedCount,
       data: {
         status,
         reason: reason || null,

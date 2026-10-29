@@ -1238,6 +1238,110 @@ async function runAllTests() {
   });
 
   // ═══════════════════════════════════════════════════════════════════════
+  // PHASE 2 SELECTOR SUITE (SEL-SEL-*) — POST /export-selected รับ { selector }
+  // ═══════════════════════════════════════════════════════════════════════
+  const runSelectedSelector = (selector, roundId = ROUND_ID) => exportSelectedApplicationsExcel(
+    { JWT_SECRET: SECRET },
+    { roundId, selector },
+    'admin-1',
+    '203.0.113.9',
+  );
+
+  t('SEL-SEL-A: selector kind ids = applicationIds เดิม (equivalence)', async () => {
+    const legacy = await runSelected(['app-1', 'app-2', 'app-3']);
+    const viaSelector = await runSelectedSelector({ kind: 'ids', ids: ['app-1', 'app-2', 'app-3'] });
+
+    assertTrue(legacy.ok && viaSelector.ok, 'ทั้งสองต้องสำเร็จ');
+    assertEqual(viaSelector.rowCount, legacy.rowCount, 'rowCount เท่ากัน');
+
+    const wLegacy = await readWorkbook(legacy.buffer);
+    const wSelector = await readWorkbook(viaSelector.buffer);
+    const nosLegacy = [];
+    const nosSelector = [];
+    for (let r = 2; r <= legacy.rowCount + 1; r++) {
+      nosLegacy.push(String(wLegacy.getRow(r).getCell(2).value));
+      nosSelector.push(String(wSelector.getRow(r).getCell(2).value));
+    }
+    assertEqual(nosSelector.join('|'), nosLegacy.join('|'), 'ลำดับแถวและเลขที่ใบสมัครต้องเหมือนกันเป๊ะ');
+  });
+
+  t('SEL-SEL-B: selector kind ids ยัง reject ทั้งชุดเมื่อมี ID ที่ export ไม่ได้', async () => {
+    const r = await runSelectedSelector({ kind: 'ids', ids: ['app-1', 'app-y1'] });
+    assertEqual(r.ok, false, 'ต้อง reject');
+    assertEqual(r.code, 'APPLICATIONS_NOT_EXPORTABLE');
+    assertEqual(r.missingCount, 1);
+  });
+
+  t('SEL-SEL-C: selector kind filter → ชุดเดียวกับ export ตามตัวกรอง', async () => {
+    const r = await runSelectedSelector({ kind: 'filter', roundId: ROUND_ID, status: 'QUALIFIED' });
+    assertTrue(r.ok, JSON.stringify(r).slice(0, 200));
+
+    // เทียบกับ export filtered เส้นทางเดิม
+    const filtered = await exportApplicationsExcel(
+      { JWT_SECRET: SECRET },
+      { roundId: ROUND_ID, status: 'QUALIFIED' },
+      'admin-1',
+      '203.0.113.9',
+    );
+    assertTrue(filtered.ok, 'filtered export ต้องสำเร็จ');
+    assertEqual(r.rowCount, filtered.rowCount, 'rowCount เท่ากับ filtered');
+  });
+
+  t('SEL-SEL-D: selector filter ตัด DRAFT โดย default (เหมือน filtered)', async () => {
+    const r = await runSelectedSelector({ kind: 'filter', roundId: ROUND_ID });
+    assertTrue(r.ok);
+    // seed: app-1..app-8 โดย app-4 = DRAFT → 7 แถว
+    assertEqual(r.rowCount, 7, 'ไม่รวม DRAFT');
+  });
+
+  t('SEL-SEL-E: selector filter ที่ไม่ตรงใคร → 422 ไม่ export เปล่า', async () => {
+    const r = await runSelectedSelector({ kind: 'filter', roundId: ROUND_ID, status: 'CANCELED' });
+    // seed ไม่มี CANCELED ในรอบนี้
+    assertEqual(r.ok, false, 'ต้องไม่คืนไฟล์เปล่า');
+    assertEqual(r.httpStatus, 422);
+  });
+
+  t('SEL-SEL-F: selector filter คนละรอบกับ roundId ที่ขอ → 422', async () => {
+    const r = await runSelectedSelector({ kind: 'filter', roundId: 'round-y1' }, ROUND_ID);
+    assertEqual(r.ok, false);
+    assertEqual(r.httpStatus, 422);
+  });
+
+  t('SEL-SEL-G: audit ของ selector filter เก็บ describe ไม่เก็บ id array', async () => {
+    const r = await runSelectedSelector({ kind: 'filter', roundId: ROUND_ID, status: 'QUALIFIED' });
+    assertTrue(r.ok);
+    const payload = latestAudit();
+    assertEqual(payload.exportMode, 'SELECTED', 'exportMode ยังเป็น SELECTED');
+    assertEqual(payload.selector.kind, 'filter', 'audit.selector.kind');
+    assertEqual(payload.selector.roundId, ROUND_ID, 'audit.selector.roundId');
+    assertTrue(!('ids' in payload.selector), 'ห้ามมี id array ใน audit');
+  });
+
+  t('SEL-SEL-H: route รับ selector ผ่าน HTTP + legacy applicationIds ยังผ่าน', async () => {
+    const token = await makeToken('ADMIN');
+
+    const viaSelector = await postSelected(
+      { roundId: ROUND_ID, selector: { kind: 'ids', ids: ['app-1'] } },
+      token,
+    );
+    assertEqual(viaSelector.status, 200, 'selector ผ่าน route');
+
+    const viaLegacy = await postSelected({ roundId: ROUND_ID, applicationIds: ['app-1'] }, token);
+    assertEqual(viaLegacy.status, 200, 'legacy applicationIds ยังผ่าน');
+
+    // ส่งทั้งคู่พร้อมกัน → 400 (กำกวม)
+    const both = await postSelected(
+      { roundId: ROUND_ID, applicationIds: ['app-1'], selector: { kind: 'ids', ids: ['app-1'] } },
+      token,
+    );
+    assertEqual(both.status, 400, 'selector + applicationIds → 400');
+
+    // ไม่ส่งอะไรเลย → 400
+    const neither = await postSelected({ roundId: ROUND_ID }, token);
+    assertEqual(neither.status, 400, 'ไม่มีทั้งคู่ → 400');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
   // D1 LIMIT SUITE (A–T) — bound parameters ≤ 100 ต่อ statement บน D1 จริง
   // makeTestDb wrap sqlite.prepare ให้ throw เมื่อ statement ใดเกิน 100 bind
   // (better-sqlite3 ไม่จำกัด — ไม่ wrap แล้ว test ผ่านไม่การันตี Production)

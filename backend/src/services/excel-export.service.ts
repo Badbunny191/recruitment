@@ -60,6 +60,10 @@ import {
 } from '../utils/filename';
 import { toUnixTimestamp } from '../utils/timestamp';
 import type { Bindings } from '../types';
+import {
+  describeSelector,
+  type ApplicationsSelector,
+} from '../lib/applications-selector';
 
 type DB = ReturnType<typeof drizzleFn<any>>;
 
@@ -724,7 +728,10 @@ export async function exportApplicationsExcel(
 // ── Main entry: Selected export (POST) ─────────────────────────────────────
 export interface SelectedExportRequest {
   roundId: string;
-  applicationIds: string[];
+  /** legacy: รายการ id ที่เลือกชัดเจน (ยังใช้ได้เหมือนเดิม) */
+  applicationIds?: string[];
+  /** Phase 2: selector (ids | filter) — ใช้แทน applicationIds ได้ */
+  selector?: ApplicationsSelector;
 }
 
 /**
@@ -733,6 +740,13 @@ export interface SelectedExportRequest {
  *   - ID ซ้ำถูก deduplicate (contract: รวบเป็นรายการเดียว ไม่ reject)
  *   - มี ID ใด export ไม่ได้ → reject ทั้งชุด (422) ไม่ export บางส่วน
  *   - ลำดับแถว deterministic เหมือน filtered: submittedAt desc, id desc
+ *
+ * Phase 2 — selector:
+ *   - kind 'ids'    → เส้นทางเดียวกับ applicationIds เดิมเป๊ะ (กฎ reject ทั้งชุดคงอยู่)
+ *   - kind 'filter' → ชุดเดียวกับ export ตามตัวกรอง (buildExportWhere):
+ *                     ตัด DRAFT โดย default, ไม่มีแนวคิด "missing" เพราะชุด
+ *                     มาจากตัวกรอง ไม่ใช่รายการที่ผู้ใช้ระบุทีละใบ
+ *                     → cap 1,000 แถวเหมือน filtered
  */
 export async function exportSelectedApplicationsExcel(
   env: Bindings,
@@ -743,7 +757,101 @@ export async function exportSelectedApplicationsExcel(
   const startedAt = Date.now();
   const db = getDb(env);
 
-  const uniqueIds = Array.from(new Set(request.applicationIds));
+  // ── 0) แปลง request → selector เดียว (backward compatible) ────────────
+  const selector: ApplicationsSelector = request.selector
+    ? request.selector
+    : { kind: 'ids', ids: request.applicationIds ?? [] };
+
+  // filter ต้องผูกกับรอบเดียวกับที่ขอ export (filename สร้างจากรอบนี้)
+  if (selector.kind === 'filter' && selector.roundId !== request.roundId) {
+    return {
+      ok: false,
+      code: 'APPLICATIONS_NOT_EXPORTABLE',
+      message: 'ตัวกรองที่เลือกไม่ตรงกับรอบที่ระบุ',
+      httpStatus: 422,
+    };
+  }
+
+  // ── 0.1) kind 'filter' — เส้นทางของ "เลือกทั้งหมดตามตัวกรอง" ──────────
+  if (selector.kind === 'filter') {
+    const round = await loadExportRound(db, request.roundId);
+    if (!round) {
+      return {
+        ok: false,
+        code: 'ROUND_NOT_FOUND',
+        message: 'ไม่พบรอบรับสมัครที่ระบุ',
+        httpStatus: 404,
+      };
+    }
+
+    // where เดียวกับ export ตามตัวกรอง (ตัด DRAFT โดย default)
+    const appRows = await db
+      .select(EXPORT_APP_COLUMNS)
+      .from(applications)
+      .where(buildExportWhere({
+        roundId: selector.roundId,
+        status: selector.status ?? undefined,
+        search: selector.search ?? undefined,
+      }))
+      .orderBy(desc(applications.submittedAt), desc(applications.id));
+
+    if (appRows.length === 0) {
+      return {
+        ok: false,
+        code: 'APPLICATIONS_NOT_EXPORTABLE',
+        message: 'ไม่พบใบสมัครที่ตรงกับตัวกรองที่เลือก',
+        httpStatus: 422,
+        missingCount: 0,
+      };
+    }
+
+    if (appRows.length > MAX_EXPORT_ROWS) {
+      return {
+        ok: false,
+        code: 'TOO_MANY_ROWS',
+        message: `จำนวนใบสมัคร ${appRows.length} รายการ เกินขีดจำกัด ${MAX_EXPORT_ROWS} รายการต่อการ export หนึ่งครั้ง กรุณากรองสถานะหรือคำค้นเพื่อลดจำนวนก่อน export`,
+        httpStatus: 422,
+      };
+    }
+
+    const { buffer, columnCount } = await buildWorkbookBuffer(db, round.templateVersionId, appRows);
+
+    const durationMs = Date.now() - startedAt;
+    const generatedAt = new Date().toISOString();
+    const stamp = bangkokStampNow();
+    const filename = buildExportFilename(round, stamp);
+    const filenameAscii = buildExportFilenameAscii(round, stamp);
+
+    const auditPayload = {
+      roundId: request.roundId,
+      exportMode: 'SELECTED' as const,
+      selector: describeSelector(selector),
+      selectedCount: appRows.length,
+      rowCount: appRows.length,
+      columnCount,
+      bytes: buffer.byteLength,
+      filename,
+      durationMs,
+      generatedAt,
+    };
+    await writeExportAudit(db, adminId, ipAddress, auditPayload);
+
+    return {
+      ok: true,
+      buffer,
+      filename,
+      filenameAscii,
+      rowCount: appRows.length,
+      columnCount,
+      bytes: buffer.byteLength,
+      durationMs,
+      generatedAt,
+      auditPayload,
+    };
+  }
+
+  // ── 1) kind 'ids' — contract เดิมทั้งหมด ─────────────────────────────
+  const uniqueIds = Array.from(new Set(selector.ids));
   if (uniqueIds.length === 0) {
     return {
       ok: false,
