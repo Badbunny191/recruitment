@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { USER_ROLES } from '../types';
+import { MAX_SELECTOR_EXCLUDE_IDS } from '../lib/applications-selector';
 
 // Allowed values must stay in sync with the CHECK constraint "chk_field_type"
 // in backend/src/db/schema.ts and the D1 table definition.
@@ -375,7 +376,8 @@ export const BulkApplicationStatusUpdateSchema = z.object({
 // ใช้ร่วมกันระหว่าง bulk-status และ export-selected
 //
 //   kind 'ids'    → { kind: 'ids', ids: string[] }
-//   kind 'filter' → { kind: 'filter', roundId, status?, search? }
+//   kind 'filter' → { kind: 'filter', filter: { roundId, status?, search? }, excludeIds? }
+//                   (Phase 2 flat { kind:'filter', roundId, ... } ยังรับได้)
 //
 // เหตุผลที่ต้องมี: "เลือกทั้งหมดตามตัวกรอง" ที่มี 1,000+ แถว ถ้าส่ง id
 // ทั้งชุดจะเกิน body/URL limit และไม่ตรงกับสิ่งที่ผู้ใช้เห็นจริง
@@ -392,15 +394,43 @@ export const ApplicationsSelectorIdsSchema = z.object({
 });
 
 /**
- * selector kind 'filter' — ทั้งหมดตามตัวกรอง
+ * ตัวกรองของ selector kind 'filter' (Phase 5: nested)
  * roundId บังคับเสมอ (กันการเลือกข้ามรอบโดยไม่ตั้งใจ)
  * status รับได้ทั้งค่า enum เดี่ยว และ comma-separated (เหมือน export GET)
  */
-export const ApplicationsSelectorFilterSchema = z.object({
-  kind: z.literal('filter'),
+export const ApplicationsSelectorFilterCriteriaSchema = z.object({
   roundId: z.string().min(1, 'กรุณาระบุรอบรับสมัคร (roundId)'),
   status: z.string().nullable().optional(),
   search: z.string().nullable().optional(),
+});
+
+/**
+ * selector kind 'filter' — ทั้งหมดตามตัวกรอง
+ *
+ * Phase 5 canonical: { kind: 'filter', filter: { roundId, status?, search? }, excludeIds? }
+ * Phase 2 legacy  : { kind: 'filter', roundId, status?, search? }  ← ยังรับได้
+ *
+ * หมายเหตุ: การบังคับ roundId (และ message ภาษาไทย) อยู่ใน
+ * normalizeSelectorInput() ของ lib/applications-selector — ที่นี่รับรูปทรง
+ * ของ payload เท่านั้น เพื่อให้ discriminatedUnion ยังใช้ได้
+ * (ZodEffects จาก superRefine ใช้เป็น option ของ discriminatedUnion ไม่ได้)
+ */
+export const ApplicationsSelectorFilterSchema = z.object({
+  kind: z.literal('filter'),
+  /** canonical (Phase 5) */
+  filter: ApplicationsSelectorFilterCriteriaSchema.optional(),
+  /** legacy flat (Phase 2) */
+  roundId: z.string().optional(),
+  status: z.string().nullable().optional(),
+  search: z.string().nullable().optional(),
+  /** id ที่เอาออกจากทั้งชุด — ต้องเป็น array ของ string ที่ไม่ว่าง */
+  excludeIds: z
+    .array(z.string().min(1, 'รหัสใบสมัครต้องไม่เป็นค่าว่าง'))
+    .max(
+      MAX_SELECTOR_EXCLUDE_IDS,
+      `ยกเลิกได้สูงสุด ${MAX_SELECTOR_EXCLUDE_IDS} รายการต่อครั้ง`,
+    )
+    .optional(),
 });
 
 export const ApplicationsSelectorSchema = z.discriminatedUnion('kind', [

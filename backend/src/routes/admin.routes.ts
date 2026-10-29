@@ -2646,10 +2646,12 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
   try {
     // ปลายทางของ selector — resolve เป็น where clause ก้อนเดียว
     // (kind 'ids' → deletedAt IS NULL AND id IN (...)
-    //  kind 'filter' → ตัวกรองเดียวกับหน้ารายชื่อ + deletedAt IS NULL)
+    //  kind 'filter' → ตัวกรองเดียวกับหน้ารายชื่อ + deletedAt IS NULL
+    //                  + status list + excludeIds)
     const targetWhere = resolveSelectorWhere(selector);
 
     // สถานะเดิมของแต่ละใบ (เฉพาะที่ยังไม่ถูกลบ) — ไว้ทำ audit trail
+    // และเป็นแหล่งของ "matched" (จำนวนแถวที่ selector ตรงจริง ณ เวลาที่กด)
     const currentRows = await db
       .select({ id: applications.id, status: applications.status })
       .from(applications)
@@ -2659,38 +2661,44 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
       previousStatus[row.id] = row.status ?? null;
     }
 
-    // ไม่มีแถวใดตรง selector → ไม่เขียน DB, ไม่สร้าง audit
     const targetIds = currentRows.map((row) => row.id);
 
-    // นับ "updated" ให้ตรง contract เดิมของแต่ละ kind:
-    //   kind 'ids'    → จำนวน id ที่ client ส่งมา (เดิมเป็น ids.length ตรง ๆ
-    //                   แม้บาง id ไม่มีอยู่จริง — คงไว้เพื่อไม่ทำลาย contract)
-    //   kind 'filter' → จำนวนแถวที่ตรงตัวกรองจริง ณ เวลาที่กด
-    const updatedCount = selector.kind === 'ids' ? selector.ids.length : targetIds.length;
+    // ── matched / updated (Phase 5) ─────────────────────────────────────
+    // matched = จำนวนแถวที่ selector ตรงจริง (จาก DB ไม่ใช่จาก payload)
+    // updated = จำนวนแถวที่ "ถูกเขียนจริง" ในคำขอนี้
+    //
+    // Phase 5 เปลี่ยนจากเดิม: เดิม kind 'ids' ตอบ updated = ids.length
+    // (จำนวน id ที่ client ส่งมา) แม้บาง id ไม่มีอยู่จริง/ถูกลบไปแล้ว
+    // → ตัวเลขนั้นไม่ใช่ "สิ่งที่เกิดขึ้น" จึงเลิกใช้เป็นตัวแทน updated
+    const matched = targetIds.length;
 
-    if (targetIds.length === 0) {
+    // ไม่มีแถวใดตรง selector → ไม่เขียน DB, ไม่สร้าง audit
+    if (matched === 0) {
       if (selector.kind === 'filter') {
         return c.json({
           success: false,
           message: 'ไม่พบใบสมัครที่ตรงกับตัวกรองที่เลือก',
+          matched: 0,
           updated: 0,
         }, 400);
       }
-      // kind 'ids' — คง behavior เดิม: update 0 แถว แต่ตอบ updated = จำนวน id
-      // ที่ส่งมา (contract เดิมของ endpoint นี้)
+      // kind 'ids' — คง behavior เดิมของ HTTP (200) แต่รายงานเลขตามจริง
+      // matched = 0, updated = 0 (เดิมตอบ updated = จำนวน id ที่ส่งมา)
       setAuditPayload(c, JSON.stringify({
         action: 'BULK_STATUS_UPDATE',
         applicationIds: selector.ids,
         previousStatus,
         newStatus: status,
         reason: reason || null,
-        updatedCount,
+        matched: 0,
+        updatedCount: 0,
         selector: describeSelector(selector),
         actor: adminId
       }));
       return c.json({
         success: true,
-        updated: updatedCount,
+        matched: 0,
+        updated: 0,
         data: {
           status,
           reason: reason || null,
@@ -2701,6 +2709,7 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
     }
 
     // Update all applications matching the selector (not deleted)
+    // ใช้ where ก้อนเดิม → จำนวนที่เขียนจริง = matched (แถวชุดเดียวกัน)
     await db
       .update(applications)
       .set({
@@ -2711,6 +2720,8 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
       })
       .where(targetWhere);
 
+    const updatedCount = matched;
+
     // Audit payload ครบสำหรับการตรวจสอบย้อนหลัง (actor บันทึกแยกคอลัมน์ admin_id ด้วย)
     setAuditPayload(c, JSON.stringify({
       action: 'BULK_STATUS_UPDATE',
@@ -2718,6 +2729,7 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
       previousStatus,
       newStatus: status,
       reason: reason || null,
+      matched,
       updatedCount,
       selector: describeSelector(selector),
       actor: adminId
@@ -2725,6 +2737,7 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
 
     return c.json({
       success: true,
+      matched,
       updated: updatedCount,
       data: {
         status,

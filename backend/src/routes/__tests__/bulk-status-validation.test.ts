@@ -586,6 +586,178 @@ async function runAllTests() {
     sqlite.prepare('DELETE FROM audit_logs').run();
   });
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // PHASE 5 — matched / updated ต้องมาจาก DB ไม่ใช่ ids.length
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // ---- BS19: ids ที่ไม่มีอยู่จริง → updated ต้องเป็น 0 (ไม่ใช่ ids.length) ----
+  await test('BS19: ids ที่ไม่มีอยู่จริง → matched=0, updated=0 (เดิมตอบ updated=ids.length)', async () => {
+    sqlite.prepare('DELETE FROM applications').run();
+    sqlite.prepare('DELETE FROM audit_logs').run();
+    appSeq = 0;
+
+    const live = insertApplication({ status: 'SUBMITTED' });
+
+    // ส่ง 3 id แต่มีจริงแค่ 1 → matched/updated ต้องเป็น 1 ไม่ใช่ 3
+    const res = await bulkRequest({
+      ids: [live, 'ghost-1', 'ghost-2'],
+      status: 'QUALIFIED',
+    });
+
+    assertEqual(res.status, 200, 'HTTP status');
+    assertEqual(res.body.success, true, 'success');
+    assertEqual(res.body.matched, 1, 'matched = แถวที่ selector ตรงจริง');
+    assertEqual(res.body.updated, 1, 'updated = แถวที่เขียนจริง (ไม่ใช่ ids.length = 3)');
+    assertEqual(appRow(live).status, 'QUALIFIED', 'ใบที่มีจริงถูกอัปเดต');
+
+    const payload = JSON.parse(JSON.parse(auditRows()[0].payload));
+    assertEqual(payload.matched, 1, 'audit.matched');
+    assertEqual(payload.updatedCount, 1, 'audit.updatedCount');
+
+    sqlite.prepare('DELETE FROM audit_logs').run();
+  });
+
+  // ---- BS20: id ที่ถูกลบไปแล้วไม่ถูกนับเป็น updated ----
+  await test('BS20: id ที่ soft-deleted ไม่ถูกนับใน matched/updated', async () => {
+    sqlite.prepare('DELETE FROM applications').run();
+    sqlite.prepare('DELETE FROM audit_logs').run();
+    appSeq = 0;
+
+    const live = insertApplication({ status: 'SUBMITTED' });
+    const deleted = insertApplication({ status: 'SUBMITTED', deleted: true });
+
+    const res = await bulkRequest({ ids: [live, deleted], status: 'QUALIFIED' });
+
+    assertEqual(res.status, 200, 'HTTP status');
+    assertEqual(res.body.matched, 1, 'matched เฉพาะใบที่ยังไม่ถูกลบ');
+    assertEqual(res.body.updated, 1, 'updated เฉพาะใบที่เขียนจริง');
+    assertEqual(appRow(deleted).status, 'SUBMITTED', 'ใบที่ลบแล้วไม่ถูกแตะ');
+
+    sqlite.prepare('DELETE FROM audit_logs').run();
+  });
+
+  // ---- BS21: ids ทั้งชุดไม่มีอยู่จริง → 200 + updated 0 (behavior เดิมของ HTTP) ----
+  await test('BS21: ids ทั้งชุดไม่มีอยู่จริง → 200 + matched=0 + updated=0', async () => {
+    sqlite.prepare('DELETE FROM applications').run();
+    sqlite.prepare('DELETE FROM audit_logs').run();
+    appSeq = 0;
+
+    const res = await bulkRequest({ ids: ['ghost-a', 'ghost-b'], status: 'QUALIFIED' });
+
+    assertEqual(res.status, 200, 'HTTP ยังเป็น 200 (contract เดิมของ kind ids)');
+    assertEqual(res.body.success, true, 'success');
+    assertEqual(res.body.matched, 0, 'matched = 0');
+    assertEqual(res.body.updated, 0, 'updated = 0 (ไม่ใช่ 2)');
+
+    sqlite.prepare('DELETE FROM audit_logs').run();
+  });
+
+  // ---- BS22: filter → matched = updated = จำนวนแถวที่ตรง ----
+  await test('BS22: filter → matched และ updated เท่ากับจำนวนแถวที่ตรงจริง', async () => {
+    sqlite.prepare('DELETE FROM applications').run();
+    sqlite.prepare('DELETE FROM audit_logs').run();
+    appSeq = 0;
+
+    insertApplication({ status: 'SUBMITTED' });
+    insertApplication({ status: 'SUBMITTED' });
+    insertApplication({ status: 'SUBMITTED' });
+    insertApplication({ status: 'QUALIFIED' });
+
+    const res = await bulkRequest({
+      selector: { kind: 'filter', filter: { roundId: 'round-1', status: 'SUBMITTED' } },
+      status: 'REJECTED',
+      reason: 'เอกสารไม่ครบ',
+    });
+
+    assertEqual(res.status, 200, `HTTP status ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.matched, 3, 'matched = 3 SUBMITTED');
+    assertEqual(res.body.updated, 3, 'updated = 3');
+
+    sqlite.prepare('DELETE FROM audit_logs').run();
+  });
+
+  // ---- BS23: filter + excludeIds → ไม่แตะใบที่ถูกยกเลิก ----
+  await test('BS23: filter + excludeIds → ใบที่ยกเลิกไม่ถูกอัปเดต และไม่ถูกนับ', async () => {
+    sqlite.prepare('DELETE FROM applications').run();
+    sqlite.prepare('DELETE FROM audit_logs').run();
+    appSeq = 0;
+
+    const a = insertApplication({ status: 'SUBMITTED' });
+    const b = insertApplication({ status: 'SUBMITTED' });
+    const c = insertApplication({ status: 'SUBMITTED' });
+
+    const res = await bulkRequest({
+      selector: {
+        kind: 'filter',
+        filter: { roundId: 'round-1', status: 'SUBMITTED' },
+        excludeIds: [b],
+      },
+      status: 'QUALIFIED',
+    });
+
+    assertEqual(res.status, 200, `HTTP status ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.matched, 2, 'matched = 3 - 1 ที่ยกเลิก');
+    assertEqual(res.body.updated, 2, 'updated = 2');
+    assertEqual(appRow(a).status, 'QUALIFIED', 'a ถูกอัปเดต');
+    assertEqual(appRow(b).status, 'SUBMITTED', 'b ถูกยกเลิก → ไม่ถูกแตะ');
+    assertEqual(appRow(c).status, 'QUALIFIED', 'c ถูกอัปเดต');
+
+    const payload = JSON.parse(JSON.parse(auditRows()[0].payload));
+    assertEqual(payload.selector.excludeCount, 1, 'audit เก็บจำนวน excludeIds');
+    assertTrue(!JSON.stringify(payload.selector).includes(b), 'audit ห้ามเก็บ id ที่ยกเลิก');
+
+    sqlite.prepare('DELETE FROM audit_logs').run();
+  });
+
+  // ---- BS24: nested (Phase 5) และ flat (Phase 2) ให้ผลเหมือนกัน ----
+  await test('BS24: selector nested = selector flat (Phase 5 = Phase 2)', async () => {
+    sqlite.prepare('DELETE FROM applications').run();
+    sqlite.prepare('DELETE FROM audit_logs').run();
+    appSeq = 0;
+
+    insertApplication({ status: 'SUBMITTED' });
+    insertApplication({ status: 'SUBMITTED' });
+
+    const flat = await bulkRequest({
+      selector: { kind: 'filter', roundId: 'round-1', status: 'SUBMITTED' },
+      status: 'QUALIFIED',
+    });
+    assertEqual(flat.status, 200, `flat ${JSON.stringify(flat.body)}`);
+    assertEqual(flat.body.updated, 2, 'flat updated');
+
+    sqlite.prepare(`UPDATE applications SET status='SUBMITTED'`).run();
+    sqlite.prepare('DELETE FROM audit_logs').run();
+
+    const nested = await bulkRequest({
+      selector: { kind: 'filter', filter: { roundId: 'round-1', status: 'SUBMITTED' } },
+      status: 'QUALIFIED',
+    });
+    assertEqual(nested.status, 200, `nested ${JSON.stringify(nested.body)}`);
+    assertEqual(nested.body.updated, flat.body.updated, 'updated เท่ากันเป๊ะ');
+    assertEqual(nested.body.matched, flat.body.matched, 'matched เท่ากันเป๊ะ');
+
+    sqlite.prepare('DELETE FROM audit_logs').run();
+  });
+
+  // ---- BS25: excludeIds เกิน cap → 400 ----
+  await test('BS25: excludeIds เกิน cap → 400 + ไม่แตะ DB', async () => {
+    sqlite.prepare('DELETE FROM applications').run();
+    sqlite.prepare('DELETE FROM audit_logs').run();
+    appSeq = 0;
+
+    const id = insertApplication({ status: 'SUBMITTED' });
+    const tooMany = Array.from({ length: 81 }, (_, i) => `x-${i}`);
+
+    const res = await bulkRequest({
+      selector: { kind: 'filter', filter: { roundId: 'round-1' }, excludeIds: tooMany },
+      status: 'QUALIFIED',
+    });
+
+    assertEqual(res.status, 400, 'HTTP status');
+    assertEqual(appRow(id).status, 'SUBMITTED', 'ไม่แตะ DB');
+    assertEqual(auditRows().length, 0, 'ไม่สร้าง audit');
+  });
+
   console.log('');
   if (failed > 0) {
     console.log(`FAILED: ${failed}/${passed + failed}`);

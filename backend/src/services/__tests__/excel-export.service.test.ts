@@ -1317,8 +1317,102 @@ async function runAllTests() {
     assertTrue(!('ids' in payload.selector), 'ห้ามมี id array ใน audit');
   });
 
-  t('SEL-SEL-H: route รับ selector ผ่าน HTTP + legacy applicationIds ยังผ่าน', async () => {
-    const token = await makeToken('ADMIN');
+  // ═══════════════════════════════════════════════════════════════════════
+  // PHASE 5 SELECTOR SUITE — nested filter, excludeIds, MAX_EXPORT_ROWS
+  // ═══════════════════════════════════════════════════════════════════════
+
+  t('SEL-P5-A: nested filter (Phase 5) = flat filter (Phase 2) — rowCount เท่ากัน', async () => {
+    const flat = await runSelectedSelector({ kind: 'filter', roundId: ROUND_ID, status: 'QUALIFIED' });
+    const nested = await runSelectedSelector({
+      kind: 'filter',
+      filter: { roundId: ROUND_ID, status: 'QUALIFIED' },
+    });
+    assertTrue(flat.ok && nested.ok, `ทั้งสองต้องสำเร็จ: ${JSON.stringify(nested).slice(0, 160)}`);
+    assertEqual(nested.rowCount, flat.rowCount, 'rowCount เท่ากันเป๊ะ');
+  });
+
+  t('SEL-P5-B: filter + excludeIds → แถวที่ยกเลิกหลุดออกจากไฟล์', async () => {
+    const all = await runSelectedSelector({ kind: 'filter', filter: { roundId: ROUND_ID } });
+    assertTrue(all.ok, 'ฐานต้องสำเร็จ');
+
+    const excluded = await runSelectedSelector({
+      kind: 'filter',
+      filter: { roundId: ROUND_ID },
+      excludeIds: ['app-1'],
+    });
+    assertTrue(excluded.ok, `ต้องสำเร็จ: ${JSON.stringify(excluded).slice(0, 160)}`);
+    assertEqual(excluded.rowCount, all.rowCount - 1, 'หายไป 1 แถวตามที่ยกเลิก');
+
+    const w = await readWorkbook(excluded.buffer);
+    const nos = [];
+    for (let r = 2; r <= excluded.rowCount + 1; r++) {
+      nos.push(String(w.getRow(r).getCell(2).value));
+    }
+    assertTrue(!nos.includes('APP-2026-0001'), 'app-1 ต้องไม่อยู่ในไฟล์');
+  });
+
+  t('SEL-P5-C: filter + excludeIds ที่ยกเลิกจนหมด → 422 ไม่คืนไฟล์เปล่า', async () => {
+    const all = await runSelectedSelector({ kind: 'filter', filter: { roundId: ROUND_ID, status: 'QUALIFIED' } });
+    assertTrue(all.ok, 'ฐานต้องสำเร็จ');
+    // QUALIFIED มีใบเดียวใน seed → ยกเลิกใบนั้น = เหลือ 0
+    const r = await runSelectedSelector({
+      kind: 'filter',
+      filter: { roundId: ROUND_ID, status: 'QUALIFIED' },
+      excludeIds: ['app-1'],
+    });
+    assertEqual(r.ok, false, 'ต้องไม่คืนไฟล์เปล่า');
+    assertEqual(r.httpStatus, 422);
+  });
+
+  t('SEL-P5-D: filter เกิน MAX_EXPORT_ROWS → TOO_MANY_ROWS (cap เดิมยังทำงาน)', async () => {
+    // ใช้รอบใหญ่ที่ test 24 สร้างไว้ (MAX_EXPORT_ROWS + 1 แถว)
+    const r = await runSelectedSelector({ kind: 'filter', filter: { roundId: 'round-big' } }, 'round-big');
+    assertEqual(r.ok, false, 'ต้องถูกปฏิเสธ');
+    assertEqual(r.code, 'TOO_MANY_ROWS', 'code');
+    assertEqual(r.httpStatus, 422, 'httpStatus');
+  });
+
+  t('SEL-P5-E: cap boundary — 1,001 → reject, 1,000 (ยกเลิก 1 ใบ) → ผ่าน', async () => {
+    // round-big มี MAX_EXPORT_ROWS + 1 = 1,001 แถว
+    const over = await runSelectedSelector({ kind: 'filter', filter: { roundId: 'round-big' } }, 'round-big');
+    assertEqual(over.ok, false, '1,001 แถวต้องถูกปฏิเสธ');
+    assertEqual(over.code, 'TOO_MANY_ROWS', 'code');
+
+    // ยกเลิก 1 ใบ → เหลือ 1,000 = cap พอดี → ต้องผ่าน (ไม่ off-by-one)
+    const atCap = await runSelectedSelector(
+      { kind: 'filter', filter: { roundId: 'round-big' }, excludeIds: ['big-0'] },
+      'round-big',
+    );
+    assertTrue(atCap.ok, `พอดี cap ต้องผ่าน: ${JSON.stringify(atCap).slice(0, 200)}`);
+    assertEqual(atCap.rowCount, MAX_EXPORT_ROWS, 'rowCount = cap พอดี');
+  });
+
+  t('SEL-P5-F: excludeIds ไม่ตรงชุดไม่ทำให้ผลเปลี่ยน', async () => {
+    const base = await runSelectedSelector({ kind: 'filter', filter: { roundId: ROUND_ID } });
+    const withGhost = await runSelectedSelector({
+      kind: 'filter',
+      filter: { roundId: ROUND_ID },
+      excludeIds: ['not-in-this-round'],
+    });
+    assertTrue(base.ok && withGhost.ok, 'ทั้งสองต้องสำเร็จ');
+    assertEqual(withGhost.rowCount, base.rowCount, 'จำนวนแถวเท่าเดิม');
+  });
+
+  t('SEL-P5-G: audit ของ filter + excludeIds เก็บ excludeCount ไม่เก็บ id', async () => {
+    const r = await runSelectedSelector({
+      kind: 'filter',
+      filter: { roundId: ROUND_ID },
+      excludeIds: ['app-1', 'app-2'],
+    });
+    assertTrue(r.ok, `ต้องสำเร็จ: ${JSON.stringify(r).slice(0, 160)}`);
+    const payload = latestAudit();
+    assertEqual(payload.selector.kind, 'filter', 'audit.selector.kind');
+    assertEqual(payload.selector.excludeCount, 2, 'audit.selector.excludeCount');
+    assertTrue(!('excludeIds' in payload.selector), 'ห้ามเก็บ excludeIds ทั้งก้อน');
+    assertTrue(!JSON.stringify(payload.selector).includes('app-1'), 'ห้ามมี id ใน audit');
+  });
+
+  t('SEL-SEL-H: route รับ selector ผ่าน HTTP + legacy applicationIds ยังผ่าน', async () => {    const token = await makeToken('ADMIN');
 
     const viaSelector = await postSelected(
       { roundId: ROUND_ID, selector: { kind: 'ids', ids: ['app-1'] } },

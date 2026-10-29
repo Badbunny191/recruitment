@@ -30,6 +30,7 @@ import {
   MAX_EXPORT_ROWS,
 } from '../services/excel-export.service';
 import { ApplicationsSelectorSchema } from '../schemas/validators';
+import { canonicalizeSelector, type ApplicationsSelector } from '../lib/applications-selector';
 import { Bindings, AppVariables } from '../types';
 
 export const XLSX_CONTENT_TYPE =
@@ -165,7 +166,10 @@ export async function handleExcelExportSelected(
     {
       roundId: parsed.data.roundId,
       applicationIds: parsed.data.applicationIds,
-      selector: parsed.data.selector,
+      // zod รับได้ทั้งรูป nested และ flat — แปลงเป็น canonical ก่อนส่งเข้า service
+      selector: parsed.data.selector
+        ? canonicalizeSelector(parsed.data.selector as ApplicationsSelector)
+        : undefined,
     },
     user?.id ?? 'unknown',
     c.req.header('cf-connecting-ip') ?? null,

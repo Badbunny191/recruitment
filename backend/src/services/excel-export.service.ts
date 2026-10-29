@@ -61,7 +61,9 @@ import {
 import { toUnixTimestamp } from '../utils/timestamp';
 import type { Bindings } from '../types';
 import {
+  canonicalizeSelector,
   describeSelector,
+  resolveSelectorWhere,
   type ApplicationsSelector,
 } from '../lib/applications-selector';
 
@@ -758,12 +760,16 @@ export async function exportSelectedApplicationsExcel(
   const db = getDb(env);
 
   // ── 0) แปลง request → selector เดียว (backward compatible) ────────────
-  const selector: ApplicationsSelector = request.selector
-    ? request.selector
-    : { kind: 'ids', ids: request.applicationIds ?? [] };
+  // canonicalizeSelector: รองรับทั้งรูป nested (Phase 5) และ flat (Phase 2)
+  // เพราะ service นี้ถูกเรียกได้ตรง ๆ โดยไม่ผ่าน zod
+  const selector: ApplicationsSelector = canonicalizeSelector(
+    request.selector
+      ? request.selector
+      : { kind: 'ids', ids: request.applicationIds ?? [] },
+  );
 
   // filter ต้องผูกกับรอบเดียวกับที่ขอ export (filename สร้างจากรอบนี้)
-  if (selector.kind === 'filter' && selector.roundId !== request.roundId) {
+  if (selector.kind === 'filter' && selector.filter.roundId !== request.roundId) {
     return {
       ok: false,
       code: 'APPLICATIONS_NOT_EXPORTABLE',
@@ -784,15 +790,13 @@ export async function exportSelectedApplicationsExcel(
       };
     }
 
-    // where เดียวกับ export ตามตัวกรอง (ตัด DRAFT โดย default)
+    // where จาก selector กลาง (roundId + status list + search + deletedAt
+    // + excludeIds) และตัด DRAFT ตาม semantics เดิมของ export
+    // → logic ไม่ถูก copy ไว้ที่นี่ ใช้ resolveSelectorWhere ตัวเดียว
     const appRows = await db
       .select(EXPORT_APP_COLUMNS)
       .from(applications)
-      .where(buildExportWhere({
-        roundId: selector.roundId,
-        status: selector.status ?? undefined,
-        search: selector.search ?? undefined,
-      }))
+      .where(resolveSelectorWhere(selector, { excludeDraft: true }))
       .orderBy(desc(applications.submittedAt), desc(applications.id));
 
     if (appRows.length === 0) {
