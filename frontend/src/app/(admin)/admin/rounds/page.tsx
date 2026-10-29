@@ -64,27 +64,19 @@ interface FormState {
   roundCode: string;
 }
 
+// Subset contract กับ GET /admin/rounds-with-version-info — backend ส่งเฉพาะ
+// ฟิลด์ที่หน้านี้อ่านจริง (fields/status/template/roundTitle ถูกตัดไปแล้ว)
 interface RoundVersionInfo {
   roundId: string;
-  roundTitle: string;
-  roundStatus: 'DRAFT' | 'ACTIVE' | 'CLOSED';
   currentVersion: {
     id: string;
     versionNumber: number;
-    status: string;
-    fields: { fieldId: string; labelTh: string; isRequired: boolean }[];
   } | null;
   latestPublishedVersion: {
     id: string;
     versionNumber: number;
-    status: string;
-    fields: { fieldId: string; labelTh: string; isRequired: boolean }[];
   } | null;
   hasNewerVersion: boolean;
-  template: {
-    id: string;
-    name: string;
-  } | null;
 }
 
 const EMPTY_FORM: FormState = {

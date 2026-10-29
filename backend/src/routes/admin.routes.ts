@@ -2826,82 +2826,49 @@ adminRoutes.get('/rounds/comparison', async (c) => {
 // =============================================================================
 adminRoutes.get('/rounds-with-version-info', async (c) => {
   const db = drizzle(c.env.DB);
-  
-  // Get all rounds with their template versions
-  const allRounds = await db.select({
-    roundId: recruitmentRounds.id,
-    roundTitle: recruitmentRounds.title,
-    roundStatus: recruitmentRounds.status,
-    templateVersionId: recruitmentRounds.templateVersionId,
-  }).from(recruitmentRounds);
-  
-  // Get all templates
-  const allTemplates = await db.select().from(templates);
-  
-  // Get all versions
-  const allVersions = await db.select().from(templateVersions);
-  
-  // Get all field master for field names
-  const allFields = await db.select().from(fieldMaster);
-  
-  // Get field counts and field details for all versions
-  const versionFieldDetails: Record<string, any[]> = {};
-  
-  for (const ver of allVersions) {
-    const fields = await db.select({
-      id: templateFields.id,
-      fieldId: templateFields.fieldId,
-      isRequired: templateFields.isRequired,
-    })
-    .from(templateFields)
-    .where(eq(templateFields.templateVersionId, ver.id));
-    
-    versionFieldDetails[ver.id] = fields.map(f => {
-      const fieldMaster = allFields.find(fm => fm.id === f.fieldId);
-      return {
-        fieldId: f.fieldId,
-        labelTh: fieldMaster?.labelTh || f.fieldId,
-        isRequired: f.isRequired,
-      };
-    });
-  }
-  
-  // Build enriched round data
+
+  // Consumer เดียว (rounds/page.tsx) อ่านแค่ roundId, currentVersion.{id,versionNumber},
+  // latestPublishedVersion.{id,versionNumber}, hasNewerVersion — ห้ามขยาย payload
+  // กลับไปดึง fields/templates/field_master (เดิม 4+V queries, ตอนนี้ 1 batch)
+  const [allRounds, allVersions] = await db.batch([
+    db.select({
+      roundId: recruitmentRounds.id,
+      templateVersionId: recruitmentRounds.templateVersionId,
+    }).from(recruitmentRounds),
+    db.select({
+      id: templateVersions.id,
+      templateId: templateVersions.templateId,
+      versionNumber: templateVersions.versionNumber,
+      status: templateVersions.status,
+    }).from(templateVersions),
+  ]);
+
   const enrichedRounds = allRounds.map(round => {
     const currentVersion = allVersions.find(v => v.id === round.templateVersionId);
-    const template = currentVersion ? allTemplates.find(t => t.id === currentVersion.templateId) : null;
-    
-    // Find latest published version for this template
-    const publishedVersions = allVersions
-      .filter(v => v.templateId === currentVersion?.templateId && v.status === 'PUBLISHED')
-      .sort((a, b) => b.versionNumber - a.versionNumber);
-    
-    const latestPublished = publishedVersions[0];
-    
+
+    // Semantics เดิม: current ไม่เจอ → ไม่มี published ให้เทียบ; latestPublishedVersion
+    // = null เมื่อ current คือ latest published เอง; hasNewerVersion เทียบ versionNumber
+    // จริง (DRAFT/ARCHIVED ที่เลขสูงกว่า published ล่าสุด → false)
+    const latestPublished = currentVersion
+      ? allVersions
+          .filter(v => v.templateId === currentVersion.templateId && v.status === 'PUBLISHED')
+          .sort((a, b) => b.versionNumber - a.versionNumber)[0]
+      : undefined;
+
     return {
       roundId: round.roundId,
-      roundTitle: round.roundTitle,
-      roundStatus: round.roundStatus,
       currentVersion: currentVersion ? {
         id: currentVersion.id,
         versionNumber: currentVersion.versionNumber,
-        status: currentVersion.status,
-        fields: versionFieldDetails[currentVersion.id] || [],
       } : null,
       latestPublishedVersion: latestPublished && latestPublished.id !== currentVersion?.id ? {
         id: latestPublished.id,
         versionNumber: latestPublished.versionNumber,
-        status: latestPublished.status,
-        fields: versionFieldDetails[latestPublished.id] || [],
       } : null,
       hasNewerVersion: latestPublished && currentVersion && latestPublished.versionNumber > currentVersion.versionNumber,
-      template: template ? {
-        id: template.id,
-        name: template.name,
-      } : null,
     };
   });
-  
+
   return c.json({ data: enrichedRounds });
 });
 
