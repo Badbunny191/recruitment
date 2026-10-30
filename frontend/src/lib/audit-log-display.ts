@@ -42,6 +42,8 @@ type ClientLookup = (entityType: string, entityId: string) => string | null;
 // PDF_DOWNLOAD (admin.routes.ts) และ EXPORT_EXCEL (excel-export.service.ts)
 // บันทึกแบบ manual — publish/archive ของ template/round ถูกบันทึกเป็น UPDATE
 // CHANGE_PASSWORD/RESET_PASSWORD (R9): เปลี่ยนรหัสผ่านเอง / admin รีเซ็ตให้
+// LOGIN/LOGIN_FAILED/ACCOUNT_LOCKED (writeLoginAudit): เข้าสู่ระบบสำเร็จ /
+//   รหัสผ่านไม่ถูกต้อง / ล็อกอัตโนมัติเมื่อพยายามผิดครบ threshold
 // CREATE_USER (P0 fix): POST /admin/users — action เฉพาะเพราะ entityId เป็น
 //   'BULK/NEW' (ไม่มี :id ใน path) → ต้องแยกจาก CREATE ของ entity อื่น
 export const AUDIT_ACTION_CONFIG: Record<string, { label: string; className: string }> = {
@@ -53,6 +55,9 @@ export const AUDIT_ACTION_CONFIG: Record<string, { label: string; className: str
   EXPORT_EXCEL: { label: 'ส่งออก Excel', className: 'bg-teal-100 text-teal-700 border-teal-200' },
   CHANGE_PASSWORD: { label: 'เปลี่ยนรหัสผ่าน', className: 'bg-violet-100 text-violet-700 border-violet-200' },
   RESET_PASSWORD: { label: 'รีเซ็ตรหัสผ่าน', className: 'bg-orange-100 text-orange-700 border-orange-200' },
+  LOGIN: { label: 'เข้าสู่ระบบ', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  LOGIN_FAILED: { label: 'เข้าสู่ระบบไม่สำเร็จ', className: 'bg-red-100 text-red-700 border-red-200' },
+  ACCOUNT_LOCKED: { label: 'บัญชีถูกล็อก', className: 'bg-amber-100 text-amber-700 border-amber-200' },
 };
 
 /** action ที่ไม่รู้จัก → แสดง raw string บน badge สีเทา (fallback) */
@@ -80,6 +85,7 @@ export const AUDIT_ENTITY_LABELS: Record<string, string> = {
   POSITION_LEVEL: 'ระดับตำแหน่ง',
   POSITION: 'ตำแหน่ง',
   ADMIN_USER: 'ผู้ใช้งานระบบ',
+  USER: 'ผู้ใช้งานระบบ', // legacy rows — โค้ดรุ่นเก่าบันทึก entityType 'USER' ปัจจุบันเป็น ADMIN_USER
 };
 
 export function getAuditEntityLabel(entityType: string): string {
@@ -132,6 +138,28 @@ export function buildAuditDescription(
   }
   if (log.action === 'EXPORT_EXCEL') {
     return `ส่งออก Excel ${target}`;
+  }
+  // LOGIN/LOGIN_FAILED/ACCOUNT_LOCKED (writeLoginAudit) และ
+  // CHANGE_PASSWORD/RESET_PASSWORD — entityId อาจ resolve ไม่ได้
+  // (CHANGE_PASSWORD ใช้ entityId = 'BULK/NEW') → อีเมลจาก payload นำหน้า
+  const emailFromPayload = (key: 'email' | 'targetEmail'): string | null =>
+    payload && typeof payload === 'object' && typeof payload[key] === 'string'
+      ? payload[key]
+      : null;
+  if (log.action === 'LOGIN') {
+    return `เข้าสู่ระบบ ${emailFromPayload('email') ?? target}`;
+  }
+  if (log.action === 'LOGIN_FAILED') {
+    return `เข้าสู่ระบบไม่สำเร็จ ${emailFromPayload('email') ?? target}`;
+  }
+  if (log.action === 'ACCOUNT_LOCKED') {
+    return `บัญชีถูกล็อก ${emailFromPayload('email') ?? target}`;
+  }
+  if (log.action === 'CHANGE_PASSWORD') {
+    return `เปลี่ยนรหัสผ่าน ${emailFromPayload('targetEmail') ?? target}`;
+  }
+  if (log.action === 'RESET_PASSWORD') {
+    return `รีเซ็ตรหัสผ่าน ${emailFromPayload('targetEmail') ?? target}`;
   }
   if (log.entityType === 'TEMPLATE_VERSION_DESCRIPTOR') {
     // entityId = templateVersions.id — secondary = "vN" (จาก backend resolver)

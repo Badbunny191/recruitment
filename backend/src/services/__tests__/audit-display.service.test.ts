@@ -16,6 +16,7 @@
  *   G.  BULK/NEW + entityType ไม่รู้จัก → ข้าม ไม่ throw
  *   H.  array ว่าง → map ว่าง
  *   I.  >90 ids → แบ่ง chunk ครบทุก id (D1 bind limit)
+ *   J.  legacy entityType 'USER' → resolve ผ่าน admin_users (email)
  *
  * Run: node --import tsx src/services/__tests__/audit-display.service.test.ts
  */
@@ -269,6 +270,25 @@ test('I: 100 application ids → แบ่ง chunk (≤90) แล้ว resolve
   const map = await resolveAuditEntityDisplays(db2, logs);
   assertEqual(Object.keys(map).length, 100, 'ทุก id ต้องถูก resolve (ข้าม chunk boundary)');
   assertEqual(map['log-app-100']?.name, 'APP-2026-0100', 'ตัวท้ายสุด (chunk 2) ต้องถูก resolve');
+});
+
+// =========================================================
+//  J. legacy entityType 'USER' — โค้ดรุ่นเก่าบันทึก 'USER'
+//     (ปัจจุบันเป็น ADMIN_USER) → resolve email ผ่าน admin_users
+// =========================================================
+
+test('J: legacy USER (entityId = admin id) → resolve อีเมลจาก admin_users', async () => {
+  const map = await resolveAuditEntityDisplays(db, [
+    { id: 'log-user', action: 'UPDATE', entityType: 'USER', entityId: 'admin-uuid-1' },
+  ]);
+  assertEqual(map['log-user']?.name, 'admin@example.com', 'legacy USER ต้อง resolve เหมือน ADMIN_USER');
+});
+
+test('J2: legacy USER resolve ไม่ได้ → ไม่อยู่ใน map (fallback UUID ฝั่ง UI)', async () => {
+  const map = await resolveAuditEntityDisplays(db, [
+    { id: 'log-user-miss', action: 'UPDATE', entityType: 'USER', entityId: 'gone-uuid' },
+  ]);
+  assertTrue(!('log-user-miss' in map), 'resolve ไม่ได้ต้องไม่มี key');
 });
 
 // =========================================================

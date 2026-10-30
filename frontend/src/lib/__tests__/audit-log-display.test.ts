@@ -18,6 +18,10 @@
  *        TEMPLATE_VERSION_DESCRIPTOR / CREATE-UPDATE-DELETE
  *   K.   APPLICATION status change (payload.status) คงพฤติกรรมเดิม
  *   L.   fallback UUID เมื่อ resolve ไม่ได้ (ทุก action)
+ *   N.   CREATE_USER — อ่าน targetEmail/role จาก payload
+ *   O.   ROUND_CLONED — label ไทยครบทุกผิว (ตาราง/description/fallback)
+ *   P.   LOGIN/LOGIN_FAILED/ACCOUNT_LOCKED + CHANGE_PASSWORD/RESET_PASSWORD
+ *        (badge ไทย + description ไทย) + legacy entity_type USER
  *   M.   source contract ของ audit-logs page — ใช้ lib กลาง ห้ามประกาศ
  *        ACTION_CONFIG/ENTITY_LABEL ซ้ำในหน้า
  *
@@ -328,6 +332,111 @@ test('O4: page contract — filter Entity และ client fallback lookup ต�
     /ROUND_CLONED:\s*'ROUND'/.test(pageSource),
     'ENTITY_TO_LOOKUP ต้อง map ROUND_CLONED → ROUND (fallback ชื่อรอบเมื่อ backend display หาย)',
   );
+});
+
+// =========================================================
+//  P. LOGIN/LOGIN_FAILED/ACCOUNT_LOCKED + CHANGE_PASSWORD/
+//     RESET_PASSWORD + legacy USER — label ไทยครบทุกผิว
+// =========================================================
+
+test('P: ACTION_CONFIG มี LOGIN/LOGIN_FAILED/ACCOUNT_LOCKED label ไทย', () => {
+  assertEqual(AUDIT_ACTION_CONFIG.LOGIN.label, 'เข้าสู่ระบบ', 'label LOGIN');
+  assertEqual(AUDIT_ACTION_CONFIG.LOGIN_FAILED.label, 'เข้าสู่ระบบไม่สำเร็จ', 'label LOGIN_FAILED');
+  assertEqual(AUDIT_ACTION_CONFIG.ACCOUNT_LOCKED.label, 'บัญชีถูกล็อก', 'label ACCOUNT_LOCKED');
+});
+
+test('P2: LOGIN → "เข้าสู่ระบบ <email>"', () => {
+  const log = {
+    action: 'LOGIN',
+    entityType: 'ADMIN_USER',
+    entityId: 'admin-uuid',
+    display: { name: 'admin@example.com', secondary: null },
+  };
+  assertEqual(
+    buildAuditDescription(log, resolveAuditEntity(log, () => null), null),
+    'เข้าสู่ระบบ admin@example.com',
+    'ต้องโชว์อีเมล ไม่ใช่ raw enum LOGIN',
+  );
+});
+
+test('P3: LOGIN_FAILED → ไทยครบ ทั้งเคส display resolve ได้และ fallback payload.email', () => {
+  const log = {
+    action: 'LOGIN_FAILED',
+    entityType: 'ADMIN_USER',
+    entityId: 'admin-uuid',
+    display: { name: 'admin@example.com', secondary: null },
+  };
+  assertEqual(
+    buildAuditDescription(log, resolveAuditEntity(log, () => null), null),
+    'เข้าสู่ระบบไม่สำเร็จ admin@example.com',
+    'เคส display resolve ได้',
+  );
+  assertEqual(
+    buildAuditDescription(
+      { action: 'LOGIN_FAILED', entityType: 'ADMIN_USER', entityId: 'gone' },
+      null,
+      { email: 'admin@example.com', failedAttempts: 3 },
+    ),
+    'เข้าสู่ระบบไม่สำเร็จ admin@example.com',
+    'display resolve ไม่ได้ → ใช้ payload.email ห้าม raw enum/UUID',
+  );
+});
+
+test('P4: ACCOUNT_LOCKED → "บัญชีถูกล็อก <email>"', () => {
+  const log = {
+    action: 'ACCOUNT_LOCKED',
+    entityType: 'ADMIN_USER',
+    entityId: 'admin-uuid',
+    display: { name: 'admin@example.com', secondary: null },
+  };
+  assertEqual(
+    buildAuditDescription(log, resolveAuditEntity(log, () => null), {
+      email: 'admin@example.com',
+      lockReason: 'MAX_FAILED_ATTEMPTS',
+    }),
+    'บัญชีถูกล็อก admin@example.com',
+    'ต้องโชว์อีเมล ไม่ใช่ raw enum ACCOUNT_LOCKED',
+  );
+});
+
+test('P5: CHANGE_PASSWORD → "เปลี่ยนรหัสผ่าน <email>" จาก payload.targetEmail (entityId = BULK/NEW resolve ไม่ได้)', () => {
+  assertEqual(
+    buildAuditDescription(
+      { action: 'CHANGE_PASSWORD', entityType: 'ADMIN_USER', entityId: 'BULK/NEW' },
+      null,
+      { selfChange: true, targetEmail: 'admin@example.com' },
+    ),
+    'เปลี่ยนรหัสผ่าน admin@example.com',
+    'ต้องไม่แสดง raw enum CHANGE_PASSWORD',
+  );
+});
+
+test('P6: RESET_PASSWORD → "รีเซ็ตรหัสผ่าน <email>"', () => {
+  const log = {
+    action: 'RESET_PASSWORD',
+    entityType: 'ADMIN_USER',
+    entityId: 'target-uuid',
+    display: { name: 'target@example.com', secondary: null },
+  };
+  assertEqual(
+    buildAuditDescription(log, resolveAuditEntity(log, () => null), {
+      selfChange: false,
+      targetEmail: 'target@example.com',
+    }),
+    'รีเซ็ตรหัสผ่าน target@example.com',
+    'ต้องโชว์อีเมลเจ้าของบัญชี ไม่ใช่ raw enum RESET_PASSWORD',
+  );
+});
+
+test('P7: label ของ entityType USER (legacy) ต้องเป็นไทย "ผู้ใช้งานระบบ"', () => {
+  assertEqual(getAuditEntityLabel('USER'), 'ผู้ใช้งานระบบ', 'ต้องมี label ไทย ไม่ใช่ raw enum USER');
+});
+
+test('P8: page contract — filter Action ต้องมี LOGIN/LOGIN_FAILED/ACCOUNT_LOCKED', () => {
+  const m = pageSource.match(/const ACTION_OPTIONS = \[[\s\S]*?\] as const/)?.[0] ?? '';
+  assertTrue(/'LOGIN'/.test(m), 'ACTION_OPTIONS ต้องมี LOGIN (กรองได้ใน dropdown)');
+  assertTrue(/'LOGIN_FAILED'/.test(m), 'ACTION_OPTIONS ต้องมี LOGIN_FAILED');
+  assertTrue(/'ACCOUNT_LOCKED'/.test(m), 'ACTION_OPTIONS ต้องมี ACCOUNT_LOCKED');
 });
 
 // =========================================================

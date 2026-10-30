@@ -94,6 +94,7 @@ function strategyFor(log: AuditLogRow): string | null {
     case 'POSITION':
       return 'POSITION';
     case 'ADMIN_USER':
+    case 'USER': // legacy: โค้ดรุ่นเก่าบันทึก entityType 'USER' — resolve เหมือน ADMIN_USER
       return 'ADMIN_USER';
     default:
       return null;

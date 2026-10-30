@@ -71,7 +71,18 @@ const CARD_STYLE = {
 
 // รายการ Action ที่ใช้ใน Filter (ค่าคงที่ — ไม่ขึ้นกับ data เพราะ data มีแค่หน้าปัจจุบัน)
 // NOTE: CREATE_USER เพิ่มเข้ามา (P0 fix) — action เฉพาะของการสร้างผู้ใช้
-const ACTION_OPTIONS = ['CREATE', 'CREATE_USER', 'UPDATE', 'DELETE', 'PDF_DOWNLOAD', 'EXPORT_EXCEL'] as const;
+// NOTE: LOGIN/LOGIN_FAILED/ACCOUNT_LOCKED — login audit จาก writeLoginAudit
+const ACTION_OPTIONS = [
+  'CREATE',
+  'CREATE_USER',
+  'UPDATE',
+  'DELETE',
+  'PDF_DOWNLOAD',
+  'EXPORT_EXCEL',
+  'LOGIN',
+  'LOGIN_FAILED',
+  'ACCOUNT_LOCKED',
+] as const;
 
 // รายการ Entity ทั้งหมด (จาก requirement)
 const ENTITY_OPTIONS = [
