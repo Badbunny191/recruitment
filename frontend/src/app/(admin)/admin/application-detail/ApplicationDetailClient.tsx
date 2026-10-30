@@ -267,6 +267,9 @@ export default function ApplicationDetailClient() {
   const { canWrite } = useRole();
   const [app, setApp] = useState<Application | null>(null);
   const [history, setHistory] = useState<StatusHistoryItem[]>([]);
+  // Phase 3: backend จำกัดจำนวนแถวแล้ว (default 50) — hasMore บอกว่ามีต่อ
+  // ใช้แค่ปรับข้อความ badge ให้ตรงความจริง ไม่เพิ่ม interaction ใด ๆ
+  const [historyHasMore, setHistoryHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // Phase 2: จัดกลุ่มตามวัน + ยุบ PDF_DOWNLOAD ซ้ำ (คำนวณฝั่ง client เท่านั้น
@@ -366,6 +369,7 @@ export default function ApplicationDetailClient() {
         }
         if (historyData.data) {
           setHistory(historyData.data);
+          setHistoryHasMore(historyData.hasMore === true);
         }
         if (Array.isArray(urlsData.data)) {
           const map: Record<string, string> = {};
@@ -462,7 +466,10 @@ export default function ApplicationDetailClient() {
         
         const [appData, historyData] = await Promise.all([appRes.json(), historyRes.json()]);
         if (appData.data) setApp(appData.data);
-        if (historyData.data) setHistory(historyData.data);
+        if (historyData.data) {
+          setHistory(historyData.data);
+          setHistoryHasMore(historyData.hasMore === true);
+        }
         
         const nextStatus = appData.data?.status || newStatus;
         setNewStatus(nextStatus || 'SUBMITTED');
@@ -853,6 +860,7 @@ export default function ApplicationDetailClient() {
             {history.length > 0 && (
               <span className="ml-2 bg-gray-200 text-gray-700 text-xs font-medium px-2 py-0.5 rounded-full">
                 {history.length} รายการ
+                {historyHasMore && ' (ใหม่ล่าสุด)'}
               </span>
             )}
           </CardTitle>
