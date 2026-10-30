@@ -16,6 +16,9 @@
  *   PDF_DOWNLOAD  → "ดาวน์โหลด PDF APP-2026-5012 (นายสมชาย ใจดี)"
  *   EXPORT_EXCEL  → "ส่งออก Excel เชี่ยวชาญ 2569 (เชี่ยวชาญ)"
  *   UPDATE + TEMPLATE_VERSION_DESCRIPTOR → "บันทึกตัวประกอบเอกสาร แบบฟอร์มสมัครงาน v5"
+ *   UPDATE + APPLICATION entityId=BULK/NEW (bulk-status)
+ *                 → "เปลี่ยนสถานะใบสมัคร (กลุ่ม 2 รายการ) → SUBMITTED"
+ *                   (1 แถวครอบหลายใบ — รายละเอียดจาก payload ไม่ใช่ entityId)
  */
 
 export interface AuditEntityDisplay {
@@ -107,6 +110,12 @@ export function resolveAuditEntity(
   log: AuditLogForDisplay,
   clientLookup: ClientLookup,
 ): ResolvedEntity | null {
+  // Bulk status update (POST /applications/bulk-status) — 1 แถว audit ครอบ
+  // หลายใบ และ route ไม่มี :id → entityId เป็น sentinel 'BULK/NEW' จึงไม่มี
+  // ใบเดี่ยวให้ resolve แสดงเป็นกลุ่มแทน
+  if (log.entityType === 'APPLICATION' && log.entityId === 'BULK/NEW') {
+    return { primary: 'กลุ่มใบสมัคร' };
+  }
   const d = log.display;
   if (d && d.name) {
     return { primary: d.name, secondary: d.secondary || undefined };
@@ -182,6 +191,26 @@ export function buildAuditDescription(
         : null;
     const who = targetEmail ?? display.primary;
     return role ? `สร้างผู้ใช้ ${who} (${role})` : `สร้างผู้ใช้ ${who}`;
+  }
+  // Bulk status update (POST /applications/bulk-status) — entityId เป็น
+  // sentinel 'BULK/NEW' เพราะ 1 แถวครอบหลายใบ รายละเอียดจริงอยู่ใน payload
+  // (action BULK_STATUS_UPDATE: updatedCount/newStatus/reason) — แถว legacy
+  // ก่อน R11 ไม่มี payload → แสดงข้อความกลุ่มอย่างเดียว
+  if (log.entityType === 'APPLICATION' && log.entityId === 'BULK/NEW') {
+    const bulk =
+      payload && typeof payload === 'object' && payload.action === 'BULK_STATUS_UPDATE'
+        ? payload
+        : null;
+    const count =
+      bulk && typeof bulk.updatedCount === 'number' ? bulk.updatedCount : null;
+    const status = bulk && typeof bulk.newStatus === 'string' ? bulk.newStatus : null;
+    const reason =
+      bulk && typeof bulk.reason === 'string' && bulk.reason ? ` (${bulk.reason})` : '';
+    const head =
+      count != null
+        ? `เปลี่ยนสถานะใบสมัคร (กลุ่ม ${count} รายการ)`
+        : 'เปลี่ยนสถานะใบสมัคร (กลุ่ม)';
+    return status ? `${head} → ${status}${reason}` : head;
   }
   if (
     log.entityType === 'APPLICATION' &&

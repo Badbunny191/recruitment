@@ -24,6 +24,9 @@
  *        (badge ไทย + description ไทย) + legacy entity_type USER
  *   M.   source contract ของ audit-logs page — ใช้ lib กลาง ห้ามประกาศ
  *        ACTION_CONFIG/ENTITY_LABEL ซ้ำในหน้า
+ *   Q.   APPLICATION bulk status update (entityId = sentinel 'BULK/NEW')
+ *        — แถวเดียวครอบหลายใบ ต้องแสดงเป็นกลุ่ม ห้ามโชว์ raw sentinel
+ *        (regression: prod แสดง "แก้ไขใบสมัคร BULK/NEW")
  *
  * Run: node --import tsx src/lib/__tests__/audit-log-display.test.ts
  */
@@ -464,6 +467,101 @@ test('M: page ต้อง import จาก lib/audit-log-display และห�
     pageSource.includes("renderActionBadge"),
     'badge ต้อง render ผ่าน renderActionBadge (getAuditActionConfig)',
   );
+});
+
+// =========================================================
+//  Q. APPLICATION bulk status update — entityId = sentinel 'BULK/NEW'
+//     1 แถว audit ครอบหลายใบ (route ไม่มี :id) — ต้องแสดงเป็นกลุ่ม
+//     ไม่ใช่ raw sentinel "แก้ไขใบสมัคร BULK/NEW" (prod regression)
+// =========================================================
+
+test('Q: resolveAuditEntity APPLICATION+BULK/NEW → "กลุ่มใบสมัคร" (คอลัมน์ entity ห้ามโชว์ sentinel)', () => {
+  const resolved = resolveAuditEntity(
+    { action: 'UPDATE', entityType: 'APPLICATION', entityId: 'BULK/NEW' },
+    () => null,
+  );
+  assertEqual(resolved?.primary, 'กลุ่มใบสมัคร', 'ต้องแสดงชื่อกลุ่ม ไม่ใช่ shortId(BULK/NEW)');
+  assertEqual(resolved?.secondary, undefined, 'ไม่มี secondary');
+});
+
+test('Q2: UPDATE + payload รูปแบบ prod → "เปลี่ยนสถานะใบสมัคร (กลุ่ม 2 รายการ) → SUBMITTED"', () => {
+  // payload ตรงตามที่ setAuditPayload ของ POST /applications/bulk-status เขียนจริง
+  const log = {
+    action: 'UPDATE',
+    entityType: 'APPLICATION',
+    entityId: 'BULK/NEW',
+  };
+  const payload = {
+    action: 'BULK_STATUS_UPDATE',
+    applicationIds: ['1398f4d8-c13e-4b2d-adc4-58752cc22633', 'ed1c9ae6-147a-4f76-9b86-6e9b567ebe58'],
+    previousStatus: {
+      '1398f4d8-c13e-4b2d-adc4-58752cc22633': 'SUBMITTED',
+      'ed1c9ae6-147a-4f76-9b86-6e9b567ebe58': 'SUBMITTED',
+    },
+    newStatus: 'SUBMITTED',
+    reason: null,
+    matched: 2,
+    updatedCount: 2,
+    selector: { kind: 'filter', roundId: '1ee6aa88-3d28-4bf0-be63-4b34354974f1' },
+    actor: 'seed-admin-001',
+  };
+  assertEqual(
+    buildAuditDescription(log, resolveAuditEntity(log, () => null), payload),
+    'เปลี่ยนสถานะใบสมัคร (กลุ่ม 2 รายการ) → SUBMITTED',
+    'ต้องโชว์จำนวนรายการ + สถานะใหม่ ไม่ใช่ "แก้ไขใบสมัคร BULK/NEW"',
+  );
+});
+
+test('Q3: payload มี reason → "เปลี่ยนสถานะใบสมัคร (กลุ่ม N รายการ) → REJECTED (<เหตุผล>)"', () => {
+  const log = { action: 'UPDATE', entityType: 'APPLICATION', entityId: 'BULK/NEW' };
+  assertEqual(
+    buildAuditDescription(
+      log,
+      resolveAuditEntity(log, () => null),
+      {
+        action: 'BULK_STATUS_UPDATE',
+        applicationIds: ['a1', 'a2', 'a3', 'a4', 'a5'],
+        previousStatus: {},
+        newStatus: 'REJECTED',
+        reason: 'ไม่ผ่านคุณสมบัติ',
+        matched: 5,
+        updatedCount: 5,
+        selector: { kind: 'ids' },
+        actor: 'admin-1',
+      },
+    ),
+    'เปลี่ยนสถานะใบสมัคร (กลุ่ม 5 รายการ) → REJECTED (ไม่ผ่านคุณสมบัติ)',
+    'ต้องแนบเหตุผลจาก payload.reason',
+  );
+});
+
+test('Q4: legacy CREATE + payload null (bulk รุ่นเก่าก่อน R11) → "เปลี่ยนสถานะใบสมัคร (กลุ่ม)" ไม่ crash', () => {
+  const log = { action: 'CREATE', entityType: 'APPLICATION', entityId: 'BULK/NEW' };
+  assertEqual(
+    buildAuditDescription(log, resolveAuditEntity(log, () => null), null),
+    'เปลี่ยนสถานะใบสมัคร (กลุ่ม)',
+    'แถวเก่าไม่มี payload → ต้องยังบอกว่าเป็นการเปลี่ยนสถานะเป็นกลุ่ม ห้าม "สร้างใบสมัคร BULK/NEW"',
+  );
+});
+
+test('Q5: payload ไม่ใช่ BULK_STATUS_UPDATE → fallback ข้อความกลุ่มอย่างเดียว ไม่ crash', () => {
+  const log = { action: 'UPDATE', entityType: 'APPLICATION', entityId: 'BULK/NEW' };
+  const desc = buildAuditDescription(log, resolveAuditEntity(log, () => null), {
+    status: 'QUALIFIED',
+  });
+  assertEqual(desc, 'เปลี่ยนสถานะใบสมัคร (กลุ่ม)', 'ต้อง fallback แบบไม่แนบตัวเลข/สถานะ');
+});
+
+test('Q6: ผลลัพธ์ห้ามมี raw sentinel BULK/NEW ทุกเคส', () => {
+  const log = { action: 'UPDATE', entityType: 'APPLICATION', entityId: 'BULK/NEW' };
+  for (const payload of [
+    null,
+    { action: 'BULK_STATUS_UPDATE', newStatus: 'QUALIFIED', updatedCount: 3, reason: null },
+    { unknown: true },
+  ]) {
+    const desc = buildAuditDescription(log, resolveAuditEntity(log, () => null), payload);
+    assertTrue(!desc.includes('BULK/NEW'), `description ห้ามมี sentinel: ${desc}`);
+  }
 });
 
 // =========================================================
