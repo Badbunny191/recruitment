@@ -286,6 +286,51 @@ test('N3: CREATE_USER ที่มี role แต่ไม่มี email → �
 });
 
 // =========================================================
+//  O. ROUND_CLONED — label ไทยครบทุกผิว (ตาราง/description/fallback)
+// =========================================================
+
+test('O: label ของ entityType ROUND_CLONED ต้องเป็นไทย "คัดลอกรอบรับสมัคร"', () => {
+  assertEqual(getAuditEntityLabel('ROUND_CLONED'), 'คัดลอกรอบรับสมัคร', 'ต้องมี label ไทย ไม่ใช่ raw enum');
+});
+
+test('O2: description ROUND_CLONED → "คัดลอกรอบรับสมัคร → <ชื่อรอบ>"', () => {
+  const log = {
+    action: 'CREATE',
+    entityType: 'ROUND_CLONED',
+    entityId: 'new-round-uuid',
+    display: { name: 'เชี่ยวชาญ 2569 (Copy)', secondary: 'เชี่ยวชาญ' },
+  };
+  assertEqual(
+    buildAuditDescription(log, resolveAuditEntity(log, () => null), null),
+    'คัดลอกรอบรับสมัคร → เชี่ยวชาญ 2569 (Copy)',
+    'ต้องโชว์ชื่อรอบใหม่ ไม่ใช่ UUID/raw enum (ระดับตำแหน่งโชว์ในคอลัมน์ entity)',
+  );
+});
+
+test('O3: ROUND_CLONED resolve ไม่ได้ → fallback UUID ย่อ พร้อมคำไทยนำหน้า', () => {
+  assertEqual(
+    buildAuditDescription(
+      { action: 'CREATE', entityType: 'ROUND_CLONED', entityId: '65ef12ab34cd56ef' },
+      null,
+      null,
+    ),
+    'คัดลอกรอบรับสมัคร → 65ef…56ef',
+    'fallback ต้องไม่แสดง ROUND_CLONED ดิบ',
+  );
+});
+
+test('O4: page contract — filter Entity และ client fallback lookup ต้องมี ROUND_CLONED', () => {
+  assertTrue(
+    /'ROUND_CLONED'/.test(pageSource.match(/const ENTITY_OPTIONS = \[[\s\S]*?\] as const/)?.[0] ?? ''),
+    'ENTITY_OPTIONS ต้องมี ROUND_CLONED (กรองได้ใน dropdown)',
+  );
+  assertTrue(
+    /ROUND_CLONED:\s*'ROUND'/.test(pageSource),
+    'ENTITY_TO_LOOKUP ต้อง map ROUND_CLONED → ROUND (fallback ชื่อรอบเมื่อ backend display หาย)',
+  );
+});
+
+// =========================================================
 //  M. source contract — audit-logs page ใช้ lib กลาง
 // =========================================================
 

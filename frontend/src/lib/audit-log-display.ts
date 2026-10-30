@@ -74,7 +74,7 @@ export const AUDIT_ENTITY_LABELS: Record<string, string> = {
   TEMPLATE_VERSION_DESCRIPTOR: 'ตัวประกอบเอกสาร (Descriptor)',
   FIELD_MASTER: 'ฟิลด์หลัก',
   APPLICATION: 'ใบสมัคร',
-  ROUND_CLONED: 'คัดลอกรอบ',
+  ROUND_CLONED: 'คัดลอกรอบรับสมัคร',
   ORGANIZATION: 'หน่วยงาน',
   JOB_FAMILY: 'กลุ่มงาน',
   POSITION_LEVEL: 'ระดับตำแหน่ง',

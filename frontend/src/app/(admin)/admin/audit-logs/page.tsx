@@ -76,6 +76,7 @@ const ACTION_OPTIONS = ['CREATE', 'CREATE_USER', 'UPDATE', 'DELETE', 'PDF_DOWNLO
 // รายการ Entity ทั้งหมด (จาก requirement)
 const ENTITY_OPTIONS = [
   'RECRUITMENT_ROUND',
+  'ROUND_CLONED',
   'TEMPLATE',
   'TEMPLATE_VERSION',
   'TEMPLATE_VERSION_DESCRIPTOR',
@@ -176,6 +177,7 @@ async function loadAllLookups(apiUrl: string, token: string): Promise<LookupBund
 
 const ENTITY_TO_LOOKUP: Record<string, keyof LookupBundle> = {
   RECRUITMENT_ROUND: 'ROUND',
+  ROUND_CLONED: 'ROUND',
   TEMPLATE: 'TEMPLATE',
   FIELD_MASTER: 'FIELD_MASTER',
   ORGANIZATION: 'ORGANIZATION',
