@@ -2574,19 +2574,20 @@ adminRoutes.get('/applications/:id/history', async (c) => {
         eq(auditLogs.entityId, id)
       )
     )
-    .orderBy(auditLogs.createdAt);
+    // เรียงใหม่ → เก่า (เหตุการณ์ล่าสุดอยู่บนสุด) + id DESC เป็น tie-breaker
+    // กันลำดับสลับกันเองเมื่อหลาย log มี created_at วินาทีเดียวกัน
+    .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id));
 
   // Get admin emails
+  // เดิม: ternary สองกิ่งเหมือนกันเป๊ะ (eq(adminUsers.id, adminIds[0])) ทำให้
+  // resolve ได้แค่ admin คนแรก — admin คนอื่นตกไป fallback เป็น UUID ใน UI
+  // แก้: ดึงทุก id ที่ปรากฏใน history ด้วย inArray
   const adminIds = [...new Set(logs.map(l => l.adminId).filter(Boolean))];
-  const admins = adminIds.length > 0 
+  const admins = adminIds.length > 0
     ? await db
         .select({ id: adminUsers.id, email: adminUsers.email })
         .from(adminUsers)
-        .where(
-          adminIds.length === 1 
-            ? eq(adminUsers.id, adminIds[0])
-            : eq(adminUsers.id, adminIds[0]) // Drizzle limitation, we'll map manually
-        )
+        .where(inArray(adminUsers.id, adminIds))
     : [];
 
   const adminMap = new Map(admins.map(a => [a.id, a.email]));
