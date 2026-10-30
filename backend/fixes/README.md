@@ -55,6 +55,7 @@ wrangler d1 migrations apply sao-db --remote  # จะ scan เฉพาะ back
 | `fix_field_master_constraint.sql` | แก้ check constraint ของ `field_master` table | `wrangler d1 execute --file=` |
 | `rollback.sql` | Rollback schema สำหรับ fix ที่ apply ไปก่อนหน้า | `wrangler d1 execute --file=` |
 | `015_rollback.sql` | Rollback สำหรับ migration `015_fix_template_fields_fk_target.sql` (ย้ายมาจาก `migrations/` เมื่อ 28 ต.ค. 2569) | `wrangler d1 execute --file=` |
+| `031_032_033_rollback.sql` | Rollback สำหรับ migrations `031/032/033` (audit_logs index optimization) — ย้อนกลับสู่ index set 5 ตัวหลัง migration 017 | `wrangler d1 execute --file=` |
 | `verify_constraint.sql` | Verify ว่า constraint ถูกต้องหลัง apply fix | `wrangler d1 execute --file=` |
 
 ---

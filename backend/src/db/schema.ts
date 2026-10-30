@@ -257,12 +257,17 @@ export const auditLogs = sqliteTable('audit_logs', {
   ipAddress: text('ip_address'),
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
 }, (table) => ({
-  entityIdx: index('idx_audit_entity').on(table.entityType, table.entityId),
-  // Performance indexes for server-side pagination (Migration 017)
-  createdAtIdx: index('idx_audit_created_at_desc').on(sql`${table.createdAt} DESC`),
+  // Composite index for entity history (Migration 031) — แทน idx_audit_entity
+  // ที่เป็น left-prefix ซ้ำซ้อน ครอบทั้ง WHERE entity_type+entity_id
+  // และ ORDER BY created_at DESC, id DESC โดยไม่ต้อง sort
+  entityCreatedIdx: index('idx_audit_entity_created').on(
+    table.entityType, table.entityId, sql`${table.createdAt} DESC`, sql`${table.id} DESC`
+  ),
+  // Tie-breaker index for pagination/dashboard (Migration 032) — แทน idx_audit_created_at_desc
+  // กำจัด USE TEMP B-TREE FOR LAST TERM OF ORDER BY
+  createdIdIdx: index('idx_audit_created_id').on(sql`${table.createdAt} DESC`, sql`${table.id} DESC`),
   actionIdx: index('idx_audit_action').on(table.action),
   adminIdx: index('idx_audit_admin_id').on(table.adminId),
-  entityIdIdx: index('idx_audit_entity_id').on(table.entityId),
 }));
 
 export const organizations = sqliteTable('organizations', {
