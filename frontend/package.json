@@ -11,6 +11,7 @@
     "test:round-payload": "node --import tsx src/lib/__tests__/round-form-payload.test.ts",
     "test:apply-draft": "node --import tsx src/lib/__tests__/apply-draft.test.ts",
     "test:audit-log-display": "node --import tsx src/lib/__tests__/audit-log-display.test.ts",
+    "test:application-history": "node --import tsx src/lib/__tests__/application-history.test.ts && tsx --tsconfig tsconfig.test.json src/components/__tests__/application-history-render.test.tsx",
     "test:file-upload-reset": "tsx --tsconfig tsconfig.test.json src/components/__tests__/file-upload-reset-repro.test.tsx",
     "test:apply-page-full": "tsx --tsconfig tsconfig.test.json src/components/__tests__/apply-page-full-repro.test.tsx",
     "test:apply-review-cross": "tsx --tsconfig tsconfig.test.json src/components/__tests__/apply-review-cross-page.test.tsx",

@@ -1,14 +1,25 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { StatusBadge } from '@/components/ui/status-badge';
+import { StatusBadge, statusConfig, type ApplicationStatus } from '@/components/ui/status-badge';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { useRole } from '@/lib/useRole';
+import { getAuditActionConfig } from '@/lib/audit-log-display';
+import {
+  groupHistory,
+  chronological,
+  formatTime,
+  formatTimeRange,
+  getStatusReason,
+  getStatusTransition,
+  type HistoryRow,
+} from '@/lib/application-history';
+import { formatDateThai } from '@/lib/date';
 import {
   OTHER_KEY_SUFFIX,
   replaceOtherInDisplay,
@@ -39,10 +50,8 @@ interface StatusHistoryItem {
   action: string;
   adminId: string;
   adminEmail: string;
-  payload: {
-    status?: string;
-    reason?: string;
-  } | null;
+  /** payload ดิบจาก DB — TEXT (JSON) หรือ object หรือ null ก็ได้ */
+  payload: unknown;
   createdAt: number | null;
 }
 
@@ -64,15 +73,14 @@ interface Application {
   schema: FormField[];
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  SUBMITTED: 'รอการตรวจสอบ',
-  QUALIFIED: 'ผ่านการตรวจสอบ',
-  REJECTED: 'ข้อมูลไม่ครบถ้วน',
-  CANCELED: 'ยกเลิกใบสมัคร',
-  ARCHIVED: 'เก็บเข้าคลัง',
-  CREATE: 'สร้างใบสมัคร',
-  UPDATE: 'แก้ไขสถานะ',
-};
+// label ของ "สถานะใบสมัคร" (SUBMITTED/QUALIFIED/...) ดึงจาก statusConfig ที่
+// StatusBadge ใช้อยู่แล้ว — ไม่ประกาศ mapping ซ้ำ
+// label ของ "การกระทำ" (PDF_DOWNLOAD/UPDATE/...) ดึงจาก getAuditActionConfig
+// ใน @/lib/audit-log-display ซึ่งเป็น Single Source of Truth ร่วมกับหน้า
+// /admin/audit-logs (เดิม STATUS_LABELS รวมสองโดเมนนี้ไว้ด้วยกันและไม่มีคีย์
+// PDF_DOWNLOAD → enum ดิบหลุดถึงผู้ใช้)
+const getStatusLabel = (status: string): string =>
+  statusConfig[status as ApplicationStatus]?.label || status;
 
 const getErrorMessage = (data: any, fallback = 'เกิดข้อผิดพลาด'): string => {
   if (!data) return fallback;
@@ -88,6 +96,171 @@ const getErrorMessage = (data: any, fallback = 'เกิดข้อผิด�
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
+/** เวลาเต็มสำหรับ 1 เหตุการณ์ — ใช้ helper กลางจาก lib/date (ไม่ประกาศซ้ำ) */
+const formatEventDateTime = (timestamp: unknown): string =>
+  formatDateThai(timestamp, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+
+/** จุดบนเส้นเวลา — ตัวล่าสุดเน้นสี, ไม่มีเลขลำดับ (index ไม่มีความหมายใน audit log) */
+function TimelineDot({ highlighted }: { highlighted: boolean }) {
+  return (
+    <div
+      className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 z-10 ${
+        highlighted ? 'bg-blue-500' : 'bg-gray-200 border border-gray-300'
+      }`}
+      aria-hidden="true"
+    >
+      <span className={`rounded-full ${highlighted ? 'w-2.5 h-2.5 bg-white' : 'w-2 h-2 bg-gray-500'}`} />
+    </div>
+  );
+}
+
+/** 1 เหตุการณ์เดียว — คงหน้าตาเดิม (badge + ผู้ดำเนินการ + เวลา + เหตุผล) */
+function HistorySingleRow({ item, isLatest }: { item: StatusHistoryItem; isLatest: boolean }) {
+  const actionCfg = getAuditActionConfig(item.action);
+  const transition = getStatusTransition(item as any);
+  const reason = getStatusReason(item as any);
+
+  return (
+    <div className="relative flex items-start gap-3 sm:gap-4">
+      <TimelineDot highlighted={isLatest} />
+      <div className="flex-1 min-w-0 bg-gray-50 rounded-lg p-4">
+        <div className="flex items-center gap-2 mb-2 flex-wrap">
+          <span
+            className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${actionCfg.className}`}
+          >
+            {actionCfg.label}
+          </span>
+          {transition && (
+            <span className="inline-flex items-center gap-1.5 text-sm flex-wrap">
+              {transition.from && (
+                <>
+                  <span className="text-gray-600">{getStatusLabel(transition.from)}</span>
+                  <svg
+                    className="w-4 h-4 text-gray-400 flex-shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                  </svg>
+                </>
+              )}
+              <span className="font-medium text-blue-700">{getStatusLabel(transition.to)}</span>
+            </span>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
+          <span className="flex items-center gap-1 min-w-0">
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            </svg>
+            <span className="truncate">{item.adminEmail || item.adminId}</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            {formatEventDateTime(item.createdAt)}
+          </span>
+        </div>
+        {reason && (
+          <div className="mt-2 p-2 bg-red-50 border border-red-100 rounded text-sm text-red-700">
+            <span className="font-medium">เหตุผล:</span> {reason}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * เหตุการณ์ซ้ำที่ถูกยุบ — action เดียวกัน + ผู้ดำเนินการเดียวกัน + วันเดียวกัน
+ * ปุ่มขยายเป็น <button> จริง (keyboard ใช้ได้) พร้อม aria-expanded/aria-controls
+ */
+function HistoryGroupRow({
+  row,
+  isLatest,
+  expanded,
+  onToggle,
+}: {
+  row: Extract<HistoryRow, { kind: 'group' }>;
+  isLatest: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const actionCfg = getAuditActionConfig(row.action);
+  const count = row.events.length;
+  const regionId = `history-group-${row.key.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+
+  return (
+    <div className="relative flex items-start gap-3 sm:gap-4">
+      <TimelineDot highlighted={isLatest} />
+      <div className="flex-1 min-w-0 bg-gray-50 rounded-lg p-4">
+        <div className="flex items-center gap-2 mb-2 flex-wrap">
+          <span
+            className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${actionCfg.className}`}
+          >
+            {actionCfg.label}
+          </span>
+          <span className="text-sm font-semibold text-gray-900">{count} ครั้ง</span>
+        </div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
+          <span className="flex items-center gap-1 min-w-0">
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            </svg>
+            <span className="truncate">{row.actor}</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            {formatTimeRange(row.events)}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-controls={regionId}
+          className="mt-2 inline-flex items-center gap-1 rounded px-1 py-1 text-sm font-medium text-blue-700 hover:text-blue-900 hover:bg-blue-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1"
+        >
+          <svg
+            className={`w-4 h-4 transition-transform ${expanded ? 'rotate-90' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+          {expanded ? 'ซ่อนรายการ' : `ดูรายการทั้งหมด ${count} รายการ`}
+        </button>
+
+        <div id={regionId} hidden={!expanded}>
+          <ul className="mt-2 border-l-2 border-gray-200 pl-3 space-y-1.5 text-sm text-gray-600">
+            {chronological(row.events).map((event) => (
+              <li key={event.id} className="flex flex-wrap items-baseline gap-x-2">
+                <span className="font-mono text-xs text-gray-700 tabular-nums">{formatTime(event.createdAt)}</span>
+                <span className="truncate">{event.adminEmail || event.adminId}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ApplicationDetailClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -95,6 +268,21 @@ export default function ApplicationDetailClient() {
   const [app, setApp] = useState<Application | null>(null);
   const [history, setHistory] = useState<StatusHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Phase 2: จัดกลุ่มตามวัน + ยุบ PDF_DOWNLOAD ซ้ำ (คำนวณฝั่ง client เท่านั้น
+  // ไม่แตะ API) — useMemo กันการ group ใหม่ทุก re-render (พิมพ์ใน modal ฯลฯ)
+  const historyDays = useMemo(() => groupHistory(history as any), [history]);
+
+  // เก็บเฉพาะกลุ่มที่ผู้ใช้กดขยาย — default ยุบไว้ (ลด cognitive load)
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (key: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
   
   // Status update state
   const [showStatusModal, setShowStatusModal] = useState(false);
@@ -671,69 +859,49 @@ export default function ApplicationDetailClient() {
         </CardHeader>
         <CardContent className="p-6">
           {history.length > 0 ? (
-            <div className="relative">
-              {/* Timeline line */}
-              <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-gray-200"></div>
-              
-              <div className="space-y-6">
-                {history.map((item, index) => (
-                  <div key={item.id} className="relative flex items-start gap-4 pl-2">
-                    {/* Timeline dot */}
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 z-10 ${
-                      index === 0 ? 'bg-blue-500' : 'bg-gray-300'
-                    }`}>
-                      {index === 0 ? (
-                        <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                      ) : (
-                        <span className="text-white text-xs font-bold">{index + 1}</span>
-                      )}
-                    </div>
-                    
-                    <div className="flex-1 bg-gray-50 rounded-lg p-4">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="font-medium">
-                          {STATUS_LABELS[item.action] || item.action}
-                        </span>
-                        {item.payload?.status && (
-                          <>
-                            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                            </svg>
-                            <span className="text-sm text-blue-600">
-                              {STATUS_LABELS[item.payload.status] || item.payload.status}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
-                        <span className="flex items-center gap-1">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                          </svg>
-                          {item.adminEmail || item.adminId}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                          {formatDate(item.createdAt)}
-                        </span>
-                      </div>
-                      {item.payload?.reason && (
-                        <div className="mt-2 p-2 bg-red-50 border border-red-100 rounded text-sm text-red-700">
-                          <span className="font-medium">เหตุผล:</span> {item.payload.reason}
-                        </div>
-                      )}
+            <div className="space-y-6">
+              {historyDays.map((day, dayIndex) => (
+                <section key={day.key} aria-label={day.label}>
+                  {/* หัวกลุ่มวัน — sticky บนจอแคบเพื่อไม่ให้หลงวันที่ขณะเลื่อน */}
+                  <h4 className="sticky top-0 z-20 -mx-1 mb-3 flex items-center justify-between gap-2 rounded bg-white/95 px-1 py-1.5 backdrop-blur-sm">
+                    <span className="text-sm font-semibold text-gray-900">{day.label}</span>
+                    <span className="text-xs text-gray-500">{day.count} รายการ</span>
+                  </h4>
+
+                  <div className="relative">
+                    {/* เส้นเวลาเฉพาะวันนั้น */}
+                    <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-gray-200" aria-hidden="true" />
+
+                    <div className="space-y-4">
+                      {day.rows.map((row) => {
+                        // แถวแรกของวันแรก = เหตุการณ์ล่าสุดของทั้งหน้า
+                        const isLatest =
+                          dayIndex === 0 && day.rows[0] === row;
+
+                        if (row.kind === 'group') {
+                          return (
+                            <HistoryGroupRow
+                              key={row.key}
+                              row={row}
+                              isLatest={isLatest}
+                              expanded={expandedGroups.has(row.key)}
+                              onToggle={() => toggleGroup(row.key)}
+                            />
+                          );
+                        }
+
+                        return (
+                          <HistorySingleRow key={row.key} item={row.event} isLatest={isLatest} />
+                        );
+                      })}
                     </div>
                   </div>
-                ))}
-              </div>
+                </section>
+              ))}
             </div>
           ) : (
             <div className="text-center py-12 text-gray-500">
-              <svg className="w-12 h-12 mx-auto mb-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-12 h-12 mx-auto mb-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <p>ยังไม่มีประวัติการดำเนินการ</p>
