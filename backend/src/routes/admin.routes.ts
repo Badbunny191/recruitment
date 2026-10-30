@@ -27,6 +27,7 @@ import {
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
 import { buildAuditLogWhere, parseMultiParam } from '../lib/audit-log-query';
+import { parseHistoryLimit, computeHasMore } from '../lib/application-history-query';
 import {
   APPLICATION_LIST_COLUMNS,
   buildApplicationsListOrderBy,
@@ -2548,9 +2549,22 @@ adminRoutes.get('/applications/:id/pdf', async (c) => {
 });
 
 // GET /admin/applications/:id/history - Get status change history
+// Phase 3 (performance & scalability):
+//   - ?limit= whitelist 10/25/50/100, ไม่ส่ง/ค่าผิดรูป → default 50
+//     (ไม่ 400 — endpoint อ่านต้องทน query string ที่ผิดรูป และ frontend
+//     ที่ยังไม่ส่ง limit ต้องได้ behavior ที่ใช้งานได้เหมือนเดิม)
+//   - เดิมไม่มี LIMIT เลย: ใบที่กดดาวน์โหลด PDF ซ้ำ ๆ จะสะสม PDF_DOWNLOAD
+//     เป็นพันแถว (payload 100–600 B/แถว) → response โตถึงระดับ MB
+//   - hasMore แทน total count: ดึง limit+1 แล้วตัดทิ้ง = query เดียว
+//     ไม่มี COUNT(*) เพิ่ม ไม่มี subrequest เพิ่มบน Workers
+//     (เหตุผลเต็มอยู่ที่ lib/application-history-query.ts)
+//   - response contract เดิมคงไว้ครบ: { data: [...] } + key ใหม่ hasMore/limit
+//     (เพิ่ม key เท่านั้น ไม่แก้/ไม่ลบ key เดิม → frontend เดิมไม่พัง)
 adminRoutes.get('/applications/:id/history', async (c) => {
   const db = drizzle(c.env.DB);
   const id = c.req.param('id');
+
+  const limit = parseHistoryLimit(c.req.query('limit'));
 
   // Check application exists
   const app = await db.select().from(applications).where(eq(applications.id, id)).get();
@@ -2559,7 +2573,8 @@ adminRoutes.get('/applications/:id/history', async (c) => {
   }
 
   // Get audit logs for this application
-  const logs = await db
+  // ดึง limit+1 เพื่อรู้ว่ามีหน้าถัดไปโดยไม่ต้อง COUNT(*) ทั้งชุด
+  const rows = await db
     .select({
       id: auditLogs.id,
       action: auditLogs.action,
@@ -2576,7 +2591,14 @@ adminRoutes.get('/applications/:id/history', async (c) => {
     )
     // เรียงใหม่ → เก่า (เหตุการณ์ล่าสุดอยู่บนสุด) + id DESC เป็น tie-breaker
     // กันลำดับสลับกันเองเมื่อหลาย log มี created_at วินาทีเดียวกัน
-    .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id));
+    // (tie-breaker นี้สำคัญกว่าเดิมเมื่อมี LIMIT: ถ้าลำดับไม่นิ่ง แถวขอบหน้า
+    //  อาจซ้ำหรือหายระหว่างหน้า)
+    .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+    .limit(limit + 1);
+
+  const hasMore = computeHasMore(rows.length, limit);
+  // ตัดแถวเกินที่ดึงมาเพื่อตรวจ hasMore ออก — ไม่หลุดไปถึง client
+  const logs = hasMore ? rows.slice(0, limit) : rows;
 
   // Get admin emails
   // เดิม: ternary สองกิ่งเหมือนกันเป๊ะ (eq(adminUsers.id, adminIds[0])) ทำให้
@@ -2601,7 +2623,7 @@ adminRoutes.get('/applications/:id/history', async (c) => {
     createdAt: toUnixTimestamp(log.createdAt)
   }));
 
-  return c.json({ data: history });
+  return c.json({ data: history, hasMore, limit });
 });
 
 // POST /admin/applications/bulk-status - Bulk update application status
