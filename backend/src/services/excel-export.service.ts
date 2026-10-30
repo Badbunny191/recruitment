@@ -633,7 +633,10 @@ async function writeExportAudit(
       id: uuidv4(),
       adminId,
       action: 'EXPORT_EXCEL',
-      entityType: 'APPLICATION',
+      // entityId = roundId จึงต้องเป็น RECRUITMENT_ROUND (log เก่าที่เขียนไว้
+      // เป็น APPLICATION + roundId ไม่แก้ย้อนหลัง — resolver ใน
+      // audit-display.service.ts รองรับทั้งสองรูปแบบ)
+      entityType: 'RECRUITMENT_ROUND',
       entityId: auditPayload.roundId as string,
       payload: JSON.stringify(auditPayload),
       ipAddress: ipAddress ?? 'unknown',

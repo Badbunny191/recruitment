@@ -11,9 +11,9 @@
  *     (D1 bind limit — pattern เดียวกับ excel-export.service.ts)
  *   - resolve ไม่ได้ (ข้อมูลถูกลบ/UUID แปลก) → ไม่มีรายการใน map
  *     → caller/fallback แสดง UUID ย่อแทน
- *   - พิเศษ: EXPORT_EXCEL บันทึก entityType='APPLICATION' แต่ entityId
- *     = roundId (excel-export.service.ts writeExportAudit) → resolve
- *     เป็นรอบรับสมัครตาม action
+ *   - พิเศษ (legacy): EXPORT_EXCEL รุ่นเก่าบันทึก entityType='APPLICATION'
+ *     แต่ entityId = roundId → resolve เป็นรอบรับสมัครตาม action
+ *     (เขียนใหม่แล้วเป็น RECRUITMENT_ROUND — ดู writeExportAudit)
  *
  * ผลลัพธ์เป็น { name, secondary } เพื่อให้ frontend จัด 2 บรรทัดได้ เช่น
  *   APPLICATION          → "APP-2026-5012" / "นายสมชาย ใจดี"
@@ -68,7 +68,8 @@ function chunkArray<T>(items: readonly T[], size: number): T[][] {
 
 /**
  * กลุ่ม resolve ต่อ log — คืน null เมื่อ entityType ไม่รู้จัก (ข้าม)
- * EXPORT_EXCEL: entityId เป็น roundId แม้ entityType จะเป็น APPLICATION
+ * EXPORT_EXCEL (legacy): log เก่า entityId เป็น roundId แม้ entityType
+ * จะเป็น APPLICATION — log ใหม่เป็น RECRUITMENT_ROUND อยู่แล้ว
  */
 function strategyFor(log: AuditLogRow): string | null {
   switch (log.entityType) {

@@ -7,7 +7,8 @@
  * เป็นชื่อที่คนอ่านได้ ณ ตอนอ่าน — ไม่แก้ historical data
  *
  *   A.  APPLICATION            → "APP-YYYY-NNNN" + ชื่อผู้สมัคร
- *   B.  EXPORT_EXCEL (APPLICATION + roundId) → resolve เป็นรอบรับสมัคร
+ *   B.  EXPORT_EXCEL legacy (APPLICATION + roundId) → resolve เป็นรอบรับสมัคร
+ *   B2. EXPORT_EXCEL format ใหม่ (RECRUITMENT_ROUND + roundId) → รอบรับสมัคร
  *   C.  TEMPLATE_VERSION(+)    → ชื่อ template + vN (join templates)
  *   D.  RECRUITMENT_ROUND / ROUND_CLONED → ชื่อรอบ + ระดับตำแหน่ง
  *   E.  master data ทั้งชุด (FIELD_MASTER/ORG/JOB/LEVEL/POSITION/ADMIN_USER)
@@ -149,15 +150,25 @@ test('A: APPLICATION → applicationNo + ชื่อผู้สมัคร', 
 });
 
 // =========================================================
-//  B. EXPORT_EXCEL — entityType APPLICATION แต่ entityId = roundId
+//  B. EXPORT_EXCEL — legacy format (APPLICATION + roundId)
 // =========================================================
 
-test('B: EXPORT_EXCEL → resolve เป็นรอบรับสมัคร (title + positionLevel)', async () => {
+test('B (legacy): EXPORT_EXCEL APPLICATION+roundId → resolve เป็นรอบรับสมัคร', async () => {
   const map = await resolveAuditEntityDisplays(db, [
     { id: 'log-2', action: 'EXPORT_EXCEL', entityType: 'APPLICATION', entityId: 'round-uuid-1' },
   ]);
   assertEqual(map['log-2']?.name, 'เชี่ยวชาญ 2569', 'name ต้องเป็นชื่อรอบ');
   assertEqual(map['log-2']?.secondary, 'เชี่ยวชาญ', 'secondary ต้องเป็นระดับตำแหน่ง');
+});
+
+// B2. format ใหม่หลังแก้ writeExportAudit — RECRUITMENT_ROUND + roundId
+// (เดิน path มาตรฐาน RECRUITMENT_ROUND → ROUND ไม่ต้องพึ่ง special case)
+test('B2: EXPORT_EXCEL RECRUITMENT_ROUND+roundId → resolve เป็นรอบรับสมัคร', async () => {
+  const map = await resolveAuditEntityDisplays(db, [
+    { id: 'log-2b', action: 'EXPORT_EXCEL', entityType: 'RECRUITMENT_ROUND', entityId: 'round-uuid-1' },
+  ]);
+  assertEqual(map['log-2b']?.name, 'เชี่ยวชาญ 2569', 'name ต้องเป็นชื่อรอบ');
+  assertEqual(map['log-2b']?.secondary, 'เชี่ยวชาญ', 'secondary ต้องเป็นระดับตำแหน่ง');
 });
 
 // =========================================================

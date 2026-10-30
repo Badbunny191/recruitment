@@ -812,7 +812,7 @@ async function runAllTests() {
     assertEqual(delta, 1, 'export 1 ครั้ง = audit เพิ่ม 1 รายการ (ไม่ใช่ต่อผู้สมัคร)');
     assertTrue(logs.length >= 1, 'ต้องมี audit อย่างน้อย 1');
     const latest = logs[0]; // DESC → ใหม่สุดคือการ export ครั้งล่าสุด
-    assertEqual(latest.entity_type, 'APPLICATION');
+    assertEqual(latest.entity_type, 'RECRUITMENT_ROUND', 'entityId = roundId ต้องคู่กับ entityType RECRUITMENT_ROUND (ไม่ใช่ APPLICATION)');
     assertEqual(latest.entity_id, ROUND_ID);
     assertEqual(latest.admin_id, 'admin-1');
     // drizzle mode:'json' อาจคืน string / object / string ซ้อนสองชั้น — parse จนกว่าจะเป็น object
