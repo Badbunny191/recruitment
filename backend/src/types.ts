@@ -56,6 +56,8 @@ export type AppVariables = {
     mustChangePassword?: boolean;
   };
   auditPayload?: string | null;
+  /** auditMiddleware: override entityId เมื่อ entity id ไม่ได้อยู่ใน path เป็น :id (เช่น versionId) */
+  auditEntityId?: string;
 };
 
 // =============================================================================

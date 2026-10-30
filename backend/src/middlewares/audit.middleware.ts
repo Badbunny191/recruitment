@@ -19,8 +19,12 @@ export const auditMiddleware = (entityType: string, options?: { action?: string 
   if (method === 'PUT' || method === 'PATCH') action = 'UPDATE';
   if (method === 'DELETE') action = 'DELETE';
 
-  // Try to get entity ID from params
-  const entityId = c.req.param('id') || 'BULK/NEW';
+  // Entity ID: route handler ตั้ง c.set('auditEntityId', ...) นำหน้าได้ เมื่อ
+  // id ของ entity ไม่ได้อยู่ใน path เป็น :id เช่น POST /templates/:id/versions
+  // (:id = templateId แต่ entity จริงคือ version ที่เพิ่งสร้าง) และ
+  // PUT /template-versions/:versionId (param ไม่ได้ชื่อ id → param('id') = undefined)
+  // ไม่ตั้ง → ใช้ param('id') ตามเดิม, ไม่มีทั้งคู่ → sentinel 'BULK/NEW'
+  const entityId = c.get('auditEntityId') || c.req.param('id') || 'BULK/NEW';
   
   // Check for custom audit payload set by route handler
   // Routes can set this to include change tracking data

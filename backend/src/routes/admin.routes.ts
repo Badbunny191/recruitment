@@ -975,6 +975,9 @@ adminRoutes.post('/templates/:id/versions', adminOnlyMiddleware, auditMiddleware
   const db = drizzle(c.env.DB);
   const payload = c.req.valid('json') as any;
   const versionId = uuidv4();
+  // audit TEMPLATE_VERSION ต้องชี้ version ที่เพิ่งสร้าง — :id ใน path คือ
+  // templateId ซึ่งทำให้ resolver หา template_versions ไม่เจอ (แสดงเป็น UUID ย่อ)
+  c.set('auditEntityId', versionId);
 
   // ── Configurable PDF Filename (Migration 028) ──
   // validate ด้วยข้อความไทย (ผู้ดูแลอ่านจาก UI ตรง ๆ); null/ว่าง = ใช้ค่าเริ่มต้น
@@ -1185,6 +1188,9 @@ adminRoutes.put('/template-versions/:versionId', adminOnlyMiddleware,
   async (c) => {
     const db = drizzle(c.env.DB);
     const versionId = c.req.param('versionId');
+    // path ใช้ :versionId แต่ auditMiddleware อ่าน param('id') → ไม่ set ตรงนี้
+    // entityId จะกลายเป็น sentinel 'BULK/NEW'
+    c.set('auditEntityId', versionId);
     const payload = c.req.valid('json') as any;
 
     // 1. Verify version exists
