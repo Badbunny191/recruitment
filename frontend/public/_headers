@@ -1,0 +1,33 @@
+# =============================================================================
+# Cloudflare Pages headers — Platform Hardening Phase 1 (TASK 2)
+# =============================================================================
+# Cloudflare Pages อ่านไฟล์นี้จาก deploy root — Next.js `output: 'export'`
+# copy ทุกไฟล์ใน public/ ลง out/ ตรง ๆ จึงต้องวางที่ public/_headers
+#
+# ข้อจำกัดที่ตรวจสอบจากโค้ดจริงก่อนเขียน (ห้ามเดา):
+#   - Next static export มี inline <script> ของตัวเองในทุกหน้า (bootstrap)
+#     → script-src ต้องมี 'unsafe-inline' (hash ไม่ practical กับ static export
+#       เพราะ hash เปลี่ยนทุก build — ดู follow-up ใน SECURITY_SWEEP_REPORT)
+#   - React style props / composer preview ใช้ inline style และ iframe srcDoc
+#     (srcDoc inherit CSP ของ parent — style-src 'unsafe-inline' จึงต้องมี)
+#   - Turnstile (TurnstileWidget.tsx): script + widget iframe จาก
+#     challenges.cloudflare.com → script-src / frame-src / connect-src
+#   - PDF ทุก flow (admin/lookup/public) fetch เป็น blob แล้วดาวน์โหลดหรือ
+#     เปิดแท็บใหม่ → อยู่ภายใต้ connect-src ของ API origin ไม่ต้อง frame ใด
+#   - iframe srcDoc ของ composer: เช็ค frame-src ด้วย URL ของ embedder
+#     (about:srcdoc → 'self' ผ่าน ตาม CSP3 §6.7.2.6)
+#   - ไม่มี Google Fonts / web worker / <img> จาก origin ภายนอก
+#
+# ⚠️ ถ้าเปลี่ยน NEXT_PUBLIC_API_URL (domain backend) ต้องแก้ connect-src ตรงนี้ด้วย
+#
+# ตรวจง่ายหลัง deploy:
+#   curl -sI https://sao-recruitment-frontend.pages.dev | grep -i content-security
+# =============================================================================
+
+/*
+  Strict-Transport-Security: max-age=15552000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://sao-recruitment-backend.hrmsao.workers.dev https://challenges.cloudflare.com; frame-src 'self' https://challenges.cloudflare.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'

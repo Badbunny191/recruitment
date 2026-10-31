@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
+import { secureHeaders } from 'hono/secure-headers';
 import { drizzle } from 'drizzle-orm/d1';
 
 import { Bindings } from './types';
@@ -11,6 +12,31 @@ import { healthRoutes } from './routes/health.routes';
 import { cleanupExpiredTempAttachments } from './lib/attachment-cleanup';
 
 const app = new Hono<{ Bindings: Bindings }>();
+
+// ── Security headers (Platform Hardening Phase 1) ──
+// HSTS / nosniff / Referrer-Policy / Permissions-Policy (+ XFO default SAMEORIGIN)
+// ครอบทุก response ของ API — ทั้งหมดเป็น header ระดับ document ที่ไม่กระทบ
+// fetch JSON, Turnstile siteverify, และ PDF ที่ frontend เปิดแบบ blob/new tab
+// (ไม่มี flow ใด embed ผ่าน iframe — ยืนยันจาก ApplicationDetailClient/lookup
+// ทั้งหมด fetch เป็น blob หรือ window.open แบบ top-level navigation)
+//
+// Content-Security-Policy ตั้งใจ "ไม่" ตั้งที่นี่: CSP เป็น policy ระดับเอกสาร
+// HTML — API ตอบ JSON/PDF จึงไม่มีผล และตัวจริงของเว็บอยู่ที่
+// frontend/public/_headers (Cloudflare Pages) ที่กำหนด CSP ครบรวม Turnstile
+app.use(
+  '*',
+  secureHeaders({
+    strictTransportSecurity: 'max-age=15552000; includeSubDomains',
+    xContentTypeOptions: 'nosniff',
+    referrerPolicy: 'no-referrer',
+    // API ไม่ต้องใช้กล้อง/ไมค์/ตำแหน่ง — ปิดทิ้ง (เอกสาร HTML จริงคุมที่ _headers)
+    permissionsPolicy: {
+      camera: [],
+      microphone: [],
+      geolocation: [],
+    },
+  })
+);
 
 app.onError((err, c) => {
   // รักษา HTTP status เดิม เช่น 400, 401, 403, 404

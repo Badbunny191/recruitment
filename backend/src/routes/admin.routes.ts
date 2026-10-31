@@ -37,6 +37,7 @@ import {
 } from '../lib/applications-list-query';
 import {
   describeSelector,
+  MAX_BULK_IDS,
   normalizeSelectorInput,
   resolveSelectorWhere,
 } from '../lib/applications-selector';
@@ -2373,10 +2374,11 @@ adminRoutes.patch('/applications/:id/status', adminOnlyMiddleware, auditMiddlewa
       }
     });
   } catch (error: any) {
+    // Security: err.message/details ห้ามส่งกลับ client (อาจพา SQL/schema ออกไป)
+    // รายละเอียดเต็มอยู่ใน server log ด้านบน — client ได้ข้อความกลางเท่านั้น
     console.error('Status update error:', error);
-    return c.json({ 
-      error: error?.message || 'เกิดข้อผิดพลาดในการอัปเดตสถานะ',
-      details: error?.cause?.message || null
+    return c.json({
+      error: 'เกิดข้อผิดพลาดในการอัปเดตสถานะ',
     }, 500);
   }
 });
@@ -2546,9 +2548,10 @@ adminRoutes.get('/applications/:id/pdf', async (c) => {
       },
     });
   } catch (err) {
+    // Security: ห้ามส่ง err.message กลับ client (อาจพา path/DB error ออกไป)
     console.error(`[PDF] Error generating PDF for application ${id}: ${err}`);
     return c.json(
-      { error: 'Failed to generate PDF', message: err instanceof Error ? err.message : String(err) },
+      { error: 'Failed to generate PDF' },
       500
     );
   }
@@ -2666,7 +2669,9 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
   const { status, reason } = parsed.data;
 
   // แปลง payload (selector หรือ ids เดิม) → selector เดียว
-  const normalized = normalizeSelectorInput(body, 'ids');
+  // maxIds: fail closed กัน D1 bind explosion — kind 'ids' กลายเป็น bind ของ
+  // IN (...) (D1 จำกัด ~100) เกินกว่านั้น query ล้มทั้งก้อนเป็น 500
+  const normalized = normalizeSelectorInput(body, 'ids', { maxIds: MAX_BULK_IDS });
   if (!normalized.ok || !normalized.selector) {
     return c.json({ success: false, message: normalized.error || 'payload ไม่ถูกต้อง' }, 400);
   }
@@ -2784,10 +2789,11 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
       }
     });
   } catch (error: any) {
+    // Security: err.message/details ห้ามส่งกลับ client (อาจพา SQL/schema ออกไป)
+    // รายละเอียดเต็มอยู่ใน server log ด้านบน — client ได้ข้อความกลางเท่านั้น
     console.error('Bulk status update error:', error);
-    return c.json({ 
-      error: error?.message || 'เกิดข้อผิดพลาดในการอัปเดตสถานะ',
-      details: error?.cause?.message || null
+    return c.json({
+      error: 'เกิดข้อผิดพลาดในการอัปเดตสถานะ',
     }, 500);
   }
 });

@@ -198,6 +198,21 @@ export const applications = sqliteTable('applications', {
   yearIdx: index('idx_apps_year').on(table.year),
   roundCodeIdx: index('idx_apps_round_code').on(table.roundCode),
   yearRoundCodeIdx: index('idx_apps_year_round_code').on(table.year, table.roundCode),
+  // Migration 031 — submitted_at sort indexes (EXPLAIN-verified, ดูไฟล์ migration)
+  // ครอบ ORDER BY ของรายชื่อผู้สมัคร (default sort) และ Excel export FILTERED
+  // ทั้งคู่ partial ที่ deleted_at IS NULL ตาม where ของ builder กลางทุก query
+  // (drizzle-orm 0.45 SQLite ไม่มี .desc() บนคอลัมน์ — ทิศ DESC เขียนเป็น sql)
+  roundSubmittedSortIdx: index('idx_apps_round_submitted_sort').on(
+    table.roundId,
+    sql`(${table.submittedAt} IS NULL)`,
+    sql`${table.submittedAt} DESC`,
+    table.id,
+  ).where(sql`deleted_at IS NULL`),
+  roundSubmittedExportIdx: index('idx_apps_round_submitted_export').on(
+    table.roundId,
+    sql`${table.submittedAt} DESC`,
+    sql`${table.id} DESC`,
+  ).where(sql`deleted_at IS NULL`),
   checkStatus: check('chk_app_status', sql`${table.status} IN ('DRAFT', 'SUBMITTED', 'QUALIFIED', 'REJECTED', 'CANCELED', 'ARCHIVED')`)
 }));
 

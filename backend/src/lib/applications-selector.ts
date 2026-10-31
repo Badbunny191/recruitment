@@ -89,6 +89,20 @@ export type ApplicationsSelector = ApplicationsSelectorIds | ApplicationsSelecto
 export const MAX_SELECTOR_EXCLUDE_IDS = 80;
 
 /**
+ * จำนวน id สูงสุดต่อคำขอของ POST /admin/applications/bulk-status
+ * (ทั้ง legacy { ids } และ selector kind 'ids')
+ *
+ * เหตุผล: kind 'ids' กลายเป็น bind parameter ของ `IN (...)` ใน D1 ซึ่งจำกัด
+ * ~100 bind ต่อ statement — เกินกว่านั้น query ล้มทั้งก้อน (500 จาก
+ * "too many SQL variables") ใช้ 80 เท่ากับ MAX_SELECTOR_EXCLUDE_IDS เพื่อ
+ * เหลือที่ให้ bind อื่น และกัน payload ขนาดยักษ์ตั้งแต่ขอบ input (fail closed)
+ *
+ * เกิน cap → reject 400 พร้อม message อ่านเข้าใจ ไม่ใช่ตัดทิ้งเงียบ ๆ
+ * (export-selected ไม่ได้ใช้ cap นี้ — มี MAX_EXPORT_ROWS ของตัวเองที่ 1,000)
+ */
+export const MAX_BULK_IDS = 80;
+
+/**
  * สถานะที่ "ไม่ใช่ DRAFT" — ใช้เมื่อ selector ต้องตัด DRAFT ออก
  * (export semantics เดิม: buildExportWhere ตัด DRAFT โดย default)
  *
@@ -111,6 +125,14 @@ export interface NormalizeSelectorResult {
   error?: string;
 }
 
+export interface NormalizeSelectorOptions {
+  /**
+   * cap จำนวน id สูงสุดของ kind 'ids' (หลัง dedupe) — เกิน → error (fail closed)
+   * ไม่ระบุ = ไม่บังคับ cap ที่ชั้นนี้ (endpoint ที่มี zod cap ของตัวเอง เช่น export)
+   */
+  maxIds?: number;
+}
+
 /**
  * แปลง payload ที่รับมารูปใดก็ได้ให้เป็น ApplicationsSelector
  *
@@ -129,6 +151,7 @@ export interface NormalizeSelectorResult {
 export function normalizeSelectorInput(
   body: unknown,
   legacyIdsKey: 'ids' | 'applicationIds',
+  options: NormalizeSelectorOptions = {},
 ): NormalizeSelectorResult {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: 'payload ไม่ถูกต้อง' };
@@ -147,7 +170,7 @@ export function normalizeSelectorInput(
   }
 
   if (hasSelector) {
-    return normalizeSelectorObject(raw.selector);
+    return normalizeSelectorObject(raw.selector, options);
   }
 
   if (hasLegacyIds) {
@@ -155,10 +178,27 @@ export function normalizeSelectorInput(
     if (!Array.isArray(ids)) {
       return { ok: false, error: `${legacyIdsKey} ต้องเป็น array` };
     }
+    const capError = checkIdsCap(ids as unknown[], options.maxIds);
+    if (capError) return { ok: false, error: capError };
     return { ok: true, selector: { kind: 'ids', ids: ids as string[] } };
   }
 
   return { ok: false, error: `กรุณาระบุ selector หรือ ${legacyIdsKey}` };
+}
+
+/**
+ * ตรวจ cap ของ kind 'ids' — นับหลัง dedupe เพราะ bind จริงใน SQL
+ * นับเฉพาะ element ที่เป็น string ไม่ว่าง (เกณฑ์เดียวกับ dedupeIds)
+ */
+function checkIdsCap(ids: readonly unknown[], maxIds?: number): string | null {
+  if (maxIds === undefined) return null;
+  const uniqueCount = new Set(
+    ids.filter((id) => typeof id === 'string' && id.length > 0),
+  ).size;
+  if (uniqueCount > maxIds) {
+    return `เลือกได้ครั้งละสูงสุด ${maxIds} รายการ กรุณาแบ่งเป็นหลายครั้ง หรือใช้ "เลือกทั้งหมดตามตัวกรอง" แทน`;
+  }
+  return null;
 }
 
 /** string ที่ trim แล้วไม่ว่าง → ค่านั้น, ไม่อย่างนั้น → null */
@@ -205,7 +245,10 @@ export function canonicalizeSelector(selector: ApplicationsSelector): Applicatio
 }
 
 /** ตรวจ selector object ที่ client ส่งมาตรง ๆ */
-function normalizeSelectorObject(raw: unknown): NormalizeSelectorResult {
+function normalizeSelectorObject(
+  raw: unknown,
+  options: NormalizeSelectorOptions = {},
+): NormalizeSelectorResult {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, error: 'selector ต้องเป็น object' };
   }
@@ -216,6 +259,8 @@ function normalizeSelectorObject(raw: unknown): NormalizeSelectorResult {
     if (!Array.isArray(sel.ids)) {
       return { ok: false, error: 'selector.ids ต้องเป็น array' };
     }
+    const capError = checkIdsCap(sel.ids as unknown[], options.maxIds);
+    if (capError) return { ok: false, error: capError };
     return { ok: true, selector: { kind: 'ids', ids: sel.ids as string[] } };
   }
 
