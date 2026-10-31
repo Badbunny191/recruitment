@@ -1,0 +1,180 @@
+# =============================================================================
+# D1 Backup — daily export of the production database to R2 (90-day retention)
+#
+# Sprint 2 Task 4. Design doc: docs/D1_BACKUP_AUTOMATION.md
+# (supersedes the workflow sketch inside docs/D1_BACKUP_AND_RESTORE_PLAN.md)
+#
+# What it does (02:00 ICT daily = 19:00 UTC):
+#   1. wrangler d1 export sao-db --remote  (full dump: schema + data)
+#   2. Validate dump (size floor + schema marker + sha256)
+#   3. Collect manifest facts (row counts + migration ledger head)
+#   4. Ensure the backup bucket exists + 90-day expire lifecycle rule
+#   5. Optional GPG encryption when secrets.BACKUP_GPG_RECIPIENT is set
+#      (strongly recommended — the dump contains full applicant PII)
+#   6. Upload dump + manifest to  R2_BACKUP_BUCKET/d1/daily/YYYY/MM/DD/
+#   7. Re-download manifest to verify the upload landed
+#
+# Required GitHub secrets (least privilege — see docs/D1_BACKUP_AUTOMATION.md):
+#   CF_BACKUP_API_TOKEN  Custom Cloudflare token:
+#                          Account | D1 | Edit
+#                          Account | Workers R2 Storage | Object Read & Write
+#                        Account Resources: include ONLY this account
+#   CF_ACCOUNT_ID        Cloudflare account id
+#   BACKUP_GPG_RECIPIENT (optional) GPG public key / fingerprint for encryption
+#   BACKUP_GPG_KEY       (optional) ASCII-armored private key NOT needed here —
+#                        only the recipient's PUBLIC key is used for encryption
+#
+# NOTE: wrangler reads CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID from env
+#       automatically; no third-party action is used.
+#
+# Failure handling: the job fails non-zero on any step error → GitHub sends the
+# default failure notification to repository watchers. Retention/correctness of
+# yesterday's backup is not affected (each run is independent).
+# =============================================================================
+
+name: D1 Backup
+
+on:
+  schedule:
+    # 19:00 UTC = 02:00 Asia/Bangkok — after the Worker attachment GC cron
+    # (18:00 UTC) so the same night's GC already ran.
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: d1-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BACKUP_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      D1_DATABASE: sao-db
+      R2_BACKUP_BUCKET: sao-recruitment-backups
+      RETENTION_DAYS: "90"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install wrangler (pinned to repo lockfile version)
+        run: npm install --no-save wrangler@3.114.17
+
+      - name: Export D1 (remote, full dump)
+        run: |
+          set -euo pipefail
+          TS="$(date -u +%Y%m%dT%H%M%SZ)"
+          echo "TS=$TS" >> "$GITHUB_ENV"
+          npx wrangler d1 export "$D1_DATABASE" --remote --output "dump-$TS.sql"
+
+      - name: Validate dump
+        run: |
+          set -euo pipefail
+          SIZE="$(stat -c%s "dump-$TS.sql")"
+          SHA="$(sha256sum "dump-$TS.sql" | cut -d' ' -f1)"
+          echo "SIZE=$SIZE" >> "$GITHUB_ENV"
+          echo "SHA=$SHA" >> "$GITHUB_ENV"
+          # A healthy dump of this DB is always >10 KB and always contains
+          # the applications table DDL (0000 chain) — fail loudly otherwise.
+          test "$SIZE" -gt 10240
+          grep -q "CREATE TABLE.*applications" "dump-$TS.sql"
+          echo "dump size: $SIZE bytes, sha256: $SHA"
+
+      - name: Collect manifest facts from D1
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute "$D1_DATABASE" --remote --json --command \
+            "SELECT (SELECT COUNT(*) FROM applications) AS applications, \
+                    (SELECT COUNT(*) FROM audit_logs) AS audit_logs, \
+                    (SELECT COUNT(*) FROM attachment_uploads) AS attachment_uploads, \
+                    (SELECT COUNT(*) FROM admin_users) AS admin_users, \
+                    (SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1) AS migration_head" \
+            > facts.json
+          jq '.results[0]' facts.json > facts-flat.json
+
+      - name: Ensure backup bucket exists
+        run: |
+          set -euo pipefail
+          npx wrangler r2 bucket info "$R2_BACKUP_BUCKET" > /dev/null 2>&1 \
+            || npx wrangler r2 bucket create "$R2_BACKUP_BUCKET"
+
+      - name: Ensure 90-day retention lifecycle rule
+        run: |
+          set -euo pipefail
+          if ! npx wrangler r2 bucket lifecycle list "$R2_BACKUP_BUCKET" \
+               | grep -q "d1-backup-expire-${RETENTION_DAYS}d"; then
+            npx wrangler r2 bucket lifecycle add "$R2_BACKUP_BUCKET" \
+              "d1-backup-expire-${RETENTION_DAYS}d" "" \
+              --expire-days "$RETENTION_DAYS" --force
+          fi
+
+      - name: Encrypt dump (optional GPG)
+        if: ${{ secrets.BACKUP_GPG_RECIPIENT != '' }}
+        env:
+          BACKUP_GPG_RECIPIENT: ${{ secrets.BACKUP_GPG_RECIPIENT }}
+        run: |
+          set -euo pipefail
+          gpg --batch --yes --trust-model always \
+            --encrypt --recipient "$BACKUP_GPG_RECIPIENT" "dump-$TS.sql"
+          echo "BACKUP_FILE=dump-$TS.sql.gpg" >> "$GITHUB_ENV"
+
+      - name: Choose plaintext file when GPG is not configured
+        if: ${{ secrets.BACKUP_GPG_RECIPIENT == '' }}
+        run: |
+          echo "BACKUP_FILE=dump-$TS.sql" >> "$GITHUB_ENV"
+          echo "::warning::GPG encryption is NOT configured (secrets.BACKUP_GPG_RECIPIENT). The dump contains full applicant PII — configure encryption. See docs/D1_BACKUP_AUTOMATION.md."
+
+      - name: Upload dump + manifest to R2
+        run: |
+          set -euo pipefail
+          PREFIX="d1/daily/$(date -u +%Y/%m/%d)"
+          echo "BACKUP_KEY=$PREFIX/$BACKUP_FILE" >> "$GITHUB_ENV"
+          jq -n \
+            --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg database "$D1_DATABASE" \
+            --arg file "$BACKUP_FILE" \
+            --arg key "$PREFIX/$BACKUP_FILE" \
+            --argjson size_bytes "$SIZE" \
+            --arg sha256 "$SHA" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --slurpfile facts facts-flat.json \
+            '{generated_at_utc: $generated_at, database: $database, file: $file, r2_key: $key, size_bytes: $size_bytes, sha256: $sha256, run_url: $run_url, facts: $facts[0]}' \
+            > "manifest-$TS.json"
+          npx wrangler r2 object put "$R2_BACKUP_BUCKET/$PREFIX/$BACKUP_FILE" --file "$BACKUP_FILE"
+          npx wrangler r2 object put "$R2_BACKUP_BUCKET/$PREFIX/manifest-$TS.json" --file "manifest-$TS.json"
+
+      - name: Verify upload (re-download manifest)
+        run: |
+          set -euo pipefail
+          MANIFEST_KEY="d1/daily/$(date -u +%Y/%m/%d)/manifest-$TS.json"
+          npx wrangler r2 object get "$R2_BACKUP_BUCKET/$MANIFEST_KEY" \
+            --file /tmp/verify-manifest.json
+          jq -e --arg sha "$SHA" '.sha256 == $sha' /tmp/verify-manifest.json > /dev/null
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## D1 Backup $TS"
+            if [ -n "${TS:-}" ]; then
+              echo ""
+              echo "| field | value |"
+              echo "|---|---|"
+              echo "| database | \`$D1_DATABASE\` |"
+              echo "| r2 key | \`$BACKUP_KEY\` |"
+              echo "| size | $SIZE bytes |"
+              echo "| sha256 | \`$SHA\` |"
+            else
+              echo "Backup failed before export completed — see the failing step above."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
