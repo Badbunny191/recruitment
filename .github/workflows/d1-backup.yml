@@ -100,7 +100,10 @@ jobs:
                     (SELECT COUNT(*) FROM admin_users) AS admin_users, \
                     (SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1) AS migration_head" \
             > facts.json
-          jq '.results[0]' facts.json > facts-flat.json
+          # wrangler d1 execute --json คืน root เป็น array ของ statement results
+          # ([{ results: [row], success, meta }]) — ยืนยันจาก prod วันที่ 2026-10-31;
+          # .results[0] บน array root จะได้ null เงียบ ๆ ต้อง .[0].results[0]
+          jq '.[0].results[0]' facts.json > facts-flat.json
 
       - name: Ensure backup bucket exists
         run: |
