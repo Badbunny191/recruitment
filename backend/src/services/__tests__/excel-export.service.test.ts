@@ -1605,6 +1605,104 @@ async function runAllTests() {
     assertEqual(over.length, 0, `statement เกิน 100 bind: ${JSON.stringify(over.slice(0, 3))}`);
   });
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // SPRINT 3 — C1 SUITE: COUNT ก่อน fetch (cap ต้องไม่ย้ายข้อมูลทั้งรอบ)
+  // พิสูจน์ด้วย boundParamLog (SQL text จริงต่อ statement — delta ต่อการรัน):
+  //   - เกิน cap → 422 และ "ไม่มี" statement ใด SELECT form_data ของรอบนั้น
+  //   - ใต้ cap → COUNT มาก่อน SELECT form_data และผลเหมือนเดิมทุกประการ
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const s = (q: string, ...p: any[]) => db.rawSqlite.prepare(q).run(...p);
+    s(
+      `INSERT INTO recruitment_rounds (id, template_version_id, title, position_level, open_date, close_date, status, round_code)
+       VALUES ('round-c1', ?, 'รอบ C1', 'ระดับต้น', 1735689600, 1767225600, 'ACTIVE', 'C101')`,
+      TV_ID,
+    );
+    const insertC1 = db.rawSqlite.prepare(
+      `INSERT INTO applications (id, application_no, round_id, email, fullname, status, form_data, submitted_at)
+       VALUES (?, ?, 'round-c1', ?, ?, 'SUBMITTED', ?, ?)`,
+    );
+    const tx = db.rawSqlite.transaction(() => {
+      for (let i = 0; i <= MAX_EXPORT_ROWS; i++) {
+        // form_data ก้อน 2 KB/แถว — จำลองต้นทุนขนส่งจริงถ้า fetch ก่อน cap
+        insertC1.run(`c1-${i}`, `C1-${String(i).padStart(5, '0')}`, `c1-${i}@t.t`, `ผู้สมัคร C1 ${i}`, `{"pad":"${'x'.repeat(2048)}"}`, NOW + i);
+      }
+    });
+    tx();
+  }
+
+  /** รัน filtered export แล้วคืน SQL statements ที่ถูก prepare ระหว่างรัน (delta) */
+  const runExportWithSqlLog = async (filters) => {
+    const mark = db.boundParamLog.length;
+    const r = await runExport(filters);
+    return { r, stmts: db.boundParamLog.slice(mark).map((e: any) => e.sql) };
+  };
+  const sqlLogOf = async (fn) => {
+    const mark = db.boundParamLog.length;
+    const r = await fn();
+    return { r, stmts: db.boundParamLog.slice(mark).map((e: any) => e.sql) };
+  };
+
+  t('C1-A: เกิน cap (filtered) → 422 โดยไม่มี statement ใด SELECT form_data', async () => {
+    const { r, stmts } = await runExportWithSqlLog({ roundId: 'round-c1' });
+    assertEqual(r.ok, false, '1,001 แถวต้องถูกปฏิเสธ');
+    assertEqual(r.code, 'TOO_MANY_ROWS');
+    assertEqual(r.httpStatus, 422);
+    const formDataSelects = stmts.filter((q) => q.includes('form_data'));
+    assertEqual(formDataSelects.length, 0,
+      `ห้าม fetch ทั้งรอบก่อน cap — พบ statement: ${JSON.stringify(formDataSelects.slice(0, 2))}`);
+    assertTrue(stmts.some((q) => /count\(/i.test(q)), 'ต้องมี statement COUNT(*) (evidence pattern ใหม่)');
+  });
+
+  t('C1-B: ใต้ cap (filtered) → COUNT มาก่อน SELECT form_data + ผลเหมือนเดิม', async () => {
+    const { r, stmts } = await runExportWithSqlLog({ roundId: 'round-c1', search: 'c1-7@t.t' });
+    assertTrue(r.ok, JSON.stringify(r).slice(0, 150));
+    assertEqual(r.rowCount, 1);
+    const countIdx = stmts.findIndex((q) => /count\(/i.test(q));
+    const selectIdx = stmts.findIndex((q) => q.includes('form_data'));
+    assertTrue(countIdx >= 0, 'ต้องมี COUNT');
+    assertTrue(selectIdx >= 0, 'ใต้ cap ต้อง SELECT จริง');
+    assertTrue(countIdx < selectIdx, `COUNT ต้องมาก่อน SELECT (count@${countIdx}, select@${selectIdx})`);
+  });
+
+  t('C1-C: selector filter เกิน cap → 422 + ไม่มี SELECT form_data + มี COUNT', async () => {
+    const { r, stmts } = await sqlLogOf(() =>
+      runSelectedSelector({ kind: 'filter', filter: { roundId: 'round-c1' } }, 'round-c1'));
+    assertEqual(r.ok, false);
+    assertEqual(r.code, 'TOO_MANY_ROWS');
+    assertEqual(r.httpStatus, 422);
+    const formDataSelects = stmts.filter((q) => q.includes('form_data'));
+    assertEqual(formDataSelects.length, 0,
+      `ห้าม fetch ทั้งชุดก่อน cap — พบ: ${JSON.stringify(formDataSelects.slice(0, 2))}`);
+    assertTrue(stmts.some((q) => /count\(/i.test(q)), 'ต้องมี COUNT');
+  });
+
+  t('C1-D: selector filter 0 แถว (COUNT แล้วว่าง) → NOT_EXPORTABLE ไม่ SELECT form_data', async () => {
+    const { r, stmts } = await sqlLogOf(() =>
+      runSelectedSelector({ kind: 'filter', filter: { roundId: 'round-c1', status: 'CANCELED' } }, 'round-c1'));
+    assertEqual(r.ok, false);
+    assertEqual(r.code, 'APPLICATIONS_NOT_EXPORTABLE');
+    assertEqual(r.httpStatus, 422);
+    assertEqual(stmts.filter((q) => q.includes('form_data')).length, 0, 'ว่างตั้งแต่ COUNT ต้องไม่ fetch');
+  });
+
+  t('C1-E: selector filter พอดี cap (1,000) → ผ่านครบทุกแถว (fetch มี limit cap)', async () => {
+    const r = await runSelectedSelector(
+      { kind: 'filter', filter: { roundId: 'round-c1' }, excludeIds: ['c1-1000'] },
+      'round-c1',
+    );
+    assertTrue(r.ok, `พอดี cap ต้องผ่าน: ${JSON.stringify(r).slice(0, 200)}`);
+    assertEqual(r.rowCount, MAX_EXPORT_ROWS);
+  });
+
+  t('C1-F: filtered เกิน cap — ข้อความ 422 ระบุจำนวนจาก COUNT ตรงจำนวนจริง (1,001)', async () => {
+    const r = await runExport({ roundId: 'round-c1' });
+    assertEqual(r.ok, false);
+    assertEqual(r.code, 'TOO_MANY_ROWS');
+    assertTrue(String(r.message).includes('1001'), `ข้อความต้องระบุจำนวนจริง 1001: ${r.message}`);
+    assertTrue(String(r.message).includes('เกินขีดจำกัด 1000'), `ข้อความต้องระบุ cap: ${r.message}`);
+  });
+
   // ── teardown ───────────────────────────────────────────────────────────
   // ── run (sequential ตามลำดับประกาศ) ────────────────────────────────────
   for (const [name, fn] of cases) await test(name, fn);

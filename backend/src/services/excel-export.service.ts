@@ -32,7 +32,7 @@
  *     เก็บเป็น text เพื่อไม่ให้ Excel ตัดค่า
  */
 
-import { eq, and, isNull, or, like, desc, sql, inArray, gte, lte } from 'drizzle-orm';
+import { eq, and, isNull, or, like, desc, sql, inArray, gte, lte, count } from 'drizzle-orm';
 import { drizzle as drizzleD1 } from 'drizzle-orm/d1';
 import type { drizzle as drizzleFn } from 'drizzle-orm/d1';
 import { v4 as uuidv4 } from 'uuid';
@@ -668,23 +668,39 @@ export async function exportApplicationsExcel(
     };
   }
 
-  // ── 2) Applications ตาม filters (ไม่มี DRAFT โดย default) ─────────────
-  // orderBy แบบ deterministic: submittedAt desc แล้ว id desc เป็น tie-breaker
-  const appRows = await db
-    .select(EXPORT_APP_COLUMNS)
+  // ── 2) Cap ก่อน fetch (Sprint 3 — CPU hotspot C1) ─────────────────────
+  // เดิม: SELECT ทั้งรอบ (รวม formData JSON ก้อนใหญ่) แล้วค่อยเช็ค cap →
+  // D1 ต้องย้าย+parse ทุกแถวของรอบเข้า Worker เพื่อตอบว่า "เกิน 1,000 ไหม"
+  // ใหม่: COUNT(*) ด้วย where เดียวกัน (query เบา ไม่แตะ formData) → เกิน cap
+  // คืน 422 ทันที แล้วจึง SELECT จริงพร้อม .limit(cap) เป็น safety net TOCTOU
+  const exportWhere = buildExportWhere(filters);
+  const countRow = await db
+    .select({ total: count() })
     .from(applications)
-    .where(buildExportWhere(filters))
-    .orderBy(desc(applications.submittedAt), desc(applications.id));
+    .where(exportWhere)
+    .get();
+  const matchedRows = Number(countRow?.total ?? 0);
 
   // ── 3) Cap 1,000 แถว ─────────────────────────────────────────────────
-  if (appRows.length > MAX_EXPORT_ROWS) {
+  if (matchedRows > MAX_EXPORT_ROWS) {
     return {
       ok: false,
       code: 'TOO_MANY_ROWS',
-      message: `จำนวนใบสมัคร ${appRows.length} รายการ เกินขีดจำกัด ${MAX_EXPORT_ROWS} รายการต่อการ export หนึ่งครั้ง กรุณากรองสถานะ ช่วงวันที่ หรือคำค้นเพื่อลดจำนวนก่อน export`,
+      message: `จำนวนใบสมัคร ${matchedRows} รายการ เกินขีดจำกัด ${MAX_EXPORT_ROWS} รายการต่อการ export หนึ่งครั้ง กรุณากรองสถานะ ช่วงวันที่ หรือคำค้นเพื่อลดจำนวนก่อน export`,
       httpStatus: 422,
     };
   }
+
+  // ── 3.1) Applications ตาม filters (ไม่มี DRAFT โดย default) ──────────
+  // orderBy แบบ deterministic: submittedAt desc แล้ว id desc เป็น tie-breaker
+  // .limit(cap): ใต้ cap ผลเหมือนเดิมทุกประการ — กรณีเดียวที่ต่างคือแถวใหม่
+  // บวมระหว่าง COUNT กับ SELECT ซึ่งตัดท้ายแทนการ 422 (ยัง deterministic)
+  const appRows = await db
+    .select(EXPORT_APP_COLUMNS)
+    .from(applications)
+    .where(exportWhere)
+    .orderBy(desc(applications.submittedAt), desc(applications.id))
+    .limit(MAX_EXPORT_ROWS);
 
   // ── 4) Build workbook (shared builder) ────────────────────────────────
   const { buffer, columnCount } = await buildWorkbookBuffer(db, round.templateVersionId, appRows);
@@ -796,13 +812,18 @@ export async function exportSelectedApplicationsExcel(
     // where จาก selector กลาง (roundId + status list + search + deletedAt
     // + excludeIds) และตัด DRAFT ตาม semantics เดิมของ export
     // → logic ไม่ถูก copy ไว้ที่นี่ ใช้ resolveSelectorWhere ตัวเดียว
-    const appRows = await db
-      .select(EXPORT_APP_COLUMNS)
-      .from(applications)
-      .where(resolveSelectorWhere(selector, { excludeDraft: true }))
-      .orderBy(desc(applications.submittedAt), desc(applications.id));
+    const selectorWhere = resolveSelectorWhere(selector, { excludeDraft: true });
 
-    if (appRows.length === 0) {
+    // COUNT ก่อน fetch (Sprint 3 — CPU hotspot C1, pattern เดียวกับ filtered):
+    // ตรวจ cap ด้วย query เบา ก่อนย้าย formData ทั้งชุดเข้า Worker
+    const countRow = await db
+      .select({ total: count() })
+      .from(applications)
+      .where(selectorWhere)
+      .get();
+    const matchedRows = Number(countRow?.total ?? 0);
+
+    if (matchedRows === 0) {
       return {
         ok: false,
         code: 'APPLICATIONS_NOT_EXPORTABLE',
@@ -812,14 +833,21 @@ export async function exportSelectedApplicationsExcel(
       };
     }
 
-    if (appRows.length > MAX_EXPORT_ROWS) {
+    if (matchedRows > MAX_EXPORT_ROWS) {
       return {
         ok: false,
         code: 'TOO_MANY_ROWS',
-        message: `จำนวนใบสมัคร ${appRows.length} รายการ เกินขีดจำกัด ${MAX_EXPORT_ROWS} รายการต่อการ export หนึ่งครั้ง กรุณากรองสถานะหรือคำค้นเพื่อลดจำนวนก่อน export`,
+        message: `จำนวนใบสมัคร ${matchedRows} รายการ เกินขีดจำกัด ${MAX_EXPORT_ROWS} รายการต่อการ export หนึ่งครั้ง กรุณากรองสถานะหรือคำค้นเพื่อลดจำนวนก่อน export`,
         httpStatus: 422,
       };
     }
+
+    const appRows = await db
+      .select(EXPORT_APP_COLUMNS)
+      .from(applications)
+      .where(selectorWhere)
+      .orderBy(desc(applications.submittedAt), desc(applications.id))
+      .limit(MAX_EXPORT_ROWS);
 
     const { buffer, columnCount } = await buildWorkbookBuffer(db, round.templateVersionId, appRows);
 
