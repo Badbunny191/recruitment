@@ -598,6 +598,21 @@ publicRoutes.post('/applications/submit',
     return c.json({ success: false, error: 'รอบรับสมัครไม่พบ' }, 404);
   }
 
+  // ✅ Block archived rounds (parity with /schema): deletedAt IS NOT NULL.
+  // /schema blocks archived rounds, but submit did not — an admin archiving
+  // a round before closeDate removed it from every page while a direct API
+  // call could still create a real application. Checked BEFORE evaluateRound
+  // (same order as /schema) so an archived DRAFT round reports ARCHIVED,
+  // not DRAFT.
+  if (round.deletedAt) {
+    return c.json({
+      success: false,
+      error: 'Round นี้ถูก archive แล้ว ไม่สามารถรับสมัครได้',
+      reason: 'ARCHIVED',
+      status: round.status,
+    }, 403);
+  }
+
   // ✅ Business rule: same gate as /schema — DRAFT/CLOSED short-circuit, and
   // ACTIVE rounds enforce the open/close window in Asia/Bangkok time. The
   // gate is server-side so a malicious client cannot bypass it by spoofing
