@@ -718,10 +718,19 @@ function normalizeTokenValue(
 }
 
 // =============================================================================
-// Thai date formatting (mirror descriptor-renderer / preview-renderer)
+// Thai date/time formatting (Asia/Bangkok, UTC+7 — fixed offset)
 // =============================================================================
+// Timezone policy เดียวกับ gate ฝั่ง public (public.routes.ts:36-55) และ Excel
+// (bangkokDateTimeString): unixepoch เป็น UTC แต่ต้อง render เป็นเวลาไทย
+// ด้วย fixed offset +7h แล้วอ่านผ่าน getUTC* — ห้ามใช้ local getters
+// (getDate/getHours ฯลฯ) เพราะบน Cloudflare Workers local timezone = UTC
+// ตลอดเวลา ทำให้วันที่ผิด 1 วันสำหรับช่วง 00:00-06:59 ไทยและเวลาผิด 7 ชม.
+// (พิสูจน์บน prod: APP-2026-5019 ส่ง 24 ต.ค. 2569 01:32 ไทย แต่ PDF แสดง
+//  23 ตุลาคม 2569 — ดู __tests__/pdf-thai-date-format.test.ts)
 
-const THAI_MONTHS = [
+const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+export const THAI_MONTHS = [
   "มกราคม",
   "กุมภาพันธ์",
   "มีนาคม",
@@ -737,13 +746,24 @@ const THAI_MONTHS = [
 ];
 
 /**
- * Format unix timestamp → Thai date string (พ.ศ.)
+ * Format unix timestamp → Thai date string (พ.ศ., Asia/Bangkok)
  * Example: 7 มกราคม 2569
  */
 export function formatThaiDate(unixSeconds: number): string {
-  const d = new Date(unixSeconds * 1000);
-  const day = d.getDate();
-  const month = THAI_MONTHS[d.getMonth()];
-  const thaiYear = d.getFullYear() + 543;
+  const d = new Date(unixSeconds * 1000 + BANGKOK_OFFSET_MS);
+  const day = d.getUTCDate();
+  const month = THAI_MONTHS[d.getUTCMonth()];
+  const thaiYear = d.getUTCFullYear() + 543;
   return `${day} ${month} ${thaiYear}`;
+}
+
+/**
+ * Format unix timestamp → HH:mm (Asia/Bangkok)
+ * Example: 13:37
+ */
+export function formatThaiTime(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000 + BANGKOK_OFFSET_MS);
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
 }

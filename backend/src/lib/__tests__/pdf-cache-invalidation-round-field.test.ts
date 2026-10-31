@@ -18,6 +18,7 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { invalidatePdfCacheForRound, invalidatePdfCacheForFieldMaster } from '../pdf-cache-invalidation';
+import { PDF_CACHE_VERSION } from '../pdf-types';
 
 let passed = 0;
 let failed = 0;
@@ -53,7 +54,7 @@ function createMockR2() {
   };
 }
 
-const KEY = (appId: string) => `pdf/applications/${appId}/v2.pdf`;
+const KEY = (appId: string) => `pdf/applications/${appId}/${PDF_CACHE_VERSION}.pdf`;
 
 async function runAllTests() {
   console.log('\n=== PDF Cache Invalidation — round / field-master scope ===\n');

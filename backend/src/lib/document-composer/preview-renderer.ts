@@ -69,6 +69,9 @@ import {
   applyDocumentTokensWithFields,
   resolveFieldValue,
   resolveFileAttachmentValue,
+  formatThaiDate,
+  formatThaiTime,
+  THAI_MONTHS,
   DOCUMENT_TOKENS,
   DOCUMENT_TOKEN_LABELS,
   INSERTABLE_DOCUMENT_TOKENS,
@@ -2288,36 +2291,11 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 // =============================================================================
-// Thai date/time formatting (mirror descriptor-renderer.ts semantics)
+// Thai date/time formatting — ใช้ formatThaiDate/formatThaiTime/THAI_MONTHS
+// จาก document-tokens (Asia/Bangkok fixed offset) — เดิมมี local copy ที่ใช้
+// local getters ทำให้วันที่/เวลาเป็น UTC บน Workers (ดู test
+// pdf-thai-date-format.test.ts) — THAI_MONTHS ยังใช้ที่ parse วันที่ในฟอร์ม
 // =============================================================================
-
-const THAI_MONTHS = [
-  "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
-  "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
-];
-
-/**
- * Format unix timestamp → Thai date string (พ.ศ.)
- * Example: 16 ตุลาคม 2569
- */
-function formatThaiDate(unixSeconds: number): string {
-  const d = new Date(unixSeconds * 1000);
-  const day = d.getDate();
-  const month = THAI_MONTHS[d.getMonth()];
-  const thaiYear = d.getFullYear() + 543;
-  return `${day} ${month} ${thaiYear}`;
-}
-
-/**
- * Format unix timestamp → HH:mm เวลา
- * Example: 13:37
- */
-function formatThaiTime(unixSeconds: number): string {
-  const d = new Date(unixSeconds * 1000);
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
-}
 
 /**
  * Escape HTML special characters

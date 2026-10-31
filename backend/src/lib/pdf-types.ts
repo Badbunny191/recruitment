@@ -188,10 +188,15 @@ export interface RenderedPdf {
 // =============================================================================
 
 export const PDF_CACHE_PREFIX = 'pdf/applications';
+// v3 (2026-10-31): flush cache ยุคที่ PDF render ด้วย formatter ที่ใช้ local
+// getters บน Workers (TZ=UTC) → {APPLICATION_DATE}/{PRINT_DATE}/วันที่-เวลาข้าง
+// ลายเซ็นแสดงเวลา UTC (ผิด 1 วันช่วง 00:00-06:59 ไทย, เวลาผิด 7 ชม.ทุกใบ)
+// — แก้ formatter เป็น Asia/Bangkok fixed offset แล้ว แต่ cache เก่าไม่มี TTL
+// และไม่ถูก invalidate เพราะ descriptor ไม่เปลี่ยน → ต้อง bump เพื่อบังคับ render ใหม่
 // v2 (2026-10-26): flush cache ยุคเก่าที่ render ก่อนสลับ engine V1 → Document
 // Composer + แก้ renderer หลายรอบ (spacing/other-option/filename) โดยไม่เคย bump
 // v1 (ตั้งแต่ a33e1f94) — object v1 เดิมที่ค้างใน R2 จะกลายเป็น orphan (ไม่ถูกอ่านอีก)
-export const PDF_CACHE_VERSION = 'v2';
+export const PDF_CACHE_VERSION = 'v3';
 
 export function buildPdfCacheKey(applicationId: string): string {
   return `${PDF_CACHE_PREFIX}/${applicationId}/${PDF_CACHE_VERSION}.pdf`;

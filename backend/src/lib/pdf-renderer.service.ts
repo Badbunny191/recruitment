@@ -871,13 +871,17 @@ const THAI_MONTHS = [
 ];
 
 /**
- * Format unix timestamp to Thai date string (Buddhist year)
+ * Format unix timestamp to Thai date string (Buddhist year, Asia/Bangkok)
  * Example: "16 ตุลาคม 2569"
+ *
+ * Fixed offset +7h + getUTC* — ห้ามใช้ local getters เพราะบน Workers
+ * local timezone = UTC (ดู document-tokens.ts formatThaiDate / test
+ * pdf-thai-date-format.test.ts)
  */
 function formatThaiDate(unixSeconds: number): string {
-  const d = new Date(unixSeconds * 1000);
-  const day = d.getDate();
-  const month = THAI_MONTHS[d.getMonth()];
-  const thaiYear = d.getFullYear() + 543;
+  const d = new Date(unixSeconds * 1000 + 7 * 60 * 60 * 1000);
+  const day = d.getUTCDate();
+  const month = THAI_MONTHS[d.getUTCMonth()];
+  const thaiYear = d.getUTCFullYear() + 543;
   return `${day} ${month} ${thaiYear}`;
 }
