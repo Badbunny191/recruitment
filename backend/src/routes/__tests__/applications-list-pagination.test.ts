@@ -29,6 +29,7 @@ import { Hono } from 'hono';
 import Database from 'better-sqlite3';
 import { sign } from 'hono/jwt';
 import { adminRoutes } from '../admin.routes';
+import { APPLICATIONS_LIST_UNPAGINATED_MAX } from '../../lib/applications-list-query';
 
 let passed = 0;
 let failed = 0;
@@ -505,6 +506,92 @@ async function runAllTests() {
       full.body.data.slice(0, 2).map((r) => r.id),
       'หน้า 1 = 2 อันดับแรกของชุดที่ sort แล้ว',
     );
+  });
+
+  // ===========================================================================
+  // Sprint 3 (hotspot H2): เพดานความปลอดภัย path "ไม่ส่ง page" + /ids
+  // ครอบคลุม:
+  //   H2-A. ไม่ส่ง page พอดี cap → 200 ครบ MAX แถว (backward compatible)
+  //   H2-B. ไม่ส่ง page เกิน cap → 422 TOO_MANY_ROWS (ไม่ส่ง data บางส่วน)
+  //   H2-C. paginated path บนรอบเดียวกัน (เกิน cap) → 200 ปกติ ไม่โดน cap
+  //   H2-D. /ids เกิน cap → 422, พอดี cap → 200 ครบ
+  //   H2-E. cap นับเฉพาะชุดที่ตรง filter — กรองแคบลงแล้วดึงได้ปกติ
+  //
+  // ⚠️ seed 4,001 แถวต้องอยู่ท้าย suite เท่านั้น — แถวที่ไม่มี roundId filter
+  // (PG8 "all", PG10, PG11) จะโดน cap ถ้า seed ก่อนรัน PG1-PG18
+  // ===========================================================================
+  {
+    const insertCapRow = sqlite.prepare(
+      `INSERT INTO applications
+         (id, application_no, round_id, email, fullname, national_id, status,
+          form_data, submitted_at, deleted_at, year, round_code, seq_in_round)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, NULL, 2569, 'RC', ?)`
+    );
+    const seedCapRows = (roundId: string, count: number, status: string, offset: number) => {
+      const tx = sqlite.transaction(() => {
+        for (let i = 0; i < count; i++) {
+          const n = offset + i;
+          insertCapRow.run(
+            `${roundId}-${String(n).padStart(4, '0')}`,
+            `APP-CAP-${roundId}-${String(n).padStart(5, '0')}`,
+            roundId,
+            `cap-${roundId}-${n}@test.local`,
+            `ผู้สมัคร cap ${n}`,
+            `9999999999${String(n).padStart(4, '0')}`,
+            status,
+            1750000000 + n,
+            n,
+          );
+        }
+      });
+      tx();
+    };
+    // round-cap: พอดี cap | round-capover: เกิน cap พอดี 1 (แถวสุดท้าย QUALIFIED)
+    seedCapRows('round-cap', APPLICATIONS_LIST_UNPAGINATED_MAX, 'SUBMITTED', 0);
+    seedCapRows('round-capover', APPLICATIONS_LIST_UNPAGINATED_MAX, 'SUBMITTED', 0);
+    seedCapRows('round-capover', 1, 'QUALIFIED', APPLICATIONS_LIST_UNPAGINATED_MAX);
+  }
+
+  await test('H2-A: ไม่ส่ง page พอดี cap → 200 ครบ MAX แถว (behavior เดิม)', async () => {
+    const res = await getJson('/api/v1/admin/applications?roundId=round-cap');
+    assertEqual(res.status, 200, 'HTTP status');
+    assertEqual(res.body.data.length, APPLICATIONS_LIST_UNPAGINATED_MAX, 'ครบทั้งชุด');
+    assertEqual(res.body.pagination, undefined, 'ไม่มี pagination (contract เดิม)');
+  });
+
+  await test('H2-B: ไม่ส่ง page เกิน cap → 422 TOO_MANY_ROWS ไม่ส่ง data บางส่วน', async () => {
+    const res = await getJson('/api/v1/admin/applications?roundId=round-capover');
+    assertEqual(res.status, 422, 'HTTP status');
+    assertEqual(res.body.error, 'TOO_MANY_ROWS', 'error code');
+    assertTrue(typeof res.body.message === 'string' && res.body.message.includes('แบ่งหน้า'), `message ไทย: ${res.body.message}`);
+    assertEqual(res.body.data, undefined, 'ห้ามส่ง data บางส่วน (กัน bulk คิดว่าครบชุด)');
+  });
+
+  await test('H2-C: paginated path บนรอบเกิน cap → 200 ปกติ (FE ไม่พัง)', async () => {
+    const res = await getJson('/api/v1/admin/applications?roundId=round-capover&page=1&pageSize=50');
+    assertEqual(res.status, 200, 'HTTP status');
+    assertEqual(res.body.data.length, 50, 'data = pageSize');
+    assertEqual(res.body.pagination.total, APPLICATIONS_LIST_UNPAGINATED_MAX + 1, 'total นับครบ');
+  });
+
+  await test('H2-D: /ids เกิน cap → 422, พอดี cap → 200 ครบ MAX id', async () => {
+    const over = await getJson('/api/v1/admin/applications/ids?roundId=round-capover');
+    assertEqual(over.status, 422, 'เกิน cap → 422');
+    assertEqual(over.body.error, 'TOO_MANY_ROWS');
+
+    const atCap = await getJson('/api/v1/admin/applications/ids?roundId=round-cap');
+    assertEqual(atCap.status, 200, 'พอดี cap → 200');
+    assertEqual(atCap.body.data.length, APPLICATIONS_LIST_UNPAGINATED_MAX, 'ครบ MAX id');
+  });
+
+  await test('H2-E: cap นับเฉพาะชุดที่ตรง filter — กรองแคบลงดึงได้ปกติ', async () => {
+    const res = await getJson('/api/v1/admin/applications/ids?roundId=round-capover&status=QUALIFIED');
+    assertEqual(res.status, 200, 'กรองแคบลง → 200');
+    assertEqual(res.body.data.length, 1, 'เหลือ 1 id');
+
+    const list = await getJson('/api/v1/admin/applications?roundId=round-capover&status=QUALIFIED');
+    assertEqual(list.status, 200, 'list แบบไม่ส่ง page บนชุดเล็ก → 200');
+    assertEqual(list.body.data.length, 1);
   });
 
   // ── สรุป ──

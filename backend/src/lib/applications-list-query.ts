@@ -103,6 +103,24 @@ export const APPLICATION_LIST_COLUMNS = {
 export const APPLICATIONS_LIST_PAGE_SIZE_DEFAULT = 50;
 export const APPLICATIONS_LIST_PAGE_SIZE_MAX = 200;
 
+/**
+ * เพดานความปลอดภัยของ path "ไม่ส่ง page = คืนทุกแถว" (Sprint 3 — CPU
+ * hotspot H2): response + JSON.stringify โต linear ตามจำนวนใบ เมื่อรอบโต
+ * จึงต้องมีเพดานกัน accidental large fetch
+ *
+ * การ implement เลือก fetch แบบ `.limit(cap + 1)` แล้วตรวจความยาว (ไม่ใช่
+ * COUNT แยก) เพราะ:
+ *   - 1 query เท่าเดิม — fetch ไม่เกิน cap+1 แถวเสมอ (bounded ตามที่ตั้งใจ)
+ *   - เกิน cap → 422 ชัดเจน ไม่ตัดข้อมูลส่งเงียบ ๆ (silent truncation ทำให้
+ *     bulk operation คิดว่าครบทั้งชุด)
+ *   - ใต้ cap พฤติกรรมเหมือนเดิมทุกประการ (backward compatible)
+ *
+ * ค่า 2,000: รอบจริงปัจจุบันหลักสิบใบ (headroom ~20-100x) และ FE ทุกจุดใช้
+ * paginated path อยู่แล้ว — caller เดียวที่ยังใช้ path ไม่ส่ง page คือ
+ * /ids เพื่อ bulk download ซึ่งจะได้ error ชัดเจนแทนการดึงชุดยักษ์
+ */
+export const APPLICATIONS_LIST_UNPAGINATED_MAX = 2000;
+
 export type ListPagination =
   | { paginated: false }
   | { paginated: true; page: number; pageSize: number; offset: number }

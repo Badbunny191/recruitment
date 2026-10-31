@@ -30,6 +30,7 @@ import { buildAuditLogWhere, parseMultiParam } from '../lib/audit-log-query';
 import { parseHistoryLimit, computeHasMore } from '../lib/application-history-query';
 import {
   APPLICATION_LIST_COLUMNS,
+  APPLICATIONS_LIST_UNPAGINATED_MAX,
   buildApplicationsListOrderBy,
   buildApplicationsListWhere,
   parseApplicationsListPagination,
@@ -2129,11 +2130,21 @@ adminRoutes.get('/applications', async (c) => {
 
   if (!pagination.paginated) {
     // ไม่ส่ง page = contract เดิม: คืนทุกแถว ไม่มี pagination ใน response
+    // Sprint 3 (hotspot H2): fetch แบบ limit(cap+1) — เกิน cap คืน 422 ชัดเจน
+    // (ไม่ตัดข้อมูลส่งเงียบ ๆ เพราะ bulk จะคิดว่าครบทั้งชุด) ใต้ cap = เหมือนเดิม
     const results = await db
       .select(APPLICATION_LIST_COLUMNS)
       .from(applications)
       .where(whereClause)
-      .orderBy(...orderByClause);
+      .orderBy(...orderByClause)
+      .limit(APPLICATIONS_LIST_UNPAGINATED_MAX + 1);
+
+    if (results.length > APPLICATIONS_LIST_UNPAGINATED_MAX) {
+      return c.json({
+        error: 'TOO_MANY_ROWS',
+        message: `จำนวนใบสมัครที่ตรงเงื่อนไขเกินขีดจำกัด ${APPLICATIONS_LIST_UNPAGINATED_MAX} รายการสำหรับการดึงแบบไม่แบ่งหน้า กรุณาระบุ ?page=1&pageSize=50 หรือกรองเงื่อนไขให้แคบลง`,
+      }, 422);
+    }
 
     return c.json({ data: results });
   }
@@ -2180,13 +2191,24 @@ adminRoutes.get('/applications/ids', async (c) => {
     search: c.req.query('search'),
   });
 
+  // Sprint 3 (hotspot H2): เพดานเดียวกับ list แบบไม่แบ่งหน้า — FE ผู้ใช้หลัก
+  // (bulk PDF "filtered" / เลือกทั้งหมดข้ามหน้า) ได้ error ชัดเจนเมื่อรอบโต
+  // เกิน cap แทนการดึง id ทั้งรอบเงียบ ๆ
   const results = await db
     .select({ id: applications.id })
     .from(applications)
     .where(whereClause)
     .orderBy(
       ...buildApplicationsListOrderBy(parseApplicationsListSort(c.req.query('sort'))),
-    );
+    )
+    .limit(APPLICATIONS_LIST_UNPAGINATED_MAX + 1);
+
+  if (results.length > APPLICATIONS_LIST_UNPAGINATED_MAX) {
+    return c.json({
+      error: 'TOO_MANY_ROWS',
+      message: `จำนวนใบสมัครที่ตรงเงื่อนไขเกินขีดจำกัด ${APPLICATIONS_LIST_UNPAGINATED_MAX} รายการ กรุณากรองเงื่อนไขให้แคบลงก่อนดึงรายการ`,
+    }, 422);
+  }
 
   return c.json({ data: results.map((r) => r.id) });
 });
