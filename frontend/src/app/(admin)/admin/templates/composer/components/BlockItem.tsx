@@ -408,10 +408,12 @@ function BlockSummary({
     const sig = block as SignatureBlock;
     const showName = sig.showName ?? true;
     const showDate = sig.showDate ?? true;
+    const showTime = sig.showTime ?? false;
     const dateSource = normalizeDateSource(sig.dateSource);
     const visible: string[] = [];
     if (showName) visible.push('ชื่อ');
     if (showDate && dateSource !== 'none') visible.push('วันที่');
+    if (showTime) visible.push('เวลา');
     return (
       <span className="text-slate-700 text-xs">
         <span className="font-medium">{sig.lineLabel ?? 'ลงลายมือชื่อ'}</span>

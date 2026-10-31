@@ -7,7 +7,7 @@
  *
  * UX Improvement:
  *   - จัด UI ใหม่ให้กระชับ เตี้ย ใช้งานง่ายเหมือน Field Block
- *   - ส่วนที่ใช้บ่อยแสดงปกติ: Font Size, Alignment, Show Name, Show Date
+ *   - ส่วนที่ใช้บ่อยแสดงปกติ: Font Size, Alignment, Show Name, Show Date, Show Time
  *   - ยุบตัวเลือกขั้นสูงเข้า Collapse: lineLabel, lineStyle, roleLabel, dateLabel, dateSource
  */
 
@@ -66,6 +66,7 @@ export function SignatureEditor({
   const dateSource = normalizeDateSource(block.dateSource);
   const showName = block.showName ?? true;
   const showDate = block.showDate ?? true;
+  const showTime = block.showTime ?? false;
 
   return (
     <div className="space-y-2 p-2.5 bg-rose-50/40 rounded border border-rose-200">
@@ -115,7 +116,7 @@ export function SignatureEditor({
         </div>
       </div>
 
-      {/* ── ส่วนที่ใช้บ่อย: การแสดงชื่อ + แสดงวันที่ ───────────────── */}
+      {/* ── ส่วนที่ใช้บ่อย: การแสดงชื่อ + แสดงวันที่ + แสดงเวลา ───────── */}
       <div className="flex items-center gap-4 pt-0.5">
         <label className="flex items-center gap-1.5 cursor-pointer select-none text-[11px] text-slate-700">
           <input
@@ -137,6 +138,17 @@ export function SignatureEditor({
             className="h-3.5 w-3.5 rounded border-slate-300 text-rose-600 focus:ring-rose-500 disabled:opacity-50"
           />
           <span>แสดงวันที่</span>
+        </label>
+
+        <label className="flex items-center gap-1.5 cursor-pointer select-none text-[11px] text-slate-700">
+          <input
+            type="checkbox"
+            checked={showTime}
+            disabled={disabled}
+            onChange={(e) => onChange({ showTime: e.target.checked })}
+            className="h-3.5 w-3.5 rounded border-slate-300 text-rose-600 focus:ring-rose-500 disabled:opacity-50"
+          />
+          <span>แสดงเวลา</span>
         </label>
       </div>
 
