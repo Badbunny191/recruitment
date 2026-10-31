@@ -120,22 +120,25 @@ jobs:
               "d1-backup-expire-${RETENTION_DAYS}d" "" \
               --expire-days "$RETENTION_DAYS" --force
           fi
-
       - name: Encrypt dump (optional GPG)
-        if: ${{ secrets.BACKUP_GPG_RECIPIENT != '' }}
         env:
           BACKUP_GPG_RECIPIENT: ${{ secrets.BACKUP_GPG_RECIPIENT }}
         run: |
           set -euo pipefail
-          gpg --batch --yes --trust-model always \
-            --encrypt --recipient "$BACKUP_GPG_RECIPIENT" "dump-$TS.sql"
-          echo "BACKUP_FILE=dump-$TS.sql.gpg" >> "$GITHUB_ENV"
 
-      - name: Choose plaintext file when GPG is not configured
-        if: ${{ secrets.BACKUP_GPG_RECIPIENT == '' }}
-        run: |
-          echo "BACKUP_FILE=dump-$TS.sql" >> "$GITHUB_ENV"
-          echo "::warning::GPG encryption is NOT configured (secrets.BACKUP_GPG_RECIPIENT). The dump contains full applicant PII — configure encryption. See docs/D1_BACKUP_AUTOMATION.md."
+          if [ -n "${BACKUP_GPG_RECIPIENT:-}" ]; then
+            echo "GPG recipient configured"
+
+            gpg --batch --yes --trust-model always \
+              --encrypt --recipient "$BACKUP_GPG_RECIPIENT" "dump-$TS.sql"
+
+            echo "BACKUP_FILE=dump-$TS.sql.gpg" >> "$GITHUB_ENV"
+          else
+            echo "BACKUP_FILE=dump-$TS.sql" >> "$GITHUB_ENV"
+
+            echo "::warning::GPG encryption is NOT configured (BACKUP_GPG_RECIPIENT missing)"
+          fi
+      
 
       - name: Upload dump + manifest to R2
         run: |
