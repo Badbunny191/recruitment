@@ -54,6 +54,8 @@ import {
   DEFAULT_SHOW_DATE,
   DEFAULT_SHOW_TIME,
   DEFAULT_DATE_FORMAT,
+  SIGNATURE_NAME_PLACEHOLDER,
+  SIGNATURE_NAME_HINT,
 } from "./types";
 import type {
   PreviewModel,
@@ -201,7 +203,10 @@ const PREVIEW_STYLES = `
 
 .dc-block {
   margin: 0;
-  padding: 0;
+  /* POST_BLOCK_SPACING (4pt) — PDF เว้นท้ายทุก block (descriptor-renderer.ts
+     state.y -= POST_BLOCK_SPACING) ใช้ padding-bottom เพราะ margin-bottom
+     จะโดน inline style ของ block เขียนทับ (parity L2) */
+  padding: 0 0 4pt 0;
 }
 
 .dc-block[data-margin-top] {
@@ -215,7 +220,9 @@ const PREVIEW_STYLES = `
 
 /* ── Heading ───────────────────────────────────────────────── */
 .dc-heading {
-  font-weight: 600;
+  /* parity L3: bold=false → regular เหมือน PDF (bold font)
+     (เดิมเป็น semibold ทำให้ bold=false ใน Preview ยังดูหนากว่า PDF) */
+  font-weight: 400;
   color: #0d4572;
   margin: 0;
   word-wrap: break-word;
@@ -255,20 +262,22 @@ const PREVIEW_STYLES = `
 }
 .dc-systemdata__value {
   color: #000000;
-  font-weight: 600;
+  /* parity L5: PDF วาด value ด้วย regular font (ไม่ bold) */
+  font-weight: 400;
   /* คงที่ 18.2pt → parity กับ PDF (SYSTEMDATA_VALUE_LINE_ADVANCE) */
   line-height: 18.2pt;
 }
-/* stacked: indent 12px เฉพาะเมื่อ align=left
-   center/right → ไม่ indent เพื่อให้ text-align ทำงานถูกต้อง */
-.dc-systemdata--stacked.dc-align--left .dc-systemdata__value {
-  padding-left: 12px;
-}
-.dc-systemdata--stacked .dc-systemdata__value {
-  margin-top: 2px;
-}
-.dc-systemdata--inline .dc-systemdata__label {
-  margin-right: 8px;
+/*
+ * indent ซ้ายของ Value แบบ stacked — เฉพาะ align=left เท่านั้น (parity M7)
+ *
+ * PDF (descriptor-renderer.ts:drawSystemData): valueX = contentLeft +
+ * STACKED_VALUE_INDENT(12pt) เฉพาะเมื่อ showLabel && align=left
+ * → class นี้ emit จาก renderSystemDataBlock ตามเงื่อนไขเดียวกัน
+ *   (เดิมเป็น CSS rule .dc-systemdata--stacked.dc-align--left ที่ indent
+ *    ทั้งที่ showLabel=false และใช้ 12px ไม่ใช่ 12pt)
+ */
+.dc-systemdata__value--indent {
+  padding-left: 12pt;
 }
 /* inline: label กับ value อยู่บรรทัดเดียวกัน */
 .dc-systemdata--inline .dc-systemdata__body {
@@ -319,7 +328,10 @@ const PREVIEW_STYLES = `
   justify-content: flex-end;
 }
 .dc-field--inline .dc-field__value {
-  margin-top: 0;
+  /* parity M7: inline ใช้ flex gap ของ .dc-field__body คั่น label↔value
+     (เดิม rule นี้ reset เฉพาะระยะบน/ซ้ายแบบ padding แต่ระยะซ้ายจาก base rule
+      ยังหลุดมาเพิ่มช่องว่าง label↔value ใน inline) */
+  margin: 0;
   padding-left: 0;
 }
 .dc-field__label {
@@ -334,21 +346,36 @@ const PREVIEW_STYLES = `
 .dc-field__value {
   font-size: 13pt;
   color: #000000;
-  margin: 2px 0 0 12px;
+  /* parity M7/L5: gap label→value = 3pt เหมือน PDF (LABEL_TO_MULTILINE_VALUE_GAP)
+     ส่วน indent ซ้าย 12pt ย้ายไป .dc-field__value--indent (เฉพาะ align=left) */
+  margin: 3pt 0 0 0;
   /* line-height คงที่ (15pt) → parity กับ PDF renderer (FIELD_VALUE_LINE_ADVANCE) */
   line-height: 15pt;
   white-space: pre-wrap;
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
+/*
+ * indent ซ้ายของ Value แบบ stacked — เฉพาะ align=left เท่านั้น (parity M7)
+ *
+ * PDF (descriptor-renderer.ts:drawField): valueX = contentLeft +
+ * STACKED_VALUE_INDENT(12pt) เฉพาะเมื่อ showLabel && align=left
+ * → class นี้ emit จาก renderFieldBlock ตามเงื่อนไขเดียวกัน
+ *   (เดิม margin-left: 12px ติดอยู่ใน base rule ทำให้ align=center ใน
+ *    Preview เพี้ยนไปจาก PDF ที่กึ่งกลางสมบูรณ์)
+ */
+.dc-field__value--indent {
+  margin-left: 12pt;
+}
 .dc-field--empty .dc-field__value {
   color: #999aa6;
   font-weight: 400;
 }
 
-/* required marker */
+/* required marker — parity L4: PDF วาด " *" ด้วย COLOR_GRAY เดียวกับ label
+   (เดิมเป็นสีแดง ไม่ตรงกับ PDF) */
 .dc-field__required {
-  color: #c0392b;
+  color: #666666;
 }
 
 /* ── Table ─────────────────────────────────────────────────── */
@@ -384,9 +411,11 @@ const PREVIEW_STYLES = `
 .dc-table th:last-child {
   border-right-color: #666666;
 }
-.dc-table--empty {
-  color: #999999;
-  font-style: italic;
+/* parity L6: emptyText — PDF วาด 12pt regular สีเทา (COLOR_GRAY)
+   (เดิม reuse .dc-field__value → ดำ 13pt + italic จาก .dc-table--empty) */
+.dc-table__empty {
+  font-size: 12pt;
+  color: #666666;
 }
 
 /* ── Logo ─────────────────────────────────────────────────── */
@@ -448,6 +477,11 @@ const PREVIEW_STYLES = `
   font-size: 10pt;
   font-style: italic;
   line-height: 1.4;
+}
+/* parity L10: source=none → PDF กินเฉพาะ margin (ไม่มีเนื้อหา ไม่มี
+   POST_BLOCK_SPACING) → ยกเลิก padding-bottom ของ .dc-block */
+.dc-logo--none {
+  padding-bottom: 0;
 }
 
 /* ── Signature ────────────────────────────────────────────── */
@@ -1106,9 +1140,10 @@ function renderFieldBlock(
 
   // ── Requirement E: layout stacked (default) | inline ────────────────
   const layout = block.layout ?? "stacked";
-  const layoutClass = layout === "inline" ? " dc-field--inline" : "";
+  const layoutClass = layout === "inline" ? " dc-field--inline" : " dc-field--stacked";
 
-  const alignClass = ALIGN_TO_CLASS[(block.align ?? DEFAULT_ALIGN) as Align];
+  const align = (block.align ?? DEFAULT_ALIGN) as Align;
+  const alignClass = ALIGN_TO_CLASS[align];
   const marginTop = block.marginTop ?? 0;
   const marginBottom = block.marginBottom ?? 0;
 
@@ -1120,16 +1155,25 @@ function renderFieldBlock(
   const labelPt = FIELD_LABEL_SIZE_TO_PT[block.labelStyle ?? "small"];
   const valuePt = FIELD_VALUE_SIZE_TO_PT[block.valueStyle ?? "medium"];
 
+  const showLabel = block.showLabel ?? true;
+
+  // ── parity M7: indent ซ้ายของ value ต้องมีเงื่อนไขเดียวกับ PDF
+  // (descriptor-renderer.ts:drawField — valueX = contentLeft + 12pt
+  //  เฉพาะเมื่อ showLabel && layout=stacked && align=left)
+  const indentClass =
+    layout === "stacked" && showLabel && align === "left"
+      ? " dc-field__value--indent"
+      : "";
+
   // ── Preview = เอกสารเสมอ (ไม่มี form control) ──────────────────────
   //   value render เป็นข้อความ label + value ชุดเดียวกับ PDF renderer
   //   → ไม่มี <input> / <textarea> / <select> / checkbox / radio ใน output
-  const valueHtml = renderDocumentValue(field, rawValue, ctx, valuePt);
+  const valueHtml = renderDocumentValue(field, rawValue, ctx, valuePt, indentClass);
 
   const emptyClass = !isNonEmptyValue(rawValue) ? " dc-field--empty" : "";
 
   // ── Requirement E: showLabel (default: true) ─────────────────────
   //  - ซ่อน label แล้ว → ไม่ emit <label> เลย (read-only mode ไม่ต้องมี label tag)
-  const showLabel = block.showLabel ?? true;
   const labelHtml = showLabel
     ? `<span class="dc-field__label" style="font-size: ${labelPt}pt">${escapeHtml(label)}<span class="dc-field__required">${requiredMarker}</span></span>`
     : "";
@@ -1159,13 +1203,14 @@ function renderDocumentValue(
   field: FieldData,
   rawValue: unknown,
   ctx: ApplicationContext,
-  valuePt?: number
+  valuePt?: number,
+  extraClass = ""
 ): string {
   const fontStyle = valuePt ? ` style="font-size: ${valuePt}pt"` : "";
   // Empty marker = "-" มาตรฐานเดียวกับ PDF (formatAnswerValueForDisplay) —
   // เดิม HTML ใช้ "(ว่าง)" ทำให้ HTML Preview กับ PDF แสดงค่าว่างคนละรูป
   if (!isNonEmptyValue(rawValue)) {
-    return `<div class="dc-field__value dc-field__value--empty"${fontStyle}>-</div>`;
+    return `<div class="dc-field__value dc-field__value--empty${extraClass}"${fontStyle}>-</div>`;
   }
   // CHECKBOX / RADIO → แสดงค่าเป็นข้อความ (ไม่ใช่กล่องติ๊ก)
   //   boolean → "ใช่"/"ไม่ใช่" ผ่าน formatAnswerValueForDisplay เดียวกับ PDF
@@ -1175,7 +1220,7 @@ function renderDocumentValue(
     formatAnswerValueForDisplay(rawValue),
     ctx.application.formData
   );
-  return `<div class="dc-field__value"${fontStyle}>${escapeHtml(display)}</div>`;
+  return `<div class="dc-field__value${extraClass}"${fontStyle}>${escapeHtml(display)}</div>`;
 }
 
 /**
@@ -1236,11 +1281,13 @@ function renderTableBlock(
 
   if (tableData.length === 0) {
     const labelHtml = showLabel && tableLabel
-      ? `<div class="dc-table-label" style="font-weight:700;margin-bottom:4px">${escapeHtml(tableLabel)}</div>`
+      ? `<div class="dc-table-label" style="font-weight:700;font-size:11pt;margin-bottom:4px">${escapeHtml(tableLabel)}</div>`
       : "";
+    // parity L6: empty text ใช้ class ของตัวเอง — PDF วาด 12pt เทา regular
+    // (เดิม reuse .dc-field__value → ดำ 13pt + italic)
     return `<section class="dc-table-wrap dc-table--empty dc-block ${alignClass}"${styleAttr}>
       ${labelHtml}
-      <div class="dc-field__value">${escapeHtml(emptyText)}</div>
+      <div class="dc-table__empty">${escapeHtml(emptyText)}</div>
     </section>`;
   }
 
@@ -1262,7 +1309,7 @@ function renderTableBlock(
     .join("");
 
   const labelHtml = showLabel && tableLabel
-    ? `<div class="dc-table-label" style="font-weight:700;margin-bottom:4px">${escapeHtml(tableLabel)}</div>`
+    ? `<div class="dc-table-label" style="font-weight:700;font-size:11pt;margin-bottom:4px">${escapeHtml(tableLabel)}</div>`
     : "";
 
   return `<section class="dc-table-wrap dc-block ${alignClass}"${styleAttr}>
@@ -1325,9 +1372,12 @@ function renderLogoBlock(block: LogoBlock): string {
   if (marginBottom > 0) styleParts.push(`margin-bottom: ${marginBottom}pt`);
   const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join("; ")}"` : "";
 
-  // ── source = "none" → ไม่แสดงอะไรเลย ────────────────────────────────
+  // ── source = "none" → ไม่มีเนื้อหา แต่ยังเก็บ margin (parity L10) ──
+  // PDF: buildRenderPlan ยัง push padding commands ของ marginTop/marginBottom
+  // → Preview ต้อง emit element เปล่าที่มี margin เท่ากัน (เดิม return "" ทำให้
+  //   margin หายไป ตำแหน่ง block ถัดไปเลื่อนต่างจาก PDF)
   if (block.source === "none") {
-    return "";
+    return `<div class="dc-block dc-logo dc-logo--none ${alignClass}"${styleAttr}></div>`;
   }
 
   // ── ขนาด (รักษา aspect ratio: ถ้าไม่ระบุ height ให้ auto) ──────────
@@ -1338,13 +1388,14 @@ function renderLogoBlock(block: LogoBlock): string {
 
   // ── เลือก URL ตาม source ───────────────────────────────────────────
   //  organization → LOGO_SOURCE_URLS (มีค่า = inline SAO logo แล้ว)
-  //  upload       → block.imageUrl (forward-compatible)
-  //  ไม่มี source  (descriptor เก่า) → organization (คงพฤติกรรมเดิม)
+  //  upload       → parity L10: PDF **ไม่ render imageUrl เลย** (ยังไม่มี
+  //                 asset storage — drawLogo วาดข้อความ "ยังไม่มีโลโก้ (upload)")
+  //                 → Preview ห้ามแสดงรูปเอง ไม่งั้น Preview มีรูปแต่ PDF ไม่มี
   const source = block.source ?? "organization";
   const rawUrl =
-    source === "upload"
-      ? block.imageUrl
-      : LOGO_SOURCE_URLS.get("organization") ?? null;
+    source === "organization"
+      ? LOGO_SOURCE_URLS.get("organization") ?? null
+      : null;
 
   // ── โลโก้ฝัง (organization) → ยิงผ่าน CSS var (ประหยัด payload) ─────────
   //  ⚠️ HTML attribute (src="var(...)") **ไม่รองรับ** var() เพราะ attribute
@@ -1369,9 +1420,12 @@ function renderLogoBlock(block: LogoBlock): string {
   const safeUrl = sanitizeImageUrl(rawUrl);
 
   if (safeUrl === null) {
-    // ── ไม่มีโลโก้ → ข้อความสีเทา (ห้ามกรอบรูปว่าง — Requirement D) ──
+    // ── ไม่มีโลโก้ → ข้อความสีเทา (parity L10 กับ PDF drawLogoText —
+    //    upload แสดง note "(upload)" เหมือนกันทุกไบต์) ──────────────────
+    const note =
+      source === "upload" ? `${NO_LOGO_TEXT} (upload)` : NO_LOGO_TEXT;
     return `<section class="dc-block dc-logo ${alignClass}"${styleAttr}>
-      <span class="dc-logo__placeholder">${NO_LOGO_TEXT}</span>
+      <span class="dc-logo__placeholder">${escapeHtml(note)}</span>
     </section>`;
   }
 
@@ -1575,7 +1629,13 @@ function renderSystemDataBlock(
   const labelHtml = showLabel
     ? `<div class="dc-systemdata__label" style="font-size: ${labelPt}pt">${escapeHtml(label)}</div>`
     : "";
-  const valueHtml = `<div class="dc-systemdata__value" style="font-size: ${valuePt}pt">${escapeHtml(valueText)}</div>`;
+  // ── parity M7: indent เฉพาะ showLabel && stacked && left
+  // (เงื่อนไขเดียวกับ PDF drawSystemData — valueX = contentLeft + 12pt)
+  const valueIndentClass =
+    showLabel && layout === "stacked" && align === "left"
+      ? " dc-systemdata__value--indent"
+      : "";
+  const valueHtml = `<div class="dc-systemdata__value${valueIndentClass}" style="font-size: ${valuePt}pt">${escapeHtml(valueText)}</div>`;
 
   const layoutClass = layout === "inline" ? " dc-systemdata--inline" : " dc-systemdata--stacked";
   const emptyClass = isEmpty ? " dc-systemdata--empty" : "";
@@ -1676,10 +1736,14 @@ function parseThaiLongDate(text: string): { day: number; monthIndex: number; yea
  *   6. showName / showDate / showParentheses
  *   7. dateLabel    (default "วันที่")
  *   8. align        — left / center / right
+ *   9. showTime     (default false) — แสดง "เวลา HH:mm น." (จาก submittedAt
+ *      เสมอ แม้ dateSource=PRINT_DATE — เวลาไทย Asia/Bangkok ผ่าน formatter
+ *      กลาง formatThaiTime ที่ document-tokens.ts)
  *
  * ── Fallback (เมื่อไม่มี application) ────────────────────────────────────
  *   - ชื่อ: "(ชื่อผู้สมัคร)"
  *   - วันที่: "______________"
+ *   - เวลา (showTime=true): "______________"
  *
  * ไม่ทำการ pagination ใน preview — ทั้ง block อยู่ใน DOM ปกติ
  */
@@ -1778,9 +1842,16 @@ function renderSignatureBlock(
     );
   }
 
-  if (showTime && hasSubmittedAt) {
+  // ── Line 5: เวลา (ถ้า showTime) ──────────────────────────────────
+  //  Parity กับ PDF (descriptor-renderer.ts drawSignature Line 5):
+  //  - ข้อความ `เวลา ${timeText} น.` (รวม suffix " น.") ทุกไบต์
+  //  - เวลาจริง = สีดำ / ไม่มี submittedAt = `เวลา ______________ น.`
+  //    สี placeholder (เหมือนบรรทัดวันที่)
+  if (showTime) {
+    const timeColor =
+      timeText === "______________" ? " dc-signature__placeholder" : "";
     bodyParts.push(
-      `<div class="dc-signature__time dc-signature__placeholder">เวลา ${escapeHtml(timeText)}</div>`
+      `<div class="dc-signature__time${timeColor}">เวลา ${escapeHtml(timeText)} น.</div>`
     );
   }
 
@@ -1792,16 +1863,10 @@ function renderSignatureBlock(
 /** ชนิดของ dateSource ที่ renderer รองรับ (หลัง normalize ค่า legacy แล้ว) */
 type SignatureDateSourceKind = "APPLICATION_DATE" | "PRINT_DATE" | "none";
 
-/**
- * ข้อความ placeholder ของชื่อ (เมื่อไม่มีข้อมูลจริง)
- *
- * เป็นข้อความ hint ของเอกสาร ไม่ใช่ Application Field
- * (Requirement C: ห้ามสร้าง Application Field ชื่อ "ลายมือชื่อ" โดยอัตโนมัติ)
- */
-const SIGNATURE_NAME_PLACEHOLDER = "ชื่อผู้สมัคร";
-
-/** ข้อความ hint เมื่อปิดวงเล็บรอบชื่อ */
-const SIGNATURE_NAME_HINT = "ชื่อ-นามสกุล";
+// ── placeholder ชื่อผู้ลงนาม ────────────────────────────────────────────
+// parity M2: SIGNATURE_NAME_PLACEHOLDER / SIGNATURE_NAME_HINT import จาก
+// types.ts เป็น single source ของทั้ง Preview และ PDF (เดิมประกาศ local
+// ทำให้ฝั่ง PDF ใช้ "(ชื่อผู้สมัคร)" ติดวงเล็บ — ขัด showParentheses=false)
 
 /**
  * Resolve ชื่อผู้ลงนาม (Requirement C.4)
@@ -2258,7 +2323,13 @@ function parseTableData(rawValue: unknown): Record<string, unknown>[] {
 /**
  * Format value สำหรับ table cell
  *
- * mirror descriptor-renderer.ts:formatCellValue
+ * mirror descriptor-renderer.ts:formatCellValue (parity M4)
+ *
+ * ── Requirement F.6 / F.7: ห้ามแสดง JSON ดิบ ──────────────────────────────
+ * object (เช่น MASTER_DATA `{ id, name }`) → ใช้ display label
+ * ตาม schema จริง (`name` → `label` → `id` → "—") เหมือน PDF ทุกไบต์
+ * (เดิมฝั่ง Preview ใช้ JSON.stringify ตัด 200 ตัว ทำให้ cell เป็น JSON
+ *  ขณะที่ PDF แสดง display label)
  */
 function formatCellValue(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -2275,13 +2346,8 @@ function formatCellValue(value: unknown): string {
       .filter((s) => s.length > 0)
       .join(", ");
   }
-  if (typeof value === "object") {
-    try {
-      const json = JSON.stringify(value);
-      return json.length > 200 ? json.slice(0, 200) + "..." : json;
-    } catch {
-      return "[object]";
-    }
+  if (isPlainObject(value)) {
+    return getObjectDisplayLabel(value);
   }
   return String(value);
 }

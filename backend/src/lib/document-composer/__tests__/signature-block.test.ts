@@ -27,6 +27,7 @@ import {
   buildRenderPlan,
   renderPlanToPdf,
   renderDescriptorToPreview,
+  formatThaiDate,
 } from "../index";
 import type {
   DocumentDescriptor,
@@ -485,7 +486,7 @@ async function main() {
     const sigCmd = plan.commands.find((c) => c.type === "signature");
     assertTrue(sigCmd !== undefined);
     if (!sigCmd || sigCmd.type !== "signature") return;
-    assertEqual(sigCmd.signerName, "(ชื่อผู้สมัคร)");
+    assertEqual(sigCmd.signerName, "ชื่อผู้สมัคร");
     assertEqual(sigCmd.dateText, "______________");
     assertEqual(sigCmd.timeText, "______________");
     assertEqual(sigCmd.isFallback, true);
@@ -807,6 +808,183 @@ async function main() {
     };
     const result = validateDescriptor(descriptor);
     assertFalse(result.ok);
+  });
+
+  // ── 11. Show time — toggle matrix + Preview ↔ PDF parity ────────
+  //
+  // พิสูจน์ parity กับ PDF renderer (descriptor-renderer.ts drawSignature
+  // Line 4/5): PDF วาด `เวลา ${timeText} น.` — Preview ต้องแสดงข้อความ
+  // เดียวกันทุกไบต์ (รวม suffix " น." และสี placeholder เมื่อไม่มีข้อมูล)
+  //
+  // ค่าคงที่: submittedAt = 1767793020 = 2026-01-07T13:37:00Z
+  //   → Asia/Bangkok = 7 มกราคม 2569, เวลา 20:37
+  console.log("\n[11] Show time — toggle matrix + Preview/PDF parity");
+
+  const SIG_MATRIX_BASE = {
+    id: "sig-1",
+    type: "signature" as const,
+    align: "center" as const,
+  };
+
+  await test("APPLICATION_DATE + date only (showTime=false): วันที่อย่างเดียว", () => {
+    const ctx = buildAppContext({});
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [{ ...SIG_MATRIX_BASE, showDate: true, showTime: false }],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx);
+    assertContains(preview.body, "วันที่ 7 มกราคม 2569");
+    assertFalse(
+      preview.body.includes("dc-signature__time"),
+      "showTime=false → ห้ามมีบรรทัดเวลา"
+    );
+  });
+
+  await test("APPLICATION_DATE + date+time: เวลา 20:37 น. (พร้อม suffix ตรง PDF)", () => {
+    const ctx = buildAppContext({});
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [{ ...SIG_MATRIX_BASE, showDate: true, showTime: true }],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx);
+    assertContains(preview.body, "วันที่ 7 มกราคม 2569");
+    // ข้อความ + class ตรงกับ PDF: เวลาจริง = สีดำ (ไม่มี placeholder class)
+    assertContains(
+      preview.body,
+      '<div class="dc-signature__time">เวลา 20:37 น.</div>'
+    );
+  });
+
+  await test("APPLICATION_DATE + time only (showDate=false): เวลาอย่างเดียว", () => {
+    const ctx = buildAppContext({});
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [{ ...SIG_MATRIX_BASE, showDate: false, showTime: true }],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx);
+    assertContains(preview.body, "เวลา 20:37 น.");
+    assertFalse(
+      preview.body.includes("วันที่ 7 มกราคม 2569"),
+      "showDate=false → ห้ามมีบรรทัดวันที่"
+    );
+    assertFalse(
+      preview.body.includes("dc-signature__date"),
+      "showDate=false → ห้ามมี div วันที่"
+    );
+  });
+
+  await test("default regression (showDate=true, showTime=false): template เก่าไม่เปลี่ยน", () => {
+    const ctx = buildAppContext({});
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [{ ...SIG_MATRIX_BASE }], // ไม่ใส่ toggle เลย — descriptor เก่า
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx);
+    assertContains(preview.body, "วันที่ 7 มกราคม 2569");
+    assertFalse(
+      preview.body.includes("dc-signature__time"),
+      "descriptor เก่า (ไม่มี showTime) → ต้องไม่มีบรรทัดเวลา"
+    );
+  });
+
+  await test("both false (showDate=false, showTime=false): เฉพาะชื่อ", () => {
+    const ctx = buildAppContext({});
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [{ ...SIG_MATRIX_BASE, showDate: false, showTime: false }],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx);
+    assertFalse(preview.body.includes("dc-signature__date"));
+    assertFalse(preview.body.includes("dc-signature__time"));
+    assertContains(preview.body, "(นายสมชาย ใจดี)");
+  });
+
+  await test("PRINT_DATE + date only: วันที่พิมพ์ (วันนี้) ไม่แสดงเวลา", () => {
+    const ctx = buildAppContext({});
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [
+        { ...SIG_MATRIX_BASE, dateSource: "PRINT_DATE", showTime: false },
+      ],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx);
+    // PRINT_DATE = เวลา render (Date.now()) — ยอมรับ second rollover
+    const nowSec = Math.floor(Date.now() / 1000);
+    const candidates = [formatThaiDate(nowSec), formatThaiDate(nowSec + 1)];
+    assertTrue(
+      candidates.some((c) => preview.body.includes(`วันที่ ${c}`)),
+      `PRINT_DATE ต้องเป็นวันนี้: ${candidates.join(" | ")}`
+    );
+    assertFalse(
+      preview.body.includes("dc-signature__time"),
+      "showTime=false → ห้ามมีบรรทัดเวลา"
+    );
+  });
+
+  await test("PRINT_DATE + date+time: วันที่พิมพ์ + เวลา 20:37 น. (จาก submittedAt)", () => {
+    const ctx = buildAppContext({});
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [
+        { ...SIG_MATRIX_BASE, dateSource: "PRINT_DATE", showTime: true },
+      ],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const candidates = [formatThaiDate(nowSec), formatThaiDate(nowSec + 1)];
+    assertTrue(
+      candidates.some((c) => preview.body.includes(`วันที่ ${c}`)),
+      `PRINT_DATE ต้องเป็นวันนี้: ${candidates.join(" | ")}`
+    );
+    assertContains(preview.body, "เวลา 20:37 น.");
+  });
+
+  await test("PRINT_DATE + time only (showDate=false): เวลาอย่างเดียว", () => {
+    const ctx = buildAppContext({});
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [
+        { ...SIG_MATRIX_BASE, dateSource: "PRINT_DATE", showDate: false, showTime: true },
+      ],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx);
+    assertContains(preview.body, "เวลา 20:37 น.");
+    assertFalse(
+      preview.body.includes("dc-signature__date"),
+      "showDate=false → ห้ามมี div วันที่ (แม้ dateSource=PRINT_DATE)"
+    );
+  });
+
+  await test("parity: preview เวลา === เวลา {cmd.timeText} น. จาก render plan", () => {
+    const ctx = buildAppContext({});
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [{ ...SIG_MATRIX_BASE, showTime: true }],
+    };
+    const plan = buildRenderPlan(descriptor, ctx);
+    const sigCmd = plan.commands.find((c) => c.type === "signature");
+    assertTrue(sigCmd !== undefined);
+    if (!sigCmd || sigCmd.type !== "signature") return;
+    assertEqual(sigCmd.timeText, "20:37");
+    assertEqual(sigCmd.showTime, true);
+    // PDF วาด `เวลา ${cmd.timeText} น.` (descriptor-renderer.ts drawSignature)
+    // → preview ต้องแสดงข้อความเดียวกันจาก fixture เดียวกัน
+    const preview = renderDescriptorToPreview(descriptor, ctx);
+    assertContains(preview.body, `เวลา ${sigCmd.timeText} น.`);
+  });
+
+  await test("parity: no submittedAt + showTime=true → placeholder เวลา ______________ น.", () => {
+    const ctx = buildAppContext({ submittedAt: 0 });
+    const descriptor: DocumentDescriptor = {
+      version: 1,
+      blocks: [{ ...SIG_MATRIX_BASE, showTime: true }],
+    };
+    const preview = renderDescriptorToPreview(descriptor, ctx);
+    // PDF วาด `เวลา ______________ น.` สี placeholder — preview ต้องตรง
+    assertContains(
+      preview.body,
+      '<div class="dc-signature__time dc-signature__placeholder">เวลา ______________ น.</div>'
+    );
   });
 
   // ── Summary ─────────────────────────────────────────────────────

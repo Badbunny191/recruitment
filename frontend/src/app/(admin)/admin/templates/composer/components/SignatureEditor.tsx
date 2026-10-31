@@ -103,7 +103,7 @@ export function SignatureEditor({
                 disabled={disabled}
                 onClick={() => onChange({ align: opt.value })}
                 className={`flex-1 h-7 text-xs rounded border transition-colors disabled:opacity-50 ${
-                  (block.align ?? 'center') === opt.value
+                  (block.align ?? 'left') === opt.value
                     ? 'bg-rose-600 text-white border-rose-600 font-medium'
                     : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
                 }`}

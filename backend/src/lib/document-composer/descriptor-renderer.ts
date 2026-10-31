@@ -55,6 +55,8 @@ import {
   DEFAULT_SHOW_DATE,
   DEFAULT_SHOW_TIME,
   DEFAULT_DATE_FORMAT,
+  SIGNATURE_NAME_PLACEHOLDER,
+  SIGNATURE_NAME_HINT,
 } from "./types";
 import type {
   DocumentDescriptor,
@@ -189,6 +191,9 @@ export interface SignatureRenderCommand {
   hasRealName: boolean;
   /** show parentheses around signer name */
   showParentheses: boolean;
+  /** แหล่งวันที่ — executor ใช้กำหนดว่าจะวาดบรรทัดวันที่หรือไม่ (parity M1:
+   *  none = ซ่อนบรรทัดทั้งสองฝั่ง เหมือน Preview และ label "ไม่แสดงวันที่" ใน UI) */
+  dateSource: "APPLICATION_DATE" | "PRINT_DATE" | "none";
   /** resolved Thai date string (หรือ fallback "______________") */
   dateText: string;
   /** resolved HH:mm (หรือ fallback "______________") */
@@ -973,7 +978,7 @@ function buildSignatureCommand(
 
   const isFallback =
     (showName && !hasRealName) ||
-    (showDate && dateText === "______________") ||
+    (showDate && dateSource !== "none" && dateText === "______________") ||
     (showTime && timeText === "______________");
 
   const size: Size = block.size ?? "medium";
@@ -993,6 +998,7 @@ function buildSignatureCommand(
     signerName,
     hasRealName,
     showParentheses,
+    dateSource,
     dateText,
     timeText,
     isFallback,
@@ -1008,12 +1014,20 @@ function buildSignatureCommand(
 // =============================================================================
 
 /**
- * ข้อความ placeholder ของชื่อ (เมื่อไม่มีข้อมูลจริง)
+ * ข้อความชื่อที่วาดจริงของ Signature Block (parity M2 กับ preview-renderer.ts)
  *
- * คงไว้ในรูป "(ชื่อผู้สมัคร)" เพื่อความ consistent กับ test signature-block
- * (command.signerName includes parens, renderer ไม่ต้องใส่ซ้ำ)
+ * - มีชื่อจริง → ค่าจริง (มี/ไม่มีวงเล็บตาม showParentheses)
+ * - ไม่มีชื่อ   → showParentheses ? "(ชื่อผู้สมัคร)" : "ชื่อ-นามสกุล"
+ *   (placeholder/hint เป็น constants เดียวกับ Preview จาก types.ts)
  */
-const SIGNATURE_NAME_PLACEHOLDER = "(ชื่อผู้สมัคร)";
+function signatureDisplayName(cmd: SignatureRenderCommand): string {
+  if (cmd.hasRealName) {
+    return cmd.showParentheses ? `(${cmd.signerName})` : cmd.signerName;
+  }
+  return cmd.showParentheses
+    ? `(${SIGNATURE_NAME_PLACEHOLDER})`
+    : SIGNATURE_NAME_HINT;
+}
 
 // =============================================================================
 // Plan Executor — adapter to PDF bytes
@@ -2180,17 +2194,7 @@ function computeSignatureHeight(
   const box = state.box;
 
   if (cmd.showName) {
-    const text = cmd.signerName;
-    const isPlaceholder = !cmd.hasRealName;
-    const alreadyWrapped = text.startsWith("(") && text.endsWith(")");
-    let displayText: string;
-    if (isPlaceholder && alreadyWrapped) {
-      displayText = text;
-    } else if (cmd.showParentheses) {
-      displayText = `(${text})`;
-    } else {
-      displayText = text;
-    }
+    const displayText = signatureDisplayName(cmd);
     const lines = wrapText(
       displayText,
       box.contentWidth,
@@ -2200,7 +2204,8 @@ function computeSignatureHeight(
     height += Math.max(1, lines.length) * (fontSize * SIGNATURE_LINE_HEIGHT);
   }
 
-  if (cmd.showDate) {
+  // parity M1: dateSource = "none" → ไม่นับบรรทัดวันที่ (ทั้งสองฝั่งซ่อน)
+  if (cmd.showDate && cmd.dateSource !== "none") {
     const lines = wrapText(
       `${cmd.dateLabel} ${cmd.dateText}`,
       box.contentWidth,
@@ -2239,27 +2244,18 @@ function drawSignature(state: ExecState, cmd: SignatureRenderCommand): void {
   // ── Line 2: signerName (ถ้า showName) ──────────────────────────────
   if (cmd.showName) {
     const nameColor = cmd.hasRealName ? COLOR_BLACK : COLOR_PLACEHOLDER;
-    const isPlaceholder = !cmd.hasRealName;
-    // ถ้า command มี placeholder ที่ห่อด้วย (...) มาแล้ว (เช่น "(ชื่อผู้สมัคร)")
-    // → วาดตรง ๆ ห้ามใส่ () ซ้ำ
-    const text = cmd.signerName;
-    const alreadyWrapped =
-      text.startsWith("(") && text.endsWith(")");
-    let displayText: string;
-    if (isPlaceholder && alreadyWrapped) {
-      displayText = text;
-    } else if (cmd.showParentheses) {
-      displayText = `(${text})`;
-    } else {
-      displayText = text;
-    }
+    // parity M2: ข้อความเดียวกับ Preview — placeholder/hint จาก types.ts
+    // และวงเล็บใส่ตาม showParentheses เท่านั้น
+    const displayText = signatureDisplayName(cmd);
     drawSignatureText(state, displayText, cmd.align, nameColor, cmd.fontSize);
   }
 
   // ── Line 3: roleLabel (already in line 1; ตาม Requirement C signature layout) ──
 
-  // ── Line 4: วันที่ (ถ้า showDate และ dateSource !== 'none') ───────
-  if (cmd.showDate) {
+  // ── Line 4: วันที่ (ถ้า showDate) ────────────────────────────────
+  // parity M1: dateSource = "none" → ซ่อนบรรทัดทั้งหมด (เหมือน Preview และ
+  // label "ไม่แสดงวันที่" ใน SignatureEditor — เดิม PDF วาด "วันที่ ______" ค้าง)
+  if (cmd.showDate && cmd.dateSource !== "none") {
     const isPlaceholderDate = cmd.dateText === "______________";
     const dateColor = isPlaceholderDate ? COLOR_PLACEHOLDER : COLOR_BLACK;
     drawSignatureText(

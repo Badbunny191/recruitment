@@ -408,6 +408,19 @@ export const DEFAULT_SIGNATURE_ROLE_LABEL = "ผู้สมัคร";
 export const DEFAULT_SIGNATURE_DATE_LABEL = "วันที่";
 export const DEFAULT_SIGNATURE_LINE_STYLE = "........................................";
 
+/**
+ * ข้อความ placeholder ของชื่อผู้ลงนาม (เมื่อไม่มีข้อมูลจริง)
+ *
+ * 🔑 Single source ของทั้ง Preview (preview-renderer.ts) และ PDF
+ *    (descriptor-renderer.ts) — ข้อความเป็น "bare" ไม่มีวงเล็บในตัว
+ *    → วงเล็บใส่โดย showParentheses ที่ renderer ทั้งสองฝั่ง
+ *      (parity M2: เดิมฝั่ง PDF ใช้ "(ชื่อผู้สมัคร)" ติดวงเล็บทำให้
+ *       showParentheses=false ยังพิมพ์วงเล็บ ขัดกับ Preview)
+ */
+export const SIGNATURE_NAME_PLACEHOLDER = "ชื่อผู้สมัคร";
+/** ข้อความ hint เมื่อ showParentheses=false และไม่มีข้อมูลจริง (parity M2) */
+export const SIGNATURE_NAME_HINT = "ชื่อ-นามสกุล";
+
 /** Visibility defaults — mirror renderer */
 export const DEFAULT_SHOW_NAME = true;
 export const DEFAULT_SHOW_PARENTHESES = true;

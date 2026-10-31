@@ -399,11 +399,21 @@ descriptorRouter.post(
       }
     }
 
-    // 3. Cast to DocumentDescriptor (zValidator already checked shape basics,
-    //    renderDescriptorToPreview will fail gracefully if invalid)
-    const descriptor = payload.descriptor as DocumentDescriptor;
+    // 3. Validate descriptor — parity M6 กับ pdf-preview route (gate เดียวกัน)
+    //    เดิม cast ตรง ๆ ทำให้ descriptor ที่ผิดรูป "Preview ผ่าน แต่ PDF preview
+    //    / ตอน Save+Generate พัง 400" → ต้องตรวจที่นี่ให้เห็นปัญหาตั้งแต่ Preview
+    const validated = validateDescriptor(payload.descriptor);
+    if (!validated.ok) {
+      return c.json(
+        { error: 'Descriptor validation failed', issues: validated.issues },
+        400
+      );
+    }
 
-    // 4. Render preview (reuse core)
+    // 4. Cast (zod output รองรับ legacy dateSource ที่ type ไม่ระบุ)
+    const descriptor = validated.value as DocumentDescriptor;
+
+    // 5. Render preview (reuse core)
     const preview = renderDescriptorToPreview(
       descriptor,
       ctx,

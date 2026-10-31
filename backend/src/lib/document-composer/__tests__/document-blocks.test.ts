@@ -512,9 +512,9 @@ async function main() {
     const plan = buildRenderPlan({ version: 1, blocks: [block] }, ctx);
     const cmd = plan.commands[0];
     if (cmd?.type !== "signature") throw new Error("not signature");
-    // command.signerName ships with parens for placeholder (consistent with
-    // signature-block.test.ts contract — renderer draws as-is)
-    assertEqual(cmd.signerName, "(ชื่อผู้สมัคร)");
+    // command.signerName เป็น bare placeholder — วงเล็บใส่โดย showParentheses
+    // ที่ตอนวาด (parity M2: constants เดียวจาก types.ts ทั้ง Preview และ PDF)
+    assertEqual(cmd.signerName, "ชื่อผู้สมัคร");
     assertEqual(cmd.hasRealName, false);
   });
 
@@ -1816,7 +1816,8 @@ async function main() {
             block = { id: `t-${align}`, type: "table", fieldId: "fm-name", align };
             break;
           case "logo":
-            // logo source=none returns "" — check plan command instead of preview body
+            // parity L10: logo source=none emit div เปล่าเก็บ margin —
+            // ตรวจ plan command (align) + preview body ต้องมี dc-logo--none
             {
               const logoBlock = { id: `l-${align}`, type: "logo" as const, source: "none" as const, align };
               const plan = buildRenderPlan({ version: 1, blocks: [logoBlock] }, ctx);
@@ -1824,7 +1825,12 @@ async function main() {
               assertTrue(cmd?.type === "logo", "logo command must exist");
               if (cmd?.type !== "logo") return;
               assertEqual(cmd.align, align);
-              return; // skip preview body check for logo (no HTML output)
+              const nonePreview = renderDescriptorToPreview(
+                { version: 1, blocks: [logoBlock] } as DocumentDescriptor,
+                ctx
+              );
+              assertContains(nonePreview.body, "dc-logo--none");
+              return; // เนื้อหาเป็น div เปล่า — ไม่มีข้อความให้เช็ค align class ท้าย body
             }
           case "signature":
             block = { id: `s-${align}`, type: "signature", align };
