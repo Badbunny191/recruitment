@@ -75,6 +75,10 @@ function createTestDb() {
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL
     );
+    CREATE TABLE attachment_uploads (
+      id TEXT PRIMARY KEY,
+      original_filename TEXT
+    );
   `);
 
   return { sqlite, db };
@@ -137,6 +141,7 @@ insert(sqlite, 'INSERT INTO job_families (id, name) VALUES (?, ?)', ['job-uuid-1
 insert(sqlite, 'INSERT INTO position_levels (id, name) VALUES (?, ?)', ['lvl-uuid-1', 'เชี่ยวชาญ']);
 insert(sqlite, 'INSERT INTO positions (id, title) VALUES (?, ?)', ['pos-uuid-1', 'นักตรวจสอบภายใน']);
 insert(sqlite, 'INSERT INTO admin_users (id, email) VALUES (?, ?)', ['admin-uuid-1', 'admin@example.com']);
+insert(sqlite, 'INSERT INTO attachment_uploads (id, original_filename) VALUES (?, ?)', ['att-uuid-1', 'เอกสารสมัคร.pdf']);
 
 // =========================================================
 //  A. APPLICATION
@@ -218,6 +223,19 @@ test('E: FIELD_MASTER / ORGANIZATION / JOB_FAMILY / POSITION_LEVEL / POSITION / 
   assertEqual(map['l4']?.name, 'เชี่ยวชาญ', 'POSITION_LEVEL ต้องได้ name');
   assertEqual(map['l5']?.name, 'นักตรวจสอบภายใน', 'POSITION ต้องได้ title');
   assertEqual(map['l6']?.name, 'admin@example.com', 'ADMIN_USER ต้องได้ email');
+});
+
+// =========================================================
+//  E2. ATTACHMENT (Audit Log Foundation Phase 1)
+// =========================================================
+
+test('E2: ATTACHMENT → original_filename', async () => {
+  const map = await resolveAuditEntityDisplays(db, [
+    { id: 'log-att', action: 'ATTACHMENT_UPLOAD', entityType: 'ATTACHMENT', entityId: 'att-uuid-1' },
+    { id: 'log-att-del', action: 'ATTACHMENT_DELETE', entityType: 'ATTACHMENT', entityId: 'att-uuid-1' },
+  ]);
+  assertEqual(map['log-att']?.name, 'เอกสารสมัคร.pdf', 'name ต้องเป็นชื่อไฟล์เดิม');
+  assertEqual(map['log-att-del']?.name, 'เอกสารสมัคร.pdf', 'DELETE resolve เหมือนกัน');
 });
 
 // =========================================================

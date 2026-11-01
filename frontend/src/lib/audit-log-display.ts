@@ -61,6 +61,10 @@ export const AUDIT_ACTION_CONFIG: Record<string, { label: string; className: str
   LOGIN: { label: 'เข้าสู่ระบบ', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   LOGIN_FAILED: { label: 'เข้าสู่ระบบไม่สำเร็จ', className: 'bg-red-100 text-red-700 border-red-200' },
   ACCOUNT_LOCKED: { label: 'บัญชีถูกล็อก', className: 'bg-amber-100 text-amber-700 border-amber-200' },
+  // Audit Log Foundation Phase 1 — เหตุการณ์ฝั่งผู้สมัคร (actor = SYSTEM)
+  APPLICATION_SUBMIT: { label: 'ส่งใบสมัคร', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  ATTACHMENT_UPLOAD: { label: 'อัปโหลดไฟล์แนบ', className: 'bg-sky-100 text-sky-700 border-sky-200' },
+  ATTACHMENT_DELETE: { label: 'ลบไฟล์แนบ', className: 'bg-red-100 text-red-700 border-red-200' },
 };
 
 /** action ที่ไม่รู้จัก → แสดง raw string บน badge สีเทา (fallback) */
@@ -89,6 +93,7 @@ export const AUDIT_ENTITY_LABELS: Record<string, string> = {
   POSITION: 'ตำแหน่ง',
   ADMIN_USER: 'ผู้ใช้งานระบบ',
   USER: 'ผู้ใช้งานระบบ', // legacy rows — โค้ดรุ่นเก่าบันทึก entityType 'USER' ปัจจุบันเป็น ADMIN_USER
+  ATTACHMENT: 'ไฟล์แนบ', // ATTACHMENT_UPLOAD/DELETE (Phase 1) — entityId = ledger id
 };
 
 export function getAuditEntityLabel(entityType: string): string {
@@ -169,6 +174,16 @@ export function buildAuditDescription(
   }
   if (log.action === 'RESET_PASSWORD') {
     return `รีเซ็ตรหัสผ่าน ${emailFromPayload('targetEmail') ?? target}`;
+  }
+  // Audit Log Foundation Phase 1 — เหตุการณ์ฝั่งผู้สมัคร (actor = SYSTEM)
+  if (log.action === 'APPLICATION_SUBMIT') {
+    return `ส่งใบสมัคร ${target}`;
+  }
+  if (log.action === 'ATTACHMENT_UPLOAD') {
+    return `อัปโหลดไฟล์แนบ ${target}`;
+  }
+  if (log.action === 'ATTACHMENT_DELETE') {
+    return `ลบไฟล์แนบ ${target}`;
   }
   if (log.entityType === 'TEMPLATE_VERSION_DESCRIPTOR') {
     // entityId = templateVersions.id — secondary = "vN" (จาก backend resolver)

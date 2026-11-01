@@ -55,7 +55,11 @@ export type AppVariables = {
     role: string;
     mustChangePassword?: boolean;
   };
-  auditPayload?: string | null;
+  /** auditMiddleware → writeAudit: object (แนะนำ) หรือ JSON string (โค้ดเดิม) —
+   *  audit.service normalize เป็น single-encode ให้เอง */
+  auditPayload?: unknown;
+  /** auditMiddleware → writeAudit: กลุ่มของ bulk operations (Migration 032) */
+  auditBatchId?: string;
   /** auditMiddleware: override entityId เมื่อ entity id ไม่ได้อยู่ใน path เป็น :id (เช่น versionId) */
   auditEntityId?: string;
 };

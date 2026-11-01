@@ -7,6 +7,7 @@ import { Bindings } from '../types';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { sanitizeDisplayFilename } from '../utils/filename';
 import { attachmentUploads } from '../db/schema';
+import { SYSTEM_ADMIN_ID, writeAudit } from '../services/audit.service';
 import { hashDeleteToken, insertTempLedger } from '../lib/attachment-ledger';
 import {
   ATTACHMENT_VIEW_TTL_TEMP,
@@ -132,6 +133,26 @@ uploadRoutes.post('/direct', rateLimitMiddleware(), async (c) => {
     // รูปแบบ fileUrl เดิม (relative path ไม่มี signature) — ค่าที่เก็บลง
     // application_attachments ตอน submit ต้องเป็นค่านี้เท่านั้น
     const fileUrl = `/api/v1/public/uploads/files/${encodeURIComponent(fileKey)}`;
+
+    // ── ATTACHMENT_UPLOAD (Audit Log Foundation Phase 1) ──
+    // เหตุการณ์ฝั่งผู้สมัคร (ยังไม่มี application): actor = SYSTEM row
+    // (Migration 032), entityId = ledgerId (ledger ล้ม → fallback fileKey)
+    // fail-soft ใน writeAudit — audit ล้มไม่กระทบผล upload
+    // ห้ามใส่ deleteToken ลง payload (capability ต้องไม่หลุดลง audit)
+    await writeAudit({
+      db: drizzle(c.env.DB),
+      action: 'ATTACHMENT_UPLOAD',
+      entityType: 'ATTACHMENT',
+      entityId: ledgerId ?? fileKey,
+      actorId: SYSTEM_ADMIN_ID,
+      payload: {
+        fileKey,
+        filename: displayFilename,
+        sizeBytes: file.size,
+        ...(ledgerId ? { ledgerId } : {}),
+      },
+      ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
+    });
 
     return c.json({
       success: true,
@@ -321,6 +342,20 @@ uploadRoutes.delete('/direct/:ledgerId', rateLimitMiddleware(), async (c) => {
     }
 
     await c.env.R2_BUCKET.delete(row.r2Key);
+
+    // ── ATTACHMENT_DELETE (Audit Log Foundation Phase 1) ──
+    // ลบสำเร็จเท่านั้น (TEMP + token ตรง) — fail-soft ใน writeAudit
+    await writeAudit({
+      db,
+      action: 'ATTACHMENT_DELETE',
+      entityType: 'ATTACHMENT',
+      entityId: ledgerId,
+      actorId: SYSTEM_ADMIN_ID,
+      payload: {
+        fileKey: row.r2Key,
+      },
+      ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
+    });
 
     return c.json({ success: true, data: { deleted: true } });
   } catch (error) {

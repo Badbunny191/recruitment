@@ -26,6 +26,7 @@ import type { drizzle as drizzleFn } from 'drizzle-orm/d1';
 import {
   adminUsers,
   applications,
+  attachmentUploads,
   fieldMaster,
   jobFamilies,
   organizations,
@@ -96,6 +97,8 @@ function strategyFor(log: AuditLogRow): string | null {
     case 'ADMIN_USER':
     case 'USER': // legacy: โค้ดรุ่นเก่าบันทึก entityType 'USER' — resolve เหมือน ADMIN_USER
       return 'ADMIN_USER';
+    case 'ATTACHMENT': // ATTACHMENT_UPLOAD/DELETE (Phase 1) — entityId = attachment_uploads.id
+      return 'ATTACHMENT';
     default:
       return null;
   }
@@ -160,6 +163,27 @@ export async function resolveAuditEntityDisplays(
             .from(applications)
             .where(inArray(applications.id, chunk)),
         (r) => ({ name: r.applicationNo ?? r.id, secondary: r.fullname ?? null }),
+      ),
+    );
+  }
+
+  // ATTACHMENT (Phase 1): entityId = attachment_uploads.id — แสดงชื่อไฟล์เดิม
+  // (ledger row ถูก GC ได้ตาม lifecycle → resolve ไม่เจอ = ไม่อยู่ใน map, fail-open)
+  const attachmentIds = [...(idsByStrategy.get('ATTACHMENT') ?? [])];
+  if (attachmentIds.length > 0) {
+    maps.set(
+      'ATTACHMENT',
+      await lookupInChunks(
+        attachmentIds,
+        (chunk) =>
+          db
+            .select({
+              id: attachmentUploads.id,
+              originalFilename: attachmentUploads.originalFilename,
+            })
+            .from(attachmentUploads)
+            .where(inArray(attachmentUploads.id, chunk)),
+        (r) => ({ name: r.originalFilename ?? null, secondary: null }),
       ),
     );
   }

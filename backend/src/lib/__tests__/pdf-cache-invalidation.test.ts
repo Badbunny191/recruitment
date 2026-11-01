@@ -302,7 +302,7 @@ function createSqliteFixture() {
       entity_type TEXT NOT NULL,
       entity_id TEXT NOT NULL,
       payload TEXT,
-      ip_address TEXT,
+      ip_address TEXT, batch_id TEXT,
       created_at INTEGER
     );
   `);

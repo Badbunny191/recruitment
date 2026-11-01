@@ -270,9 +270,12 @@ export const auditLogs = sqliteTable('audit_logs', {
   entityId: text('entity_id').notNull(),
   payload: text('payload', { mode: 'json' }),
   ipAddress: text('ip_address'),
+  // Migration 032 — กลุ่มของ bulk operations (1 ค่าต่อ 1 request), nullable
+  batchId: text('batch_id'),
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
 }, (table) => ({
   entityIdx: index('idx_audit_entity').on(table.entityType, table.entityId),
+  batchIdIdx: index('idx_audit_batch_id').on(table.batchId),
   // Performance indexes for server-side pagination (Migration 017)
   createdAtIdx: index('idx_audit_created_at_desc').on(sql`${table.createdAt} DESC`),
   actionIdx: index('idx_audit_action').on(table.action),

@@ -1,18 +1,17 @@
 import { createMiddleware } from 'hono/factory';
 import { drizzle } from 'drizzle-orm/d1';
-import { auditLogs } from '../db/schema';
-import { v4 as uuidv4 } from 'uuid';
+import { writeAudit } from '../services/audit.service';
 import { Bindings, AppVariables } from '../types';
 
 export const auditMiddleware = (entityType: string, options?: { action?: string }) => createMiddleware<{ Bindings: Bindings; Variables: AppVariables }>(async (c, next) => {
   await next();
-  
+
   const method = c.req.method;
   if (method === 'GET' || c.res.status >= 400) return;
 
   const db = drizzle(c.env.DB);
   const user = c.get('jwtPayload');
-  
+
   // Default action มาจาก HTTP method — POST /admin/applications/bulk-status
   // เป็นการ "อัปเดตสถานะ" จึง override เป็น UPDATE เพื่อให้ audit ตรงความหมาย
   let action = options?.action ?? 'CREATE';
@@ -25,18 +24,18 @@ export const auditMiddleware = (entityType: string, options?: { action?: string 
   // PUT /template-versions/:versionId (param ไม่ได้ชื่อ id → param('id') = undefined)
   // ไม่ตั้ง → ใช้ param('id') ตามเดิม, ไม่มีทั้งคู่ → sentinel 'BULK/NEW'
   const entityId = c.get('auditEntityId') || c.req.param('id') || 'BULK/NEW';
-  
+
   // Check for custom audit payload set by route handler
   // Routes can set this to include change tracking data
   const customPayload = c.get('auditPayload');
-  
+
   // For APPLICATION status updates, capture the request body as payload
-  let payload: any = null;
+  let bodyPayload: unknown = null;
   if (entityType === 'APPLICATION' && (method === 'PATCH' || method === 'PUT') && !customPayload) {
     try {
       const body = await c.req.json().catch(() => null);
       if (body) {
-        payload = body;
+        bodyPayload = body;
       }
     } catch {
       // Ignore parse errors
@@ -44,7 +43,12 @@ export const auditMiddleware = (entityType: string, options?: { action?: string 
   }
 
   // Use custom payload if provided (e.g., change tracking data)
-  const finalPayload = customPayload || (payload ? JSON.stringify(payload) : null);
+  // ส่งเข้า writeAudit แบบดิบ (object หรือ string ก็ได้) — normalize
+  // single-encode ที่ audit.service จุดเดียว
+  const finalPayload = customPayload ?? bodyPayload;
+
+  // batch_id สำหรับ bulk operations (route handler ตั้งผ่าน setAuditBatchId)
+  const batchId = c.get('auditBatchId');
 
   // ── Audit insert ต้อง fail-soft ────────────────────────────────────────────
   // ⚠️ `await next()` ทำงานไปแล้ว (business operation สำเร็จ) ถ้า insert audit
@@ -54,29 +58,35 @@ export const auditMiddleware = (entityType: string, options?: { action?: string 
   //    ตัวอย่างที่ทำให้เกิดได้จริง: audit_logs.admin_id เป็น FK → admin_users(id)
   //    ON DELETE RESTRICT → ถ้า adminId ไม่มีใน admin_users insert จะ fail
   //
-  //    Pattern เดียวกับ PDF_DOWNLOAD (admin.routes.ts) และ writeExportAudit
-  //    (excel-export.service.ts): log error → ไม่ block response
-  try {
-    await db.insert(auditLogs).values({
-      id: uuidv4(),
-      adminId: user.id,
-      action,
-      entityType,
-      entityId,
-      payload: finalPayload,
-      ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
-    });
-  } catch (auditErr) {
-    console.error('[AUDIT_MIDDLEWARE] Failed to write audit log:', auditErr);
-  }
+  //    writeAudit เป็น fail-soft ภายใน (log error → ไม่ block response)
+  await writeAudit({
+    db,
+    action,
+    entityType,
+    entityId,
+    actorId: user.id,
+    payload: finalPayload,
+    ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
+    batchId,
+  });
 });
 
 /**
  * Sets a custom audit payload for change tracking.
  * Call this in route handlers before returning.
+ * รับทั้ง object (แนะนำ — จะถูก encode ครั้งเดียวที่ audit.service) และ
+ * JSON string (พฤติกรรมเดิม — normalize ให้เอง)
  */
-export function setAuditPayload(c: any, payload: string | null): void {
+export function setAuditPayload(c: any, payload: unknown): void {
   c.set('auditPayload', payload);
+}
+
+/**
+ * ตั้ง batch_id ของ bulk operation ให้ auditMiddleware ส่งต่อเข้า writeAudit
+ * (Migration 032) — เรียกใน route handler ก่อนคืน response
+ */
+export function setAuditBatchId(c: any, batchId: string): void {
+  c.set('auditBatchId', batchId);
 }
 
 // =============================================================================
@@ -85,13 +95,11 @@ export function setAuditPayload(c: any, payload: string | null): void {
 // ⚠️ POST /admin/auth/login อยู่ *ก่อน* authMiddleware → ไม่มี jwtPayload และ
 //    auditMiddleware ใช้ไม่ได้ (มัน return ทิ้งทุก response ที่ status >= 400
 //    ซึ่งคือ 401/423 ของ login พอดี) จึงเขียน audit ตรงใน handler
-//    ตาม pattern PDF_DOWNLOAD (admin.routes.ts) และ writeExportAudit
-//    (excel-export.service.ts)
 //
 // SECURITY: entry type ไม่มี field สำหรับ password / password hash / JWT /
 // token / temporary password เลยตั้งแต่ระดับ type — ใส่เข้ามาไม่ได้
 //
-// FAIL-SOFT: audit พังได้ แต่ login ห้ามพัง → กลืน error แล้ว log อย่างเดียว
+// FAIL-SOFT: audit พังได้ แต่ login ห้ามพัง → writeAudit กลืน error แล้ว log อย่างเดียว
 // =============================================================================
 
 export type LoginAuditAction = 'LOGIN' | 'LOGIN_FAILED' | 'ACCOUNT_LOCKED';
@@ -108,25 +116,20 @@ export interface LoginAuditEntry {
 }
 
 export async function writeLoginAudit(c: any, entry: LoginAuditEntry): Promise<void> {
-  try {
-    const db = drizzle(c.env.DB);
+  const db = drizzle(c.env.DB);
 
-    const payload: Record<string, unknown> = { email: entry.email };
-    if (entry.failedAttempts !== undefined) payload.failedAttempts = entry.failedAttempts;
-    if (entry.lockReason !== undefined) payload.lockReason = entry.lockReason;
-    if (entry.lockedUntil !== undefined) payload.lockedUntil = entry.lockedUntil;
+  const payload: Record<string, unknown> = { email: entry.email };
+  if (entry.failedAttempts !== undefined) payload.failedAttempts = entry.failedAttempts;
+  if (entry.lockReason !== undefined) payload.lockReason = entry.lockReason;
+  if (entry.lockedUntil !== undefined) payload.lockedUntil = entry.lockedUntil;
 
-    await db.insert(auditLogs).values({
-      id: uuidv4(),
-      adminId: entry.adminId,
-      action: entry.action,
-      entityType: 'ADMIN_USER',
-      entityId: entry.adminId,
-      payload: JSON.stringify(payload),
-      ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
-    });
-  } catch (auditErr) {
-    // audit ล้มไม่ block login — ตาม pattern PDF_DOWNLOAD / writeExportAudit
-    console.error('[LOGIN_AUDIT] Failed to write audit log:', auditErr);
-  }
+  await writeAudit({
+    db,
+    action: entry.action,
+    entityType: 'ADMIN_USER',
+    entityId: entry.adminId,
+    actorId: entry.adminId,
+    payload,
+    ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
+  });
 }
