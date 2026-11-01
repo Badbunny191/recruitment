@@ -35,7 +35,8 @@ function createTestDb() {
     CREATE TABLE applications (
       id TEXT PRIMARY KEY,
       application_no TEXT UNIQUE,
-      fullname TEXT NOT NULL
+      fullname TEXT NOT NULL,
+      email TEXT
     );
     CREATE TABLE recruitment_rounds (
       id TEXT PRIMARY KEY,
@@ -77,7 +78,8 @@ function createTestDb() {
     );
     CREATE TABLE attachment_uploads (
       id TEXT PRIMARY KEY,
-      original_filename TEXT
+      original_filename TEXT,
+      application_id TEXT
     );
   `);
 
@@ -121,9 +123,6 @@ function assertEqual(actual, expected, msg) {
 
 // fixture กลาง — ตารางเดียวใช้ร่วมทุกเคส
 const { sqlite, db } = createTestDb();
-insert(sqlite, 'INSERT INTO applications (id, application_no, fullname) VALUES (?, ?, ?)', [
-  'app-uuid-1', 'APP-2026-5012', 'นายสมชาย ใจดี',
-]);
 insert(sqlite, 'INSERT INTO recruitment_rounds (id, title, position_level) VALUES (?, ?, ?)', [
   'round-uuid-1', 'เชี่ยวชาญ 2569', 'เชี่ยวชาญ',
 ]);
@@ -141,7 +140,15 @@ insert(sqlite, 'INSERT INTO job_families (id, name) VALUES (?, ?)', ['job-uuid-1
 insert(sqlite, 'INSERT INTO position_levels (id, name) VALUES (?, ?)', ['lvl-uuid-1', 'เชี่ยวชาญ']);
 insert(sqlite, 'INSERT INTO positions (id, title) VALUES (?, ?)', ['pos-uuid-1', 'นักตรวจสอบภายใน']);
 insert(sqlite, 'INSERT INTO admin_users (id, email) VALUES (?, ?)', ['admin-uuid-1', 'admin@example.com']);
-insert(sqlite, 'INSERT INTO attachment_uploads (id, original_filename) VALUES (?, ?)', ['att-uuid-1', 'เอกสารสมัคร.pdf']);
+insert(sqlite, 'INSERT INTO applications (id, application_no, fullname, email) VALUES (?, ?, ?, ?)', [
+  'app-uuid-1', 'APP-2026-5012', 'นายสมชาย ใจดี', 'somchai@test.local',
+]);
+insert(sqlite, 'INSERT INTO attachment_uploads (id, original_filename, application_id) VALUES (?, ?, ?)', [
+  'att-uuid-1', 'เอกสารสมัคร.pdf', 'app-uuid-1',
+]);
+insert(sqlite, 'INSERT INTO attachment_uploads (id, original_filename, application_id) VALUES (?, ?, ?)', [
+  'att-uuid-2', 'draft-ทิ้งไว้.pdf', null,
+]);
 
 // =========================================================
 //  A. APPLICATION
@@ -229,13 +236,37 @@ test('E: FIELD_MASTER / ORGANIZATION / JOB_FAMILY / POSITION_LEVEL / POSITION / 
 //  E2. ATTACHMENT (Audit Log Foundation Phase 1)
 // =========================================================
 
-test('E2: ATTACHMENT → original_filename', async () => {
+test('E2: ATTACHMENT → original_filename + applicant (Phase 1.1 resolve-at-read)', async () => {
   const map = await resolveAuditEntityDisplays(db, [
     { id: 'log-att', action: 'ATTACHMENT_UPLOAD', entityType: 'ATTACHMENT', entityId: 'att-uuid-1' },
     { id: 'log-att-del', action: 'ATTACHMENT_DELETE', entityType: 'ATTACHMENT', entityId: 'att-uuid-1' },
+    { id: 'log-att-orphan', action: 'ATTACHMENT_UPLOAD', entityType: 'ATTACHMENT', entityId: 'att-uuid-2' },
   ]);
   assertEqual(map['log-att']?.name, 'เอกสารสมัคร.pdf', 'name ต้องเป็นชื่อไฟล์เดิม');
   assertEqual(map['log-att-del']?.name, 'เอกสารสมัคร.pdf', 'DELETE resolve เหมือนกัน');
+  // Phase 1.1 — ไฟล์ที่ผูกใบสมัครแล้ว resolve ตัวตนผู้สมัครได้ (ไม่ใช่ PII ใน audit)
+  assertEqual(map['log-att']?.secondary, 'APP-2026-5012', 'secondary = appNo เมื่อผูกแล้ว');
+  assertEqual(map['log-att']?.applicant?.name, 'นายสมชาย ใจดี', 'applicant.name');
+  assertEqual(map['log-att']?.applicant?.email, 'somchai@test.local', 'applicant.email');
+  assertEqual(map['log-att']?.applicant?.applicationNo, 'APP-2026-5012', 'applicant.applicationNo');
+  // draft ที่ยังไม่ผูกใบสมัคร (ยังไม่ submit / ถูกลบ) — ไม่มีตัวตนให้ resolve
+  assertTrue(!('log-att-orphan' in map) === false, 'orphan ยัง resolve ชื่อไฟล์ได้');
+  assertEqual(map['log-att-orphan']?.name, 'draft-ทิ้งไว้.pdf', 'orphan ได้ชื่อไฟล์');
+  assertEqual(map['log-att-orphan']?.applicant ?? null, null, 'applicant = null เมื่อไม่ผูกใบสมัคร');
+  assertEqual(map['log-att-orphan']?.secondary ?? null, null, 'orphan ไม่มี appNo');
+});
+
+// =========================================================
+//  E3. APPLICATION_SUBMIT — applicant resolve ตอนอ่าน (Phase 1.1)
+// =========================================================
+
+test('E3: APPLICATION_SUBMIT → applicant ครบ name/email/applicationNo', async () => {
+  const map = await resolveAuditEntityDisplays(db, [
+    { id: 'log-submit', action: 'APPLICATION_SUBMIT', entityType: 'APPLICATION', entityId: 'app-uuid-1' },
+  ]);
+  assertEqual(map['log-submit']?.name, 'APP-2026-5012', 'name = appNo');
+  assertEqual(map['log-submit']?.applicant?.email, 'somchai@test.local', 'applicant.email ต้องมาจากตาราง applications');
+  assertEqual(map['log-submit']?.applicant?.name, 'นายสมชาย ใจดี', 'applicant.name');
 });
 
 // =========================================================
