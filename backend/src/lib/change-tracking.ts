@@ -256,25 +256,28 @@ export function generateDetailedSummary(changes: FieldChange[]): string {
 /**
  * Builds the audit payload for UPDATE actions.
  * Includes change tracking data.
+ *
+ * คืน object — ไม่ stringify ที่นี่แล้ว (เคยทำให้ drizzle `text mode json`
+ * stringify ซ้ำเป็น double-encode) encode ครั้งเดียวที่ audit.service
  */
 export function buildAuditPayload(
   changes: FieldChange[],
   additionalData?: Record<string, any>
-): string | null {
+): Record<string, any> | null {
   if (changes.length === 0 && !additionalData) {
     return null;
   }
-  
+
   const payload: Record<string, any> = {
     changes,
     summary: generateSummary(changes),
   };
-  
+
   if (additionalData) {
     Object.assign(payload, additionalData);
   }
-  
-  return JSON.stringify(payload);
+
+  return payload;
 }
 
 // =============================================================================

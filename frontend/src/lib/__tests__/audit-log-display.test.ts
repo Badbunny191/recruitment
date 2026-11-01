@@ -443,6 +443,61 @@ test('P8: page contract — filter Action ต้องมี LOGIN/LOGIN_FAILED/
 });
 
 // =========================================================
+//  R. Audit Log Foundation Phase 1 — เหตุการณ์ฝั่งผู้สมัคร
+//     APPLICATION_SUBMIT / ATTACHMENT_UPLOAD / ATTACHMENT_DELETE
+// =========================================================
+
+test('R1: ACTION_CONFIG มี label ไทยของ 3 action ใหม่', () => {
+  assertEqual(AUDIT_ACTION_CONFIG.APPLICATION_SUBMIT.label, 'ส่งใบสมัคร', 'label APPLICATION_SUBMIT');
+  assertEqual(AUDIT_ACTION_CONFIG.ATTACHMENT_UPLOAD.label, 'อัปโหลดไฟล์แนบ', 'label ATTACHMENT_UPLOAD');
+  assertEqual(AUDIT_ACTION_CONFIG.ATTACHMENT_DELETE.label, 'ลบไฟล์แนบ', 'label ATTACHMENT_DELETE');
+});
+
+test('R2: APPLICATION_SUBMIT → "ส่งใบสมัคร APP-... (ชื่อผู้สมัคร)"', () => {
+  const log = {
+    action: 'APPLICATION_SUBMIT',
+    entityType: 'APPLICATION',
+    entityId: 'app-uuid',
+    display: { name: 'APP-2026-6001', secondary: 'นางสาวสมใส จริงใจ' },
+  };
+  assertEqual(
+    buildAuditDescription(log, resolveAuditEntity(log, () => null), null),
+    'ส่งใบสมัคร APP-2026-6001 (นางสาวสมใส จริงใจ)',
+    'ต้อง resolve จากตาราง applications ไม่แสดง raw enum',
+  );
+});
+
+test('R3: ATTACHMENT_UPLOAD/DELETE → ไทยครบ + entity label ไฟล์แนบ', () => {
+  const up = {
+    action: 'ATTACHMENT_UPLOAD',
+    entityType: 'ATTACHMENT',
+    entityId: 'att-uuid',
+    display: { name: 'resume.pdf', secondary: null },
+  };
+  assertEqual(
+    buildAuditDescription(up, resolveAuditEntity(up, () => null), null),
+    'อัปโหลดไฟล์แนบ resume.pdf',
+    'description ATTACHMENT_UPLOAD',
+  );
+  const del = { action: 'ATTACHMENT_DELETE', entityType: 'ATTACHMENT', entityId: 'att-uuid' };
+  assertEqual(
+    buildAuditDescription(del, null, null),
+    `ลบไฟล์แนบ ${shortId('att-uuid')}`,
+    'description ATTACHMENT_DELETE fallback shortId (resolve ไม่ได้)',
+  );
+  assertEqual(getAuditEntityLabel('ATTACHMENT'), 'ไฟล์แนบ', 'entity label ATTACHMENT');
+});
+
+test('R4: page contract — ACTION_OPTIONS/ENTITY_OPTIONS ต้องมีค่าใหม่', () => {
+  const actions = pageSource.match(/const ACTION_OPTIONS = \[[\s\S]*?\] as const/)?.[0] ?? '';
+  assertTrue(/'APPLICATION_SUBMIT'/.test(actions), 'ACTION_OPTIONS ต้องมี APPLICATION_SUBMIT');
+  assertTrue(/'ATTACHMENT_UPLOAD'/.test(actions), 'ACTION_OPTIONS ต้องมี ATTACHMENT_UPLOAD');
+  assertTrue(/'ATTACHMENT_DELETE'/.test(actions), 'ACTION_OPTIONS ต้องมี ATTACHMENT_DELETE');
+  const entities = pageSource.match(/const ENTITY_OPTIONS = \[[\s\S]*?\] as const/)?.[0] ?? '';
+  assertTrue(/'ATTACHMENT'/.test(entities), 'ENTITY_OPTIONS ต้องมี ATTACHMENT');
+});
+
+// =========================================================
 //  M. source contract — audit-logs page ใช้ lib กลาง
 // =========================================================
 

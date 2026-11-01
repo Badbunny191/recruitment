@@ -82,6 +82,10 @@ const ACTION_OPTIONS = [
   'LOGIN',
   'LOGIN_FAILED',
   'ACCOUNT_LOCKED',
+  // Audit Log Foundation Phase 1 — เหตุการณ์ฝั่งผู้สมัคร
+  'APPLICATION_SUBMIT',
+  'ATTACHMENT_UPLOAD',
+  'ATTACHMENT_DELETE',
 ] as const;
 
 // รายการ Entity ทั้งหมด (จาก requirement)
@@ -98,6 +102,7 @@ const ENTITY_OPTIONS = [
   'JOB_FAMILY',
   'POSITION_LEVEL',
   'ADMIN_USER',
+  'ATTACHMENT',
 ] as const;
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];

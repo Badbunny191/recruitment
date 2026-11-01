@@ -114,7 +114,7 @@ sqlite.exec(`
     entity_type TEXT NOT NULL,
     entity_id TEXT NOT NULL,
     payload TEXT,
-    ip_address TEXT,
+    ip_address TEXT, batch_id TEXT,
     created_at INTEGER DEFAULT (unixepoch())
   );
   CREATE TABLE applications (
@@ -297,9 +297,9 @@ async function runAllTests() {
 
     const audits = auditRows();
     assertEqual(audits.length, 1, 'audit row count');
-    // convention เดิมของระบบ: setAuditPayload รับ JSON string แล้ว drizzle
-    // (payload mode 'json') stringify ซ้ำ → คอลัมน์ดิบต้อง parse สองชั้น
-    const payload = JSON.parse(JSON.parse(audits[0].payload));
+    // Audit Log Foundation Phase 1: payload ถูก normalize ที่ audit.service →
+    // เก็บ single-encode (parse ครั้งเดียวได้ object — เดิม double-encode ต้อง parse สองชั้น)
+    const payload = JSON.parse(audits[0].payload);
     assertEqual(payload.action, 'BULK_STATUS_UPDATE', 'payload.action');
     assertTrue(Array.isArray(payload.applicationIds), 'มี applicationIds เป็น array');
     assertEqual(payload.applicationIds.length, 2, 'applicationIds ครบ 2 รายการ');
@@ -309,6 +309,9 @@ async function runAllTests() {
     assertEqual(payload.previousStatus[id2], 'QUALIFIED', 'previousStatus[id2] (สถานะเดิมต่างกันได้ต่อใบ)');
     assertEqual(payload.actor, ADMIN_ID, 'มี actor');
     assertEqual(payload.reason, 'เอกสารไม่ครบ', 'มี reason');
+    // batch_id (Migration 032) — 1 bulk request = 1 batch ทั้งในคอลัมน์และ payload
+    assertTrue(typeof audits[0].batch_id === 'string' && audits[0].batch_id.length > 0, 'มี batch_id ในคอลัมน์');
+    assertEqual(payload.batchId, audits[0].batch_id, 'payload.batchId ตรงกับคอลัมน์');
 
     sqlite.prepare('DELETE FROM audit_logs').run();
   });
@@ -577,7 +580,7 @@ async function runAllTests() {
 
     const audits = auditRows();
     assertEqual(audits.length, 1, 'audit 1 รายการ');
-    const payload = JSON.parse(JSON.parse(audits[0].payload));
+    const payload = JSON.parse(audits[0].payload);
     assertEqual(payload.selector.kind, 'filter', 'audit.selector.kind');
     assertEqual(payload.selector.roundId, 'round-1', 'audit.selector.roundId');
     assertEqual(payload.selector.status, 'SUBMITTED', 'audit.selector.status');
@@ -610,7 +613,7 @@ async function runAllTests() {
     assertEqual(res.body.updated, 1, 'updated = แถวที่เขียนจริง (ไม่ใช่ ids.length = 3)');
     assertEqual(appRow(live).status, 'QUALIFIED', 'ใบที่มีจริงถูกอัปเดต');
 
-    const payload = JSON.parse(JSON.parse(auditRows()[0].payload));
+    const payload = JSON.parse(auditRows()[0].payload);
     assertEqual(payload.matched, 1, 'audit.matched');
     assertEqual(payload.updatedCount, 1, 'audit.updatedCount');
 
@@ -702,7 +705,7 @@ async function runAllTests() {
     assertEqual(appRow(b).status, 'SUBMITTED', 'b ถูกยกเลิก → ไม่ถูกแตะ');
     assertEqual(appRow(c).status, 'QUALIFIED', 'c ถูกอัปเดต');
 
-    const payload = JSON.parse(JSON.parse(auditRows()[0].payload));
+    const payload = JSON.parse(auditRows()[0].payload);
     assertEqual(payload.selector.excludeCount, 1, 'audit เก็บจำนวน excludeIds');
     assertTrue(!JSON.stringify(payload.selector).includes(b), 'audit ห้ามเก็บ id ที่ยกเลิก');
 

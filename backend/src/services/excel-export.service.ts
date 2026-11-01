@@ -35,7 +35,6 @@
 import { eq, and, isNull, or, like, desc, sql, inArray, gte, lte, count } from 'drizzle-orm';
 import { drizzle as drizzleD1 } from 'drizzle-orm/d1';
 import type { drizzle as drizzleFn } from 'drizzle-orm/d1';
-import { v4 as uuidv4 } from 'uuid';
 import ExcelJS from 'exceljs';
 import {
   applications,
@@ -45,8 +44,8 @@ import {
   templateFields,
   fieldMaster,
   applicationAttachments,
-  auditLogs,
 } from '../db/schema';
+import { writeAudit } from './audit.service';
 import {
   formatFieldValueWithOther,
   replaceOtherInDisplay,
@@ -621,30 +620,25 @@ async function buildWorkbookBuffer(
   return { buffer, columnCount: columns.length };
 }
 
-/** Audit 1 รายการต่อการ export สำเร็จ — ล้มไม่ block response */
+/** Audit 1 รายการต่อการ export สำเร็จ — ล้มไม่ block response (fail-soft ใน writeAudit) */
 async function writeExportAudit(
   db: DB,
   adminId: string,
   ipAddress: string | null,
   auditPayload: Record<string, unknown>,
 ): Promise<void> {
-  try {
-    await db.insert(auditLogs).values({
-      id: uuidv4(),
-      adminId,
-      action: 'EXPORT_EXCEL',
-      // entityId = roundId จึงต้องเป็น RECRUITMENT_ROUND (log เก่าที่เขียนไว้
-      // เป็น APPLICATION + roundId ไม่แก้ย้อนหลัง — resolver ใน
-      // audit-display.service.ts รองรับทั้งสองรูปแบบ)
-      entityType: 'RECRUITMENT_ROUND',
-      entityId: auditPayload.roundId as string,
-      payload: JSON.stringify(auditPayload),
-      ipAddress: ipAddress ?? 'unknown',
-    });
-  } catch (auditErr) {
-    // Audit ล้มไม่ block response — ตาม pattern PDF_DOWNLOAD
-    console.error('[EXCEL_EXPORT] Failed to log audit:', auditErr);
-  }
+  await writeAudit({
+    db,
+    action: 'EXPORT_EXCEL',
+    // entityId = roundId จึงต้องเป็น RECRUITMENT_ROUND (log เก่าที่เขียนไว้
+    // เป็น APPLICATION + roundId ไม่แก้ย้อนหลัง — resolver ใน
+    // audit-display.service.ts รองรับทั้งสองรูปแบบ)
+    entityType: 'RECRUITMENT_ROUND',
+    entityId: auditPayload.roundId as string,
+    actorId: adminId,
+    payload: auditPayload,
+    ipAddress: ipAddress ?? 'unknown',
+  });
 }
 
 // ── Main entry: Filtered export (GET) ──────────────────────────────────────

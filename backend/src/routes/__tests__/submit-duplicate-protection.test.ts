@@ -142,7 +142,7 @@ sqlite.exec(`
   CREATE TABLE application_attachments (id TEXT PRIMARY KEY, application_id TEXT NOT NULL, field_id TEXT NOT NULL, file_url TEXT NOT NULL, original_filename TEXT, uploaded_at INTEGER);
   CREATE TABLE attachment_uploads (id TEXT PRIMARY KEY, r2_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'TEMP', uploaded_at INTEGER, application_id TEXT, original_filename TEXT, delete_token_hash TEXT, activated_at INTEGER, deleted_at INTEGER);
   CREATE TABLE admin_users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'ADMIN', is_active INTEGER NOT NULL DEFAULT 1);
-  CREATE TABLE audit_logs (id TEXT PRIMARY KEY, admin_id TEXT NOT NULL, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT, ip_address TEXT, created_at INTEGER);
+  CREATE TABLE audit_logs (id TEXT PRIMARY KEY, admin_id TEXT NOT NULL, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT, ip_address TEXT, batch_id TEXT, created_at INTEGER);
 
   -- ── Migration 030: partial unique index ตัวจริง ──
   CREATE UNIQUE INDEX idx_apps_round_email
@@ -291,6 +291,34 @@ await test('DP7: TOCTOU — check ถูกแข่งเวลา → insert �
   // ไม่มีแถวใหม่ถูกใส่
   const rows = sqlite.prepare(`SELECT COUNT(*) AS n FROM applications WHERE lower(email)=lower('${email}')`).get();
   assertEqual(rows.n, 1, 'ต้องยังมีแถวเดียว (insert ถูก index ปฏิเสธ)');
+});
+
+// ── Audit Log Foundation Phase 1: APPLICATION_SUBMIT ──
+await test('DP8: submit สำเร็จ → audit APPLICATION_SUBMIT (actor = SYSTEM, payload single-encode)', async () => {
+  const email = newEmail('dp8');
+  const res = await post(submitBody(email));
+  const body = await res.json();
+  assertEqual(res.status, 201, `status=${res.status} ${JSON.stringify(body)}`);
+
+  const auditRows = sqlite.prepare(`SELECT * FROM audit_logs WHERE action='APPLICATION_SUBMIT'`).all();
+  assertTrue(auditRows.length >= 1, 'มี audit APPLICATION_SUBMIT');
+  // 1 application ที่เพิ่ง submit ต้องมี APPLICATION_SUBMIT แถวเดียว
+  // (ไฟล์นี้มี submit สำเร็จหลายเคส จึง query ตาม application ที่เพิ่งสร้าง)
+  const appRow = sqlite.prepare(`SELECT id FROM applications WHERE email = ?`).get(email);
+  const perApp = sqlite.prepare(`SELECT COUNT(*) AS n FROM audit_logs WHERE action='APPLICATION_SUBMIT' AND entity_id=?`).get(appRow.id);
+  assertEqual(perApp.n, 1, 'APPLICATION_SUBMIT 1 แถวต่อ 1 application');
+  const row = auditRows.find((r) => r.entity_id === appRow.id);
+  assertTrue(!!row, 'แถวของ application นี้อยู่ใน audit_logs');
+  assertEqual(row.admin_id, '00000000-0000-0000-0000-000000000000', 'actor = reserved SYSTEM row (Migration 032)');
+  assertEqual(row.entity_type, 'APPLICATION', 'entity_type = APPLICATION');
+  assertTrue(!!row.ip_address, 'บันทึก ip_address');
+
+  // payload ต้อง single-encode — parse ครั้งเดียวได้ object (ไม่ใช่ string ซ้อน)
+  const payload = JSON.parse(row.payload);
+  assertTrue(payload && typeof payload === 'object', 'payload เป็น object เมื่อ parse 1 ชั้น');
+  assertEqual(payload.applicationNo, body.data.applicationNo, 'payload.applicationNo ตรงกับที่ตอบ');
+  assertEqual(payload.roundId, 'round-dup-1', 'payload.roundId');
+  assertEqual(payload.attachmentCount, 0, 'payload.attachmentCount');
 });
 
 console.log(`\nผลรวม: ผ่าน ${passed} ไม่ผ่าน ${failed}`);

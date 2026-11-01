@@ -22,6 +22,7 @@ import {
 } from '../lib/other-option';
 import { buildApplicationNumber, getMaxSequenceForYear } from '../services/application-number.service';
 import { buildPromoteAttachmentsStatements } from '../lib/attachment-ledger';
+import { SYSTEM_ADMIN_ID, writeAudit } from '../services/audit.service';
 import { idempotencyMiddleware } from '../middlewares/idempotency.middleware';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { honeypotMiddleware } from '../middlewares/honeypot.middleware';
@@ -820,6 +821,27 @@ publicRoutes.post('/applications/submit',
     }
     return c.json({ success: false, error: 'ไม่สามารถบันทึกใบสมัครได้' }, 500);
   }
+
+  // ── APPLICATION_SUBMIT (Audit Log Foundation Phase 1) ──
+  // เหตุการณ์ฝั่งผู้สมัคร: actor = SYSTEM row (Migration 032 — admin_id เป็น
+  // NOT NULL FK จึงใช้ actor เสมือน) / fail-soft ใน writeAudit — audit ล้ม
+  // ไม่กระทบผล submit แล้วคืน 201 ตามเดิม
+  // payload ไม่ใส่ PII (ชื่อ/email อ่านย้อนได้จากตาราง applications ผ่าน
+  // display resolver ตอนแสดงผล — หน้า audit logs เข้าถึง SUPER_ADMIN เท่านั้น)
+  await writeAudit({
+    db,
+    action: 'APPLICATION_SUBMIT',
+    entityType: 'APPLICATION',
+    entityId: applicationId,
+    actorId: SYSTEM_ADMIN_ID,
+    payload: {
+      applicationNo: insertResult.applicationNo,
+      roundId: data.roundId,
+      roundTitle: round.title,
+      attachmentCount: data.attachments?.length ?? 0,
+    },
+    ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
+  });
 
   return c.json({ success: true, data: { applicationNo: insertResult.applicationNo } }, 201);
 });

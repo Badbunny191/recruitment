@@ -6,7 +6,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc } from 'drizzle-orm';
 import { Bindings, AppVariables, isSuperAdmin } from '../types';
 import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middleware';
-import { auditMiddleware, setAuditPayload, writeLoginAudit } from '../middlewares/audit.middleware';
+import { auditMiddleware, setAuditPayload, setAuditBatchId, writeLoginAudit } from '../middlewares/audit.middleware';
+import { writeAudit } from '../services/audit.service';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { handleApplicationStatusChange, buildAuditPayload } from '../lib/change-tracking';
 import { getApplicationPdf } from '../lib/pdf.service';
@@ -321,11 +322,11 @@ adminRoutes.post('/auth/change-password', auditMiddleware('ADMIN_USER', { action
     .where(eq(adminUsers.id, currentUser.id));
 
   // R9: audit log — self change (actor = target = ผู้ใช้เอง)
-  setAuditPayload(c, JSON.stringify({
+  setAuditPayload(c, {
     selfChange: true,
     targetUserId: user.id,
     targetEmail: user.email,
-  }));
+  });
 
   return c.json({
     success: true,
@@ -2530,24 +2531,21 @@ adminRoutes.get('/applications/:id/pdf', async (c) => {
     }
 
     // Manual audit log: PDF_DOWNLOAD (GET is skipped by auditMiddleware)
-    try {
-      await db.insert(auditLogs).values({
-        id: uuidv4(),
-        adminId: user.id,
-        action: 'PDF_DOWNLOAD',
-        entityType: 'APPLICATION',
-        entityId: id,
-        payload: JSON.stringify({
-          cacheHit: result.cacheHit,
-          pageCount: result.pageCount,
-          bytes: result.bytes.length,
-          generatedAt: result.generatedAt,
-        }),
-        ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
-      });
-    } catch (auditErr) {
-      console.error(`[PDF] Failed to log audit: ${auditErr}`);
-    }
+    // → เขียนผ่าน writeAudit (fail-soft ภายใน — ล้มไม่ block response)
+    await writeAudit({
+      db,
+      action: 'PDF_DOWNLOAD',
+      entityType: 'APPLICATION',
+      entityId: id,
+      actorId: user.id,
+      payload: {
+        cacheHit: result.cacheHit,
+        pageCount: result.pageCount,
+        bytes: result.bytes.length,
+        generatedAt: result.generatedAt,
+      },
+      ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
+    });
 
     // ── Configurable PDF Filename (Migration 028) ──
     // Backend เป็น Source of Truth — pattern จาก template version ที่ round อ้างอิง
@@ -2667,6 +2665,11 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
   const db = drizzle(c.env.DB);
   const adminId = c.get('jwtPayload').id;
 
+  // batch_id (Migration 032) — 1 request = 1 batch ทั้ง 2 branch (matched=0 และปกติ)
+  // ใช้เชื่อมโยงเหตุการณ์ในกลุ่มเดียวกันตอนตรวจ audit ย้อนหลัง
+  const batchId = uuidv4();
+  setAuditBatchId(c, batchId);
+
   const body = await c.req.json().catch(() => null);
 
   // ห้ามดันสถานะกลับไป DRAFT ผ่าน bulk update (message เฉพาะเจาะจงเพื่อ audit ชัดเจน)
@@ -2748,7 +2751,7 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
       }
       // kind 'ids' — คง behavior เดิมของ HTTP (200) แต่รายงานเลขตามจริง
       // matched = 0, updated = 0 (เดิมตอบ updated = จำนวน id ที่ส่งมา)
-      setAuditPayload(c, JSON.stringify({
+      setAuditPayload(c, {
         action: 'BULK_STATUS_UPDATE',
         applicationIds: selector.ids,
         previousStatus,
@@ -2757,8 +2760,9 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
         matched: 0,
         updatedCount: 0,
         selector: describeSelector(selector),
-        actor: adminId
-      }));
+        actor: adminId,
+        batchId,
+      });
       return c.json({
         success: true,
         matched: 0,
@@ -2787,7 +2791,7 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
     const updatedCount = matched;
 
     // Audit payload ครบสำหรับการตรวจสอบย้อนหลัง (actor บันทึกแยกคอลัมน์ admin_id ด้วย)
-    setAuditPayload(c, JSON.stringify({
+    setAuditPayload(c, {
       action: 'BULK_STATUS_UPDATE',
       applicationIds: selector.kind === 'ids' ? selector.ids : targetIds,
       previousStatus,
@@ -2796,8 +2800,9 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
       matched,
       updatedCount,
       selector: describeSelector(selector),
-      actor: adminId
-    }));
+      actor: adminId,
+      batchId,
+    });
 
     return c.json({
       success: true,
@@ -3229,16 +3234,17 @@ adminRoutes.post('/rounds/:id/clone', adminOnlyMiddleware, auditMiddleware('ROUN
     roundCode: newRoundCode,
   });
 
-  // Log the clone action with audit details
+  // Log the clone action with audit details (fail-soft ใน writeAudit —
+  // clone สำเร็จแล้วห้ามพังทั้ง request เพราะ audit)
   const adminId = c.get('jwtPayload')?.id;
   if (adminId) {
-    await db.insert(auditLogs).values({
-      id: uuidv4(),
-      adminId,
+    await writeAudit({
+      db,
       action: 'CREATE',
       entityType: 'ROUND_CLONED',
       entityId: newRoundId,
-      payload: JSON.stringify({
+      actorId: adminId,
+      payload: {
         originalRoundId: roundId,
         newRoundId,
         originalVersionId: originalRound.templateVersionId,
@@ -3248,7 +3254,9 @@ adminRoutes.post('/rounds/:id/clone', adminOnlyMiddleware, auditMiddleware('ROUN
         // Migration 019
         applicationPattern: originalRound.applicationPattern,
         roundCode: newRoundCode,
-      }),
+      },
+      // ตามเดิม: ไม่บันทึก ip → NULL
+      ipAddress: null,
     });
   }
 
@@ -4335,14 +4343,14 @@ adminRoutes.post(
     //    → ต้องบันทึก targetUserId/targetEmail/role ใน payload เพื่อให้
     //    ตอบคำถาม "ใครสร้างผู้ใช้คนนี้" ได้จากหน้า Audit Logs
     // ⚠️ ห้ามบันทึก temporaryPassword ใน audit (ไม่เก็บ plaintext ในที่ใด)
-    setAuditPayload(c, JSON.stringify({
+    setAuditPayload(c, {
       selfChange: false,
       targetUserId: id,
       targetEmail: data.email,
       role: data.role,
       mustChangePassword: data.mustChangePassword ?? true,
       issuedTemporaryPassword: true,
-    }));
+    });
 
     return c.json(
       {
@@ -4486,11 +4494,11 @@ adminRoutes.post(
       .where(eq(adminUsers.id, id));
 
     // R9: audit log — admin reset (actor = SUPER_ADMIN, target = เจ้าของบัญชี)
-    setAuditPayload(c, JSON.stringify({
+    setAuditPayload(c, {
       selfChange: false,
       targetUserId: target.id,
       targetEmail: target.email,
-    }));
+    });
 
     return c.json({
       success: true,
@@ -4525,12 +4533,12 @@ adminRoutes.post(
       .where(eq(adminUsers.id, id));
 
     // R9: audit log — บันทึกว่า admin สั่ง/ยกเลิกการบังคับเปลี่ยนรหัสผ่าน
-    setAuditPayload(c, JSON.stringify({
+    setAuditPayload(c, {
       selfChange: false,
       targetUserId: target.id,
       targetEmail: target.email,
       forcedMustChangePassword: mustChangePassword,
-    }));
+    });
 
     return c.json({ success: true });
   },
@@ -4592,12 +4600,12 @@ adminRoutes.post(
       .where(eq(adminUsers.id, id));
 
     // R9.1: audit log — บันทึกการปิดบัญชี (มีผลบังคับทันทีกับ JWT เดิม)
-    setAuditPayload(c, JSON.stringify({
+    setAuditPayload(c, {
       selfChange: false,
       targetUserId: target.id,
       targetEmail: target.email,
       reason,
-    }));
+    });
 
     return c.json({ success: true, disabledAt: now, reason });
   },
