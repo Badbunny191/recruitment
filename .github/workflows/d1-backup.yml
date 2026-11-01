@@ -34,6 +34,11 @@
 #                        Account Resources: include ONLY this account
 #   CF_ACCOUNT_ID        Cloudflare account id
 #   BACKUP_GPG_RECIPIENT (optional) GPG public key / fingerprint for encryption
+#   BACKUP_GPG_PUBLIC_KEY (optional) ASCII-armored PUBLIC key — required together
+#                        with BACKUP_GPG_RECIPIENT: imported into the runner
+#                        keyring before encryption (runner keyrings start empty
+#                        every job — without this step encrypt fails with
+#                        "gpg: skipped: No public key", see run #10 2026-11-01)
 #   BACKUP_GPG_KEY       (optional) ASCII-armored private key NOT needed here —
 #                        only the recipient's PUBLIC key is used for encryption
 #
@@ -164,6 +169,50 @@ jobs:
               "d1-backup-expire-${RETENTION_DAYS}d" "" \
               --expire-days "$RETENTION_DAYS" --force
           fi
+      - name: Import backup GPG public key (optional)
+        env:
+          BACKUP_GPG_RECIPIENT: ${{ secrets.BACKUP_GPG_RECIPIENT }}
+          BACKUP_GPG_PUBLIC_KEY: ${{ secrets.BACKUP_GPG_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+
+          # GitHub-hosted runners start with an EMPTY keyring every job —
+          # encryption can only work if this workflow imports the public key
+          # itself (run #10, 2026-11-01: "gpg: skipped: No public key").
+          if [ -z "${BACKUP_GPG_RECIPIENT:-}" ]; then
+            echo "GPG encryption not configured (BACKUP_GPG_RECIPIENT missing) — skip key import"
+            exit 0
+          fi
+          # Encryption is mandatory when a recipient is configured (the dumps
+          # carry full PII and are never uploaded plaintext), so missing key
+          # material must fail HERE with an actionable message — not later at
+          # encrypt time with a bare "No public key".
+          if [ -z "${BACKUP_GPG_PUBLIC_KEY:-}" ]; then
+            echo "::error::BACKUP_GPG_RECIPIENT is set but BACKUP_GPG_PUBLIC_KEY is missing — the runner keyring is always empty; set the ASCII-armored public key secret (docs/D1_BACKUP_AUTOMATION.md §3)"
+            exit 1
+          fi
+          printf '%s' "$BACKUP_GPG_PUBLIC_KEY" | gpg --batch --import \
+            || { echo "::error::gpg --import failed — BACKUP_GPG_PUBLIC_KEY must be the ASCII-armored block (-----BEGIN PGP PUBLIC KEY BLOCK-----)"; exit 1; }
+          # Belt and braces: the recipient must resolve to an imported key NOW
+          # (an email/fingerprint mismatch would otherwise resurface at encrypt
+          # time with the same cryptic "No public key"). Output-based check —
+          # some gpg versions exit 0 even when nothing matches.
+          PUB_OUT="$(gpg --batch --list-keys --with-colons "$BACKUP_GPG_RECIPIENT" 2>/dev/null || true)"
+          if ! printf '%s\n' "$PUB_OUT" | grep -q '^pub:'; then
+            echo "::error::imported BACKUP_GPG_PUBLIC_KEY but recipient '${BACKUP_GPG_RECIPIENT}' does not match any key in the keyring — check fingerprint/email"
+            exit 1
+          fi
+          # Reproduce the Encrypt step's operation once against a tiny input —
+          # catches e.g. an encryption-less (sign-only) key NOW instead of at
+          # encrypt time ("gpg: skipped: Unusable public key").
+          if ! printf 'backup-gpg-preflight' | gpg --batch --yes --trust-model always \
+                 --encrypt --recipient "$BACKUP_GPG_RECIPIENT" --output /dev/null 2>/dev/null; then
+            echo "::error::recipient '${BACKUP_GPG_RECIPIENT}' is not usable for ENCRYPTION (e.g. sign-only key without an encr subkey) — fix the key material in BACKUP_GPG_PUBLIC_KEY"
+            exit 1
+          fi
+          FPR="$(printf '%s\n' "$PUB_OUT" | awk -F: '/^fpr:/ {print $10; exit}')"
+          echo "GPG public key imported: recipient '${BACKUP_GPG_RECIPIENT}' → fingerprint ${FPR:-?}"
+
       - name: Encrypt dumps (optional GPG)
         env:
           BACKUP_GPG_RECIPIENT: ${{ secrets.BACKUP_GPG_RECIPIENT }}
@@ -293,6 +342,43 @@ jobs:
               /tmp/verify-manifest.json > /dev/null
           else
             jq -e '.ordered.available == false' /tmp/verify-manifest.json > /dev/null
+          fi
+
+      - name: Write health snapshot (best-effort)
+        run: |
+          set -uo pipefail
+          # d1/health/latest.json = stable key ที่ workflow "Backup Health"
+          # (ไฟล์แยก, cron 04:30 ICT) อ่านเพื่อตรวจความสด/ความพร้อมของ backup
+          # โดยไม่ต้อง list R2 — ทุกค่า derive จาก manifest ที่ verify ผ่านแล้ว
+          # ข้างบน จึงไม่มีทางเพี้ยนจากตัว manifest
+          # พังตรงนี้ต้องไม่ล้ม job — raw + manifest ขึ้น R2 และยืนยันแล้ว
+          # การแจ้งเตือนจะมาจากเช็ค BACKUP_FRESH ของคืนถัดไปแทน
+          # (docs/BACKUP_HEALTH_MONITORING.md)
+          HEALTH_EXIT=0
+          jq -n \
+            --arg updated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --slurpfile manifest "manifest-$TS.json" \
+            '{schema_version: 1,
+              updated_at_utc: $updated_at,
+              database: $manifest[0].database,
+              backup: {generated_at_utc: $manifest[0].generated_at_utc,
+                       r2_key: $manifest[0].r2_key,
+                       sha256: $manifest[0].sha256,
+                       size_bytes: $manifest[0].size_bytes,
+                       encrypted: ($manifest[0].file | endswith(".gpg")),
+                       run_url: $manifest[0].run_url},
+              ordered: {available: $manifest[0].ordered.available,
+                        verified: $manifest[0].ordered.verified,
+                        r2_key: $manifest[0].ordered.r2_key,
+                        error_code: $manifest[0].ordered.error_code},
+              facts: {migration_head: $manifest[0].facts.migration_head}}' \
+            > health-latest.json || HEALTH_EXIT=$?
+          if [ "$HEALTH_EXIT" -eq 0 ]; then
+            npx wrangler r2 object put "$R2_BACKUP_BUCKET/d1/health/latest.json" \
+              --file health-latest.json || HEALTH_EXIT=$?
+          fi
+          if [ "$HEALTH_EXIT" -ne 0 ]; then
+            echo "::warning::health snapshot write failed (exit $HEALTH_EXIT) — raw + manifest backup is unaffected; tomorrow's BACKUP_FRESH check will flag stale (docs/BACKUP_HEALTH_MONITORING.md)"
           fi
 
       - name: Job summary

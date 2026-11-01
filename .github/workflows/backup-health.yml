@@ -1,0 +1,375 @@
+# =============================================================================
+# Backup Health — daily readiness check of the D1 backup (no UI, no restore)
+#
+# Companion to d1-backup.yml. The backup workflow publishes a small health
+# snapshot to R2 (d1/health/latest.json — best-effort, derived from the
+# verified manifest) after every successful backup. This workflow reads that
+# snapshot and the one raw object it points at — nothing else — then alerts.
+#
+# Checks (docs/BACKUP_HEALTH_MONITORING.md §3):
+#   BACKUP_FRESH        last backup age ≤ MAX_BACKUP_AGE_HOURS (default 24h)
+#   RAW_PRESENT         raw object the snapshot points at still downloads
+#   ORDERED_AVAILABLE   snapshot recorded ordered.available == true
+#   ORDERED_VERIFIED    snapshot recorded ordered.verified == true
+#   HEALTH_MISSING      replaces all four when the snapshot is unreadable
+#
+# Alert policy (docs/BACKUP_HEALTH_MONITORING.md §4):
+#   - one aggregate GitHub Issue, identified by title prefix "[backup-health]"
+#     + state open (no label dependency)
+#   - dedup: never open a second issue — the existing one's body is updated
+#     every run; a comment is added only when the failure FINGERPRINT changes
+#     (set of red checks + ordered error_code)
+#   - auto-close with a recovery comment when all checks pass again
+#   - when any check is red the job FAILS too (decision D1, 2026-11-01) —
+#     the issue is the alert channel and the red X is the second signal
+#   - issue content is metadata only (no PII — the repo is public)
+#
+# Read-only guarantees (provable by grep on this file): no "d1 " command,
+# no "r2 object put", no "r2 object ls", no "r2 bucket" — this workflow
+# cannot touch the production database or modify/delete any R2 object.
+# There is also no checkout: the only code that runs is what is reviewed
+# below.
+#
+# Drill support: workflow_dispatch input drill_scenario forces an outcome
+# (healthy / stale / ordered_unavailable / raw_missing) to exercise the
+# issue machinery without waiting for a real failure. Empty = real check.
+#
+# Required secrets: CF_BACKUP_API_TOKEN + CF_ACCOUNT_ID (reused from
+# d1-backup.yml — TODO: consider a dedicated read-only R2 token for this
+# workflow later, docs/BACKUP_HEALTH_MONITORING.md §8). github.token needs
+# issues:write.
+#
+# Failure policy (docs/BACKUP_HEALTH_MONITORING.md §5): if this workflow
+# itself cannot run (auth, wrangler install, gh API error) the job goes red
+# and GitHub's default failure notification is the backstop — it never
+# affects the backup pipeline (separate workflow, separate schedule, and
+# the snapshot write in d1-backup.yml is best-effort).
+# =============================================================================
+
+name: Backup Health
+
+on:
+  schedule:
+    # 21:30 UTC = 04:30 Asia/Bangkok — 2.5 h after the 02:00 ICT backup so a
+    # normally-delayed GitHub cron still reads a fresh snapshot, while a
+    # missed night reads ~26.5 h old > MAX_BACKUP_AGE_HOURS (24) and alerts.
+    - cron: "30 21 * * *"
+  workflow_dispatch:
+    inputs:
+      drill_scenario:
+        description: "Force an outcome for drills: healthy | stale | ordered_unavailable | raw_missing (empty = real check)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: backup-health
+  cancel-in-progress: false
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BACKUP_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      R2_BACKUP_BUCKET: sao-recruitment-backups
+      HEALTH_KEY: d1/health/latest.json
+      # D2 (2026-11-01): the single configurable age threshold — do NOT
+      # hardcode 24 anywhere else; the issue body and job summary read this.
+      MAX_BACKUP_AGE_HOURS: "24"
+      TITLE_MARKER: "[backup-health]"
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install wrangler (pinned to repo lockfile version)
+        run: npm install --no-save wrangler@3.114.17
+
+      - name: Download health snapshot (missing → HEALTH_MISSING path)
+        run: |
+          set -uo pipefail
+          # Never a hard failure here: an unreadable snapshot is itself the
+          # alert state (HEALTH_MISSING), evaluated by the next step.
+          HEALTH_MISSING=0
+          if ! npx wrangler r2 object get "$R2_BACKUP_BUCKET/$HEALTH_KEY" \
+               --file health-latest.json > /dev/null 2>&1; then
+            HEALTH_MISSING=1
+          elif ! jq -e . health-latest.json > /dev/null 2>&1; then
+            HEALTH_MISSING=1
+          fi
+          echo "HEALTH_MISSING=$HEALTH_MISSING" >> "$GITHUB_ENV"
+
+      - name: Evaluate checks
+        run: |
+          set -uo pipefail
+
+          FAILED=""
+          ORDERED_ERR=""
+          AGE_HOURS="?"
+          AGE_DETAIL="n/a"
+          RAW_DETAIL="n/a"
+          ORD_DETAIL="n/a"
+          RAW_KEY=""
+          BACKUP_RUN_URL=""
+          HEALTH_UPDATED=""
+
+          if [ "${HEALTH_MISSING:-0}" = "1" ]; then
+            FAILED="HEALTH_MISSING"
+            AGE_DETAIL="ไม่ประเมินได้ — health snapshot หาย/JSON เสีย"
+            RAW_DETAIL="ไม่ประเมินได้ — health snapshot หาย/JSON เสีย"
+            ORD_DETAIL="ไม่ประเมินได้ — health snapshot หาย/JSON เสีย"
+          else
+            GEN_TS="$(jq -r '.backup.generated_at_utc // ""' health-latest.json)"
+            RAW_KEY="$(jq -r '.backup.r2_key // ""' health-latest.json)"
+            BACKUP_RUN_URL="$(jq -r '.backup.run_url // ""' health-latest.json)"
+            HEALTH_UPDATED="$(jq -r '.updated_at_utc // ""' health-latest.json)"
+            ORDERED_AVAIL="$(jq -r '.ordered.available // false' health-latest.json)"
+            ORDERED_VER="$(jq -r '.ordered.verified // false' health-latest.json)"
+            ORDERED_ERR="$(jq -r '.ordered.error_code // ""' health-latest.json)"
+
+            # --- BACKUP_FRESH — fromdateiso8601 keeps the math jq-only;
+            #     the threshold decision is in SECONDS (hours would leave a
+            #     59-minute grace window), the display is in hours.
+            GEN_EPOCH=0
+            if [ -n "$GEN_TS" ]; then
+              GEN_EPOCH="$(printf '%s' "$GEN_TS" | jq -Rr 'fromdateiso8601? // 0')"
+            fi
+            if [ "$GEN_EPOCH" -gt 0 ]; then
+              AGE_SECONDS=$(( $(date -u +%s) - GEN_EPOCH ))
+              AGE_HOURS=$(( AGE_SECONDS / 3600 ))
+              AGE_MIN=$(( (AGE_SECONDS % 3600) / 60 ))
+              AGE_DETAIL="อายุ ${AGE_HOURS} ชม. ${AGE_MIN} นาท. (generated_at_utc: ${GEN_TS}, เกณฑ์ ≤ ${MAX_BACKUP_AGE_HOURS} ชม.)"
+              if [ "$AGE_SECONDS" -gt $(( MAX_BACKUP_AGE_HOURS * 3600 )) ]; then
+                FAILED="BACKUP_FRESH"
+              fi
+            else
+              AGE_HOURS="?"
+              AGE_DETAIL="generated_at_utc อ่านไม่ได้ ('${GEN_TS}')"
+              FAILED="BACKUP_FRESH"
+            fi
+
+            # --- RAW_PRESENT — known-key GET, never a list; no checksum
+            #     because the object on R2 may be GPG-encrypted (the
+            #     manifest sha256 refers to the plaintext before encryption)
+            if [ -z "$RAW_KEY" ]; then
+              RAW_DETAIL="health snapshot ไม่มี backup.r2_key"
+              FAILED="$FAILED RAW_PRESENT"
+            else
+              RAW_BYTES="0"
+              if npx wrangler r2 object get "$R2_BACKUP_BUCKET/$RAW_KEY" \
+                   --file /tmp/raw-check.bin > /dev/null 2>&1; then
+                RAW_BYTES="$(wc -c < /tmp/raw-check.bin)"
+                RAW_BYTES="${RAW_BYTES//[[:space:]]/}"
+              fi
+              if [ "$RAW_BYTES" -gt 0 ]; then
+                RAW_DETAIL="object อยู่จริง (${RAW_BYTES} bytes): ${RAW_KEY}"
+              else
+                RAW_DETAIL="ดึง object ไม่สำเร็จ/ว่างเปล่า: ${RAW_KEY}"
+                FAILED="$FAILED RAW_PRESENT"
+              fi
+            fi
+
+            # --- ORDERED_AVAILABLE / ORDERED_VERIFIED
+            ORD_DETAIL="available=${ORDERED_AVAIL} verified=${ORDERED_VER} error_code=${ORDERED_ERR:-null}"
+            if [ "$ORDERED_AVAIL" != "true" ]; then
+              FAILED="$FAILED ORDERED_AVAILABLE"
+            fi
+            if [ "$ORDERED_VER" != "true" ]; then
+              FAILED="$FAILED ORDERED_VERIFIED"
+            fi
+          fi
+
+          # --- drill override (per-dispatch input; never persists) ---
+          DRILL="${{ inputs.drill_scenario || '' }}"
+          DRILL_NOTE=""
+          if [ -n "$DRILL" ]; then
+            case "$DRILL" in
+              healthy)             FAILED=""; DRILL_NOTE="yes (healthy)";;
+              stale)               FAILED="BACKUP_FRESH"; DRILL_NOTE="yes (stale)";;
+              ordered_unavailable) FAILED="ORDERED_AVAILABLE ORDERED_VERIFIED"; DRILL_NOTE="yes (ordered_unavailable)";;
+              raw_missing)         FAILED="RAW_PRESENT"; DRILL_NOTE="yes (raw_missing)";;
+              *) DRILL="";;  # unknown value → treat as a real check
+            esac
+          fi
+
+          if [ -n "$FAILED" ]; then
+            HEALTH_STATUS="failed"
+          else
+            HEALTH_STATUS="passed"
+          fi
+          # normalize for a stable fingerprint (sorted, unique, single spaces)
+          FAILED="$(printf '%s\n' $FAILED | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+          FP="$(printf '%s' "${FAILED}|${ORDERED_ERR}" | sha256sum | cut -c1-16)"
+
+          echo "HEALTH_STATUS=$HEALTH_STATUS" >> "$GITHUB_ENV"
+          echo "FAILED_CHECKS=$FAILED" >> "$GITHUB_ENV"
+          echo "FP=$FP" >> "$GITHUB_ENV"
+          echo "ORDERED_ERR=$ORDERED_ERR" >> "$GITHUB_ENV"
+          echo "AGE_HOURS=$AGE_HOURS" >> "$GITHUB_ENV"
+          echo "AGE_DETAIL=$AGE_DETAIL" >> "$GITHUB_ENV"
+          echo "RAW_DETAIL=$RAW_DETAIL" >> "$GITHUB_ENV"
+          echo "ORD_DETAIL=$ORD_DETAIL" >> "$GITHUB_ENV"
+          echo "BACKUP_RUN_URL=$BACKUP_RUN_URL" >> "$GITHUB_ENV"
+          echo "HEALTH_UPDATED=$HEALTH_UPDATED" >> "$GITHUB_ENV"
+          echo "DRILL_NOTE=$DRILL_NOTE" >> "$GITHUB_ENV"
+
+      - name: Manage alert issue
+        if: env.HEALTH_STATUS != ''
+        run: |
+          set -uo pipefail
+
+          ICT_NOW="$(TZ=Asia/Bangkok date '+%Y-%m-%d %H:%M ICT')"
+          UTC_NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          ISSUE_ACTION="none"
+          ISSUE_URL=""
+
+          # หา issue ที่ระบบเปิดค้าง — title prefix + state open เท่านั้น
+          # (ป้องกัน output ว่างจาก gh ทุกจุด — ตัวแปรถัดไปต้องเป็น JSON array เสมอ
+          #  ไม่งั้น jq คืนค่าว่างและ FIRST_NUM จะไม่ใช่ตัวเลข)
+          OPEN_JSON="$(gh issue list --state open --limit 200 --json number,title,body 2>/dev/null || true)"
+          [ -n "$OPEN_JSON" ] || OPEN_JSON='[]'
+          OURS="$(printf '%s' "$OPEN_JSON" | jq -c --arg m "$TITLE_MARKER" \
+            '[.[] | select(.title | startswith($m))] | sort_by(.number)')"
+          [ -n "$OURS" ] || OURS='[]'
+          FIRST_NUM="$(printf '%s' "$OURS" | jq -r '.[0].number // 0')"
+          [ -n "$FIRST_NUM" ] || FIRST_NUM=0
+          # กันเหนียว: ถ้ามีหลายใบค้าง ให้เก็บใบเลขต่ำสุดและปิดใบซ้ำทิ้ง
+          # (ระบบใช้ issue ใบเดียวต่อสถานะแดง)
+          printf '%s' "$OURS" | jq -r '.[1:] | .[] | .number' | while read -r DUP; do
+            gh issue close "$DUP" \
+              --comment "ปิด issue ซ้ำ (duplicate) — Backup Health ใช้ issue ใบเดียวต่อสถานะแดง" \
+              > /dev/null 2>&1 || true
+          done
+
+          if [ "$HEALTH_STATUS" = "passed" ]; then
+            if [ "$FIRST_NUM" != "0" ]; then
+              if gh issue close "$FIRST_NUM" \
+                   --comment "✅ กลับมาปกติครบทุกเช็ค (รอบตรวจ ${ICT_NOW}) — ปิดอัตโนมัติโดย Backup Health: ${RUN_URL}"; then
+                ISSUE_ACTION="closed #$FIRST_NUM"
+                ISSUE_URL="${GITHUB_SERVER_URL}/${GH_REPO}/issues/${FIRST_NUM}"
+              else
+                # เช็คผ่านครบแล้ว — การปิดเป็นงานเก็บกวาด ไม่ล้ม job สีเขียว
+                ISSUE_ACTION="close-failed #$FIRST_NUM"
+                echo "::warning::ปิด issue #$FIRST_NUM ไม่สำเร็จ — เช็คผ่านครบแล้ว ปิดเองได้"
+              fi
+            fi
+          else
+            TITLE="${TITLE_MARKER} 🔴 แดง: $(printf '%s' "$FAILED_CHECKS" | tr ' ' '+')"
+            BODY_FILE="$(mktemp)"
+            {
+              echo "<!-- backup-health-fingerprint:${FP} -->"
+              printf '\n## 🔴 D1 Backup health ผิดปกติ\n\n'
+              printf 'รอบตรวจ: %s (UTC: %s)\n' "$ICT_NOW" "$UTC_NOW"
+              if [ -n "$DRILL_NOTE" ]; then
+                printf '\n> ⚠️ รอบนี้เป็น **drill** (drill_scenario บังคับสถานะเพื่อทดสอบกลไกแจ้งเตือน — ไม่ใช่ความผิดปกติจริง)\n'
+              fi
+              printf '\n| เช็ค | สถานะ | รายละเอียด |\n|---|---|---|\n'
+              # mark รายเช็ค — แดงเฉพาะเช็คที่อยู่ใน FAILED_CHECKS จริง
+              # (❓ = ประเมินไม่ได้เพราะ HEALTH_MISSING)
+              mark() {
+                if [ "${HEALTH_MISSING:-0}" = "1" ]; then
+                  printf '❓'
+                else
+                  case " ${FAILED_CHECKS} " in
+                    *" $1 "*) printf '❌' ;;
+                    *) printf '✅' ;;
+                  esac
+                fi
+              }
+              printf '| BACKUP_FRESH | %s | %s |\n' "$(mark BACKUP_FRESH)" "$AGE_DETAIL"
+              printf '| RAW_PRESENT | %s | %s |\n' "$(mark RAW_PRESENT)" "$RAW_DETAIL"
+              printf '| ORDERED_AVAILABLE | %s | %s |\n' "$(mark ORDERED_AVAILABLE)" "$ORD_DETAIL"
+              printf '| ORDERED_VERIFIED | %s | %s |\n' "$(mark ORDERED_VERIFIED)" "$ORD_DETAIL"
+              if [ "${HEALTH_MISSING:-0}" = "1" ]; then
+                printf '| HEALTH_MISSING | ❌ | อ่าน `%s` ไม่สำเร็จ — dispatch "D1 Backup" หนึ่งครั้งเพื่อ seed ไฟล์ |\n' "$HEALTH_KEY"
+              fi
+              printf '\n- Health snapshot: `%s` (updated_at_utc: %s)\n' "$HEALTH_KEY" "${HEALTH_UPDATED:-?}"
+              printf -- '- รอบ backup ที่อ้างอิง: %s\n' "${BACKUP_RUN_URL:-ไม่ทราบ}"
+              printf -- '- รอบตรวจนี้: %s\n' "$RUN_URL"
+              printf -- '- เกณฑ์อายุ: ≤ %s ชม. (MAX_BACKUP_AGE_HOURS — แก้ได้ที่ job env ของ workflow นี้)\n' "$MAX_BACKUP_AGE_HOURS"
+              # heredoc content + ตัวปิด RUNBOOK ต้องอยู่ที่ indent ฐานของ
+              # block scalar (10 spaces) — bash รับเป็น column 0 พอดี
+              # (ตัวปิดห้ามเยื้อง และเนื้อหา Markdown ห้ามเยื้องเกิน 4 ช่อง)
+              cat <<'RUNBOOK'
+
+          ### ทำอย่างไรต่อ (runbook เต็ม: docs/BACKUP_HEALTH_MONITORING.md)
+
+          - **BACKUP_FRESH** — เปิด Actions → "D1 Backup" ดูรอบคืนล่าสุดว่า fail หรือไม่ยิงเลย แล้ว dispatch ใหม่
+          - **RAW_PRESENT** — object ที่ manifest ชี้กลับมาอ่านไม่ได้ → ตรวจ R2 dashboard; พิจารณา backup ก่อนหน้า / D1 Time Travel
+          - **ORDERED_*** — raw ยังอยู่ = ไม่ใช่ข้อมูลหาย — ตาม error_code ใน `backend/scripts/reorder-dump/SPEC.md` §7-8 (UNSUPPORTED หลัง migration ใหม่ = เพิ่ม capability ให้ utility ไม่ใช่เหตุฉุกเฉิน)
+          - **HEALTH_MISSING** — ไฟล์ health หาย/เสีย (backup อาจยังสำเร็จ) → dispatch "D1 Backup" หนึ่งครั้ง
+
+          issue นี้ถูกจัดการโดย workflow "Backup Health": อัปเดต body ทุกรอบ, comment เฉพาะ fingerprint เปลี่ยน, ปิดเองเมื่อผ่านครบทุกเช็ค
+          RUNBOOK
+            } > "$BODY_FILE"
+
+            if [ "$FIRST_NUM" != "0" ]; then
+              OLD_FP="$(printf '%s' "$OURS" | jq -r '.[0].body' \
+                | grep -o 'backup-health-fingerprint:[0-9a-f]*' | head -1 | cut -d: -f2)"
+              if gh issue edit "$FIRST_NUM" --title "$TITLE" --body-file "$BODY_FILE" > /dev/null; then
+                ISSUE_ACTION="updated #$FIRST_NUM"
+                ISSUE_URL="${GITHUB_SERVER_URL}/${GH_REPO}/issues/${FIRST_NUM}"
+              else
+                echo "::error::อัปเดต issue #$FIRST_NUM ไม่สำเร็จ"
+                exit 1
+              fi
+              # D3: comment เฉพาะเมื่อ fingerprint เปลี่ยน — กันสแปมรายวัน
+              if [ "${OLD_FP:-}" != "$FP" ]; then
+                gh issue comment "$FIRST_NUM" \
+                  --body "fingerprint เปลี่ยน (${OLD_FP:-none} → ${FP}) — ตอนนี้แดง: ${FAILED_CHECKS} · รอบตรวจ ${ICT_NOW} · ${RUN_URL}" \
+                  > /dev/null || echo "::warning::comment fingerprint change ไม่สำเร็จ (issue ถูกอัปเดตแล้ว)"
+              fi
+            else
+              CREATED="$(gh issue create --title "$TITLE" --body-file "$BODY_FILE" 2>/dev/null | tail -n 1 || true)"
+              if [ -n "$CREATED" ]; then
+                ISSUE_ACTION="created"
+                ISSUE_URL="$CREATED"
+              else
+                echo "::error::สร้าง issue แจ้งเตือนไม่สำเร็จ (gh issue create failed)"
+                exit 1
+              fi
+            fi
+          fi
+
+          echo "ISSUE_ACTION=$ISSUE_ACTION" >> "$GITHUB_ENV"
+          echo "ISSUE_URL=$ISSUE_URL" >> "$GITHUB_ENV"
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Backup Health"
+            echo ""
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| สถานะรวม | ${HEALTH_STATUS:-unknown} |"
+            echo "| เช็คที่แดง | ${FAILED_CHECKS:-—} |"
+            echo "| อายุ backup | ${AGE_HOURS:-?} ชม. (เกณฑ์ ≤ ${MAX_BACKUP_AGE_HOURS} ชม.) |"
+            echo "| raw | ${RAW_DETAIL:-n/a} |"
+            echo "| ordered | ${ORD_DETAIL:-n/a} |"
+            echo "| issue | ${ISSUE_URL:-—} (${ISSUE_ACTION:-—}) |"
+            if [ -n "${DRILL_NOTE:-}" ]; then
+              echo "| drill | ${DRILL_NOTE} |"
+            fi
+            echo ""
+            echo "รอบตรวจนี้: ${RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # D1 (2026-11-01): เช็คแดง = job แดง (issue ถูกจัดการแล้วใน step ก่อนหน้า)
+      - name: Exit status (fail when abnormal)
+        if: always()
+        run: |
+          if [ "${HEALTH_STATUS:-}" = "failed" ]; then
+            echo "::error::Backup health ผิดปกติ: ${FAILED_CHECKS:-?} — alert issue: ${ISSUE_URL:-ไม่มี (ดู error ใน step Manage alert issue)}"
+            exit 1
+          fi
+          echo "Backup health ปกติทุกเช็ค"
