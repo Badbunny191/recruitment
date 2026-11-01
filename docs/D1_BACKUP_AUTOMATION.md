@@ -38,6 +38,7 @@
 | `CF_ACCOUNT_ID` | Account ID ของ Cloudflare (หน้า dashboard หลัก) |
 | `CF_BACKUP_API_TOKEN` | Custom token ที่สร้างตามตารางด้านล่าง |
 | `BACKUP_GPG_RECIPIENT` | (แนะนำอย่างยิ่ง) public key fingerprint/email สำหรับเข้ารหัส dump ก่อนอัปโหลด |
+| `BACKUP_GPG_PUBLIC_KEY` | (จำเป็นคู่กับ `BACKUP_GPG_RECIPIENT`) public key แบบ ASCII-armored (`-----BEGIN PGP PUBLIC KEY BLOCK-----`) — workflow จะ `gpg --import` เข้า keyring ของ runner ก่อน step Encrypt (runner เริ่มด้วย keyring ว่างเสมอ — root cause ของ run #10 วันที่ 2026-11-01) |
 | `BACKUP_GPG_KEY` | ไม่ใช้ตอน backup (ใช้แค่ public key) — สงวนไว้สำหรับ restore drill workflow ในอนาคต |
 
 หมายเหตุ (2026-11-01): workflow **Backup Health** (`.github/workflows/backup-health.yml`) reuse `CF_ACCOUNT_ID` + `CF_BACKUP_API_TOKEN` (ใช้เฉพาะ `r2 object get` — อ่านอย่างเดียว) — **TODO: อนาคตควรแยก token read-only (R2 Object Read) เฉพาะ health เป็น secret ใหม่ (เช่น `CF_HEALTH_API_TOKEN`) เพื่อ least privilege เต็มรูปแบบ** — ดู `BACKUP_HEALTH_MONITORING.md` §8
