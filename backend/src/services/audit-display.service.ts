@@ -49,11 +49,21 @@ export interface AuditLogRow {
   entityId: string;
 }
 
+export interface AuditApplicantDisplay {
+  name: string | null;
+  email: string | null;
+  applicationNo: string | null;
+}
+
 export interface AuditEntityDisplay {
   /** ชื่อหลักที่คนอ่าน — null เมื่อ resolve ไม่ได้ (fallback UUID ฝั่ง UI) */
   name: string | null;
   /** บรรทัดรอง เช่น ชื่อผู้สมัคร / vN / ระดับตำแหน่ง */
   secondary: string | null;
+  /** ตัวตนผู้สมัคร (Phase 1.1) — resolve จากตาราง applications ณ ตอนอ่าน
+   *  ไม่เคยถูกเก็บลง audit_logs; null เมื่อ resolve ไม่ได้ (เช่น draft ที่
+   *  ยังไม่ผูกใบสมัคร) — FE แสดงเฉพาะ action ฝั่งผู้สมัคร */
+  applicant?: AuditApplicantDisplay | null;
 }
 
 export type AuditDisplayMap = Record<string, AuditEntityDisplay>;
@@ -159,10 +169,16 @@ export async function resolveAuditEntityDisplays(
               id: applications.id,
               applicationNo: applications.applicationNo,
               fullname: applications.fullname,
+              email: applications.email,
             })
             .from(applications)
             .where(inArray(applications.id, chunk)),
-        (r) => ({ name: r.applicationNo ?? r.id, secondary: r.fullname ?? null }),
+        (r) => ({
+          name: r.applicationNo ?? r.id,
+          secondary: r.fullname ?? null,
+          // ตัวตนผู้สมัคร resolve ตอนอ่าน — ไม่เคยถูกเก็บลง audit_logs
+          applicant: { name: r.fullname ?? null, email: r.email ?? null, applicationNo: r.applicationNo ?? null },
+        }),
       ),
     );
   }
@@ -180,10 +196,23 @@ export async function resolveAuditEntityDisplays(
             .select({
               id: attachmentUploads.id,
               originalFilename: attachmentUploads.originalFilename,
+              applicationNo: applications.applicationNo,
+              fullname: applications.fullname,
+              email: applications.email,
             })
             .from(attachmentUploads)
+            // ledger ผูก application_id เฉพาะตอน submit สำเร็จ — draft ที่ไม่ผูก
+            // (ยังไม่ส่ง / ถูกลบ) ให้ตัวตนเป็น null ตามความจริง
+            .leftJoin(applications, eq(attachmentUploads.applicationId, applications.id))
             .where(inArray(attachmentUploads.id, chunk)),
-        (r) => ({ name: r.originalFilename ?? null, secondary: null }),
+        (r) => ({
+          name: r.originalFilename ?? null,
+          secondary: r.applicationNo ?? null,
+          applicant:
+            r.fullname || r.email || r.applicationNo
+              ? { name: r.fullname ?? null, email: r.email ?? null, applicationNo: r.applicationNo ?? null }
+              : null,
+        }),
       ),
     );
   }
