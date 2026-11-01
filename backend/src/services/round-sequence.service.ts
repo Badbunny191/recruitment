@@ -6,14 +6,14 @@
  * จัดการ running number ของ application ในแต่ละ round
  * - 1 round = 1 row ใน round_sequences
  * - สร้างแบบ lazy (ตอน application แรกของ round)
- * - ใช้ UPSERT + RETURNING เพื่อ atomic increment
+ * - ใช้ INSERT ... ON CONFLICT DO UPDATE ... RETURNING ผ่าน db.all()
+ *   เพื่อ atomic increment + อ่านค่าใน statement เดียว (ไม่มี SELECT-after-UPSERT)
  * - Clone round: lazy create row ใหม่ที่ current_value = 0 (เริ่มนับใหม่)
  * - Archive round: row คงอยู่ แต่ไม่ issue running ใหม่
  *
  * D1/SQLite considerations:
  * - SQLite มี transaction-based locking ที่ strong พอ
- * - ใช้ INSERT ... ON CONFLICT DO UPDATE (UPSERT) + RETURNING
- * - ถ้า race condition (ขณะ insert row ใหม่): retry สูงสุด 3 ครั้ง
+ * - ถ้า SQLITE_BUSY (statement ไม่ได้รัน): retry สูงสุด 3 ครั้ง
  */
 
 import { eq, sql } from 'drizzle-orm';
@@ -53,9 +53,17 @@ export async function getNextRunningNumber(
         return { ok: false, reason: 'ROUND_NOT_FOUND' };
       }
 
-      // UPSERT: insert ถ้ายังไม่มี, increment + return ถ้ามีแล้ว
-      // ใช้ raw SQL เพื่อความชัดเจนและ atomic
-      const result = await db.run(sql`
+      // ── Atomic claim (statement เดียว) ──
+      // INSERT ... ON CONFLICT DO UPDATE ... RETURNING เพิ่มค่าและคืนค่า
+      // ใน statement เดียว — SQLite/D1 รัน statement แบบ serialize (single
+      // writer) จึงไม่มี request สองตัวได้ค่าเดียวกัน
+      //
+      // ต้องใช้ db.all() ไม่ใช่ db.run(): drizzle d1 `run()` คืนแค่
+      // { success, meta } — D1 .run() ไม่มี RETURNING rows ทำให้เดิมต้อง
+      // SELECT ตามหลัง ซึ่งเป็น race (request คู่ขนานอ่านค่าเดียวกัน →
+      // application_no ซ้ำ → ชน UNIQUE) — db.all() กับ raw sql คืน
+      // results array ตรง ๆ (drizzle d1 session: stmt.all().then(({results}) => results))
+      const rows = await db.all<{ current_value: number }>(sql`
         INSERT INTO round_sequences (round_id, current_value, created_at, updated_at)
         VALUES (${roundId}, 1, unixepoch(), unixepoch())
         ON CONFLICT(round_id) DO UPDATE SET
@@ -64,27 +72,23 @@ export async function getNextRunningNumber(
         RETURNING current_value
       `);
 
-      // D1/SQLite: อ่าน RETURNING จาก result.meta
-      const newValue = extractReturnedValue(result);
-      if (newValue == null) {
-        // fallback: SELECT หลัง UPSERT
-        const seq = await db
-          .select({ value: roundSequences.currentValue })
-          .from(roundSequences)
-          .where(eq(roundSequences.roundId, roundId))
-          .get();
-        if (!seq) {
-          throw new Error('Failed to read sequence after UPSERT');
-        }
-        return { ok: true, running: seq.value };
+      // UPSERT นี้กระทบ 1 row เสมอ — row[0] ต้องมี current_value เป็นตัวเลข
+      // ถ้า shape ผิด (adapter/D1 พฤติกรรมเปลี่ยน) ต้อง fail ดัง ๆ ห้าม
+      // fallback ไป SELECT หลัง UPSERT — การอ่านซ้ำคือ race window เดิม
+      const value = Number(rows?.[0]?.current_value);
+      if (!Number.isFinite(value) || value < 1) {
+        throw new Error('round_sequences: UPSERT RETURNING did not yield current_value');
       }
 
-      return { ok: true, running: newValue };
+      return { ok: true, running: value };
     } catch (err: any) {
       const message = String(err?.message ?? err);
-      // Transient errors: retry
-      const isRetryable = /SQLITE_BUSY|UNIQUE|conflict/i.test(message);
-      if (isRetryable && attempt < maxRetries - 1) {
+      const causeMessage = String(err?.cause?.message ?? '');
+      const combined = `${message} ${causeMessage}`;
+      // SQLITE_BUSY: statement ไม่ได้รันเลย (database locked) — ลองใหม่ได้
+      // โดยไม่เผา sequence / ส่วน error อื่น (รวมถึง shape-mismatch ข้างบน
+      // ที่ UPSERT อาจรันไปแล้ว) ห้าม retry ไม่งั้นเลขข้ามเพิ่มโดยไม่จำเป็น
+      if (/SQLITE_BUSY/i.test(combined) && attempt < maxRetries - 1) {
         await sleep(20 * (attempt + 1));
         continue;
       }
@@ -126,18 +130,6 @@ export async function resetRunningNumber(
 }
 
 // --- Helpers ---
-
-function extractReturnedValue(result: any): number | null {
-  // D1 returns: { success, meta: { changes, last_row_id, ... } }
-  // SQLite better-sqlite3 returns: { changes, lastInsertRowid }
-  // Drizzle's db.run wraps the D1 response
-  const meta = result?.meta;
-  if (!meta) return null;
-  // RETURNING clause: last_row_id ไม่ใช่ sequence value
-  // ต้อง query ซ้ำเพื่ออ่าน RETURNING value
-  // (D1 ปัจจุบันยังไม่ expose RETURNING rows ใน meta)
-  return null;
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

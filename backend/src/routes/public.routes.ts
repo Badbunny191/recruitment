@@ -4,9 +4,9 @@ import { drizzle } from 'drizzle-orm/d1';
 import { Bindings } from '../types';
 import { ApplicationSubmitSchema, ApplicationLookupSchema, CORE_FIELD_IDS } from '../schemas/validators';
 import { recruitmentRounds, templateFields, templateSections, fieldMaster, applications, applicationAttachments, organizations } from '../db/schema';
-import { eq, and, isNull, asc, sql, like, desc, ne } from 'drizzle-orm';
+import { eq, and, isNull, asc, sql, ne } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
-import { getCurrentBangkokYear, buildApplicationNo, parseApplicationNo } from '../utils/application-no';
+import { getCurrentBangkokYear, buildApplicationNo } from '../utils/application-no';
 import { sanitizeOriginalFilenameOrNull } from '../utils/filename';
 import {
   buildApplicationPdfFilename,
@@ -20,7 +20,7 @@ import {
   appendOtherOption,
   parseOptionsArray,
 } from '../lib/other-option';
-import { buildApplicationNumber } from '../services/application-number.service';
+import { buildApplicationNumber, getMaxSequenceForYear } from '../services/application-number.service';
 import { buildPromoteAttachmentsStatements } from '../lib/attachment-ledger';
 import { idempotencyMiddleware } from '../middlewares/idempotency.middleware';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
@@ -309,7 +309,7 @@ publicRoutes.get('/rounds/:id/detail', async (c) => {
 
 /**
  * =============================================================================
- * Application No Generation (PR #1 hardening)
+ * Application No Generation (PR #1 hardening + race fix)
  * =============================================================================
  * The legacy generator used `Math.random()` against `new Date().getFullYear()`.
  * That has two problems:
@@ -320,14 +320,21 @@ publicRoutes.get('/rounds/:id/detail', async (c) => {
  *      Thailand time the generator emits last year's number (e.g. APP-2026
  *      instead of APP-2027).
  *
- * The replacement:
+ * The replacement (Strategy A — format เดิม APP-YYYY-NNNN, per-year global):
  *   - Reads the current Bangkok year from a single helper.
  *   - Queries D1 for the highest existing sequence in that year using
- *     `application_no LIKE 'APP-YYYY-%'`, ordered descending.
- *   - Increments by 1, formats via `buildApplicationNo`.
- *   - If the UNIQUE constraint still trips (extremely rare race: two isolates
- *     both computed the same MAX at the same instant), retry up to 5 times.
+ *     `application_no LIKE 'APP-YYYY-%'` with a NUMERIC max
+ *     (`MAX(CAST(SUBSTR(...)))` — application_no เป็น TEXT ห้ามเทียบ lexical
+ *     เพราะ 'APP-2026-9999' > 'APP-2026-10000').
+ *   - Increments by 1, formats via `buildApplicationNo` (padStart ไม่ truncate —
+ *     เลขเกิน 9,999 ออกเป็น APP-2026-10000 ได้).
+ *   - If the UNIQUE constraint trips (race: two requests computed the same
+ *     MAX), re-read the MAX and retry up to 5 times — bounded, never infinite.
  *   - After 5 attempts, return 503 so the client can retry.
+ *
+ * Strategy B (round มี application_pattern) ใช้ atomic claim จาก
+ * round_sequences (UPSERT ... RETURNING ใน round-sequence.service.ts) —
+ * ดู insertApplicationWithRetry ด้านล่าง
  *
  * IMPORTANT: this preserves the existing public format
  * (`APP-YYYY-NNNN`) and is fully backward-compatible with the admin UI.
@@ -337,28 +344,17 @@ publicRoutes.get('/rounds/:id/detail', async (c) => {
  * Find the highest sequence number in D1 for the given Bangkok year.
  * Returns 0 if no applications exist for the year.
  *
- * The query is a single-row scan that asks D1 for the max applicationNo
- * whose prefix matches `APP-YYYY-`. We use `like` + `desc()` + `limit(1)`
- * to keep the read cheap even as the table grows.
+ * Canonical implementation: `getMaxSequenceForYear` จาก
+ * application-number.service.ts (import ด้านบน) — numeric MAX ผ่าน
+ * MAX(CAST(SUBSTR(application_no, 10))) ไม่ใช่ lexical ORDER BY DESC
+ * (application_no เป็น TEXT: 'APP-2026-9999' > 'APP-2026-10000' แบบ
+ * lexical ทำให้ submit หลังข้าม 9,999 ชน UNIQUE ครบ retry → 503 ถาวร)
+ *
+ * ยังเป็น SELECT-MAX+1 คู่กับ bounded retry ด้านล่าง: เมื่อ concurrent
+ * submit ได้ candidate เดียวกัน ตัวที่ชน applications.application_no
+ * UNIQUE จะ re-read MAX ใหม่แล้วลองอีกครั้ง (bounded 5 ครั้ง) — UNIQUE
+ * constraint เป็นตัวชี้ขาด ไม่ใช่กลไกหลักเหมือน Strategy B
  */
-async function getMaxSequenceForYear(
-  db: ReturnType<typeof drizzle<any>>,
-  year: number,
-): Promise<number> {
-  const prefix = `APP-${year}-`;
-  const row = await db
-    .select({ applicationNo: applications.applicationNo })
-    .from(applications)
-    .where(like(applications.applicationNo, `${prefix}%`))
-    .orderBy(desc(applications.applicationNo))
-    .limit(1)
-    .get();
-
-  if (!row || !row.applicationNo) return 0;
-  const parsed = parseApplicationNo(row.applicationNo);
-  if (!parsed || parsed.year !== year) return 0;
-  return parsed.sequence;
-}
 
 /**
  * Attempts to insert a new application with a unique applicationNo.
@@ -397,16 +393,22 @@ async function insertApplicationWithRetry(
 
   // === Strategy B: Pattern ใหม่ — ใช้ buildApplicationNumber service ===
   if (round.applicationPattern) {
-    const buildResult = await buildApplicationNumber(db, { roundId: args.roundId, applicationId: args.id });
-    if (!buildResult.ok) {
-      return {
-        ok: false,
-        reason: buildResult.reason === 'INVALID_PATTERN' ? 'INVALID_PATTERN' : 'ROUND_ERROR',
-      };
-    }
-    const { applicationNo, snapshot } = buildResult;
+    // claim ต้องอยู่ใน loop: เลขที่ claim ต้อง render เป็น string ก่อน bind
+    // ลง INSERT (pattern render เป็นฝั่ง TS) claim กับ insert จึงคนละ
+    // statement — claim เอง atomic แล้ว (round_sequences UPSERT RETURNING
+    // ใน round-sequence.service) ถ้ายังชน application_no UNIQUE (เช่น
+    // sequence ถูก reset ต่ำกว่าเลขเดิม หรือ pattern ไม่ unique) ให้ claim
+    // เลขใหม่แบบ bounded — ห้าม retry ไม่จำกัด
     const maxRetries = 5;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const buildResult = await buildApplicationNumber(db, { roundId: args.roundId, applicationId: args.id });
+      if (!buildResult.ok) {
+        return {
+          ok: false,
+          reason: buildResult.reason === 'INVALID_PATTERN' ? 'INVALID_PATTERN' : 'ROUND_ERROR',
+        };
+      }
+      const { applicationNo, snapshot } = buildResult;
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const statements: any[] = [
@@ -458,10 +460,9 @@ async function insertApplicationWithRetry(
         if (/UNIQUE constraint failed/i.test(msg) && /idx_apps_round_email/i.test(msg)) {
           return { ok: false, reason: 'DUPLICATE_EMAIL' };
         }
-        if (/UNIQUE constraint failed: applications\.application_no/.test(msg) && attempt < maxRetries - 1) {
-          // Pattern service already issued the number — collision shouldn't happen normally
-          // but if it does (rare race), fail
-          return { ok: false, reason: 'UNIQUE_COLLISION' };
+        if (/UNIQUE constraint failed: applications\.application_no/.test(msg)) {
+          // เลขซ้ำจริง — claim เลขใหม่ในรอบถัดไป (bounded โดย maxRetries)
+          continue;
         }
         return { ok: false, reason: 'DB_ERROR' };
       }

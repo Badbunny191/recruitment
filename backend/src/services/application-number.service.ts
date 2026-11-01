@@ -18,9 +18,9 @@
  *   - ใบสมัครเก่าไม่ถูกแตะ
  */
 
-import { eq, sql } from 'drizzle-orm';
+import { eq, like, sql } from 'drizzle-orm';
 import type { drizzle as drizzleFn } from 'drizzle-orm/d1';
-import { recruitmentRounds } from '../db/schema';
+import { recruitmentRounds, applications } from '../db/schema';
 import {
   renderPattern,
   validateApplicationPattern,
@@ -32,6 +32,34 @@ import { getCurrentBangkokYear } from '../utils/application-no';
 import { buildApplicationNo } from '../utils/application-no';
 
 type DB = ReturnType<typeof drizzleFn<any>>;
+
+/**
+ * หา sequence สูงสุดของปี (Bangkok) จาก application_no ที่มีอยู่ — canonical
+ * implementation ที่ทั้ง submit route (Strategy A) และ buildLegacyNumber ใช้ร่วมกัน
+ *
+ * ต้องเป็น numeric MAX ไม่ใช่ lexical: application_no เป็น TEXT ทำให้
+ * 'APP-2026-9999' > 'APP-2026-10000' แบบ lexical — ORDER BY DESC จะมอง
+ * 9,999 มากกว่า 10,000 แล้ว deadlock ทุก submit หลังข้าม 9,999
+ * LIKE filter pin prefix 'APP-YYYY-' (9 ตัวอักษรคงที่) จึงตัด sequence
+ * ด้วย SUBSTR จากตำแหน่ง prefix.length + 1 แล้ว CAST เทียบเป็นจำนวนเต็ม
+ *
+ * ยังคงเป็น SELECT-MAX+1 คู่กับ bounded retry บน UNIQUE ของ submit route —
+ * DB (UNIQUE constraint) เป็นตัวชี้ขาดเมื่อแข่งกัน ไม่ใช่กลไกหลักของ Strategy B
+ * (ซึ่ง claim atomically จาก round_sequences)
+ */
+export async function getMaxSequenceForYear(db: DB, year: number): Promise<number> {
+  const prefix = `APP-${year}-`;
+  const row = await db
+    .select({
+      maxSeq: sql<number | null>`MAX(CAST(SUBSTR(${applications.applicationNo}, ${prefix.length + 1}) AS INTEGER))`,
+    })
+    .from(applications)
+    .where(like(applications.applicationNo, `${prefix}%`))
+    .get();
+
+  if (!row || row.maxSeq == null) return 0;
+  return row.maxSeq;
+}
 
 export interface BuildNumberInput {
   roundId: string;
@@ -108,22 +136,9 @@ async function buildLegacyNumber(
 ): Promise<BuildNumberResult | BuildNumberFailure> {
   const year = getCurrentBangkokYear();
 
-  // ใช้ max query แบบเดิม (LIKE 'APP-YYYY-%')
-  const row = await db
-    .select({ applicationNo: sql<string>`application_no` })
-    .from(sql`applications`)
-    .where(sql`application_no LIKE ${`APP-${year}-%`}`)
-    .orderBy(sql`application_no DESC`)
-    .limit(1)
-    .get();
-
-  let nextSequence = 1;
-  if (row?.applicationNo) {
-    const m = row.applicationNo.match(/^APP-(\d{4})-(\d+)$/);
-    if (m && parseInt(m[1], 10) === year) {
-      nextSequence = parseInt(m[2], 10) + 1;
-    }
-  }
+  // numeric MAX ผ่าน getMaxSequenceForYear (ห้าม lexical ORDER BY DESC —
+  // เลขข้าม 9,999 จะย้อนกลับ ดู comment ที่ getMaxSequenceForYear)
+  const nextSequence = (await getMaxSequenceForYear(db, year)) + 1;
 
   const applicationNo = buildApplicationNo(year, nextSequence);
 
