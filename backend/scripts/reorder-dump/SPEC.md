@@ -115,21 +115,25 @@ npm alias: `npm run dump:reorder -- --input ... --output ...`
   "tool": "reorder-dump",
   "ok": true,
   "input": "...", "output": "...",
-  "inputSha256": "...", "outputSha256": "…  ← manifest field ordered_sha256",
+  "inputSha256": "...", "outputSha256": "…  ← manifest v2: ordered.sha256",
   "inputBytes": 399625, "outputBytes": 399625,
   "statementCounts": { "input": 131, "output": 131, "pragma": 1, "table": 22, "index": 42, "view": 0, "dml": 66 },
   "multisetParity": true,
   "invariantsOk": true,
   "tableOrder": ["d1_migrations", "admin_users", "…  ← ลำดับ CREATE ทั้งหมด"],
-  "insertTableOrder": ["d1_migrations", "…  ← เฉพาะตารางที่มี DML (manifest field insert_table_order)"],
+  "insertTableOrder": ["d1_migrations", "…  ← เฉพาะตารางที่มี DML (manifest v2: ordered.insert_table_order)"],
   "warnings": [],
   "verify": { "replayed": true, "orderedFkOn": true, "foreignKeyCheckRows": 0,
               "rawFkOffCountMatch": true, "rowCounts": { "applications": 591, "…": 0 } }
 }
 ```
 
-Failure policy ที่ Phase 2 (workflow) ต้องทำเมื่อ utility exit 1: ยัง upload **raw** + manifest โดย
-`ordered_file: null` + `::warning` แล้ว fail job (loud — backup ไม่สะดุด, restore ยังพึ่ง raw ได้)
+Failure policy ที่ Phase 2 (workflow) **ทำจริงแล้ว**เมื่อ utility exit 1 (implement 2026-11-01,
+`.github/workflows/d1-backup.yml`): ยัง upload **raw** + manifest v2 โดย `ordered.available: false`
+(+ `error_code` บอกสาเหตุ) + `::warning` แล้ว **job ยังสำเร็จ — ไม่มี fail-gate** เพราะ raw คือ
+source of truth, restore ยังพึ่ง raw ได้เสมอ และ ordered สร้างใหม่จาก raw ได้ทุกเมื่อ (การเสีย
+ordered คือ "เสียความสะดวก" ไม่ใช่ "เสียข้อมูล") สุขภาพรายคืนตรวจจากแถว ordered ใน job summary
+— รายละเอียด policy ฉบับเต็มที่ `docs/D1_BACKUP_AUTOMATION.md` §5.1
 — เอกสารไว้ที่นี่เพื่อให้ contract ครบ แต่**ไม่อยู่ในขอบเขตของ utility นี้**
 
 ## 8. Limitations (ประกาศชัด — ล้มดัง ไม่เดา)

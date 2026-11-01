@@ -18,6 +18,7 @@
 | **บั๊กที่พบและแก้แล้ว** | `jq '.results[0]'` อ่านผล `d1 execute --json` ผิด shape — root เป็น array จริง → `manifest.facts = null` เงียบ ๆ ทำให้ restore drill ไม่มี baseline ให้เทียบ | **แก้เป็น `jq '.[0].results[0]'`** — พิสูจน์ shape จาก prod D1 จริง (`[{results:[{applications:20,...}], meta:{size_after:765952}}]` วันที่ 2026-10-31) |
 | npm install ที่ root ปลอดภัย | ✓ root package.json ไม่มี preinstall/postinstall hooks | `grep package.json` |
 | ขนาด DB ปัจจุบัน | ≈ 0.75 MB (765,952 bytes), applications = 20 แถว | meta.size_after จาก d1 execute วันที่ 2026-10-31 |
+| **Phase 2 (2026-11-01): ordered dump + manifest v2** | ✓ 13 steps (+1 `Build ordered dump` best-effort) — raw pipeline ไม่เปลี่ยนพฤติกรรม, ordered ล้ม = `::warning` + raw-only + job เขียว, manifest เพิ่ม `schema_version: 2` + block `ordered` (additive) | `docs/D1_BACKUP_AUTOMATION.md` §5.1/§6, `backend/scripts/reorder-dump/SPEC.md` |
 
 ---
 
@@ -56,8 +57,8 @@
 **ขั้นเปิดใช้ (run แรก):**
 - [ ] 3.4 กด **Actions → D1 Backup → Run workflow** (workflow_dispatch) — อย่ารอ cron คืนแรก
 - [ ] 3.5 รอ run เสร็จ (สีเขียว, ≤ 20 นาที) — ดู `docs/FIRST_BACKUP_RUNBOOK.md` สำหรับเกณฑ์ "สำเร็จจริง" ทุกข้อ
-- [ ] 3.6 เช็ค job summary ของ run: ต้องแสดง `r2 key`, `size`, `sha256` (ถ้าแถวว่าง = fail ก่อน export — ดู §4)
-- [ ] 3.7 ยืนยัน object บน R2 จริง: `npx wrangler r2 object get sao-recruitment-backups/d1/daily/<YYYY>/<MM>/<DD>/manifest-<TS>.json --file /tmp/m.json && cat /tmp/m.json`
+- [ ] 3.6 เช็ค job summary ของ run: ต้องแสดง `r2 key (raw)`, `size`, `sha256` และแถว ordered (ปกติ = `ordered key (restore-ready)` + `ordered verify = FK-ON replay + parity OK`; ถ้า `unavailable (code)` ดู `docs/D1_BACKUP_AUTOMATION.md` §5.1 — ถ้าแถวว่าง = fail ก่อน export — ดู §4)
+- [ ] 3.7 ยืนยัน object บน R2 จริง: `npx wrangler r2 object get sao-recruitment-backups/d1/daily/<YYYY>/<MM>/<DD>/manifest-<TS>.json --file /tmp/m.json && cat /tmp/m.json` — ต้องมี `schema_version: 2` และ `ordered.available: true` (รวม 3 objects ต่อคืน: raw + ordered + manifest)
 - [ ] 3.8 ยืนยัน lifecycle rule: `npx wrangler r2 bucket lifecycle list sao-recruitment-backups` ต้องมี `d1-backup-expire-90d`
 - [ ] 3.9 ยืนยัน warning ไม่โผล่ใน log (GPG ทำงาน) — ถ้าข้ามขั้น 3.2 จะเห็น `::warning::GPG encryption is NOT configured`
 

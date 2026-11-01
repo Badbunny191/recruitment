@@ -12,8 +12,8 @@
 | # | เกณฑ์ | วิธีตรวจ | เกณฑ์ผ่าน |
 |---|---|---|---|
 | V1 | **Object upload** | Download manifest กลับจาก R2 ด้วยมือ (§ขั้น 4) | get สำเร็จ + JSON parse ได้ |
-| V2 | **Manifest ครบ** | อ่าน field ทั้ง 9 ตัว (§ขั้น 5) | ครบ + `facts` เป็น object ไม่ใช่ `null` |
-| V3 | **Checksum** | `sha256sum` dump ที่โหลดกลับ เทียบ manifest | ตรงกันทุกตัวอักษร + size ตรง byte |
+| V2 | **Manifest ครบ (v2)** | อ่าน field ทั้งหมด (§ขั้น 5) | ครบ + `facts` เป็น object ไม่ใช่ `null` + `schema_version: 2` + `ordered.available: true` |
+| V3 | **Checksum** | `sha256sum` dump ที่โหลดกลับ เทียบ manifest (ordered → `.ordered.sha256` / raw → `.sha256`) | ตรงกันทุกตัวอักษร + size ตรง byte |
 | V4 | **Lifecycle** | `r2 bucket lifecycle list` | มี rule `d1-backup-expire-90d` |
 | V5 | **Retention** | นับ backup ครบ 2 รอบถัดมา + คำนวณอายุ | มี object ใหม่ทุกคืน และรู้ว่า object อายุ >90 วันจะถูกลบเอง |
 
@@ -27,8 +27,8 @@ run บน Actions เป็นสีเขียว **ยังไม่พอ*
 
 Actions → **D1 Backup** → run ล่าสุด (trigger = workflow_dispatch ครั้งแรก)
 
-- [ ] Job `backup` สีเขียว ทุก step ผ่าน (13 steps)
-- [ ] Job summary มีตาราง: `database = sao-db`, `r2 key = d1/daily/…`, `size`, `sha256`
+- [ ] Job `backup` สีเขียว ทุก step ผ่าน (13 steps — รวม `Build ordered dump (best-effort)`)
+- [ ] Job summary มีตาราง: `database = sao-db`, `r2 key (raw) = d1/daily/…`, `size`, `sha256` และแถว ordered (`ordered key (restore-ready)` + `ordered verify = FK-ON replay + parity OK` — ถ้าเห็น `unavailable (code)` ดู `D1_BACKUP_AUTOMATION.md` §5.1 ตาม code)
 - ถ้าสีแดง: ไป `BACKUP_ACTIVATION_CHECKLIST.md` §4 (Failure Recovery) ตาม step ที่ fail
 
 จดค่าจาก summary: `TS` (จากชื่อไฟล์ dump-<TS>.sql) และ `PREFIX` = `d1/daily/YYYY/MM/DD` (วัน UTC ของ run)
@@ -48,7 +48,8 @@ npx wrangler r2 object get "sao-recruitment-backups/$PREFIX/manifest-$TS.json" -
 cat /tmp/manifest.json | jq .
 ```
 
-- [ ] มีครบ 9 fields: `generated_at_utc, database, file, r2_key, size_bytes, sha256, run_url, facts`
+- [ ] มี field ครบ: `schema_version` (= 2), `generated_at_utc, database, file, r2_key, size_bytes, sha256, run_url, facts` และ block `ordered` (Phase 2)
+- [ ] `ordered.available == true` — พร้อม `ordered.file/r2_key/sha256/verified: true` (ถ้า `false`: รอบนั้นเป็น raw-only backup — ดู `D1_BACKUP_AUTOMATION.md` §5.1 ตาม `ordered.error_code`)
 - [ ] `facts` เป็น **object** (ไม่ใช่ `null`) ที่มี: `applications, audit_logs, attachment_uploads, admin_users, migration_head`
   - ตัวอย่างที่ควรเห็นวันแรก (ค่าจริง prod 2026-10-31): `applications ≈ 20`, `admin_users = 5`, `migration_head = "031_applications_submitted_at_sort_indexes.sql"`
   - ถ้า `facts = null`: workflow เก่าที่ยังใช้ jq ผิด — ยืนยัน `main` มี fix `.[0].results[0]` แล้วรันใหม่
@@ -57,8 +58,9 @@ cat /tmp/manifest.json | jq .
 ### ขั้น 4 — โหลด dump กลับ + ตรวจ checksum (V3) — หัวใจของ "สำเร็จจริง"
 
 ```bash
-# ชื่อไฟล์ = manifest.file (dump-$TS.sql หรือ .sql.gpg ถ้าเปิด GPG)
-npx wrangler r2 object get "sao-recruitment-backups/$PREFIX/$(jq -r .file /tmp/manifest.json)" --file /tmp/dump-check
+# โหลด ordered dump ก่อนเสมอ (Phase 2) — ชื่อไฟล์ = manifest.ordered.file
+# ต่อเมื่อ ordered.available == false จึงโหลด raw (manifest.file) แทน
+npx wrangler r2 object get "sao-recruitment-backups/$PREFIX/$(jq -r '.ordered.available ? .ordered.file : .file' /tmp/manifest.json)" --file /tmp/dump-check
 
 # ถ้าเป็น .gpg: ถอดก่อน (ต้องมี private key ของ BACKUP_GPG_RECIPIENT)
 # gpg --decrypt --output /tmp/dump-check.sql /tmp/dump-check
@@ -67,10 +69,11 @@ sha256sum /tmp/dump-check
 stat -c%s /tmp/dump-check   # linux / บน macOS ใช้: stat -f%z
 ```
 
-- [ ] `sha256` **ตรง manifest.sha256 ทุกตัวอักษร**
-- [ ] `size` ตรง `manifest.size_bytes` ±0
+- [ ] `sha256` **ตรง `manifest.ordered.sha256` (หรือ `manifest.sha256` ถ้าใช้ raw) ทุกตัวอักษร**
+- [ ] `size` ตรง `manifest.ordered.size_bytes` (หรือ `manifest.size_bytes`) ±0
 - [ ] `grep -c "CREATE TABLE" /tmp/dump-check` ต้อง > 10 (schema ครบ)
 - [ ] `grep -q "CREATE TABLE.*applications" /tmp/dump-check` ต้องพบ
+- [ ] (ordered เท่านั้น) หัวไฟล์ไม่มี `INSERT` ก่อน `CREATE TABLE` ครบทุกตาราง — ordered dump จัดเรียง FK-safe แล้ว (`manifest.ordered.verified: true` ยืนยัน replay ผ่านมาแล้วตอน build)
 
 > เกณฑ์นี้เข้มกว่าตัว workflow เอง: workflow ยืนยันแค่ re-download manifest; ขั้นนี้พิสูจน์ว่า **dump เอง** โหลดกลับมาและตรง checksum — ปิดช่อง "put สำเร็จแต่ไฟล์เสียระหว่างทาง"
 
@@ -96,6 +99,6 @@ npx wrangler r2 bucket lifecycle list sao-recruitment-backups
 
 ## สิ่งที่ run แรกนี้ยังไม่พิสูจน์ (อย่าลืม)
 
-1. **กู้จริงได้จริง** — ต้องรัน restore drill อย่างน้อย 1 ครั้ง (dump ที่ checksum ผ่านยังอาจ restore ไม่ได้เมื่อ statement ชนกัน)
+1. **กู้จริงได้จริง** — ต้องรัน restore drill อย่างน้อย 1 ครั้ง (ตั้งแต่ Phase 2 2026-11-01 workflow replay-verify ordered dump ให้ทุกคืนแล้ว — ที่ต้องซ้อมคือเส้นทางปลายทาง: โหลดจาก R2 → import → verify บน DB ใหม่)
 2. **ไฟล์แนบ R2 (`sao-storage`) ยังไม่อยู่ใน backup นี้** — ดู `docs/R2_ATTACHMENT_RECOVERY.md`
 3. **GPG ถอดกลับได้** — ถ้าเปิด encryption ครั้งแรก ให้ทดลอง `gpg --decrypt` ตั้งแต่วันแรกด้วย private key ที่เก็บไว้ (อย่ารอวันเกิดเหตุ)

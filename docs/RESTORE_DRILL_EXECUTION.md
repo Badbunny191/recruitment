@@ -1,6 +1,7 @@
 # Restore Drill Execution — เช็กลิสต์ปฏิบัติจริง แยก 4 เฟส
 
 > **Sprint 3 — Task 3** | วันที่: 2026-10-31 | Branch: `feature/sprint3-backup-activation`
+> **Phase 2** | อัปเดต 2026-11-01 | Branch: `feature/d1-backup-phase2` — A1 ใช้ **ordered dump ก่อนเสมอ** (`manifest.ordered.available`) ถ้า ordered ไม่มีค่อยใช้ raw แล้ว reorder + verify (A1.8) ก่อน import
 >
 > แปลง `docs/RESTORE_DRILL.md` (Sprint 2 — เนื้อหาเชิงออกแบบ) เป็นเช็กลิสต์สั่งงานได้
 > เฟส A → B → C → D ต้องผ่านตามลำดับ — ข้อใด fail ให้หยุดและบันทึกอาการก่อนไปขั้นถัดไป
@@ -28,16 +29,17 @@
 
 - [ ] A1.1 เลือกรอบ backup ล่าสุดที่ผ่าน (จาก Actions run สีเขียวล่าสุด / list R2)
 - [ ] A1.2 `npx wrangler r2 object get sao-recruitment-backups/d1/daily/<YYYY>/<MM>/<DD>/manifest-<TS>.json --file /tmp/manifest.json && cat /tmp/manifest.json | jq .`
-- [ ] A1.3 โหลด dump: `npx wrangler r2 object get "sao-recruitment-backups/d1/daily/<YYYY>/<MM>/<DD>/$(jq -r .file /tmp/manifest.json)" --file /tmp/dump.raw`
-- [ ] A1.4 ถ้าไฟล์เป็น `.gpg`: `gpg --decrypt --output /tmp/dump.sql /tmp/dump.raw` — ผ่านโดยไม่มี warning
-- [ ] A1.5 **`sha256sum /tmp/dump.sql` ต้องตรง `manifest.sha256` ทุกตัวอักษร** (ไม่ตรง = หยุด — dump เสีย กลับไปรอบ backup ก่อนหน้า)
-- [ ] A1.6 `stat` ขนาดไฟล์ ตรง `manifest.size_bytes` ±0
+- [ ] A1.3 โหลด dump — **ใช้ ordered ก่อนเสมอ**: `npx wrangler r2 object get "sao-recruitment-backups/d1/daily/<YYYY>/<MM>/<DD>/$(jq -r '.ordered.available ? .ordered.file : .file' /tmp/manifest.json)" --file /tmp/dump.download` (jq ternary ครอบ manifest เก่าที่ไม่มี `ordered` ด้วย)
+- [ ] A1.4 ถ้าไฟล์เป็น `.gpg`: `gpg --decrypt --output /tmp/dump.sql /tmp/dump.download` — ผ่านโดยไม่มี warning (ถ้าเป็น plaintext `.sql`: `cp /tmp/dump.download /tmp/dump.sql`)
+- [ ] A1.5 **`sha256sum /tmp/dump.sql` ต้องตรง manifest ทุกตัวอักษร** — โหลดจาก `ordered.file` → เทียบ `manifest.ordered.sha256` / โหลดจาก `.file` (raw) → เทียบ `manifest.sha256` (ไม่ตรง = หยุด — dump เสีย กลับไปรอบ backup ก่อนหน้า)
+- [ ] A1.6 `stat` ขนาดไฟล์ ตรง `manifest.ordered.size_bytes` (หรือ `manifest.size_bytes` ถ้าโหลด raw) ±0
 - [ ] A1.7 `grep -q "CREATE TABLE.*applications" /tmp/dump.sql` พบ (ก่อนเสียเวลา import)
+- [ ] A1.8 *(เฉพาะเมื่อ `.ordered.available == false` คือโหลด raw มา)* สร้าง ordered จาก raw: `cd backend && npm run dump:reorder -- --input /tmp/dump.sql --output /tmp/dump.ordered.sql --report /tmp/reorder-report.json --verify` — ต้อง exit 0 (verify = replay ด้วย `foreign_keys=ON` ผ่าน + row count ตรง raw ทุกตาราง)
 
 **A2. Restore ลง database ใหม่ (ห้าม restore ทับ prod เด็ดขาด)**
 
 - [ ] A2.1 `npx wrangler d1 create sao-db-restore-<TS>` — จด `database_id` ที่ได้: ________________
-- [ ] A2.2 `npx wrangler d1 execute sao-db-restore-<TS> --remote --file=/tmp/dump.sql -y` (wrangler แบ่ง statement เอง; **ห้าม** `migrations apply` — dump มี d1_migrations มาแล้ว)
+- [ ] A2.2 `npx wrangler d1 execute sao-db-restore-<TS> --remote --file=<ordered file> -y` — `<ordered file>` = `/tmp/dump.ordered.sql` เมื่อผ่าน A1.8 หรือ `/tmp/dump.sql` เมื่อโหลด ordered มาตั้งแต่ A1.3 (wrangler แบ่ง statement เอง; **ห้าม** `migrations apply` — dump มี d1_migrations มาแล้ว; **ห้าม import raw dump ตรง ๆ** — raw restore ไม่ได้เพราะลำดับ FK + `defer_foreign_keys` ที่ D1 ไม่รองรับ พิสูจน์ 2026-10-31 — ถ้าไม่มี ordered ให้ทำ A1.8 ก่อน)
 - [ ] A2.3 (โหมดซ้อม) copy `backend/wrangler.toml` ชั่วคราว → แก้ `[[d1_databases]]` binding `DB` เป็น `database_id` จาก A2.1 **เฉพาะไฟล์ชั่วคราว** (ห้าม commit)
 - [ ] A2.4 (โหมดซ้อม) `cd backend && npx wrangler deploy --name sao-recruitment-backend-drill` — จด URL drill: ________________
 - [ ] A2.5 (โหมดซ้อม) ตั้ง secret ให้ Worker drill ครบเหมือน prod (อย่างน้อย `JWT_SECRET` — ขาดจะ fail ที่ /health/ready)

@@ -5,14 +5,27 @@
 # (supersedes the workflow sketch inside docs/D1_BACKUP_AND_RESTORE_PLAN.md)
 #
 # What it does (02:00 ICT daily = 19:00 UTC):
-#   1. wrangler d1 export sao-db --remote  (full dump: schema + data)
+#   1. wrangler d1 export sao-db --remote  (full dump: schema + data = RAW,
+#      the source of truth)
 #   2. Validate dump (size floor + schema marker + sha256)
-#   3. Collect manifest facts (row counts + migration ledger head)
-#   4. Ensure the backup bucket exists + 90-day expire lifecycle rule
-#   5. Optional GPG encryption when secrets.BACKUP_GPG_RECIPIENT is set
-#      (strongly recommended — the dump contains full applicant PII)
-#   6. Upload dump + manifest to  R2_BACKUP_BUCKET/d1/daily/YYYY/MM/DD/
-#   7. Re-download manifest to verify the upload landed
+#   3. Build ordered dump — FK-safe reorder via backend/scripts/reorder-dump
+#      (topology + multiset parity + in-memory replay with foreign_keys=ON)
+#   4. Collect manifest facts (row counts + migration ledger head)
+#   5. Ensure the backup bucket exists + 90-day expire lifecycle rule
+#   6. Optional GPG encryption when secrets.BACKUP_GPG_RECIPIENT is set
+#      (strongly recommended — the dumps contain full applicant PII)
+#   7. Upload raw dump + ordered dump + manifest v2
+#      to  R2_BACKUP_BUCKET/d1/daily/YYYY/MM/DD/
+#   8. Re-download manifest to verify the upload landed
+#
+# Failure policy (Phase 2, 2026-11-01):
+#   The RAW dump is the source of truth — its pipeline stays fatal on error.
+#   The ordered dump is a restore-ready artifact: if building, encrypting or
+#   uploading it fails, the run still uploads raw + manifest with
+#   ordered.available=false and the job stays GREEN with a ::warning
+#   (deliberate — no alert fatigue; ordered is regenerable from raw anytime).
+#   Nightly ordered health is read from the summary table, not the run status.
+#   See docs/D1_BACKUP_AUTOMATION.md §5.1.
 #
 # Required GitHub secrets (least privilege — see docs/D1_BACKUP_AUTOMATION.md):
 #   CF_BACKUP_API_TOKEN  Custom Cloudflare token:
@@ -66,6 +79,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
 
       - name: Install wrangler (pinned to repo lockfile version)
         run: npm install --no-save wrangler@3.114.17
@@ -89,6 +104,35 @@ jobs:
           test "$SIZE" -gt 10240
           grep -q "CREATE TABLE.*applications" "dump-$TS.sql"
           echo "dump size: $SIZE bytes, sha256: $SHA"
+
+      - name: Build ordered dump (best-effort)
+        run: |
+          set -uo pipefail
+          # Exit codes are captured explicitly — an ordered-dump failure must
+          # never abort this step (raw backup still has to land). Exit 0 but a
+          # missing/failed report is treated as failure (belt and braces).
+          REORDER_EXIT=0
+          ( cd backend && npm ci --no-audit --no-fund && \
+            npm run dump:reorder -- \
+              --input "../dump-$TS.sql" \
+              --output "../dump-$TS.ordered.sql" \
+              --report "../reorder-report-$TS.json" \
+              --verify ) || REORDER_EXIT=$?
+          REPORT="reorder-report-$TS.json"
+          if [ "$REORDER_EXIT" -eq 0 ] \
+             && [ "$(jq -r '.ok // false' "$REPORT" 2>/dev/null)" = "true" ] \
+             && [ "$(jq -r '.verify.replayed // false' "$REPORT" 2>/dev/null)" = "true" ]; then
+            echo "ORDERED_AVAILABLE=true" >> "$GITHUB_ENV"
+            echo "ORDERED_SHA=$(jq -r .outputSha256 "$REPORT")" >> "$GITHUB_ENV"
+            echo "ORDERED_SIZE=$(jq -r .outputBytes "$REPORT")" >> "$GITHUB_ENV"
+            echo "ordered dump OK: $(jq -r '.statementCounts | "\(.input) statements (\(.table) tables, \(.index) indexes, \(.dml) dml)"' "$REPORT")"
+          else
+            CODE="$(jq -r '.error.code // "SETUP"' "$REPORT" 2>/dev/null || echo SETUP)"
+            echo "ORDERED_AVAILABLE=false" >> "$GITHUB_ENV"
+            echo "ORDERED_ERROR_CODE=$CODE" >> "$GITHUB_ENV"
+            rm -f "dump-$TS.ordered.sql"
+            echo "::warning::ordered dump build failed (exit $REORDER_EXIT, code $CODE) — backup continues with raw dump only (backend/scripts/reorder-dump/SPEC.md)"
+          fi
 
       - name: Collect manifest facts from D1
         run: |
@@ -120,7 +164,7 @@ jobs:
               "d1-backup-expire-${RETENTION_DAYS}d" "" \
               --expire-days "$RETENTION_DAYS" --force
           fi
-      - name: Encrypt dump (optional GPG)
+      - name: Encrypt dumps (optional GPG)
         env:
           BACKUP_GPG_RECIPIENT: ${{ secrets.BACKUP_GPG_RECIPIENT }}
         run: |
@@ -138,13 +182,85 @@ jobs:
 
             echo "::warning::GPG encryption is NOT configured (BACKUP_GPG_RECIPIENT missing)"
           fi
+
+          # The ordered dump carries the same PII as raw (multiset parity proves
+          # identical content) so it is encrypted symmetrically. Its failure
+          # degrades to a raw-only backup and never fails the job.
+          ORDERED_BACKUP_FILE=""
+          if [ "${ORDERED_AVAILABLE:-false}" = "true" ]; then
+            if [ -n "${BACKUP_GPG_RECIPIENT:-}" ]; then
+              ORDERED_ENC_EXIT=0
+              gpg --batch --yes --trust-model always \
+                --encrypt --recipient "$BACKUP_GPG_RECIPIENT" "dump-$TS.ordered.sql" \
+                || ORDERED_ENC_EXIT=$?
+              if [ "$ORDERED_ENC_EXIT" -eq 0 ]; then
+                ORDERED_BACKUP_FILE="dump-$TS.ordered.sql.gpg"
+              else
+                echo "ORDERED_AVAILABLE=false" >> "$GITHUB_ENV"
+                echo "ORDERED_ERROR_CODE=GPG" >> "$GITHUB_ENV"
+                rm -f "dump-$TS.ordered.sql.gpg"
+                echo "::warning::ordered dump encryption failed (exit $ORDERED_ENC_EXIT) — backup continues with raw dump only"
+              fi
+            else
+              ORDERED_BACKUP_FILE="dump-$TS.ordered.sql"
+            fi
+          fi
+          echo "ORDERED_BACKUP_FILE=$ORDERED_BACKUP_FILE" >> "$GITHUB_ENV"
       
 
-      - name: Upload dump + manifest to R2
+      - name: Upload raw + ordered + manifest to R2
         run: |
           set -euo pipefail
           PREFIX="d1/daily/$(date -u +%Y/%m/%d)"
           echo "BACKUP_KEY=$PREFIX/$BACKUP_FILE" >> "$GITHUB_ENV"
+
+          # 1. raw dump first — always (source of truth)
+          npx wrangler r2 object put "$R2_BACKUP_BUCKET/$PREFIX/$BACKUP_FILE" --file "$BACKUP_FILE"
+
+          # 2. ordered dump — best-effort; a failed put degrades tonight's
+          #    backup to raw-only and the manifest records that truthfully
+          ORDERED_UPLOADED=false
+          if [ -n "$ORDERED_BACKUP_FILE" ]; then
+            if npx wrangler r2 object put "$R2_BACKUP_BUCKET/$PREFIX/$ORDERED_BACKUP_FILE" \
+                 --file "$ORDERED_BACKUP_FILE"; then
+              ORDERED_UPLOADED=true
+              echo "ORDERED_KEY=$PREFIX/$ORDERED_BACKUP_FILE" >> "$GITHUB_ENV"
+            else
+              echo "ORDERED_AVAILABLE=false" >> "$GITHUB_ENV"
+              echo "ORDERED_ERROR_CODE=UPLOAD" >> "$GITHUB_ENV"
+              echo "::warning::ordered dump upload failed — backup continues with raw dump only"
+            fi
+          fi
+
+          # 3. manifest v2 — built AFTER the ordered upload attempt so the
+          #    ordered block always reflects what actually landed in R2
+          if [ "$ORDERED_UPLOADED" = "true" ]; then
+            jq -n \
+              --arg file "$ORDERED_BACKUP_FILE" \
+              --arg key "$PREFIX/$ORDERED_BACKUP_FILE" \
+              --argjson size_bytes "$ORDERED_SIZE" \
+              --arg sha256 "$ORDERED_SHA" \
+              --slurpfile report "reorder-report-$TS.json" \
+              '{available: true, file: $file, r2_key: $key, size_bytes: $size_bytes,
+                sha256: $sha256, encrypted: ($file | endswith(".gpg")),
+                tool: "reorder-dump", verified: true,
+                statement_counts: $report[0].statementCounts,
+                table_order: $report[0].tableOrder,
+                insert_table_order: $report[0].insertTableOrder,
+                replay: {orderedFkOn: $report[0].verify.orderedFkOn,
+                         foreignKeyCheckRows: $report[0].verify.foreignKeyCheckRows,
+                         rawFkOffCountMatch: $report[0].verify.rawFkOffCountMatch},
+                warnings: $report[0].warnings, error_code: null}' \
+              > ordered-block.json
+          else
+            jq -n --arg code "${ORDERED_ERROR_CODE:-UNKNOWN}" \
+              '{available: false, file: null, r2_key: null, size_bytes: null,
+                sha256: null, encrypted: false, tool: "reorder-dump", verified: false,
+                statement_counts: null, table_order: null, insert_table_order: null,
+                replay: null, warnings: [], error_code: $code}' \
+              > ordered-block.json
+          fi
+
           jq -n \
             --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg database "$D1_DATABASE" \
@@ -154,9 +270,12 @@ jobs:
             --arg sha256 "$SHA" \
             --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --slurpfile facts facts-flat.json \
-            '{generated_at_utc: $generated_at, database: $database, file: $file, r2_key: $key, size_bytes: $size_bytes, sha256: $sha256, run_url: $run_url, facts: $facts[0]}' \
+            --slurpfile ordered ordered-block.json \
+            '{schema_version: 2, generated_at_utc: $generated_at, database: $database,
+              file: $file, r2_key: $key, size_bytes: $size_bytes, sha256: $sha256,
+              run_url: $run_url, facts: $facts[0], ordered: $ordered[0]}' \
             > "manifest-$TS.json"
-          npx wrangler r2 object put "$R2_BACKUP_BUCKET/$PREFIX/$BACKUP_FILE" --file "$BACKUP_FILE"
+
           npx wrangler r2 object put "$R2_BACKUP_BUCKET/$PREFIX/manifest-$TS.json" --file "manifest-$TS.json"
 
       - name: Verify upload (re-download manifest)
@@ -166,6 +285,15 @@ jobs:
           npx wrangler r2 object get "$R2_BACKUP_BUCKET/$MANIFEST_KEY" \
             --file /tmp/verify-manifest.json
           jq -e --arg sha "$SHA" '.sha256 == $sha' /tmp/verify-manifest.json > /dev/null
+          jq -e '.schema_version == 2' /tmp/verify-manifest.json > /dev/null
+          # manifest ต้องสอดคล้องกับสิ่งที่ run นี้ทำจริงทั้งสองสถานะ
+          if [ "${ORDERED_AVAILABLE:-false}" = "true" ]; then
+            jq -e --arg sha "$ORDERED_SHA" \
+              '.ordered.available == true and .ordered.sha256 == $sha' \
+              /tmp/verify-manifest.json > /dev/null
+          else
+            jq -e '.ordered.available == false' /tmp/verify-manifest.json > /dev/null
+          fi
 
       - name: Job summary
         if: always()
@@ -177,9 +305,16 @@ jobs:
               echo "| field | value |"
               echo "|---|---|"
               echo "| database | \`$D1_DATABASE\` |"
-              echo "| r2 key | \`$BACKUP_KEY\` |"
+              echo "| r2 key (raw) | \`$BACKUP_KEY\` |"
               echo "| size | $SIZE bytes |"
               echo "| sha256 | \`$SHA\` |"
+              if [ "${ORDERED_AVAILABLE:-false}" = "true" ]; then
+                echo "| ordered key (restore-ready) | \`${ORDERED_KEY:-}\` |"
+                echo "| ordered sha256 | \`${ORDERED_SHA:-}\` |"
+                echo "| ordered verify | FK-ON replay + parity OK |"
+              else
+                echo "| ordered | unavailable (${ORDERED_ERROR_CODE:-?}) — raw-only backup tonight |"
+              fi
             else
               echo "Backup failed before export completed — see the failing step above."
             fi

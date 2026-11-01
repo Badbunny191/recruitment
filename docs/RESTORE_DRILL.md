@@ -30,17 +30,29 @@
 npx wrangler r2 object get sao-recruitment-backups/d1/daily/2026/10/31/manifest-<TS>.json --file /tmp/manifest.json
 cat /tmp/manifest.json | jq .
 
-# 1.2 โหลด dump (ไฟล์ .gpg ถ้าเปิดใช้ encryption / .sql ถ้าไม่ได้เปิด)
-npx wrangler r2 object get sao-recruitment-backups/d1/daily/2026/10/31/dump-<TS>.sql.gpg --file /tmp/dump.sql.gpg
+# 1.2 โหลด dump — **ใช้ ordered ก่อนเสมอ** (Phase 2, 2026-11-01):
+#   - manifest.ordered.available == true  → ordered.file (restore-ready, FK-safe)
+#   - manifest.ordered.available == false → .file (raw) แล้วทำขั้น 1.5 เพื่อสร้าง ordered เอง
+npx wrangler r2 object get \
+  "sao-recruitment-backups/d1/daily/2026/10/31/$(jq -r '.ordered.available ? .ordered.file : .file' /tmp/manifest.json)" \
+  --file /tmp/dump.download
 
 # 1.3 ถอดรหัส (เฉพาะเมื่อเข้ารหัสไว้ — ต้องมี private key ของ BACKUP_GPG_RECIPIENT)
-gpg --decrypt --output /tmp/dump.sql /tmp/dump.sql.gpg
+gpg --decrypt --output /tmp/dump.sql /tmp/dump.download
+#   ถ้าไฟล์ที่โหลดเป็น plaintext (.sql) ไม่ต้องถอด: cp /tmp/dump.download /tmp/dump.sql
 
-# 1.4 ตรวจ checksum ให้ตรงกับ manifest ก่อนใช้ (บังคับ)
-sha256sum /tmp/dump.sql   # ต้องเท่ากับ manifest.sha256
+# 1.4 ตรวจ checksum ของ /tmp/dump.sql ก่อนใช้ (บังคับ)
+#     โหลดจาก ordered.file → เทียบ manifest.ordered.sha256
+#     โหลดจาก .file (raw)  → เทียบ manifest.sha256
+sha256sum /tmp/dump.sql
+
+# 1.5 (เฉพาะเมื่อโหลด raw เพราะ ordered ไม่มี) สร้าง ordered จาก raw + verify:
+#   cd backend && npm run dump:reorder -- \
+#     --input /tmp/dump.sql --output /tmp/dump.ordered.sql --report /tmp/reorder-report.json --verify
+#   ต้อง exit 0 (report.verify.replayed = true) ก่อนนำไป restore
 ```
 
-**ผ่านเกณฑ์เมื่อ:** sha256 ตรง + ขนาดไฟล์เท่า `manifest.size_bytes` (±0)
+**ผ่านเกณฑ์เมื่อ:** sha256 ตรง + ขนาดไฟล์เท่า `manifest.ordered.size_bytes` (±0) — หรือ `manifest.size_bytes` ถ้าโหลด raw
 
 ## 2. Restore Database (ลง database ใหม่เสมอ)
 
@@ -49,9 +61,13 @@ sha256sum /tmp/dump.sql   # ต้องเท่ากับ manifest.sha256
 npx wrangler d1 create sao-db-restore-<TS>
 # จด database_id ที่คืนมาให้ครบ (ใช้ในขั้น 5)
 
-# 2.2 นำเข้า dump ทั้งไฟล์ (wrangler แบ่ง statement เป็น batch เอง)
-npx wrangler d1 execute sao-db-restore-<TS> --remote --file=/tmp/dump.sql -y
+# 2.2 นำเข้า dump ทั้งไฟล์ — ต้องเป็น **ordered content** เสมอ
+#     - โหลด ordered มาตั้งแต่ขั้น 1.2 → /tmp/dump.sql
+#     - ผ่านขั้น 1.5 (reorder จาก raw) → /tmp/dump.ordered.sql
+npx wrangler d1 execute sao-db-restore-<TS> --remote --file=/tmp/dump.ordered.sql -y
 ```
+
+> ⚠️ **ห้าม restore ด้วย raw dump ตรง ๆ** — พิสูจน์จาก Restore Drill Lite (2026-10-31): raw dump ของ `d1 export` เรียง INSERT แบบลูกก่อนแม่ + หัวไฟล์ `PRAGMA defer_foreign_keys=TRUE` ที่ D1 remote engine ไม่รองรับ → restore ล้มกลางทาง `no such table: main.<parent>` (ทดสอบทั้ง wrangler 3.114.17 และ 4.156.0) ถ้ามีแต่ raw ให้ผ่านขั้น 1.5 (reorder + verify) ก่อนเสมอ
 
 หมายเหตุสำหรับอนาคต: ถ้า dump ใหญ่เกิน (ปัจจุบัน 0.75 MB ไม่มีปัญหา) `d1 execute --file` มีเพดานขนาดต่อ request ของ API — ให้แบ่งไฟล์เป็นชิ้นตาม statement หรือใช้ `--local` เพื่อพัฒนาต่อ ห้ามรัน `migrations apply` บน DB ที่ restore แล้ว (dump มี schema+data ครบแล้ว และ d1_migrations ledger ถูก restore มาด้วย — การ apply ซ้ำจะ conflict)
 
@@ -138,7 +154,8 @@ RPO = **24 ชั่วโมง** (backup รายวัน) คู่กั�
 
 ## 8. Validation Checklist (พิมพ์ไว้ใช้หน้างาน)
 
-- [ ] sha256 dump ตรง manifest
+- [ ] manifest รอบนั้น `ordered.available == true` (หรือสร้าง ordered จาก raw แล้วผ่าน `--verify` ตาม §1.5)
+- [ ] sha256 ของไฟล์ที่ใช้ (ordered/raw) ตรง manifest ทุกตัวอักษร
 - [ ] `CREATE TABLE applications` พบในไฟล์ (ก่อน import)
 - [ ] COUNT 4 ตาราง ตรง manifest.facts
 - [ ] `PRAGMA integrity_check` = ok (หรือ app-level check ผ่าน)

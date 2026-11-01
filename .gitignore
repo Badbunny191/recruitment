@@ -53,6 +53,10 @@ docs/*.html
 
 backend/full_backup.sql
 backend/backups/*.sql
+# dump + report ที่ d1-backup.yml / reorder-dump สร้างใน repo root
+# (dump-*.sql ครอบทั้ง dump-<TS>.sql และ dump-<TS>.ordered.sql)
+dump-*.sql
+reorder-report-*.json
 
 backend/.wrangler/
 **/.wrangler/state/
