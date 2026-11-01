@@ -72,6 +72,11 @@ function ReviewContent() {
   // desktop = all open; mobile = only the first open.
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [isMobile, setIsMobile] = useState(false);
+  // Success Page UX (FE-only) — ตัวตนรอบ (title + positionLevel) จาก endpoint
+  // เดิม GET /public/rounds/:id/detail เพื่อเขียนลง lastSubmittedApplication
+  // ให้หน้า /apply/success แสดง "สมัครตำแหน่งอะไร รอบไหน" ได้ โดยไม่ต้องแตะ
+  // submit response — fetch ล้มได้ (fail-soft) และห้ามบล็อกการ submit
+  const [roundMeta, setRoundMeta] = useState<{ title: string; positionLevel: string } | null>(null);
 
   // ✅ Double-submit guard (ช่วง B): one request per user action. React
   // state (`submitting`) re-renders asynchronously, so a second click /
@@ -154,6 +159,35 @@ function ReviewContent() {
         setLoadError('ไม่สามารถโหลดแบบฟอร์มอ้างอิงได้');
       })
       .finally(() => setLoadingSchema(false));
+    return () => controller.abort();
+  }, [draft]);
+
+  // =========================================================================
+  //  Load round identity (title + positionLevel) for the success-page record
+  // =========================================================================
+  // Parallel to the schema fetch above but intentionally independent: the
+  // schema powers the review UI, this powers the sessionStorage record the
+  // success page reads. A failure here is fail-soft — the record is still
+  // written with empty roundTitle/positionLevel (the success page hides
+  // those rows), and submission is never blocked by this fetch.
+  useEffect(() => {
+    if (!draft) return;
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
+    const controller = new AbortController();
+    fetch(`${apiUrl}/public/rounds/${draft.roundId}/detail`, { signal: controller.signal })
+      .then((res) => res.json())
+      .then((res: any) => {
+        const d = res?.data;
+        if (d && typeof d === 'object' && !Array.isArray(d)) {
+          setRoundMeta({
+            title: String(d.title ?? ''),
+            positionLevel: String(d.positionLevel ?? ''),
+          });
+        }
+      })
+      .catch(() => {
+        // fail-soft: ข้อมูลเสริมของหน้า success — เงียบไว้ (submit ไม่เกี่ยว)
+      });
     return () => controller.abort();
   }, [draft]);
 
@@ -461,7 +495,27 @@ function ReviewContent() {
           }
         }
 
-        // Save last submitted application to sessionStorage as primary source
+        // Success Page UX — ชื่อผู้สมัคร: canonical core field คือ 'field-fullname'
+        // (backend อ่านคีย์นี้ตรง ๆ และ 400 ถ้าว่าง จึงรับประกันว่ามีในใบที่ submit
+        // สำเร็จ); fallback แบบเดียวกับ email/phone resolver ด้านบน
+        let applicantFullname = '';
+        if (typeof fd['field-fullname'] === 'string' && fd['field-fullname'].trim()) {
+          applicantFullname = fd['field-fullname'].trim();
+        } else if (typeof fd['fullname'] === 'string' && fd['fullname'].trim()) {
+          applicantFullname = fd['fullname'].trim();
+        } else {
+          const nameField = schema.find((f) => f.fieldId.toLowerCase().includes('fullname'));
+          if (nameField && typeof fd[nameField.fieldId] === 'string') {
+            applicantFullname = (fd[nameField.fieldId] as string).trim();
+          }
+        }
+
+        // Save last submitted application to sessionStorage as primary source.
+        // Success Page UX (FE-only): นอกจาก appNo/email/phone ยังเขียนตัวตนใบสมัคร
+        // (fullname/roundId/roundTitle/positionLevel) เพื่อให้หน้า /apply/success
+        // แสดง "สมัครตำแหน่งอะไร รอบไหน" และเตรียม 3 คีย์ค้นหาครบถ้วน —
+        // roundTitle/positionLevel มาจาก /rounds/:id/detail (fetch ล้ม → ว่าง,
+        // หน้า success ซ่อนแถวนั้น — ไม่บล็อก submit)
         try {
           sessionStorage.setItem(
             'lastSubmittedApplication',
@@ -469,6 +523,10 @@ function ReviewContent() {
               appNo: result.data.applicationNo,
               email: applicantEmail,
               phone: applicantPhone,
+              fullname: applicantFullname,
+              roundId: draft.roundId,
+              roundTitle: roundMeta?.title ?? '',
+              positionLevel: roundMeta?.positionLevel ?? '',
             })
           );
         } catch {
