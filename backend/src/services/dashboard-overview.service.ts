@@ -129,13 +129,19 @@ export interface DashboardOverviewData {
 
 // ── Section builders (แต่ละอัน throw ได้ — caller ครอบด้วย try/catch) ────────
 
-async function buildSummary(db: DB): Promise<DashboardSummaryData> {
+async function buildSummary(db: DB, roundId: string | null): Promise<DashboardSummaryData> {
   // GROUP BY ครั้งเดียว: total = ผลบวกทุก group (เท่ากับ COUNT(*) เพราะทุกแถว
   // มีค่า status หรือเป็น group NULL ที่นับรวมเหมือน COUNT(*) ของ endpoint เดิม)
+  // roundId filter (Dashboard Round Filter): เงื่อนไขเพิ่มใน WHERE เดิม —
+  // จำนวน query คงเดิม และยังโดน idx_apps_round_status (0001/030) ครอบ
   const statusGroups = await db
     .select({ status: applications.status, count: count() })
     .from(applications)
-    .where(isNull(applications.deletedAt))
+    .where(
+      roundId
+        ? and(isNull(applications.deletedAt), eq(applications.roundId, roundId))
+        : isNull(applications.deletedAt),
+    )
     .groupBy(applications.status);
 
   const byStatus: Record<string, number> = {};
@@ -153,10 +159,21 @@ async function buildSummary(db: DB): Promise<DashboardSummaryData> {
   return { total, byStatus };
 }
 
-async function buildPending(db: DB, now: Date): Promise<DashboardPendingData> {
+async function buildPending(db: DB, now: Date, roundId: string | null): Promise<DashboardPendingData> {
   // overdue ตรงนิยาม ageInDays ฝั่ง client: floor((now - submittedAt) / วัน) > slaDays
   // ⟺ (now - submittedAt) ≥ (slaDays + 1) วัน ⟺ submittedAt ≤ now - (slaDays+1) วัน
   const cutoffSec = Math.floor((now.getTime() - (DASHBOARD_SLA_DAYS + 1) * 86_400_000) / 1000);
+
+  // roundId filter — ใส่ทั้ง agg และ items (ชุดเดียวกันเสมอ) จำนวน query คงเดิม;
+  // agg โดน idx_apps_round_status, items (ORDER BY submitted_at) โดน
+  // idx_apps_round_submitted_sort (031, partial deleted_at IS NULL)
+  const pendingWhere = roundId
+    ? and(
+        isNull(applications.deletedAt),
+        eq(applications.status, PENDING_STATUS),
+        eq(applications.roundId, roundId),
+      )
+    : and(isNull(applications.deletedAt), eq(applications.status, PENDING_STATUS));
 
   const [agg] = await db
     .select({
@@ -165,7 +182,7 @@ async function buildPending(db: DB, now: Date): Promise<DashboardPendingData> {
       oldest: sql<number | null>`min(${applications.submittedAt})`,
     })
     .from(applications)
-    .where(and(isNull(applications.deletedAt), eq(applications.status, PENDING_STATUS)));
+    .where(pendingWhere);
 
   const items = await db
     .select({
@@ -175,7 +192,7 @@ async function buildPending(db: DB, now: Date): Promise<DashboardPendingData> {
       submittedAt: applications.submittedAt,
     })
     .from(applications)
-    .where(and(isNull(applications.deletedAt), eq(applications.status, PENDING_STATUS)))
+    .where(pendingWhere)
     .orderBy(desc(applications.submittedAt), asc(applications.id))
     .limit(PENDING_ITEMS_LIMIT);
 
@@ -308,12 +325,22 @@ function logSectionError(section: string, err: unknown): void {
 /**
  * รวม KPI ทั้งหมดของ Executive Dashboard — section ใดล้ม = null + รายชื่อใน errors[]
  * (Promise.all ที่แต่ละ section catch เอง → section อื่นไม่กระทบ)
+ *
+ * opts.roundId (Dashboard Round Filter — optional):
+ *   มีค่า → filter เฉพาะ summary + pending (application domain) ให้นับใบสมัคร
+ *   ของรอบนั้น; rounds / comparison / activities คง global เสมอ (rounds คือตัว
+ *   filter เอง, audit_logs ไม่มีมิติ round)
+ *   ไม่มีค่า/ค่าว่าง → ทุก section เหมือนเดิมทุกประการ
+ *   ⚠️ ไม่ validate ว่า roundId มีจริง (parity กับ GET /admin/applications/summary
+ *   ที่ไม่ validate) — roundId ที่ไม่รู้จักให้ผลเป็นศูนย์ และ frontend self-heal
+ *   ด้วยรายชื่อรอบจาก section rounds ที่ส่งกลับมาอยู่แล้ว → ไม่เพิ่ม query
  */
 export async function buildDashboardOverview(
   db: DB,
-  opts: { isSuperAdmin: boolean; now?: Date },
+  opts: { isSuperAdmin: boolean; now?: Date; roundId?: string | null },
 ): Promise<DashboardOverviewData> {
   const now = opts.now ?? new Date();
+  const roundId = opts.roundId || null; // '' = ไม่ filter (เทียบ truthy แบบ endpoint เดิม)
   const errors: string[] = [];
 
   const catchSection = <T,>(section: string, work: () => Promise<T>): Promise<T | null> =>
@@ -324,8 +351,8 @@ export async function buildDashboardOverview(
     });
 
   const [summary, pending, rounds, comparison, activities] = await Promise.all([
-    catchSection('summary', () => buildSummary(db)),
-    catchSection('pending', () => buildPending(db, now)),
+    catchSection('summary', () => buildSummary(db, roundId)),
+    catchSection('pending', () => buildPending(db, now, roundId)),
     catchSection('rounds', () => buildRounds(db)),
     catchSection('comparison', () => buildComparison(db)),
     // policy เดียวกับ GET /admin/audit-logs: ไม่ใช่ SUPER_ADMIN → ไม่ query เลย

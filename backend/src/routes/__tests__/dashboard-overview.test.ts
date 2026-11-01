@@ -17,6 +17,9 @@
  *   7. ADMIN / VIEWER → 200 แต่ activities = null และไม่มีข้อมูล audit หลุด
  *   8. ไม่มี token → 401
  *   9. fail-soft: query ของ section ใดล้ม → 200 + errors[...] + ส่วนอื่นปกติ
+ *  10. Round Filter (?roundId=): filter เฉพาะ summary+pending / rounds+comparison+
+ *      activities คง global ทุกไบต์ / unknown → ศูนย์ไม่ 400 / roundId="" ≡ ไม่ส่ง /
+ *      จำนวน SQL statement (prepare) เท่าเดิม — ไม่เพิ่ม query
  *
  * รัน SQL จริงบน better-sqlite3 ผ่าน D1-compatible adapter
  * (prepare/bind/all/run/raw/batch) และ mount adminRoutes จริง ครบ chain:
@@ -456,6 +459,147 @@ async function runAllTests() {
     assertTrue(data.summary && data.pending && Array.isArray(data.rounds), 'ส่วนอื่นยังต้องมาครบ');
     assertTrue(data.activities, 'activities ไม่เกี่ยวกับ section ที่ล้ม ต้องยังมา');
   });
+
+  // ===========================================================================
+  // Dashboard Round Filter (?roundId=) — filter เฉพาะ summary + pending;
+  // rounds/comparison/activities คง global; จำนวน SQL statement ไม่เพิ่ม
+  // ===========================================================================
+  // seed เฉพาะ section นี้ (test ก่อนหน้า assert จำนวนแถว fixture เดิมไว้แล้ว
+  // จึงต้องแทรกท้าย + เก็บกู้ใน finally): รอบ rf-round-b + ใบสมัคร 5 ใบ
+  //   2 SUBMITTED (เก่า 8 วัน = overdue / ใหม่ 1 ชม.) + 1 QUALIFIED + 1 DRAFT
+  //   + 1 SUBMITTED ที่ถูกลบ (ห้ามนับ)
+
+  function insertRoundFilterFixture() {
+    sqlite
+      .prepare(
+        `INSERT INTO recruitment_rounds (id, template_version_id, title, position_level,
+          open_date, close_date, status, deleted_at, round_code)
+         VALUES ('rf-round-b', 'tplA-v2', 'รอบ filter', 'SENIOR', ?, ?, 'ACTIVE', NULL, 'RF-B')`,
+      )
+      .run(NOW_SEC - 30 * DAY, NOW_SEC + 30 * DAY);
+    const insertApp = sqlite.prepare(
+      `INSERT INTO applications (id, application_no, round_id, fullname, email, status, form_data, submitted_at, deleted_at)
+       VALUES (?, ?, 'rf-round-b', ?, ?, ?, '{}', ?, ?)`,
+    );
+    insertApp.run('rf-old', 'APP-RF-0001', 'เก่าแปดวัน(รอบB)', 'rf-old@test.com', 'SUBMITTED', NOW_SEC - 8 * DAY, null);
+    insertApp.run('rf-fresh', 'APP-RF-0002', 'ใหม่หนึ่งชม(รอบB)', 'rf-fresh@test.com', 'SUBMITTED', NOW_SEC - 3600, null);
+    insertApp.run('rf-qualified', 'APP-RF-0003', 'ผ่านแล้ว(รอบB)', 'rf-qualified@test.com', 'QUALIFIED', NOW_SEC - 2 * DAY, null);
+    insertApp.run('rf-draft', null, 'ยังร่าง(รอบB)', 'rf-draft@test.com', 'DRAFT', null, null);
+    insertApp.run('rf-deleted', 'APP-RF-0005', 'ถูกลบ(รอบB)', 'rf-deleted@test.com', 'SUBMITTED', NOW_SEC - 20 * DAY, NOW_SEC - DAY);
+  }
+
+  function removeRoundFilterFixture() {
+    sqlite.prepare(`DELETE FROM applications WHERE round_id = 'rf-round-b'`).run();
+    sqlite.prepare(`DELETE FROM recruitment_rounds WHERE id = 'rf-round-b'`).run();
+  }
+
+  // adapter นับ prepare() — พิสูจน์ว่า roundId ไม่เพิ่มจำนวน SQL statement
+  function createCountingD1(base: any) {
+    let count = 0;
+    return {
+      d1: {
+        prepare(sqlText: string) {
+          count++;
+          return base.prepare(sqlText);
+        },
+        async batch(stmts: any[]) {
+          return base.batch(stmts);
+        },
+      },
+      reset: () => {
+        count = 0;
+      },
+      get: () => count,
+    };
+  }
+
+  const SA_PAYLOAD = () => payloadFor(SA_ID, 'sa@test.com', 'SUPER_ADMIN');
+
+  insertRoundFilterFixture();
+  try {
+    await test('ROUND B1: ?roundId=rf-round-b → summary เฉพาะรอบ (parity รูปทรง: DRAFT นับใน total แต่ไม่อยู่ byStatus)', async () => {
+      const res = await signedRequest('/dashboard/overview?roundId=rf-round-b', SA_PAYLOAD());
+      assertEqual(res.status, 200);
+      const summary = res.body.data.summary;
+      assertEqual(summary.total, 4, '2 SUBMITTED + 1 QUALIFIED + 1 DRAFT ของรอบ B (ตัดที่ถูกลบ)');
+      assertEqual(summary.byStatus.SUBMITTED, 2);
+      assertEqual(summary.byStatus.QUALIFIED, 1);
+      assertEqual(summary.byStatus.REJECTED, 0);
+      assertEqual(summary.byStatus.CANCELED, 0);
+      assertEqual(summary.byStatus.ARCHIVED, 0);
+      assertTrue(!('DRAFT' in summary.byStatus), 'byStatus ต้องไม่มี DRAFT เหมือนเดิมทุกกรณี');
+      assertEqual(res.body.data.errors.length, 0);
+    });
+
+    await test('ROUND B2: ?roundId=rf-round-b → pending เฉพาะรอบ (total/overdue/oldest/items)', async () => {
+      const res = await signedRequest('/dashboard/overview?roundId=rf-round-b', SA_PAYLOAD());
+      const pending = res.body.data.pending;
+      assertEqual(pending.total, 2, 'เฉพาะ SUBMITTED ของรอบ B (QUALIFIED/DRAFT/ลบแล้ว ห้ามนับ)');
+      assertEqual(pending.overdueCount, 1, 'เก่า 8 วันเกิน SLA / ใหม่ 1 ชม ยังไม่เกิน');
+      const oldestAgeDays = Math.floor((Date.now() - new Date(pending.oldestSubmittedAt).getTime()) / 86_400_000);
+      assertEqual(oldestAgeDays, 8, 'oldest ของรอบ B = ใบเก่าสุด 8 วัน');
+      assertEqual(pending.items.length, 2);
+      assertEqual(pending.items[0].id, 'rf-fresh', 'submittedAt ใหม่สุดก่อน (เหมือน no-filter)');
+      assertEqual(pending.items[1].id, 'rf-old');
+    });
+
+    await test('ROUND B3: ไม่มี roundId → เห็นทุกรอบ (8/4) — พิสูจน์ว่า filter เปลี่ยนผลจริง (fail-when-no-fix)', async () => {
+      const res = await signedRequest('/dashboard/overview', SA_PAYLOAD());
+      assertEqual(res.body.data.summary.total, 8, 'fixture เดิม 4 + รอบ B 4');
+      assertEqual(res.body.data.pending.total, 4, 'SUBMITTED เดิม 2 + รอบ B 2');
+    });
+
+    await test('ROUND B4: unknown roundId → 200 + ศูนย์ (ไม่ 400 — parity /applications/summary) ส่วนอื่นปกติ', async () => {
+      const res = await signedRequest('/dashboard/overview?roundId=rf-none', SA_PAYLOAD());
+      assertEqual(res.status, 200, 'ห้าม 400 — ให้ frontend self-heal ด้วยรายชื่อรอบใน response');
+      assertEqual(res.body.data.summary.total, 0);
+      assertEqual(res.body.data.summary.byStatus.SUBMITTED, 0);
+      assertEqual(res.body.data.pending.total, 0);
+      assertEqual(res.body.data.pending.items.length, 0);
+      assertTrue(res.body.data.rounds.length > 0, 'rounds ยังต้องมา (dropdown ใช้ self-heal)');
+      assertEqual(res.body.data.errors.length, 0);
+    });
+
+    await test('ROUND B5: rounds/comparison/activities ตรงกันทุกไบต์ ระหว่างมี/ไม่มี roundId (ห้าม filter)', async () => {
+      const plain = await signedRequest('/dashboard/overview', SA_PAYLOAD());
+      const filtered = await signedRequest('/dashboard/overview?roundId=rf-round-b', SA_PAYLOAD());
+      assertEqual(
+        JSON.stringify(filtered.body.data.rounds),
+        JSON.stringify(plain.body.data.rounds),
+        'rounds คือตัว filter เอง — ห้ามถูก filter',
+      );
+      assertEqual(
+        JSON.stringify(filtered.body.data.comparison),
+        JSON.stringify(plain.body.data.comparison),
+        'comparison (Template Governance) ต้องคง global',
+      );
+      assertEqual(
+        JSON.stringify(filtered.body.data.activities),
+        JSON.stringify(plain.body.data.activities),
+        'activities (audit) ต้องคง global',
+      );
+    });
+
+    await test('ROUND B6: roundId="" ว่าง ≡ ไม่ส่ง (truthy เทียบแบบ /applications/summary)', async () => {
+      const res = await signedRequest('/dashboard/overview?roundId=', SA_PAYLOAD());
+      assertEqual(res.body.data.summary.total, 8);
+      assertEqual(res.body.data.pending.total, 4);
+    });
+
+    await test('ROUND B7: จำนวน SQL statement (prepare) มี roundId ≡ ไม่มี roundId — ไม่เพิ่ม query', async () => {
+      const counting = createCountingD1(d1);
+      counting.reset();
+      await signedRequest('/dashboard/overview?roundId=rf-round-b', SA_PAYLOAD(), counting.d1);
+      const countFiltered = counting.get();
+      counting.reset();
+      await signedRequest('/dashboard/overview', SA_PAYLOAD(), counting.d1);
+      const countPlain = counting.get();
+      assertEqual(countFiltered, countPlain, `มี roundId = ${countFiltered} statements, ไม่มี = ${countPlain} — ต้องเท่ากัน (ไม่ validate/ไม่ pre-query)`);
+      assertTrue(countFiltered > 0, 'ต้องมี query จริง (ไม่ใช่ cache ว่าง)');
+    });
+  } finally {
+    removeRoundFilterFixture();
+  }
 
   console.log('\n=== Summary ===');
   console.log(`Passed: ${passed}`);

@@ -560,6 +560,45 @@ export function buildDashboardSnapshot(input: {
 }
 
 // =============================================================================
+// Round Filter — Dashboard Round Filter (pure helpers)
+// =============================================================================
+// Dropdown filter รอบในหน้า dashboard: เลือกรอบ → GET /admin/dashboard/overview
+// ?roundId= (backend filter เฉพาะ summary + pending; rounds/comparison/activities
+// คง global) — logic ทั้งหมดอยู่ที่นี่เพื่อเทสตรง ๆ โดยไม่ต้อง render component
+
+/**
+ * อ่าน ?roundId= จาก URL — null เมื่อไม่มี/ค่าว่าง
+ * กฎ "default (ทั้งหมด) ไม่เขียนลง URL" เดียวกับหน้า applications
+ */
+export function parseDashboardRoundParam(searchParams: URLSearchParams): string | null {
+  const value = searchParams.get('roundId');
+  return value ? value : null;
+}
+
+/** path ของ GET /admin/dashboard/overview — แนบ ?roundId= เฉพาะเมื่อมีการเลือก (1 request ต่อโหลด/เปลี่ยน filter) */
+export function dashboardOverviewApiPath(roundId: string | null): string {
+  return roundId
+    ? `/admin/dashboard/overview?roundId=${encodeURIComponent(roundId)}`
+    : '/admin/dashboard/overview';
+}
+
+/**
+ * ตรวจว่า roundId ที่เลือกยังอยู่ในรายการรอบ — ใช้ self-heal URL ที่ชี้รอบที่
+ * ถูกลบทิ้งแล้ว (backend ไม่ validate: parity กับ /applications/summary)
+ *   - ไม่มีการเลือก → true (ไม่มีอะไรต้อง heal)
+ *   - rounds เป็น null (section ล้ม) → true (ตัดสินไม่ได้ คงค่าไว้)
+ *   - ไม่พบ id ในรายการ → false (caller ต้องล้าง filter กลับ "ทั้งหมด")
+ */
+export function isRoundSelectable(
+  roundId: string | null,
+  rounds: readonly RoundItem[] | null | undefined,
+): boolean {
+  if (!roundId) return true;
+  if (!rounds) return true;
+  return rounds.some((r) => r && r.id === roundId);
+}
+
+// =============================================================================
 // V2 — single endpoint: GET /admin/dashboard/overview
 // =============================================================================
 // Backend aggregate ครบทุก section ใน request เดียว (fail-soft ต่อ section —
