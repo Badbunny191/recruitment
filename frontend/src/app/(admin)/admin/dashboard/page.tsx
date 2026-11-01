@@ -5,7 +5,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Select } from '@/components/ui/select';
+import { RoundSelect, type RoundOptionGroup } from '@/components/RoundSelect';
 import { cn } from '@/lib/utils';
 import { formatDateThai } from '@/lib/date';
 import { getAuditActionConfig, getAuditEntityLabel } from '@/lib/audit-log-display';
@@ -14,8 +14,12 @@ import { useRole } from '@/lib/useRole';
 import {
   buildDashboardSnapshotFromOverview,
   dashboardOverviewApiPath,
+  groupRoundsByStatus,
   isRoundSelectable,
   parseDashboardRoundParam,
+  roundOptionMeta,
+  roundStatusBadge,
+  roundTitleForScope,
   type AuditLogItem,
   type DashboardOverviewPayload,
   type PendingOverview,
@@ -29,13 +33,23 @@ import {
  * rounds/comparison, audit-logs) — backend aggregate KPI ครบทุก section
  * รวมถึงงานค้างที่ V1 ต้อง fetch แถวมากถึง 200 แถวมานับฝั่ง client
  *
- * Round Filter (?roundId= — Dashboard Round Filter):
- * dropdown ใน header เลือกรอบ → ยิง endpoint เดิม 1 request ด้วย ?roundId=
+ * Round Filter (?roundId= — Dashboard Round Filter / V4):
+ * Round Bar เต็มความกว้างใต้ header (แทน dropdown มุมขวาบน) ใช้ RoundSelect
+ * (listbox ค้นหาได้ — option 2 บรรทัด + badge สถานะ รองรับชื่อรอบยาว)
+ * เลือกรอบ → ยิง endpoint เดิม 1 request ด้วย ?roundId=
  * (backend filter เฉพาะ KPI การ์ด/สัดส่วนสถานะ/งานค้าง; รอบที่เปิดรับ,
  * Template Governance, กิจกรรมล่าสุด คงเห็นทุกรอบ) — options ของ dropdown
  * ใช้ overview.rounds จาก response เดิม จึงไม่ยิง request เพิ่ม
  * เลือก "ทั้งหมด" = ไม่มี param ใน URL (default ไม่เขียนลง URL)
  * URL ที่ชี้รอบที่ถูกลบ → self-heal กลับ "ทั้งหมด" อัตโนมัติ
+ *
+ * Scope Banner: ใต้ Round Bar บอกขอบเขตที่กำลังแสดงตลอดเวลา ("ทุก Recruitment
+ * Round" หรือชื่อรอบ + ปุ่ม ✕ ล้าง) — ทำให้การแบ่ง follow/global อ่านออก
+ * ชื่อรอบ resolve จาก overview.rounds ใน response เดิม (ไม่ยิง request เพิ่ม)
+ *
+ * Widget รอบรับสมัคร (V4): จัดกลุ่มตามสถานะจริงใน DB — ใช้งานอยู่ / ร่าง /
+ * ปิดแล้ว (helper เดียวกับ dropdown) + แถวรอบคลิกได้ = click-to-filter
+ * (แถวที่กำลังดูไฮไลต์ "กำลังดู") — KPI การ์ดทุกใบคงเดิม ไม่เปลี่ยนความหมาย
  *
  * Response เป็น fail-soft ต่อ section: section ใดล้ม = null + ชื่อ section
  * ใน errors[] — ส่วนอื่นยังแสดงได้ (คุณสมบัติ allSettled ของ V1 รักษาไว้)
@@ -142,6 +156,51 @@ function Pill({ label, className }: { label: string; className?: string }) {
     >
       {label}
     </span>
+  );
+}
+
+// =============================================================================
+// Scope Banner — บอกขอบเขตที่กำลังแสดง (follow/global split ของแดชบอร์ด)
+// =============================================================================
+
+function ScopeBanner({
+  roundId,
+  roundTitle,
+  onClear,
+}: {
+  /** null = ทั้งหมด (banner แสดง "ทุก Recruitment Round") */
+  roundId: string | null;
+  /** ชื่อรอบจาก overview.rounds — null ระหว่างโหลด/ไม่พบ → แสดง "…" */
+  roundTitle: string | null;
+  onClear: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2" data-testid="dashboard-scope-banner">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm text-slate-600">กำลังแสดง:</span>
+        <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-900">
+          <span aria-hidden="true" className="text-emerald-600">
+            ✓
+          </span>
+          {roundId ? (roundTitle ?? '…') : 'ทุก Recruitment Round'}
+        </span>
+        {roundId && (
+          <button
+            type="button"
+            onClick={onClear}
+            aria-label="ล้างตัวกรองรอบ แสดงทุกรอบ"
+            className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 text-xs leading-none text-slate-500 hover:bg-white hover:text-slate-700"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+      {roundId && roundTitle && (
+        <p className="mt-0.5 text-xs text-slate-500">
+          KPI ใบสมัครและงานค้างกรองตามรอบนี้ · รอบ/Governance/กิจกรรมล่าสุดแสดงทุกรอบ
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -341,51 +400,80 @@ function DashboardClient() {
 
   const highAlerts = alerts.filter((a) => a.severity === 'high').length;
 
+  // ── V4: จัดกลุ่มรอบตามสถานะ — dropdown กับ widget ใช้ helper เดียวกัน ──
+  // widget: แสดง 3 กลุ่มหลักเสมอ (กลุ่มว่าง = บรรทัด "ไม่มี") + "อื่น ๆ" เฉพาะเมื่อมีรอบสถานะแปลก
+  const widgetGroups = useMemo(
+    () => groupRoundsByStatus(activeRounds).filter((g) => g.key !== 'unknown' || g.rows.length > 0),
+    [activeRounds],
+  );
+  // dropdown: เฉพาะกลุ่มที่มีรายการ (ประหยัดพื้นที่ใน panel)
+  const roundDropdownGroups = useMemo<RoundOptionGroup[]>(
+    () =>
+      groupRoundsByStatus(activeRounds)
+        .filter((g) => g.rows.length > 0)
+        .map((g) => ({
+          key: g.key,
+          label: g.label,
+          options: g.rows.map((r) => roundOptionMeta(r, formatDateThai)),
+        })),
+    [activeRounds],
+  );
+  // ข้อความบน trigger — "ทั้งหมด (ทุกรอบ)" / "รหัส · ชื่อรอบ" / "…" ระหว่างโหลด (ก่อน resolve ได้)
+  const roundTriggerLabel = useMemo(() => {
+    if (!roundId) return 'ทั้งหมด (ทุกรอบ)';
+    const found = activeRounds.find((r) => r.id === roundId);
+    if (!found) return '…';
+    return found.roundCode ? `${found.roundCode} · ${found.title}` : found.title;
+  }, [activeRounds, roundId]);
+
   return (
     <div className="p-4 md:p-8 space-y-6">
       {/* ── Header ── */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h1 className="text-2xl font-bold text-slate-900">Executive Dashboard</h1>
+        <p className="text-sm text-slate-500">
+          ภาพรวมการรับสมัคร · ข้อมูล ณ {formatDateThai(new Date())}
+        </p>
+      </div>
+
+      {/* ── Round Bar (V4) — filter เต็มความกว้างใต้ header แทนมุมขวาบน ── */}
+      <div className="space-y-2">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Executive Dashboard</h1>
-          <p className="text-sm text-slate-500">
-            ภาพรวมการรับสมัคร · ข้อมูล ณ {formatDateThai(new Date())}
-          </p>
-        </div>
-        <div className="flex flex-col items-end gap-1">
-          <div className="flex items-center gap-2">
+          <label htmlFor="dashboard-round-filter" className="mb-1 block text-sm text-slate-600">
+            รอบรับสมัคร
+          </label>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             {/* Round filter — server-side filter (endpoint เดิม + ?roundId=):
                 กระทบเฉพาะ KPI การ์ด/สัดส่วนสถานะ/งานค้าง; รอบที่เปิดรับ,
                 Template Governance, กิจกรรมล่าสุด คงเห็นทุกรอบเสมอ
                 (options จาก overview.rounds ใน response เดิม — ไม่ยิง request เพิ่ม) */}
-            <label htmlFor="dashboard-round-filter" className="hidden text-sm text-slate-500 sm:block">
-              รอบ:
-            </label>
-            <Select
+            <RoundSelect
               id="dashboard-round-filter"
-              className="w-56 sm:w-64"
-              value={roundId ?? ''}
-              onChange={(e) => applyRoundChange(e.target.value || null)}
-              aria-label="กรองตามรอบรับสมัคร"
-            >
-              <option value="">ทั้งหมด (ทุกรอบ)</option>
-              {(overview.data?.rounds ?? []).map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.roundCode ? `${r.roundCode} · ` : ''}
-                  {r.title}
-                </option>
-              ))}
-            </Select>
+              className="min-w-0 flex-1"
+              groups={roundDropdownGroups}
+              value={roundId}
+              triggerLabel={roundTriggerLabel}
+              onChange={(next) => applyRoundChange(next)}
+              disabled={rounds.status !== 'ready'}
+            />
             <Button variant="outline" size="sm" onClick={reloadAll} disabled={anyLoading}>
               {anyLoading ? 'กำลังโหลด…' : 'รีเฟรช'}
             </Button>
           </div>
-          {roundNotice && (
-            <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
-              {roundNotice}
-            </p>
-          )}
         </div>
+        {roundNotice && (
+          <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+            {roundNotice}
+          </p>
+        )}
       </div>
+
+      {/* ── Scope Banner — ขอบเขตที่กำลังแสดง (KPI/งานค้าง follow · รอบ/Governance/กิจกรรม global) ── */}
+      <ScopeBanner
+        roundId={roundId}
+        roundTitle={roundTitleForScope(roundId, overview.data?.rounds ?? null)}
+        onClear={() => applyRoundChange(null)}
+      />
 
       {/* ── 1. KPI cards ── */}
       <section aria-labelledby="kpi-heading" className="space-y-3">
@@ -493,12 +581,13 @@ function DashboardClient() {
 
       {/* ── 2 + 3. Rounds + Pending decisions ── */}
       <div className="grid gap-6 lg:grid-cols-2">
-        {/* Active rounds */}
+        {/* รอบรับสมัครทั้งหมด — Global (ไม่ follow filter): แผนที่ของตัว filter เอง
+            V4: จัดกลุ่มตามสถานะจริงใน DB (ใช้งานอยู่/ร่าง/ปิดแล้ว) + แถวคลิกได้ = เลือกรอบ */}
         <section aria-labelledby="rounds-heading">
           <Card className="h-full">
             <CardHeader className="!flex-row items-center justify-between space-y-0 pb-3">
               <CardTitle id="rounds-heading" className="text-base font-semibold">
-                รอบที่เปิดรับ
+                รอบรับสมัครทั้งหมด
               </CardTitle>
               <Link href="/admin/rounds" className="text-sm text-blue-600 hover:underline">
                 ดูทั้งหมด
@@ -510,32 +599,92 @@ function DashboardClient() {
                 <SectionError message={rounds.error ?? 'ไม่ทราบสาเหตุ'} onRetry={reloadAll} />
               )}
               {rounds.status === 'ready' && activeRounds.length === 0 && (
-                <EmptyRow text="ยังไม่มีรอบที่เปิดรับ" />
+                <EmptyRow text="ยังไม่มีรอบรับสมัคร" />
               )}
               {rounds.status === 'ready' && activeRounds.length > 0 && (
-                <ul className="divide-y divide-slate-100">
-                  {activeRounds.map((r) => (
-                    <li key={r.id} className="flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0">
-                      <div className="min-w-0">
-                        <p className="truncate font-medium text-slate-900">{r.title}</p>
-                        <p className="mt-0.5 text-xs text-slate-500">
-                          {r.roundCode ? `${r.roundCode} · ` : ''}
-                          {formatDateThai(r.openDate)} – {formatDateThai(r.closeDate)}
-                        </p>
-                      </div>
-                      <div className="shrink-0 text-right">
-                        <Pill label={r.urgencyLabel} className={r.urgencyClassName} />
-                        {r.daysLeft != null && (
-                          <p className="mt-1 text-xs text-slate-500">
-                            {r.daysLeft < 0
-                              ? `เลยกำหนด ${Math.abs(r.daysLeft)} วัน`
-                              : `เหลือ ${r.daysLeft} วัน`}
-                          </p>
-                        )}
-                      </div>
-                    </li>
+                <div className="space-y-4">
+                  {widgetGroups.map((g) => (
+                    <div key={g.key}>
+                      <p
+                        className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+                        data-testid={`dashboard-round-group-${g.key}`}
+                      >
+                        {g.label} ({g.rows.length})
+                      </p>
+                      {g.rows.length === 0 ? (
+                        <p className="py-2 text-sm text-slate-400">ไม่มี</p>
+                      ) : (
+                        <ul className="divide-y divide-slate-100">
+                          {g.rows.map((r) => {
+                            const badge = roundStatusBadge(r.status);
+                            const isSelected = r.id === roundId;
+                            return (
+                              <li key={r.id} className="py-3 first:pt-0 last:pb-0">
+                                <button
+                                  type="button"
+                                  data-testid="dashboard-round-row"
+                                  data-value={r.id}
+                                  aria-pressed={isSelected}
+                                  aria-label={
+                                    isSelected ? `กำลังดูรอบ ${r.title}` : `เลือกกรองตามรอบ ${r.title}`
+                                  }
+                                  onClick={() => {
+                                    // click-to-filter: แถวรอบ = ทางลัดของ dropdown
+                                    // (คลิกรอบที่กำลังดูอยู่ = no-op — ล้างผ่าน banner/dropdown)
+                                    if (!isSelected) applyRoundChange(r.id);
+                                  }}
+                                  className={cn(
+                                    '-mx-2 flex w-full items-start justify-between gap-3 rounded-md px-2 text-left transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500',
+                                    isSelected && 'bg-blue-50',
+                                  )}
+                                >
+                                  <div className="min-w-0">
+                                    <p className="truncate font-medium text-slate-900" title={r.title}>
+                                      {r.title}
+                                    </p>
+                                    <p className="mt-0.5 text-xs text-slate-500">
+                                      {r.roundCode ? `${r.roundCode} · ` : ''}
+                                      {formatDateThai(r.openDate)} – {formatDateThai(r.closeDate)}
+                                    </p>
+                                  </div>
+                                  <div className="shrink-0 text-right">
+                                    <Pill label={badge.label} className={badge.className} />
+                                    {/* daysLeft เฉพาะรอบใช้งาน — กัน "เลยกำหนด" ติดรอบที่ปิดแล้ว;
+                                        สีแทน urgency (amber = ใกล้ปิด, red = เลยกำหนด) */}
+                                    {r.status === 'ACTIVE' && r.daysLeft != null && (
+                                      <p
+                                        className={cn(
+                                          'mt-1 text-xs font-medium',
+                                          r.urgency === 'overdue'
+                                            ? 'text-red-600'
+                                            : r.urgency === 'closing-soon'
+                                              ? 'text-amber-600'
+                                              : 'text-slate-500',
+                                        )}
+                                      >
+                                        {r.daysLeft < 0
+                                          ? `เลยกำหนด ${Math.abs(r.daysLeft)} วัน`
+                                          : `เหลือ ${r.daysLeft} วัน`}
+                                      </p>
+                                    )}
+                                    {isSelected && (
+                                      <span
+                                        data-testid="dashboard-round-viewing"
+                                        className="mt-1 inline-flex items-center rounded-full border border-blue-200 bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-800"
+                                      >
+                                        กำลังดู
+                                      </span>
+                                    )}
+                                  </div>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
                   ))}
-                </ul>
+                </div>
               )}
             </CardContent>
           </Card>

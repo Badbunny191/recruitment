@@ -397,6 +397,135 @@ export function countOverdueRounds(rows: readonly ActiveRoundRow[]): number {
   return rows.filter((r) => r.urgency === 'overdue').length;
 }
 
+// ── Badge สถานะรอบ (Dashboard V4) ───────────────────────────────────────────
+// ค่า label/สีต้องตรงกับ STATUS_CONFIG ของหน้า "รอบการรับสมัคร"
+// (admin/rounds/page.tsx) — badge ข้ามหน้าต้องเหมือนกันทุกคำทุกสี
+// ห้ามแก้ที่นี่โดยไม่แก้หน้า rounds พร้อมกัน
+
+export interface RoundStatusBadgeMeta {
+  label: string;
+  className: string;
+}
+
+const ROUND_STATUS_BADGE_META: Record<string, RoundStatusBadgeMeta> = {
+  ACTIVE: { label: 'ใช้งาน', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  CLOSED: { label: 'ปิดแล้ว', className: 'bg-slate-100 text-slate-600 border-slate-200' },
+  DRAFT: { label: 'ร่าง', className: 'bg-amber-100 text-amber-700 border-amber-200' },
+};
+
+/** badge สถานะของรอบ — สถานะแปลก/null → slate "ไม่ทราบสถานะ" (defensive) */
+export function roundStatusBadge(status: string | null | undefined): RoundStatusBadgeMeta {
+  const key = (status ?? '').toUpperCase();
+  return (
+    ROUND_STATUS_BADGE_META[key] ?? {
+      label: 'ไม่ทราบสถานะ',
+      className: 'bg-slate-100 text-slate-600 border-slate-200',
+    }
+  );
+}
+
+// ── จัดกลุ่มรอบตามสถานะ (Dashboard V4) ─────────────────────────────────────
+// ลำดับกลุ่มตามข้อกำหนด: ใช้งานอยู่ → ร่าง → ปิดแล้ว (dropdown และ widget ใช้ helper เดียวกัน)
+// - overdue (ACTIVE ที่เลย closeDate) ยังอยู่กลุ่ม "ใช้งานอยู่" เพราะสถานะจริงใน DB คือ ACTIVE
+//   และเรียงบนสุดของกลุ่มด้วยลำดับ urgency จาก buildActiveRounds (input ที่ sort แล้ว)
+// - status ที่ไม่ใช่ 3 ค่าข้างต้น/null → กลุ่ม fallback "อื่น ๆ" (defensive เดียวกับ roundStatusBadge)
+
+export type RoundGroupKey = 'active' | 'draft' | 'closed' | 'unknown';
+
+export interface RoundGroup {
+  key: RoundGroupKey;
+  label: string;
+  rows: ActiveRoundRow[];
+}
+
+const ROUND_GROUP_META: Record<RoundGroupKey, string> = {
+  active: 'ใช้งานอยู่',
+  draft: 'ร่าง',
+  closed: 'ปิดแล้ว',
+  unknown: 'อื่น ๆ',
+};
+
+/**
+ * จัดกลุ่มรอบตามสถานะ — คืนครบ 4 กลุ่มตามลำดับ (rows อาจว่าง) เพื่อให้ caller
+ * เลือกได้เองว่าจะแสดงกลุ่มว่างเป็น "ไม่มี" หรือซ่อน; ลำดับภายในกลุ่มสืบจาก
+ * input (ควรเป็นผลลัพธ์ buildActiveRounds ที่ sort urgency → closeDate แล้ว)
+ */
+export function groupRoundsByStatus(rows: readonly ActiveRoundRow[]): RoundGroup[] {
+  const grouped: Record<RoundGroupKey, ActiveRoundRow[]> = {
+    active: [],
+    draft: [],
+    closed: [],
+    unknown: [],
+  };
+
+  for (const row of rows ?? []) {
+    if (!row) continue;
+    const status = (row.status ?? '').toUpperCase();
+    const key: RoundGroupKey =
+      status === 'ACTIVE'
+        ? 'active'
+        : status === 'DRAFT'
+          ? 'draft'
+          : status === 'CLOSED'
+            ? 'closed'
+            : 'unknown';
+    grouped[key].push(row);
+  }
+
+  return (['active', 'draft', 'closed', 'unknown'] as const).map((key) => ({
+    key,
+    label: ROUND_GROUP_META[key],
+    rows: grouped[key],
+  }));
+}
+
+// ── Option ของ RoundSelect (2 บรรทัด) + ชื่อรอบใน Scope Banner ─────────────
+
+export interface RoundOptionMeta {
+  id: string;
+  /** บรรทัดแรก — ชื่อรอบเต็ม (UI truncate ได้ + title attr โชว์เต็มเมื่อ hover) */
+  primary: string;
+  /** บรรทัดรอง — "รหัสรอบ · ปิด วันที่" (ไม่มีรหัส → เหลือวันปิด, ไม่มีทั้งคู่ → ว่าง) */
+  secondary: string;
+  badgeLabel: string;
+  badgeClassName: string;
+}
+
+/**
+ * meta ของ option รอบใน dropdown — formatter (formatDateThai) ส่งเข้ามา
+ * เพื่อให้ไฟล์นี้คงเป็น pure logic เทสได้โดยไม่พึ่ง React
+ */
+export function roundOptionMeta(
+  row: ActiveRoundRow,
+  formatDate: (value: unknown) => string,
+): RoundOptionMeta {
+  const badge = roundStatusBadge(row.status);
+  const parts: string[] = [];
+  if (row.roundCode) parts.push(row.roundCode);
+  if (row.closeDate) parts.push(`ปิด ${formatDate(row.closeDate)}`);
+  return {
+    id: row.id,
+    primary: row.title,
+    secondary: parts.join(' · '),
+    badgeLabel: badge.label,
+    badgeClassName: badge.className,
+  };
+}
+
+/**
+ * ชื่อรอบสำหรับ Scope Banner ("กำลังแสดง: ✓ …")
+ *   - ไม่มีการเลือก → null (banner แสดง "ทุก Recruitment Round")
+ *   - ยังไม่มีข้อมูล/ไม่พบ (โหลดครั้งแรก หรือ stale ก่อน self-heal) → null (banner แสดง "…")
+ */
+export function roundTitleForScope(
+  roundId: string | null,
+  rounds: readonly RoundItem[] | null | undefined,
+): string | null {
+  if (!roundId) return null;
+  const found = (rounds ?? []).find((r) => r && r.id === roundId);
+  return found?.title ?? null;
+}
+
 // =============================================================================
 // KPI: Template governance alerts
 // =============================================================================

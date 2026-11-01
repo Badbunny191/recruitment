@@ -14,6 +14,14 @@
  *       + แสดง notice + URL ถูกล้าง (loop-safe)
  *   C5. KPI ฝั่ง global (รอบที่เปิดรับ) คงค่าเดิมแม้ filter รอบ (ห้าม filter rounds)
  *
+ * V4 (Dashboard Layout V4 — Round Bar บน main @ ad4eaf5a):
+ *   R1. widget จัดกลุ่มตามสถานะ ใช้งานอยู่ → ร่าง → ปิดแล้ว (+ นับในหัวกลุ่ม)
+ *   R2. click-to-filter — คลิกแถวรอบใน widget = เลือกรอบ (1 request + URL sync)
+ *   R3. highlight "กำลังดู" แถวเดียวคือรอบที่เลือก + trigger โชว์รหัส·ชื่อ
+ *   R4. dropdown — option 2 บรรทัด + badge สถานะ + หัวกลุ่มครบ 3 กลุ่ม
+ *   R5. ค้นหาใน dropdown — กรองเหลือ option เดียว
+ *   R6. Round Bar label "รอบรับสมัคร" + Scope Banner คงอยู่ใต้ bar
+ *
  * Run: tsx --tsconfig tsconfig.test.json src/components/__tests__/dashboard-round-filter-repro.test.tsx
  */
 
@@ -149,7 +157,9 @@ function installFetch(handler: (url: string) => { status: number; body: any }) {
 const NOW_SEC = Math.floor(Date.now() / 1000);
 const DAY = 86_400;
 
-/** 2 รอบ ACTIVE ที่กำลังเปิดรับ (urgency=open → การ์ด "รอบที่เปิดรับ" = 2 เสมอ) */
+/** 4 รอบครบ 3 สถานะ (V4 ทดสอบกลุ่ม): 2 ACTIVE เปิดรับ + 1 DRAFT + 1 CLOSED
+ *  การ์ด KPI "รอบที่เปิดรับ" value ยัง = 2 (นับเฉพาะ open/closing-soon/overdue)
+ *  แต่ hint "${activeRounds.length} รอบในช่วงนี้" = 4 — ต้องไม่ถูก filter ทั้งคู่ (C5) */
 const ROUNDS_FIXTURE = [
   {
     id: 'r-1', title: 'รอบ A', roundCode: 'RC-A', status: 'ACTIVE', positionLevel: 'SENIOR',
@@ -158,6 +168,14 @@ const ROUNDS_FIXTURE = [
   {
     id: 'r-2', title: 'รอบ B', roundCode: 'RC-B', status: 'ACTIVE', positionLevel: 'SENIOR',
     openDate: NOW_SEC - 30 * DAY, closeDate: NOW_SEC + 30 * DAY, deletedAt: null,
+  },
+  {
+    id: 'r-draft', title: 'รอบร่าง', roundCode: 'RC-D', status: 'DRAFT', positionLevel: 'SENIOR',
+    openDate: NOW_SEC + 10 * DAY, closeDate: NOW_SEC + 40 * DAY, deletedAt: null,
+  },
+  {
+    id: 'r-closed', title: 'รอบปิดแล้ว', roundCode: 'RC-C', status: 'CLOSED', positionLevel: 'SENIOR',
+    openDate: NOW_SEC - 60 * DAY, closeDate: NOW_SEC - 10 * DAY, deletedAt: null,
   },
 ];
 
@@ -255,14 +273,24 @@ async function renderDashboard() {
   };
 }
 
-/** เลือกค่าใน dropdown แบบเดียวกับผู้ใช้ (native setter + change event) */
-async function selectRound(ui: { container: HTMLElement }, value: string) {
-  const select = ui.container.querySelector('#dashboard-round-filter');
-  assert(select, 'dropdown ต้องมีอยู่ (#dashboard-round-filter)');
-  const setter = Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, 'value')!.set!;
+/** เปิด panel ของ RoundSelect (คลิก trigger — interaction เดียวกับผู้ใช้จริง) */
+async function openRoundPanel(ui: { container: HTMLElement }) {
+  const trigger = ui.container.querySelector('#dashboard-round-filter');
+  assert(trigger, 'trigger ของ RoundSelect ต้องมีอยู่ (#dashboard-round-filter)');
   await act(async () => {
-    setter.call(select, value);
-    select.dispatchEvent(new win.Event('change', { bubbles: true }));
+    (trigger as HTMLElement).dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  });
+}
+
+/** เลือกรอบแบบเดียวกับผู้ใช้: เปิด panel → คลิก option ('' = "ทั้งหมด") */
+async function selectRound(ui: { container: HTMLElement }, value: string) {
+  await openRoundPanel(ui);
+  const option = value
+    ? ui.container.querySelector(`[data-testid="dashboard-round-option"][data-value="${value}"]`)
+    : ui.container.querySelector('[data-testid="dashboard-round-option-all"]');
+  assert(option, `ต้องมี option รอบ "${value || 'ทั้งหมด'}" ใน panel`);
+  await act(async () => {
+    (option as HTMLElement).dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   });
   await act(async () => {
     await new Promise((r) => setTimeout(r, 120));
@@ -305,9 +333,10 @@ async function main() {
     const ui = await renderDashboard();
     assertEqual(calls.length, 1, 'โหลดครั้งเดียว = request เดียว');
     assert(calls[0].includes('/admin/dashboard/overview?roundId=r-1'), 'ต้องแนบ ?roundId= ตั้งแต่ request แรก');
-    const select = ui.select();
-    assert(select, 'ต้องมี dropdown รอบ');
-    assertEqual((select as HTMLSelectElement).value, 'r-1', 'dropdown ต้อง preselect รอบจาก URL');
+    const trigger = ui.select();
+    assert(trigger, 'ต้องมี dropdown รอบ');
+    const triggerText = (trigger as HTMLElement).textContent ?? '';
+    assert(triggerText.includes('รอบ A'), `trigger ต้อง preselect รอบจาก URL (พบ: "${triggerText}")`);
     await ui.unmount();
   });
 
@@ -358,7 +387,11 @@ async function main() {
     assert(ui.text().includes('รอบที่เลือกไม่พบแล้ว'), 'ต้องแจ้งเหตุผลของการกลับไปทั้งหมด');
     const replaced = routerCalls.filter((c) => c.startsWith('replace:')).pop() ?? '';
     assert(!replaced.includes('roundId'), 'URL หลัง heal ต้องไม่มี roundId');
-    assertEqual((ui.select() as HTMLSelectElement).value, '', 'dropdown ต้องกลับเป็น ทั้งหมด');
+    assertEqual(
+      ((ui.select() as HTMLElement).textContent ?? '').trim(),
+      'ทั้งหมด (ทุกรอบ)',
+      'dropdown ต้องกลับเป็น ทั้งหมด',
+    );
     await ui.unmount();
   });
 
@@ -366,12 +399,141 @@ async function main() {
     setSession('ADMIN');
     const calls = installRecordingFetch();
     const ui = await renderDashboard();
-    assert(ui.text().includes('2 รอบในช่วงนี้'), 'ก่อน filter: การ์ดรอบเปิดรับ = 2');
+    // fixture มี 4 รอบ (2 ACTIVE + 1 DRAFT + 1 CLOSED) — hint KPI #3 "รอบในช่วงนี้" = 4
+    // (value ยัง = 2 เพราะนับเฉพาะ open/closing-soon/overdue — คงเดิมตามข้อห้ามแก้ KPI #3)
+    assert(ui.text().includes('4 รอบในช่วงนี้'), 'ก่อน filter: KPI #3 ต้องเห็นรอบทั้งหมด 4 รอบ');
 
     await selectRound(ui, 'r-1');
 
-    assert(ui.text().includes('2 รอบในช่วงนี้'), 'หลัง filter r-1: การ์ดรอบเปิดรับต้องยัง = 2 (rounds ไม่ถูก filter)');
+    assert(ui.text().includes('4 รอบในช่วงนี้'), 'หลัง filter r-1: KPI #3 ต้องยังเห็น 4 รอบ (rounds ไม่ถูก filter)');
     assert(routerCalls.some((c) => c.includes('roundId=r-1')), 'และ filter ต้องถูกใช้จริง');
+    await ui.unmount();
+  });
+
+  console.log('\n=== V4: Round Bar / กลุ่มสถานะ / click-to-filter / highlight ===');
+
+  await test('R1: widget จัดกลุ่มตามสถานะ ใช้งานอยู่ → ร่าง → ปิดแล้ว (+ นับจำนวนในหัวกลุ่ม)', async () => {
+    setSession('ADMIN');
+    installRecordingFetch();
+    const ui = await renderDashboard();
+    // dropdown ยังไม่เปิด → group testid ทั้งหมดเป็นของ widget
+    const keys = [...ui.container.querySelectorAll('[data-testid^="dashboard-round-group-"]')].map(
+      (el) => el.getAttribute('data-testid'),
+    );
+    assertEqual(
+      keys.join(','),
+      'dashboard-round-group-active,dashboard-round-group-draft,dashboard-round-group-closed',
+      'ลำดับกลุ่มต้องเป็น ใช้งานอยู่ → ร่าง → ปิดแล้ว',
+    );
+    const text = ui.text();
+    assert(text.includes('ใช้งานอยู่ (2)'), 'กลุ่มใช้งานอยู่ = 2 รอบ');
+    assert(text.includes('ร่าง (1)'), 'กลุ่มร่าง = 1 รอบ');
+    assert(text.includes('ปิดแล้ว (1)'), 'กลุ่มปิดแล้ว = 1 รอบ');
+    assert(text.includes('รอบรับสมัครทั้งหมด'), 'widget title ต้องเป็น "รอบรับสมัครทั้งหมด"');
+    await ui.unmount();
+  });
+
+  await test('R2: click-to-filter — คลิกแถวรอบใน widget → ยิง 1 request + URL sync ?roundId=', async () => {
+    setSession('ADMIN');
+    const calls = installRecordingFetch();
+    const ui = await renderDashboard();
+    const row = ui.container.querySelector('[data-testid="dashboard-round-row"][data-value="r-1"]');
+    assert(row, 'ต้องมีแถวรอบ r-1 ใน widget');
+    await act(async () => {
+      (row as HTMLElement).dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 120));
+    });
+    const overviewCalls = calls.filter((u) => u.includes('/admin/dashboard/overview'));
+    assertEqual(overviewCalls.length, 2, 'คลิกรอบ 1 ครั้ง = request เพิ่ม 1 เท่านั้น');
+    assert(overviewCalls[1].includes('roundId=r-1'), 'request ต้องแนบ ?roundId=r-1');
+    assert(
+      routerCalls.some((c) => c.startsWith('replace:') && c.includes('roundId=r-1')),
+      'URL ต้อง sync ?roundId=r-1',
+    );
+    await ui.unmount();
+  });
+
+  await test('R3: highlight "กำลังดู" แถวเดียวคือรอบที่เลือก + trigger โชว์รหัส·ชื่อ', async () => {
+    setSession('ADMIN');
+    installRecordingFetch();
+    const ui = await renderDashboard();
+    await selectRound(ui, 'r-1');
+    const viewing = ui.container.querySelectorAll('[data-testid="dashboard-round-viewing"]');
+    assertEqual(viewing.length, 1, 'ต้องมี chip "กำลังดู" แถวเดียว');
+    const row = ui.container.querySelector('[data-testid="dashboard-round-row"][data-value="r-1"]');
+    assert(row, 'ต้องมีแถวรอบ r-1');
+    assert((row as HTMLElement).textContent?.includes('กำลังดู'), 'chip ต้องอยู่ที่แถว r-1');
+    assertEqual(
+      (row as HTMLElement).getAttribute('aria-pressed'),
+      'true',
+      'แถวที่เลือกต้อง aria-pressed=true',
+    );
+    const trigger = ui.container.querySelector('#dashboard-round-filter') as HTMLElement | null;
+    assert(trigger?.textContent?.includes('รอบ A'), 'trigger ต้องโชว์รอบที่เลือก');
+    await ui.unmount();
+  });
+
+  await test('R4: dropdown — option 2 บรรทัด (รหัส/วันปิด) + badge สถานะ + หัวกลุ่มครบ 3 กลุ่ม', async () => {
+    setSession('ADMIN');
+    installRecordingFetch();
+    const ui = await renderDashboard();
+    await openRoundPanel(ui);
+    const panel = ui.container.querySelector('[data-testid="dashboard-round-panel"]');
+    assert(panel, 'ต้องมี panel หลังเปิด trigger');
+    assert(
+      panel!.querySelector('[data-testid="dashboard-round-option-all"]'),
+      'ต้องมี "ทั้งหมด (ทุกรอบ)" pin บนสุด',
+    );
+    for (const key of ['active', 'draft', 'closed']) {
+      assert(
+        panel!.querySelector(`[data-testid="dashboard-round-group-${key}"]`),
+        `panel ต้องมีหัวกลุ่ม ${key}`,
+      );
+    }
+    const draftOpt = panel!.querySelector(
+      '[data-testid="dashboard-round-option"][data-value="r-draft"]',
+    ) as HTMLElement | null;
+    assert(draftOpt, 'ต้องมี option รอบร่าง');
+    const optText = draftOpt.textContent ?? '';
+    assert(optText.includes('รอบร่าง'), 'บรรทัดแรก = ชื่อรอบ');
+    assert(optText.includes('RC-D'), 'บรรทัดรองต้องมีรหัสรอบ');
+    assert(optText.includes('ร่าง'), 'option ต้องมี badge สถานะ "ร่าง"');
+    await ui.unmount();
+  });
+
+  await test('R5: ค้นหาใน dropdown — "รอบ A" เหลือ option รอบเดียว', async () => {
+    setSession('ADMIN');
+    installRecordingFetch();
+    const ui = await renderDashboard();
+    await openRoundPanel(ui);
+    const search = ui.container.querySelector(
+      '[data-testid="dashboard-round-search"]',
+    ) as HTMLInputElement | null;
+    assert(search, 'ต้องมีช่องค้นหาใน panel');
+    const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(search, 'รอบ A');
+      search.dispatchEvent(new win.Event('input', { bubbles: true }));
+    });
+    const roundOptions = [
+      ...ui.container.querySelectorAll('[data-testid="dashboard-round-panel"] [data-testid="dashboard-round-option"]'),
+    ];
+    assertEqual(roundOptions.length, 1, 'ค้นหา "รอบ A" ต้องเหลือ option รอบเดียว (ไม่นับ "ทั้งหมด")');
+    assertEqual(roundOptions[0].getAttribute('data-value'), 'r-1');
+    await ui.unmount();
+  });
+
+  await test('R6: Round Bar label "รอบรับสมัคร" + Scope Banner อยู่ใต้ bar (คงไว้ตาม V4)', async () => {
+    setSession('ADMIN');
+    installRecordingFetch();
+    const ui = await renderDashboard();
+    assert(ui.text().includes('รอบรับสมัคร'), 'label ต้องมองเห็นทุก breakpoint (ไม่ซ่อนบนมือถือ)');
+    const banner = ui.container.querySelector('[data-testid="dashboard-scope-banner"]') as HTMLElement | null;
+    assert(banner, 'ต้องมี Scope Banner');
+    assert(banner.textContent?.includes('กำลังแสดง:'), 'banner ต้องบอกขอบเขตที่กำลังแสดง');
+    assert(banner.textContent?.includes('ทุก Recruitment Round'), 'default = ทุก Recruitment Round');
     await ui.unmount();
   });
 
