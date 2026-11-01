@@ -295,6 +295,43 @@ jobs:
             jq -e '.ordered.available == false' /tmp/verify-manifest.json > /dev/null
           fi
 
+      - name: Write health snapshot (best-effort)
+        run: |
+          set -uo pipefail
+          # d1/health/latest.json = stable key ที่ workflow "Backup Health"
+          # (ไฟล์แยก, cron 04:30 ICT) อ่านเพื่อตรวจความสด/ความพร้อมของ backup
+          # โดยไม่ต้อง list R2 — ทุกค่า derive จาก manifest ที่ verify ผ่านแล้ว
+          # ข้างบน จึงไม่มีทางเพี้ยนจากตัว manifest
+          # พังตรงนี้ต้องไม่ล้ม job — raw + manifest ขึ้น R2 และยืนยันแล้ว
+          # การแจ้งเตือนจะมาจากเช็ค BACKUP_FRESH ของคืนถัดไปแทน
+          # (docs/BACKUP_HEALTH_MONITORING.md)
+          HEALTH_EXIT=0
+          jq -n \
+            --arg updated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --slurpfile manifest "manifest-$TS.json" \
+            '{schema_version: 1,
+              updated_at_utc: $updated_at,
+              database: $manifest[0].database,
+              backup: {generated_at_utc: $manifest[0].generated_at_utc,
+                       r2_key: $manifest[0].r2_key,
+                       sha256: $manifest[0].sha256,
+                       size_bytes: $manifest[0].size_bytes,
+                       encrypted: ($manifest[0].file | endswith(".gpg")),
+                       run_url: $manifest[0].run_url},
+              ordered: {available: $manifest[0].ordered.available,
+                        verified: $manifest[0].ordered.verified,
+                        r2_key: $manifest[0].ordered.r2_key,
+                        error_code: $manifest[0].ordered.error_code},
+              facts: {migration_head: $manifest[0].facts.migration_head}}' \
+            > health-latest.json || HEALTH_EXIT=$?
+          if [ "$HEALTH_EXIT" -eq 0 ]; then
+            npx wrangler r2 object put "$R2_BACKUP_BUCKET/d1/health/latest.json" \
+              --file health-latest.json || HEALTH_EXIT=$?
+          fi
+          if [ "$HEALTH_EXIT" -ne 0 ]; then
+            echo "::warning::health snapshot write failed (exit $HEALTH_EXIT) — raw + manifest backup is unaffected; tomorrow's BACKUP_FRESH check will flag stale (docs/BACKUP_HEALTH_MONITORING.md)"
+          fi
+
       - name: Job summary
         if: always()
         run: |

@@ -3,6 +3,8 @@
 > **Sprint 2 — Task 4** | วันที่: 2026-10-31 | Branch: `feature/sprint2-recoverability-and-pdf`
 > **Phase 2** | วันที่: 2026-11-01 | Branch: `feature/d1-backup-phase2` — ผูก reorder utility (`backend/scripts/reorder-dump`, commit 190b6ef2) เข้ากับ workflow: ผลิต **raw + ordered dump คู่กันทุกคืน** + manifest v2
 >
+> **Health Monitoring** | วันที่: 2026-11-01 | Branch: `feature/backup-health-monitoring` — เพิ่ม `d1/health/latest.json` (เขียนหลัง manifest verify) + workflow **Backup Health** ตรวจทุกเช้า 04:30 ICT แจ้งเตือนผ่าน GitHub Issue — ดู `docs/BACKUP_HEALTH_MONITORING.md`
+>
 > Workflow: `.github/workflows/d1-backup.yml`
 > ออกแบบต่อยอดจาก `docs/D1_BACKUP_AND_RESTORE_PLAN.md` (Phase 1 design) — เอกสารนี้คือ implementation spec ฉบับที่ใช้จริง
 
@@ -38,6 +40,8 @@
 | `BACKUP_GPG_RECIPIENT` | (แนะนำอย่างยิ่ง) public key fingerprint/email สำหรับเข้ารหัส dump ก่อนอัปโหลด |
 | `BACKUP_GPG_KEY` | ไม่ใช้ตอน backup (ใช้แค่ public key) — สงวนไว้สำหรับ restore drill workflow ในอนาคต |
 
+หมายเหตุ (2026-11-01): workflow **Backup Health** (`.github/workflows/backup-health.yml`) reuse `CF_ACCOUNT_ID` + `CF_BACKUP_API_TOKEN` (ใช้เฉพาะ `r2 object get` — อ่านอย่างเดียว) — **TODO: อนาคตควรแยก token read-only (R2 Object Read) เฉพาะ health เป็น secret ใหม่ (เช่น `CF_HEALTH_API_TOKEN`) เพื่อ least privilege เต็มรูปแบบ** — ดู `BACKUP_HEALTH_MONITORING.md` §8
+
 **การสร้าง `CF_BACKUP_API_TOKEN`** (Cloudflare dashboard → My Profile → API Tokens → Create Token → Custom):
 
 | Permission | Scope | เหตุผล |
@@ -70,6 +74,7 @@
 | Ordered dump encrypt/upload fail (Phase 2) | เหมือนข้างบน — manifest สร้าง*หลัง*พยายาม upload เสมอ จึงบันทึกสถานะจริงของคืนนั้น |
 | GPG ไม่ได้ตั้ง | อัปโหลด plain (ทั้ง raw และ ordered) + `::warning::` ใน log เตือนชัดเจน |
 | รันซ้อน | `concurrency: d1-backup` + `cancel-in-progress: false` — รอบใหม่รอรอบเดิมจบ |
+| Health snapshot write fail (2026-11-01) | step "Write health snapshot" เป็น best-effort — `::warning::` + job ยังเขียว (raw + manifest ขึ้น R2 และ verify ผ่านแล้ว); รอบตรวจ Backup Health คืนถัดไปจับเป็น `BACKUP_FRESH` แดงแทน |
 
 ### 5.1 Ordered dump failure policy (Phase 2 — ตัดสินใจ 2026-11-01)
 
@@ -81,6 +86,8 @@
 สุขภาพ ordered ตรวจรายคืนจาก **ตาราง job summary (แถว ordered)** — ถ้าเห็น `unavailable (code)` ติดกันหลายคืน ให้ตามอาการตาม `backend/scripts/reorder-dump/SPEC.md` §7-§8 (code UNSUPPORTED หลัง migration ใหม่ = ต้องเพิ่ม capability ให้ utility, ไม่ใช่เหตุฉุกเฉินข้อมูล)
 
 การตรวจติดตามประจำวัน: ดู Actions tab (หรือเปิด email notification ของ GitHub สำหรับ workflow failure) — แนะนำให้แอดมินสั่ง "send notification for failed workflows only" ให้ครบ
+
+ตั้งแต่ 2026-11-01 มี **Backup Health** (`.github/workflows/backup-health.yml`) ตรวจอัตโนมัติทุกเช้า 04:30 ICT — อ่าน `d1/health/latest.json` (stable key ที่ D1 Backup เขียนหลัง manifest ผ่าน verify) แล้วเช็ค 4 ข้อ: อายุ backup ≤ `MAX_BACKUP_AGE_HOURS` (24 ชม.) / raw object อยู่จริง / `ordered.available` / `ordered.verified` — ผิดปกติ = เปิด/อัปเดต GitHub Issue (`[backup-health]`) **และ job แดง**, กลับมาปกติ = ปิด issue เอง; runbook + drill: `docs/BACKUP_HEALTH_MONITORING.md` (การอ่านตาราง job summary ด้านบนยังใช้ได้เป็นวิธีเสริม)
 
 ## 6. Manifest v2 (ไฟล์ที่อัปโหลดคู่กันทุกวัน — Phase 2, additive)
 
@@ -132,6 +139,8 @@
 
 `facts` ใช้เป็น baseline เทียบตอน restore (ขั้นตอนที่ 3 ของ `RESTORE_DRILL.md`) และ `migration_head` ใช้ตัดสินว่า dump นั้นมาจาก schema ไหน (สำคัญมากกับ migration 030 ที่ rebuild ตาราง applications) — **การ restore ให้ใช้ ordered dump ก่อนเสมอเมื่อ `ordered.available == true`** (ดู `RESTORE_DRILL.md` §1-2)
 
+**Health snapshot (2026-11-01):** หลัง step verify ผ่าน workflow derive `d1/health/latest.json` (stable key, overwrite ทุกคืน, `schema_version: 1`) จาก manifest ไฟล์นี้ทั้งหมด — เป็น key เดียวที่ Backup Health อ่าน จึงไม่ต้อง list R2; การเขียน best-effort — พัง = `::warning` + รอบตรวจคืนถัดไปจับเป็น stale (schema และกฎ: `BACKUP_HEALTH_MONITORING.md` §2)
+
 ## 7. ขั้นตอนเปิดใช้งานครั้งแรก (แอดมิน)
 
 1. สร้าง API token ตาม §3 แล้วตั้ง secrets `CF_ACCOUNT_ID` + `CF_BACKUP_API_TOKEN`
@@ -139,6 +148,7 @@
 3. กด "Run workflow" (workflow_dispatch) ครั้งแรกเพื่อทดสอบ — bucket และ lifecycle rule จะถูกสร้างเอง
 4. ตรวจผล: Actions tab → run ล่าสุด → job summary ต้องแสดง r2 key + size + แถว ordered (คาดหวัง: `ordered key (restore-ready)` + `ordered verify = FK-ON replay + parity OK`; ถ้าเห็น `unavailable (code)` ดู §5.1); เช็คใน dashboard R2 ว่ามี object ใน `d1/daily/2026/...` — รอบปกติต้องได้ 3 objects: raw, ordered, manifest
 5. ยืนยัน lifecycle rule: `npx wrangler r2 bucket lifecycle list sao-recruitment-backups`
+6. (2026-11-01) ตรวจ health snapshot: `npx wrangler r2 object get sao-recruitment-backups/d1/health/latest.json --file /tmp/health.json && jq . /tmp/health.json` ต้องเห็นค่าตรง manifest รอบนั้น แล้ว dispatch workflow **Backup Health** หนึ่งครั้ง — คาดหวังเขียว (ผ่าน 4/4) และไม่มี issue `[backup-health]` ถูกสร้าง; ต้องการซ้อมกลไกแจ้งเตือนใช้ input `drill_scenario` (`BACKUP_HEALTH_MONITORING.md` §6)
 
 ## 8. สิ่งที่ยังไม่ครอบคลุม (ช่องว่างที่จดไว้)
 
