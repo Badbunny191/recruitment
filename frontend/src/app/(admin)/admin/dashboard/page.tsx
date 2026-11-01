@@ -1,9 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Select } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import { formatDateThai } from '@/lib/date';
 import { getAuditActionConfig, getAuditEntityLabel } from '@/lib/audit-log-display';
@@ -11,6 +13,9 @@ import { redirectToLogin } from '@/lib/account-state';
 import { useRole } from '@/lib/useRole';
 import {
   buildDashboardSnapshotFromOverview,
+  dashboardOverviewApiPath,
+  isRoundSelectable,
+  parseDashboardRoundParam,
   type AuditLogItem,
   type DashboardOverviewPayload,
   type PendingOverview,
@@ -24,11 +29,20 @@ import {
  * rounds/comparison, audit-logs) — backend aggregate KPI ครบทุก section
  * รวมถึงงานค้างที่ V1 ต้อง fetch แถวมากถึง 200 แถวมานับฝั่ง client
  *
+ * Round Filter (?roundId= — Dashboard Round Filter):
+ * dropdown ใน header เลือกรอบ → ยิง endpoint เดิม 1 request ด้วย ?roundId=
+ * (backend filter เฉพาะ KPI การ์ด/สัดส่วนสถานะ/งานค้าง; รอบที่เปิดรับ,
+ * Template Governance, กิจกรรมล่าสุด คงเห็นทุกรอบ) — options ของ dropdown
+ * ใช้ overview.rounds จาก response เดิม จึงไม่ยิง request เพิ่ม
+ * เลือก "ทั้งหมด" = ไม่มี param ใน URL (default ไม่เขียนลง URL)
+ * URL ที่ชี้รอบที่ถูกลบ → self-heal กลับ "ทั้งหมด" อัตโนมัติ
+ *
  * Response เป็น fail-soft ต่อ section: section ใดล้ม = null + ชื่อ section
  * ใน errors[] — ส่วนอื่นยังแสดงได้ (คุณสมบัติ allSettled ของ V1 รักษาไว้)
  * section ที่ล้ม → กล่อง "โหลดข้อมูลไม่สำเร็จ" ของส่วนนั้นเหมือนเดิม
  *
  * UI/markup คงเดิมทุกส่วนจาก V1 — มีเพียงชั้นโหลดข้อมูลที่เปลี่ยน
+ * (useSearchParams ต้องอยู่ใต้ Suspense — Next 14 requirement)
  */
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
@@ -189,10 +203,23 @@ function KpiCard({
 // =============================================================================
 
 export default function DashboardPage() {
+  // useSearchParams ต้องอยู่ใต้ Suspense เสมอ (Next 14 — static prerender ไม่งั้น build fail)
+  return (
+    <Suspense fallback={<div className="p-8 text-sm text-slate-500">กำลังโหลด…</div>}>
+      <DashboardClient />
+    </Suspense>
+  );
+}
+
+function DashboardClient() {
   // Audit Log เปิดให้เฉพาะ SUPER_ADMIN (ตรงกับ RBAC ของหน้า /admin/audit-logs
   // และเมนู System) — role อื่นต้องไม่เห็นกิจกรรมเลย แม้แต่ใน dashboard
   // (backend ส่ง activities เฉพาะ SUPER_ADMIN อยู่แล้ว — ชั้นนี้เป็น guard แสดงผล)
   const { isSuperAdmin } = useRole();
+
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   // request เดียวรวมทุก section — สถานะ loading/error/error message ใช้ร่วมกัน
   // แล้วแยกเป็นสถานะต่อ section ด้วย sectionOf ด้านล่าง
@@ -200,27 +227,75 @@ export default function DashboardPage() {
     initialSection(),
   );
 
-  // ── Loader (request เดียว) ──
+  // ── Round filter (Dashboard Round Filter) ──
+  // ค่าเริ่มต้นอ่านจาก URL (?roundId=) → แชร์ลิงก์/รีเฟรช/Back ได้ตำแหน่งเดิม
+  // "ทั้งหมด" = null = ไม่มี param ใน URL; sync กลับจาก searchParams เมื่อ
+  // Back/Forward (transition จบ → searchParams อัปเดต → effect เซ็ตค่าเดิม no-op)
+  const [roundId, setRoundId] = useState<string | null>(() =>
+    parseDashboardRoundParam(new URLSearchParams(searchParams.toString())),
+  );
+  // ข้อความแจ้งเหตุผลเมื่อ self-heal (URL ชี้รอบที่ไม่มีแล้ว) — หายเมื่อผู้ใช้เลือกเอง
+  const [roundNotice, setRoundNotice] = useState<string | null>(null);
 
-  const loadOverview = useCallback(async () => {
+  useEffect(() => {
+    setRoundId(parseDashboardRoundParam(new URLSearchParams(searchParams.toString())));
+  }, [searchParams]);
+
+  /** เปลี่ยน filter: state + URL พร้อมกัน (default ไม่เขียนลง URL — กฎเดียวกับหน้า applications) */
+  const applyRoundChange = useCallback(
+    (next: string | null, notice: string | null = null) => {
+      setRoundId(next);
+      setRoundNotice(notice);
+      const params = new URLSearchParams(searchParams.toString());
+      if (next) {
+        params.set('roundId', next);
+      } else {
+        params.delete('roundId');
+      }
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [pathname, router, searchParams],
+  );
+
+  // ── Loader (request เดียว — เปลี่ยน round = ยิง endpoint เดิม 1 request) ──
+
+  // ลำดับคำขอ: response ของ request เก่า (เปลี่ยน round รัว ๆ) ห้ามทับ request ใหม่
+  const reqSeqRef = useRef(0);
+
+  const loadOverview = useCallback(async (rid: string | null) => {
+    const seq = ++reqSeqRef.current;
     setOverview((s) => ({ ...s, status: 'loading', error: null }));
     try {
-      const res = await fetchJson<OverviewResponse>('/admin/dashboard/overview');
+      const res = await fetchJson<OverviewResponse>(dashboardOverviewApiPath(rid));
+      if (seq !== reqSeqRef.current) return; // มี request ใหม่กว่า — ทิ้ง response เก่า
       setOverview({ status: 'ready', data: res.data ?? null, error: null });
     } catch (e) {
       // 401 → กำลังถูกพาไป login อยู่ ไม่ต้องแสดง error ปลอม
       if (e instanceof UnauthorizedError) return;
+      if (seq !== reqSeqRef.current) return;
       setOverview({ status: 'error', data: null, error: (e as Error).message });
     }
   }, []);
 
   useEffect(() => {
-    void loadOverview();
-  }, [loadOverview]);
+    void loadOverview(roundId);
+  }, [loadOverview, roundId]);
 
   const reloadAll = useCallback(() => {
-    void loadOverview();
-  }, [loadOverview]);
+    void loadOverview(roundId);
+  }, [loadOverview, roundId]);
+
+  // ── Self-heal: URL ชี้รอบที่ไม่มีแล้ว (เช่น ถูกลบหลังแชร์ลิงก์) → กลับ "ทั้งหมด" ──
+  // backend ไม่ validate roundId (parity /applications/summary) — รอบแปลกให้ค่า
+  // ศูนย์ซึ่งอ่านผิดความหมาย จึงเช็คกับ overview.rounds ที่มาใน response เดิม
+  // (ไม่ยิงเพิ่ม) — rounds ล้ม = ตัดสินไม่ได้ คงค่าไว้; loop-safe เพราะล้างแล้ว
+  // param หาย จึง heal ได้ครั้งเดียวต่อ URL เดียว
+  useEffect(() => {
+    if (overview.status !== 'ready' || !roundId) return;
+    if (isRoundSelectable(roundId, overview.data?.rounds ?? null)) return;
+    applyRoundChange(null, 'รอบที่เลือกไม่พบแล้ว (อาจถูกลบ) — แสดงทุกรอบแทน');
+  }, [overview.status, overview.data, roundId, applyRoundChange]);
 
   // ── สถานะต่อ section (map จาก response เดียว → SectionState รูปทรงเดิม) ──
   // fail-soft ฝั่ง backend: section ที่ query ล้มจะเป็น null + ชื่อใน errors[]
@@ -276,9 +351,40 @@ export default function DashboardPage() {
             ภาพรวมการรับสมัคร · ข้อมูล ณ {formatDateThai(new Date())}
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={reloadAll} disabled={anyLoading}>
-          {anyLoading ? 'กำลังโหลด…' : 'รีเฟรช'}
-        </Button>
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex items-center gap-2">
+            {/* Round filter — server-side filter (endpoint เดิม + ?roundId=):
+                กระทบเฉพาะ KPI การ์ด/สัดส่วนสถานะ/งานค้าง; รอบที่เปิดรับ,
+                Template Governance, กิจกรรมล่าสุด คงเห็นทุกรอบเสมอ
+                (options จาก overview.rounds ใน response เดิม — ไม่ยิง request เพิ่ม) */}
+            <label htmlFor="dashboard-round-filter" className="hidden text-sm text-slate-500 sm:block">
+              รอบ:
+            </label>
+            <Select
+              id="dashboard-round-filter"
+              className="w-56 sm:w-64"
+              value={roundId ?? ''}
+              onChange={(e) => applyRoundChange(e.target.value || null)}
+              aria-label="กรองตามรอบรับสมัคร"
+            >
+              <option value="">ทั้งหมด (ทุกรอบ)</option>
+              {(overview.data?.rounds ?? []).map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.roundCode ? `${r.roundCode} · ` : ''}
+                  {r.title}
+                </option>
+              ))}
+            </Select>
+            <Button variant="outline" size="sm" onClick={reloadAll} disabled={anyLoading}>
+              {anyLoading ? 'กำลังโหลด…' : 'รีเฟรช'}
+            </Button>
+          </div>
+          {roundNotice && (
+            <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+              {roundNotice}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* ── 1. KPI cards ── */}
@@ -443,7 +549,12 @@ export default function DashboardPage() {
                 งานค้างที่ต้องตัดสิน
               </CardTitle>
               <Link
-                href="/admin/applications?status=SUBMITTED"
+                // แนบ roundId ต่อ — หน้าพิจารณารับ ?roundId= อยู่แล้ว (hydrateListState)
+                href={
+                  roundId
+                    ? `/admin/applications?status=SUBMITTED&roundId=${encodeURIComponent(roundId)}`
+                    : '/admin/applications?status=SUBMITTED'
+                }
                 className="text-sm text-blue-600 hover:underline"
               >
                 ไปหน้าพิจารณา

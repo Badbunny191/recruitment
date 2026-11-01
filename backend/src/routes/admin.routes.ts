@@ -3457,10 +3457,18 @@ adminRoutes.get('/audit-logs', superAdminOnlyMiddleware, async (c) => {
 // องค์ประกอบส่วนใหญ่; ส่วน "activities" (audit log) ใส่เฉพาะ SUPER_ADMIN ตาม
 // policy ของ GET /admin/audit-logs และไม่ select payload → PII ไม่ออกจาก DB
 // Fail-soft: section ใดล้ม = null + ชื่อ section ใน errors[] (ส่วนอื่นยังแสดง)
+//
+// ?roundId= (Dashboard Round Filter — optional): filter เฉพาะ summary + pending
+// ให้นับใบสมัครของรอบนั้น; rounds/comparison/activities คง global — เงื่อนไข
+// เพิ่มใน WHERE เดิม (idx_apps_round_status / idx_apps_round_submitted_sort
+// ครอบอยู่แล้ว) จึงไม่เพิ่ม query/index/migration; ไม่ validate roundId
+// (parity กับ /applications/summary) — roundId แปลก = ผลศูนย์ แล้ว frontend
+// self-heal ด้วยรายชื่อรอบใน response
 adminRoutes.get('/dashboard/overview', async (c) => {
   const user = c.get('jwtPayload');
   const data = await buildDashboardOverview(drizzle(c.env.DB), {
     isSuperAdmin: isSuperAdmin(user?.role),
+    roundId: c.req.query('roundId') || undefined,
   });
   return c.json({ data });
 });
