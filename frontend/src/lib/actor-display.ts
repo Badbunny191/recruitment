@@ -23,6 +23,8 @@ export const APPLICANT_ACTIONS: readonly string[] = [
   'APPLICATION_SUBMIT',
   'ATTACHMENT_UPLOAD',
   'ATTACHMENT_DELETE',
+  // C-attach: ต้องตรงกับ backend/src/lib/actor-display.ts
+  'ATTACHMENT_LINK',
 ];
 
 export type ActorType = 'APPLICANT' | 'ADMIN' | 'SYSTEM';

@@ -130,6 +130,21 @@ sqlite.exec(`
   );
   CREATE INDEX idx_audit_entity ON audit_logs (entity_type, entity_id);
   CREATE INDEX idx_audit_created_at_desc ON audit_logs (created_at DESC);
+  -- C-attach: history route อ่าน attachment_uploads เป็น source of truth ของ
+  -- "ไฟล์ของใบนี้" แล้ว join audit ของ ledger เหล่านั้น — fixture ต้องมีตารางนี้
+  -- ไม่งั้น route 500 (no such table) ทั้งที่ logic ไม่ได้ผิด
+  CREATE TABLE attachment_uploads (
+    id TEXT PRIMARY KEY,
+    r2_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'TEMP',
+    uploaded_at INTEGER DEFAULT (unixepoch()),
+    application_id TEXT REFERENCES applications(id) ON DELETE SET NULL,
+    original_filename TEXT,
+    delete_token_hash TEXT,
+    activated_at INTEGER,
+    deleted_at INTEGER
+  );
+  CREATE INDEX idx_attachment_uploads_application ON attachment_uploads (application_id);
 `);
 
 const d1 = createD1Adapter(sqlite);
@@ -352,8 +367,8 @@ async function runAllTests() {
     const res = await getJson(historyPath(ONE));
     assertDeepEqual(
       Object.keys(res.body.data[0]).sort(),
-      ['action', 'actorLabel', 'actorSecondary', 'actorType', 'adminEmail', 'adminId', 'createdAt', 'id', 'payload'].sort(),
-      'ชุดคีย์ต่อแถว: 6 เดิม + actorType/actorLabel/actorSecondary',
+      ['action', 'actorLabel', 'actorSecondary', 'actorType', 'adminEmail', 'adminId', 'attachmentFilename', 'createdAt', 'id', 'payload'].sort(),
+      'ชุดคีย์ต่อแถว: 6 เดิม + actorType/actorLabel/actorSecondary + attachmentFilename (C-attach)',
     );
     assertTrue(Array.isArray(res.body.data), 'data เป็น array (contract เดิม)');
   });
@@ -457,6 +472,105 @@ async function runAllTests() {
     assertTrue(
       res.body.data.every((r) => !r.id.startsWith('other-')),
       'ไม่มี log ของ RECRUITMENT_ROUND',
+    );
+  });
+
+  // ===========================================================================
+  // C-attach — Attachment Timeline Coverage
+  // ===========================================================================
+  // fixture: 3 ledger ของ ATT
+  //   att-legacy  → มีแต่ ATTACHMENT_UPLOAD (ข้อมูลก่อน C-attach) → ต้องเห็น
+  //   att-linked  → มี ATTACHMENT_UPLOAD + ATTACHMENT_LINK        → ต้องเห็น LINK แถวเดียว
+  //   att-far     → LINK อยู่นอกหน้าแรก (created_at ใหม่สุด)      → ต้องไม่โผล่ซ้ำ
+  // ===========================================================================
+  const ATT = 'app-attach';
+  insertApplication(ATT);
+
+  const insertLedger = sqlite.prepare(
+    `INSERT INTO attachment_uploads (id, r2_key, status, application_id, original_filename)
+     VALUES (?, ?, 'ACTIVE', ?, ?)`
+  );
+  insertLedger.run('att-legacy', 'uploads/legacy.pdf', ATT, 'legacy-ใบสมัคร.pdf');
+  insertLedger.run('att-linked', 'uploads/linked.pdf', ATT, 'linked-ใบสมัคร.pdf');
+  insertLedger.run('att-far', 'uploads/far.pdf', ATT, 'far-ใบสมัคร.pdf');
+
+  // ledger ของใบอื่น — ต้องไม่หลุดข้ามใบ
+  insertApplication('app-other-att');
+  insertLedger.run('att-other', 'uploads/other.pdf', 'app-other-att', 'other.pdf');
+
+  // ATTACHMENT_UPLOAD (entityType='ATTACHMENT', entityId=ledgerId)
+  insertLog.run('att-up-legacy', '00000000-0000-0000-0000-000000000000', 'ATTACHMENT_UPLOAD',
+    'ATTACHMENT', 'att-legacy', JSON.stringify({ fileKey: 'uploads/legacy.pdf' }), 1760700000);
+  insertLog.run('att-up-linked', '00000000-0000-0000-0000-000000000000', 'ATTACHMENT_UPLOAD',
+    'ATTACHMENT', 'att-linked', JSON.stringify({ fileKey: 'uploads/linked.pdf' }), 1760700100);
+  insertLog.run('att-up-far', '00000000-0000-0000-0000-000000000000', 'ATTACHMENT_UPLOAD',
+    'ATTACHMENT', 'att-far', JSON.stringify({ fileKey: 'uploads/far.pdf' }), 1760700200);
+  insertLog.run('att-up-other', '00000000-0000-0000-0000-000000000000', 'ATTACHMENT_UPLOAD',
+    'ATTACHMENT', 'att-other', JSON.stringify({ fileKey: 'uploads/other.pdf' }), 1760700300);
+
+  // ATTACHMENT_LINK (entityType='APPLICATION', entityId=appId, payload.ledgerId)
+  // att-far ได้ created_at ใหม่สุด → อยู่ในหน้าแรกเสมอ และดัน upload เก่าออกนอกหน้า
+  insertLog.run('att-link-linked', '00000000-0000-0000-0000-000000000000', 'ATTACHMENT_LINK',
+    'APPLICATION', ATT,
+    JSON.stringify({ ledgerId: 'att-linked', fileKey: 'uploads/linked.pdf', filename: 'linked-ใบสมัคร.pdf' }),
+    1760701000);
+  insertLog.run('att-link-far', '00000000-0000-0000-0000-000000000000', 'ATTACHMENT_LINK',
+    'APPLICATION', ATT,
+    JSON.stringify({ ledgerId: 'att-far', fileKey: 'uploads/far.pdf', filename: 'far-ใบสมัคร.pdf' }),
+    1760702000);
+  // เหตุการณ์อื่นของใบนี้ เพื่อให้หน้าแรกเต็มและดัน upload เก่าตกออกไป
+  for (let i = 0; i < 12; i++) {
+    insertLog.run(`att-filler-${i}`, 'admin-a', 'PDF_DOWNLOAD', 'APPLICATION', ATT,
+      JSON.stringify({ cacheHit: false }), 1760703000 + i);
+  }
+
+  // ---- C1 ----
+  await test('C1: ข้อมูลเก่า (ไม่มี LINK) → ATTACHMENT_UPLOAD ยังเห็นใน timeline', async () => {
+    const res = await getJson(historyPath(ATT, '?limit=100'));
+    assertEqual(res.status, 200, 'HTTP status');
+    const legacy = res.body.data.find((r) => r.id === 'att-up-legacy');
+    assertTrue(!!legacy, 'ATTACHMENT_UPLOAD ของ ledger ที่ไม่มี LINK ต้องปรากฏ');
+    assertEqual(legacy.action, 'ATTACHMENT_UPLOAD', 'action');
+    assertEqual(legacy.attachmentFilename, 'legacy-ใบสมัคร.pdf', 'เติมชื่อไฟล์จาก ledger');
+  });
+
+  // ---- C2 ----
+  await test('C2: มี ATTACHMENT_LINK → ซ่อน ATTACHMENT_UPLOAD ของ ledger เดียวกัน', async () => {
+    const res = await getJson(historyPath(ATT, '?limit=100'));
+    const ids = res.body.data.map((r) => r.id);
+    assertTrue(ids.includes('att-link-linked'), 'LINK ต้องปรากฏ');
+    assertTrue(!ids.includes('att-up-linked'), 'UPLOAD ของ ledger ที่มี LINK ต้องถูกซ่อน');
+    assertTrue(!ids.includes('att-up-far'), 'UPLOAD ของ ledger ที่มี LINK (นอกหน้า) ต้องถูกซ่อนด้วย');
+  });
+
+  // ---- C3 ----
+  await test('C3: LINK อยู่นอกหน้าแรก → ไม่ทำให้หน้าแรกสั้นลงหรือมีซ้ำ', async () => {
+    // limit=10: att-link-far + filler 12 แถว → หน้าแรกเต็ม 10 และยังมีต่อ
+    const res = await getJson(historyPath(ATT, '?limit=10'));
+    assertEqual(res.body.data.length, 10, 'หน้าแรกต้องเต็ม 10 ไม่ใช่สั้นลงเพราะ dedup');
+    assertEqual(res.body.hasMore, true, 'ยังมีเหตุการณ์เหลือ');
+    const ids = res.body.data.map((r) => r.id);
+    assertEqual(new Set(ids).size, ids.length, 'ไม่มี id ซ้ำ');
+    assertTrue(!ids.includes('att-up-far'), 'UPLOAD ที่มี LINK แล้วต้องไม่โผล่แม้อยู่นอกหน้า');
+  });
+
+  // ---- C4 ----
+  await test('C4: ledger ของใบอื่นไม่หลุดเข้ามา', async () => {
+    const res = await getJson(historyPath(ATT, '?limit=100'));
+    assertTrue(
+      res.body.data.every((r) => r.id !== 'att-up-other'),
+      'ไฟล์ของใบอื่นต้องไม่ปรากฏ',
+    );
+  });
+
+  // ---- C5 ----
+  await test('C5: ATTACHMENT_LINK จัดเป็น APPLICANT ไม่ใช่ SYSTEM', async () => {
+    const res = await getJson(historyPath(ATT, '?limit=100'));
+    const link = res.body.data.find((r) => r.id === 'att-link-linked');
+    assertEqual(link.actorType, 'APPLICANT', 'ผู้สมัครเป็นคนแนบไฟล์ ไม่ใช่ระบบ');
+    assertTrue(
+      !String(link.actorLabel).includes('system@audit.local'),
+      'reserved email ต้องไม่หลุด',
     );
   });
 

@@ -26,7 +26,7 @@ import {
 } from '../lib/other-option';
 
 import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
-import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
+import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, attachmentUploads, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
 import { buildAuditLogWhere, parseMultiParam } from '../lib/audit-log-query';
 import { parseHistoryLimit, computeHasMore } from '../lib/application-history-query';
 import { classifyActorType } from '../lib/actor-display';
@@ -2630,11 +2630,126 @@ adminRoutes.get('/applications/:id/history', async (c) => {
   // ตัดแถวเกินที่ดึงมาเพื่อตรวจ hasMore ออก — ไม่หลุดไปถึง client
   const logs = hasMore ? rows.slice(0, limit) : rows;
 
+  // ── Attachment Timeline (C-attach) ───────────────────────────────────────
+  // เหตุการณ์แนบไฟล์ถูกเขียนด้วย entityType='ATTACHMENT' และ entityId = ledger id
+  // (attachment_uploads.id) เพราะตอนอัปโหลดยังไม่มี application_id ให้ผูก
+  // (ไฟล์เป็น TEMP จนกว่าจะ submit) → query หลักที่กรอง entityType='APPLICATION'
+  // จึงไม่เห็นเหตุการณ์เหล่านี้เลย
+  //
+  // ทางแก้: ใช้ attachment_uploads เป็น source of truth ของ "ไฟล์ของใบนี้"
+  // แล้วดึง audit ของ ledger เหล่านั้นด้วย indexed lookup 2 ครั้ง
+  //   1. ledger ของใบนี้      → idx_attachment_uploads_application
+  //   2. audit ของ ledger นั้น → idx_audit_entity_id
+  // ไม่มี JSON LIKE และไม่ต้องมี migration (index มีอยู่แล้วทั้งคู่)
+  //
+  // ⚠️ ATTACHMENT_DELETE ลบได้เฉพาะไฟล์ TEMP (ยังไม่ผูกใบสมัคร) แถวที่ถูกลบจึงมี
+  //    application_id = NULL เสมอ → ไม่มีทาง join เจอ นี่คือข้อจำกัดของข้อมูล
+  //    ไม่ใช่บั๊ก: ไฟล์ของใบที่ submit แล้วลบไม่ได้ (endpoint ตอบ 409)
+  const ledgerRows = await db
+    .select({
+      id: attachmentUploads.id,
+      originalFilename: attachmentUploads.originalFilename,
+      r2Key: attachmentUploads.r2Key,
+      uploadedAt: attachmentUploads.uploadedAt,
+    })
+    .from(attachmentUploads)
+    .where(eq(attachmentUploads.applicationId, id));
+
+  // ledgerId → ชื่อไฟล์ (ใช้เติมชื่อไฟล์ให้เหตุการณ์ที่ payload ไม่ได้เก็บไว้)
+  const ledgerFilename = new Map<string, string | null>();
+  for (const row of ledgerRows) {
+    ledgerFilename.set(row.id, row.originalFilename ?? null);
+  }
+
+  const ledgerIds = ledgerRows.map((row) => row.id);
+
+  // ไฟล์ที่มี ATTACHMENT_LINK แล้ว (canonical event ของข้อมูลใหม่) — ต้องรู้ให้ครบ
+  // "ทุกแถวของใบนี้" ไม่ใช่แค่แถวที่บังเอิญอยู่ในหน้าปัจจุบัน
+  //
+  // เดิมตัดสินจาก `logs` (ซึ่งถูก LIMIT แล้ว) → ไฟล์ที่ LINK อยู่นอกหน้าจะยังโผล่
+  // เป็น ATTACHMENT_UPLOAD ซ้ำ และ worse: หน้านั้นจะสั้นกว่า limit ทั้งที่ยังมี
+  // เหตุการณ์เหลือ (hasMore ผิด)
+  //
+  // query นี้กรอง entity_type + entity_id + action → ใช้ idx_audit_entity
+  // (entity_type, entity_id) ไม่มี JSON LIKE และไม่ต้องมี migration
+  const linkRows = await db
+    .select({ payload: auditLogs.payload })
+    .from(auditLogs)
+    .where(
+      and(
+        eq(auditLogs.entityType, 'APPLICATION'),
+        eq(auditLogs.entityId, id),
+        eq(auditLogs.action, 'ATTACHMENT_LINK'),
+      ),
+    );
+
+  const linkedLedgerIds = new Set<string>();
+  for (const row of linkRows) {
+    const payload = row.payload as Record<string, unknown> | null;
+    const ledgerId = payload && typeof payload.ledgerId === 'string' ? payload.ledgerId : null;
+    if (ledgerId) linkedLedgerIds.add(ledgerId);
+  }
+
+  // เฉพาะ ledger ที่ยังไม่มี LINK (ข้อมูลเก่าก่อน C-attach) จึงต้องแสดง
+  // ATTACHMENT_UPLOAD — ที่มี LINK แล้วซ่อนไปเลย ไม่ต้องดึงมาแล้วกรองทีหลัง
+  const unlinkedLedgerIds = ledgerIds.filter((ledgerId) => !linkedLedgerIds.has(ledgerId));
+
+  // audit ของ ledger เหล่านั้น — IN (...) บน index entity_id
+  // ข้าม query เมื่อไม่มี ledger (ไม่ยิง IN () ที่ไม่มีประโยชน์)
+  const attachmentLogs = unlinkedLedgerIds.length > 0
+    ? await db
+        .select({
+          id: auditLogs.id,
+          action: auditLogs.action,
+          adminId: auditLogs.adminId,
+          entityId: auditLogs.entityId,
+          payload: auditLogs.payload,
+          createdAt: auditLogs.createdAt,
+        })
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.entityType, 'ATTACHMENT'),
+            inArray(auditLogs.entityId, unlinkedLedgerIds),
+          ),
+        )
+        .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+        .limit(limit + 1)
+    : [];
+
+  // ATTACHMENT_LINK ถูกเขียนเป็น entityType='APPLICATION', entityId=app.id
+  // ตอน submit → มาอยู่ใน `rows` แล้วโดยธรรมชาติ ไม่ต้อง join อะไรเพิ่ม
+  const attachmentEvents = attachmentLogs.map((log) => ({
+    ...log,
+    // เติมชื่อไฟล์จาก ledger เมื่อ payload ไม่มี (payload ของ ATTACHMENT_DELETE
+    // เก็บแค่ fileKey) — ใช้ ledger เป็น source of truth ตามที่กำหนด
+    ledgerFilename: ledgerFilename.get(log.entityId) ?? null,
+  }));
+
+  // รวมสองแหล่งแล้วเรียงใหม่ → เก่า ด้วยกติกาเดียวกับ query หลัก
+  // (created_at DESC, id DESC) เพื่อให้ลำดับนิ่งและไม่สลับกันเอง
+  //
+  // ⚠️ ต้องใช้ `rows` (limit+1 แถวดิบ) ไม่ใช่ `logs` (ที่ slice เหลือ limit แล้ว)
+  //    ถ้าใช้ `logs` ชุดรวมจะยาวได้ไม่เกิน limit → computeHasMore เป็น false
+  //    ตลอดกาล และเหตุการณ์ที่เก่ากว่าหน้าแรกจะหายไปเงียบ ๆ
+  const merged = [...rows.map((log) => ({ ...log, ledgerFilename: null as string | null })), ...attachmentEvents]
+    .sort((a, b) => {
+      const at = a.createdAt instanceof Date ? a.createdAt.getTime() : 0;
+      const bt = b.createdAt instanceof Date ? b.createdAt.getTime() : 0;
+      if (bt !== at) return bt - at;
+      return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+    });
+
+  // hasMore ต้องคิดจากชุดที่รวมแล้ว: ดึงมา limit+1 จากทั้งสองแหล่ง
+  // → ถ้ารวมแล้วเกิน limit แปลว่ายังมีต่อ
+  const mergedHasMore = computeHasMore(merged.length, limit);
+  const mergedLogs = mergedHasMore ? merged.slice(0, limit) : merged;
+
   // Get admin emails
   // เดิม: ternary สองกิ่งเหมือนกันเป๊ะ (eq(adminUsers.id, adminIds[0])) ทำให้
   // resolve ได้แค่ admin คนแรก — admin คนอื่นตกไป fallback เป็น UUID ใน UI
   // แก้: ดึงทุก id ที่ปรากฏใน history ด้วย inArray
-  const adminIds = [...new Set(logs.map(l => l.adminId).filter(Boolean))];
+  const adminIds = [...new Set(mergedLogs.map(l => l.adminId).filter(Boolean))];
   const admins = adminIds.length > 0
     ? await db
         .select({ id: adminUsers.id, email: adminUsers.email })
@@ -2660,7 +2775,7 @@ adminRoutes.get('/applications/:id/history', async (c) => {
   const applicantName = app.fullname || null;
   const applicantEmail = app.email || null;
 
-  const history = logs.map(log => {
+  const history = mergedLogs.map(log => {
     const actorType = classifyActorType(log.adminId, log.action);
     const adminEmail = adminMap.get(log.adminId) || log.adminId;
 
@@ -2691,11 +2806,14 @@ adminRoutes.get('/applications/:id/history', async (c) => {
       actorLabel,
       actorSecondary,
       payload: log.payload,
+      // ชื่อไฟล์แนบ (เฉพาะเหตุการณ์ ATTACHMENT ที่ join ledger มา) — ให้ UI
+      // แสดง "ไฟล์อะไร" ได้โดยไม่ต้อง parse payload เอง
+      attachmentFilename: log.ledgerFilename ?? null,
       createdAt: toUnixTimestamp(log.createdAt)
     };
   });
 
-  return c.json({ data: history, hasMore, limit });
+  return c.json({ data: history, hasMore: mergedHasMore, limit });
 });
 
 // POST /admin/applications/bulk-status - Bulk update application status

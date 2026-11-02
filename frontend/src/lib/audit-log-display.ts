@@ -65,6 +65,9 @@ export const AUDIT_ACTION_CONFIG: Record<string, { label: string; className: str
   APPLICATION_SUBMIT: { label: 'ส่งใบสมัคร', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   ATTACHMENT_UPLOAD: { label: 'อัปโหลดไฟล์แนบ', className: 'bg-sky-100 text-sky-700 border-sky-200' },
   ATTACHMENT_DELETE: { label: 'ลบไฟล์แนบ', className: 'bg-red-100 text-red-700 border-red-200' },
+  // C-attach: canonical event ของไฟล์แนบ (เขียนตอน submit, entityId = appId)
+  // ใช้สีเดียวกับ ATTACHMENT_UPLOAD เพื่อให้อ่านเป็น "แนบไฟล์" หมวดเดียวกัน
+  ATTACHMENT_LINK: { label: 'แนบไฟล์กับใบสมัคร', className: 'bg-sky-100 text-sky-700 border-sky-200' },
 };
 
 /** action ที่ไม่รู้จัก → แสดง raw string บน badge สีเทา (fallback) */

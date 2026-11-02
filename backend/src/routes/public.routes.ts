@@ -3,11 +3,11 @@ import { zValidator } from '@hono/zod-validator';
 import { drizzle } from 'drizzle-orm/d1';
 import { Bindings } from '../types';
 import { ApplicationSubmitSchema, ApplicationLookupSchema, CORE_FIELD_IDS } from '../schemas/validators';
-import { recruitmentRounds, templateFields, templateSections, fieldMaster, applications, applicationAttachments, organizations } from '../db/schema';
+import { recruitmentRounds, templateFields, templateSections, fieldMaster, applications, applicationAttachments, attachmentUploads, organizations } from '../db/schema';
 import { eq, and, isNull, asc, sql, ne } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { getCurrentBangkokYear, buildApplicationNo } from '../utils/application-no';
-import { sanitizeOriginalFilenameOrNull } from '../utils/filename';
+import { sanitizeOriginalFilenameOrNull, extractR2KeyFromFileUrl } from '../utils/filename';
 import {
   buildApplicationPdfFilename,
   buildPdfContentDisposition,
@@ -22,7 +22,7 @@ import {
 } from '../lib/other-option';
 import { buildApplicationNumber, getMaxSequenceForYear } from '../services/application-number.service';
 import { buildPromoteAttachmentsStatements } from '../lib/attachment-ledger';
-import { SYSTEM_ADMIN_ID, writeAudit } from '../services/audit.service';
+import { SYSTEM_ADMIN_ID, writeAudit, writeAuditBatch } from '../services/audit.service';
 import { idempotencyMiddleware } from '../middlewares/idempotency.middleware';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { honeypotMiddleware } from '../middlewares/honeypot.middleware';
@@ -842,6 +842,59 @@ publicRoutes.post('/applications/submit',
     },
     ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
   });
+
+  // ── ATTACHMENT_LINK (canonical event ของไฟล์แนบ — C-attach) ──
+  // ไฟล์แนบถูกอัปโหลดก่อนมีใบสมัคร (TEMP) จึงเขียน audit ตอนนั้นด้วย
+  // entityType='ATTACHMENT', entityId=ledger id ซึ่ง timeline ของใบสมัคร
+  // (entityType='APPLICATION' AND entityId=app.id) มองไม่เห็น
+  //
+  // ตอน submit คือจุดที่รู้ความจริงว่า "ไฟล์นี้เป็นของใบนี้" → เขียน 1 แถวต่อไฟล์
+  // ด้วย entityId = applicationId (เข้า timeline ได้ด้วย query เดิม ไม่ต้อง join)
+  // และ ledgerId ใน payload ให้ read path กันการแสดงซ้ำกับ ATTACHMENT_UPLOAD
+  //
+  // อ่านจาก ledger (source of truth) ไม่ใช่จาก statements: UPDATE ที่ promote
+  // แล้วไม่ match จะเงียบ ๆ 0 แถว (legacy/ถูก cron เก็บไปแล้ว) จึงต้องดูของจริง
+  // ว่าไฟล์ไหน ACTIVE และผูกกับใบนี้จริง
+  const linkedAttachments = await db
+    .select({
+      id: attachmentUploads.id,
+      r2Key: attachmentUploads.r2Key,
+      originalFilename: attachmentUploads.originalFilename,
+    })
+    .from(attachmentUploads)
+    .where(
+      and(
+        eq(attachmentUploads.applicationId, applicationId),
+        eq(attachmentUploads.status, 'ACTIVE'),
+      ),
+    );
+
+  if (linkedAttachments.length > 0) {
+    // fieldId ของแต่ละไฟล์มาจาก client (application_attachments) — ledger ไม่ได้
+    // เก็บ fieldId จึง map ด้วย r2_key ที่สกัดจาก fileUrl
+    const fieldIdByR2Key = new Map<string, string>();
+    for (const att of data.attachments ?? []) {
+      const r2Key = extractR2KeyFromFileUrl(att.fileUrl);
+      if (r2Key) fieldIdByR2Key.set(r2Key, att.fieldId);
+    }
+
+    await writeAuditBatch({
+      db,
+      entries: linkedAttachments.map((att) => ({
+        action: 'ATTACHMENT_LINK',
+        entityType: 'APPLICATION',
+        entityId: applicationId,
+        actorId: SYSTEM_ADMIN_ID,
+        payload: {
+          ledgerId: att.id,
+          fileKey: att.r2Key,
+          filename: att.originalFilename ?? null,
+          fieldId: fieldIdByR2Key.get(att.r2Key) ?? null,
+        },
+        ipAddress: c.req.header('cf-connecting-ip') || 'unknown',
+      })),
+    });
+  }
 
   return c.json({ success: true, data: { applicationNo: insertResult.applicationNo } }, 201);
 });

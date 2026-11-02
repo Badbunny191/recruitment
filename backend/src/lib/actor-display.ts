@@ -30,6 +30,9 @@ export const APPLICANT_ACTIONS: readonly string[] = [
   'APPLICATION_SUBMIT',
   'ATTACHMENT_UPLOAD',
   'ATTACHMENT_DELETE',
+  // C-attach: canonical event เขียนตอน submit ด้วย SYSTEM row — ถ้าไม่รวมไว้
+  // จะถูกจัดเป็น SYSTEM แล้ว timeline ขึ้นว่า "ระบบ" ทั้งที่ผู้สมัครเป็นคนแนบ
+  'ATTACHMENT_LINK',
 ];
 
 export type ActorType = 'APPLICANT' | 'ADMIN' | 'SYSTEM';
