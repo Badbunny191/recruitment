@@ -60,8 +60,10 @@ export interface AuditFieldChange {
 export interface ParsedAuditPayload {
   changes?: AuditFieldChange[];
   summary?: string;
-  /** UPDATE สถานะใบสมัคร — admin.routes.ts ใส่ app.status เดิมไว้ที่นี่ */
-  previousStatus?: string | null;
+  /** UPDATE สถานะใบสมัคร — admin.routes.ts ใส่ app.status เดิมไว้ที่นี่
+   *  ⚠️ runtime อาจไม่ใช่ string (แถว bulk รุ่นที่เขียนผิด shape เก็บเป็น
+   *  Record<applicationId,status>) → ห้ามใช้โดยไม่ type-guard */
+  previousStatus?: unknown;
   /** legacy: บาง payload เก่าอาจเก็บสถานะใหม่ตรง ๆ */
   status?: string | null;
   /** legacy: เหตุผลที่เก็บแบบ flat */
@@ -113,7 +115,15 @@ export function getStatusTransition(event: HistoryEvent): StatusTransition | nul
   const to = change?.newValue ?? payload.status ?? null;
   if (!to) return null;
 
-  const from = payload.previousStatus ?? change?.oldValue ?? null;
+  // ⚠️ previousStatus ต้องเป็น string เท่านั้น — ห้ามเชื่อ type ที่ประกาศไว้
+  //    เพราะ payload มาจาก JSON ใน DB (ข้อมูลเก่า/แถวที่เขียนผิด shape หลุดเข้ามาได้)
+  //    เคยเกิดจริง: bulk status เขียน Record<applicationId,status> ลงแถวรายใบ
+  //    → object หลุดไปเป็น JSX child → React #31 (Objects are not valid as a React child)
+  //    ค่าที่ไม่ใช่ string ถือว่า "ไม่รู้สถานะเดิม" → ตกไปใช้ changes[].oldValue
+  const from =
+    typeof payload.previousStatus === 'string'
+      ? payload.previousStatus
+      : change?.oldValue ?? null;
 
   return { from: from || null, to };
 }

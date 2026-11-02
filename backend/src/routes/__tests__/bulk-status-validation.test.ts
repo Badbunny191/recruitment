@@ -312,8 +312,17 @@ async function runAllTests() {
     assertEqual(payload.applicationIds.length, 2, 'applicationIds ครบ 2 รายการ');
     assertTrue(payload.applicationIds.includes(id1) && payload.applicationIds.includes(id2), 'applicationIds ตรงกับที่ส่งมา');
     assertEqual(payload.newStatus, 'REJECTED', 'มี newStatus');
-    assertEqual(payload.previousStatus[id1], 'SUBMITTED', 'previousStatus[id1]');
-    assertEqual(payload.previousStatus[id2], 'QUALIFIED', 'previousStatus[id2] (สถานะเดิมต่างกันได้ต่อใบ)');
+    // ⚠️ previousStatus ของแถวรายใบต้องเป็น "สถานะเดิมของใบนั้น" (string)
+    //    ไม่ใช่ Record<applicationId,status> ของทั้งกลุ่ม — frontend อ่านค่านี้
+    //    เป็น string ใน getStatusTransition() ถ้าเป็น object จะหลุดไปเป็น JSX
+    //    child → React #31 "Objects are not valid as a React child" ทั้งหน้า
+    //    (แถวรวม entityId='BULK/NEW' ยังคงเก็บ Record ได้ — คนละแถว คนละผู้อ่าน)
+    assertEqual(typeof payload.previousStatus, 'string', 'previousStatus ต้องเป็น string ไม่ใช่ Record');
+    // audits เรียงตาม created_at, id — ไม่รับประกันว่าแถวแรกคือ id1
+    // → ตรวจแบบไม่ผูกกับลำดับ: แต่ละแถวต้องได้สถานะเดิมของ "ตัวเอง"
+    const byEntity = new Map(audits.map((a) => [a.entity_id, JSON.parse(a.payload)]));
+    assertEqual(byEntity.get(id1)?.previousStatus, 'SUBMITTED', 'previousStatus ของ id1 = สถานะเดิมของ id1');
+    assertEqual(byEntity.get(id2)?.previousStatus, 'QUALIFIED', 'previousStatus ของ id2 = สถานะเดิมของ id2 (ไม่ใช่ของทั้งกลุ่ม)');
     assertEqual(payload.actor, ADMIN_ID, 'มี actor');
     assertEqual(payload.reason, 'เอกสารไม่ครบ', 'มี reason');
     // batch_id (Migration 032) — 1 bulk request = 1 batch ทั้งในคอลัมน์และ payload
@@ -335,7 +344,7 @@ async function runAllTests() {
       assertEqual(statusChange.newValue, 'REJECTED', 'changes.status.newValue = สถานะใหม่');
       assertEqual(
         statusChange.oldValue,
-        rowPayload.previousStatus[a.entity_id],
+        rowPayload.previousStatus,
         'changes.status.oldValue = สถานะเดิมของใบนั้น',
       );
     }

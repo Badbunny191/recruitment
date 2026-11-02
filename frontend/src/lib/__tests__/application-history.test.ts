@@ -137,6 +137,62 @@ test('E5: getStatusReason อ่านจาก changes[statusReason]', () => {
   assertEqual(getStatusReason(ev('1', 'UPDATE', ACTOR_A, localTs(2026, 10, 24), payload)), 'เอกสารไม่ชัดเจน', 'reason');
 });
 
+// =============================================================================
+// E6–E8: regression — previousStatus ที่ไม่ใช่ string (React #31)
+// =============================================================================
+// บั๊กจริงจาก Bulk Status Timeline Fix: audit payload ของแถวรายใบเคยเก็บ
+// previousStatus เป็น Record<applicationId, status> (สถานะเดิมของ "ทั้งกลุ่ม")
+// frontend อ่านเป็น string → object หลุดไปเป็น JSX child → React #31
+// "Objects are not valid as a React child" ทั้งหน้า application-detail
+//
+// กติกา: ค่าที่ไม่ใช่ string = "ไม่รู้สถานะเดิม" → ต้องตกไปใช้ changes[].oldValue
+// หรือ null เท่านั้น ห้ามคืน object ออกไปไม่ว่ากรณีใด
+
+const BULK_PREVIOUS_STATUS = {
+  'c525237b-969c-4413-ab84-8aa54aa33758': 'SUBMITTED',
+  '1233a5a7-a924-4602-8433-c51e469a5922': 'SUBMITTED',
+  'ce50e431-33ed-41b3-a5e6-f472dd21a302': 'SUBMITTED',
+  'ed1c9ae6-147a-4f76-9b86-6e9b567ebe58': 'SUBMITTED',
+  '1398f4d8-c13e-4b2d-adc4-58752cc22633': 'SUBMITTED',
+};
+
+test('E6: previousStatus เป็น Record<appId,status> → from ต้องไม่ใช่ object (React #31)', () => {
+  const payload = JSON.stringify({
+    changes: [
+      { field: 'status', fieldLabel: 'สถานะใบสมัคร', oldValue: 'รอการตรวจสอบ', newValue: 'ผ่านการตรวจสอบ' },
+    ],
+    summary: 'สถานะใบสมัคร: รอการตรวจสอบ → ผ่านการตรวจสอบ',
+    previousStatus: BULK_PREVIOUS_STATUS,
+    action: 'BULK_STATUS_UPDATE',
+    newStatus: 'QUALIFIED',
+    bulk: true,
+  });
+  const t = getStatusTransition(ev('1', 'UPDATE', ACTOR_A, localTs(2026, 11, 2, 16, 30), payload));
+
+  assert(t !== null, 'transition ต้องไม่เป็น null');
+  assertEqual(typeof t.from, 'string', 'from ต้องเป็น string เท่านั้น (ห้ามเป็น object)');
+  assertEqual(t.from, 'รอการตรวจสอบ', 'from ตกไปใช้ changes[].oldValue');
+  assertEqual(t.to, 'ผ่านการตรวจสอบ', 'to ยังอ่านจาก changes[].newValue');
+});
+
+test('E7: previousStatus เป็น Record และไม่มี changes → from null (ไม่คืน object)', () => {
+  const payload = JSON.stringify({ previousStatus: BULK_PREVIOUS_STATUS, status: 'QUALIFIED' });
+  const t = getStatusTransition(ev('1', 'UPDATE', ACTOR_A, localTs(2026, 11, 2), payload));
+
+  assert(t !== null, 'transition ต้องไม่เป็น null (to มีค่า)');
+  assertEqual(t.from, null, 'from ต้องเป็น null ไม่ใช่ object');
+  assertEqual(typeof t.from, 'object', 'from ต้องไม่ใช่ object');
+});
+
+test('E8: previousStatus เป็น array / number / boolean → ไม่หลุดเป็น object', () => {
+  for (const bad of [['SUBMITTED'], 123, true, { nested: { a: 1 } }]) {
+    const payload = JSON.stringify({ previousStatus: bad, status: 'QUALIFIED' });
+    const t = getStatusTransition(ev('1', 'UPDATE', ACTOR_A, localTs(2026, 11, 2), payload));
+    assert(t !== null, `transition ต้องไม่เป็น null สำหรับ ${JSON.stringify(bad)}`);
+    assertEqual(t.from, null, `from ต้องเป็น null สำหรับ ${JSON.stringify(bad)}`);
+  }
+});
+
 console.log('\n[A] จัดกลุ่มตามวัน');
 
 test('A1: 12 รายการ (ข้อมูลจริง) → 5 วัน ตามลำดับใหม่ → เก่า', () => {

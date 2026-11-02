@@ -90,8 +90,14 @@ interface Application {
 // ใน @/lib/audit-log-display ซึ่งเป็น Single Source of Truth ร่วมกับหน้า
 // /admin/audit-logs (เดิม STATUS_LABELS รวมสองโดเมนนี้ไว้ด้วยกันและไม่มีคีย์
 // PDF_DOWNLOAD → enum ดิบหลุดถึงผู้ใช้)
-const getStatusLabel = (status: string): string =>
-  statusConfig[status as ApplicationStatus]?.label || status;
+//
+// ⚠️ ต้องคืน string เสมอ: ค่านี้ถูกใช้เป็น JSX child โดยตรง ถ้า input ไม่ใช่
+//    string (payload ผิด shape / ข้อมูลเก่า) แล้วคืนค่าดิบ React จะ throw #31
+//    "Objects are not valid as a React child" ทั้งหน้า — คืน '-' แทน
+const getStatusLabel = (status: unknown): string => {
+  if (typeof status !== 'string' || !status) return '-';
+  return statusConfig[status as ApplicationStatus]?.label || status;
+};
 
 const getErrorMessage = (data: any, fallback = 'เกิดข้อผิดพลาด'): string => {
   if (!data) return fallback;

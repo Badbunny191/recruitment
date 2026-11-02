@@ -3003,7 +3003,13 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, async (c) => 
         payload: buildAuditPayload(changeData.changes, {
           action: 'BULK_STATUS_UPDATE',
           applicationIds: selector.kind === 'ids' ? selector.ids : targetIds,
-          previousStatus,
+          // ⚠️ ต้องเป็น "สถานะเดิมของใบนี้" (string) ไม่ใช่ Record<appId,status>
+          //    ของทั้งกลุ่ม — payload แถวนี้ถูกอ่านโดย timeline ของใบเดียว
+          //    (getStatusTransition) ซึ่งคาดว่า previousStatus เป็น string
+          //    เดิมใส่ Record ลงไป → object หลุดไปเป็น JSX child → React #31
+          //    (ดูแถวรวม entityId='BULK/NEW' ด้านบนที่ยังคง Record ได้ เพราะ
+          //     เป็นแถวเดียวครอบหลายใบ และไม่ถูก render เป็น "เดิม → ใหม่")
+          previousStatus: oldStatus,
           newStatus: status,
           reason: reason || null,
           matched,
