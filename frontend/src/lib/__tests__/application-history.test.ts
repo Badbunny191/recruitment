@@ -27,6 +27,7 @@ import {
   formatTime,
   resolveActorLabel,
   getActorType,
+  resolveActorSecondary,
 } from '../application-history';
 import { SYSTEM_ACTOR_ID, SYSTEM_ACTOR_EMAIL } from '../actor-display';
 
@@ -362,6 +363,46 @@ test('H10: APPLICANT กับ ADMIN ในวันเดียวกัน ไ
   ];
   const days = groupHistory(events);
   assertEqual(days[0].rows.length, 2, 'ต้องแยกเป็น 2 แถว');
+});
+
+console.log('\n[I] actorSecondary — อีเมลผู้สมัคร (เฉพาะ APPLICANT)');
+
+test('I1: APPLICANT → คืนอีเมลผู้สมัคร', () => {
+  const e = evApplicant('1', 'APPLICATION_SUBMIT', 1, { actorSecondary: 'somchai@example.com' });
+  assertEqual(resolveActorSecondary(e), 'somchai@example.com', 'secondary');
+});
+
+test('I2: APPLICANT ที่ไม่มีอีเมล → null', () => {
+  const e = evApplicant('1', 'APPLICATION_SUBMIT', 1, { actorSecondary: null });
+  assertEqual(resolveActorSecondary(e), null, 'secondary');
+});
+
+test('I3: ADMIN → null (คงรูปแบบเดิม ไม่มีบรรทัดรอง)', () => {
+  const e = ev('1', 'UPDATE', ACTOR_A, 1);
+  assertEqual(resolveActorSecondary(e), null, 'secondary');
+});
+
+test('I4: SYSTEM → null', () => {
+  const e = {
+    id: '1',
+    action: 'AUTO_ARCHIVE',
+    adminId: SYSTEM_ACTOR_ID,
+    adminEmail: null,
+    actorSecondary: 'x@y.com',
+    payload: null,
+    createdAt: 1,
+  };
+  assertEqual(resolveActorSecondary(e), null, 'secondary');
+});
+
+test('I5: reserved email ต้องถูกกันแม้มาทาง actorSecondary', () => {
+  const e = evApplicant('1', 'APPLICATION_SUBMIT', 1, { actorSecondary: SYSTEM_ACTOR_EMAIL });
+  assertEqual(resolveActorSecondary(e), null, 'secondary');
+});
+
+test('I6: ค่าที่ไม่ใช่อีเมล → null (ไม่ปล่อยขยะขึ้นจอ)', () => {
+  const e = evApplicant('1', 'APPLICATION_SUBMIT', 1, { actorSecondary: 'ไม่ใช่อีเมล' });
+  assertEqual(resolveActorSecondary(e), null, 'secondary');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

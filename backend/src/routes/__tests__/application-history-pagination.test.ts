@@ -352,8 +352,8 @@ async function runAllTests() {
     const res = await getJson(historyPath(ONE));
     assertDeepEqual(
       Object.keys(res.body.data[0]).sort(),
-      ['action', 'actorLabel', 'actorType', 'adminEmail', 'adminId', 'createdAt', 'id', 'payload'].sort(),
-      'ชุดคีย์ต่อแถว: 6 เดิม + actorType/actorLabel',
+      ['action', 'actorLabel', 'actorSecondary', 'actorType', 'adminEmail', 'adminId', 'createdAt', 'id', 'payload'].sort(),
+      'ชุดคีย์ต่อแถว: 6 เดิม + actorType/actorLabel/actorSecondary',
     );
     assertTrue(Array.isArray(res.body.data), 'data เป็น array (contract เดิม)');
   });
@@ -365,6 +365,7 @@ async function runAllTests() {
     assertTrue(submit, 'พบแถว APPLICATION_SUBMIT');
     assertEqual(submit.actorType, 'APPLICANT', 'actorType');
     assertEqual(submit.actorLabel, 'นายสมชาย ใจดี', 'actorLabel = ชื่อผู้สมัคร');
+    assertEqual(submit.actorSecondary, 'app-applicant@test.local', 'actorSecondary = อีเมลผู้สมัคร');
     assertEqual(submit.adminEmail, null, 'adminEmail ต้องเป็น null (ไม่ส่ง reserved email)');
 
     // adminId คงไว้ตามจริง (FK ของ audit log) แต่ต้องไม่ถูกใช้เป็นข้อความแสดงผล
@@ -385,16 +386,29 @@ async function runAllTests() {
     assertTrue(upd, 'พบแถว UPDATE');
     assertEqual(upd.actorType, 'ADMIN', 'actorType');
     assertEqual(upd.actorLabel, 'alpha@test.local', 'actorLabel = อีเมลเจ้าหน้าที่');
+    assertEqual(upd.actorSecondary, null, 'ADMIN ไม่มีบรรทัดรอง');
     assertEqual(upd.adminEmail, 'alpha@test.local', 'adminEmail คงเดิม');
   });
 
   // ---- H19 ----
-  await test('H19: APPLICANT ที่ resolve ชื่อไม่ได้ → "ผู้สมัคร" (ไม่ใช่ email/UUID)', async () => {
+  await test('H19: APPLICANT ที่ resolve ชื่อไม่ได้ → "ผู้สมัคร" แต่อีเมลยังอยู่', async () => {
     sqlite.prepare(`UPDATE applications SET fullname = '' WHERE id = ?`).run(APPLICANT);
     const res = await getJson(historyPath(APPLICANT));
     const submit = res.body.data.find((r) => r.action === 'APPLICATION_SUBMIT');
     assertEqual(submit.actorLabel, 'ผู้สมัคร', 'fallback label');
+    assertEqual(submit.actorSecondary, 'app-applicant@test.local', 'อีเมลยังแสดงแม้ชื่อว่าง');
     sqlite.prepare(`UPDATE applications SET fullname = ? WHERE id = ?`).run('นายสมชาย ใจดี', APPLICANT);
+  });
+
+  // ---- H20 ----
+  await test('H20: actorSecondary ห้ามมี reserved email / ห้ามรั่วไป adminEmail', async () => {
+    const res = await getJson(historyPath(APPLICANT));
+    const submit = res.body.data.find((r) => r.action === 'APPLICATION_SUBMIT');
+    assertTrue(
+      !String(submit.actorSecondary).includes('system@audit.local'),
+      'actorSecondary ต้องไม่ใช่ reserved email',
+    );
+    assertEqual(submit.adminEmail, null, 'อีเมลผู้สมัครต้องไม่อยู่ใน adminEmail');
   });
 
   // ---- H10 ----

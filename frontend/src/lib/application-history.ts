@@ -41,6 +41,8 @@ export interface HistoryEvent {
   actorType?: ActorType;
   /** ค่าที่พร้อมแสดง "ใครทำ" — backend resolve มาแล้ว (ชื่อผู้สมัคร/อีเมล/ระบบ) */
   actorLabel?: string | null;
+  /** บรรทัดรองของ actor — ปัจจุบันมีเฉพาะ APPLICANT (อีเมลผู้สมัคร) */
+  actorSecondary?: string | null;
   /** payload ดิบจาก DB — string (JSON) หรือ object หรือ null */
   payload: unknown;
   /** unix seconds (backend แปลงด้วย toUnixTimestamp) */
@@ -234,6 +236,30 @@ export function resolveActorLabel(event: HistoryEvent): string {
 
   // APPLICANT ที่ได้ email มาแทนชื่อ (ข้อมูลเก่า) → ใช้ fallback ที่อ่านรู้เรื่อง
   if (type === 'APPLICANT' && raw.includes('@')) return fallback;
+
+  return raw;
+}
+
+/** รูปแบบอีเมลอย่างง่าย — กันค่าแปลก ๆ หลุดมาเป็นบรรทัดรอง */
+function looksLikeEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+/**
+ * บรรทัดรองของ actor (ปัจจุบันมีเฉพาะ APPLICANT = อีเมลผู้สมัคร)
+ *
+ * คืน null เมื่อ:
+ *   - ไม่ใช่ APPLICANT (ADMIN/SYSTEM คงรูปแบบเดิม ไม่มีบรรทัดรอง)
+ *   - ไม่มีค่า / ค่าไม่ใช่อีเมล
+ *   - ค่าเป็นอีเมลของ reserved row (ด่านเดิม — ห้ามหลุด)
+ */
+export function resolveActorSecondary(event: HistoryEvent): string | null {
+  if (getActorType(event) !== 'APPLICANT') return null;
+
+  const raw = (event.actorSecondary ?? '').trim();
+  if (!raw) return null;
+  if (isReservedActorEmail(raw)) return null;
+  if (!looksLikeEmail(raw)) return null;
 
   return raw;
 }

@@ -2656,19 +2656,29 @@ adminRoutes.get('/applications/:id/history', async (c) => {
   //
   // ชื่อผู้สมัคร resolve จากใบสมัครของ history นี้เอง (entityId = app.id)
   // ไม่ต้อง query เพิ่ม — ใช้ app ที่ตรวจ existence ไปแล้วด้านบน
+  // `select()` ไม่มี argument = ทุกคอลัมน์ → app.email พร้อมใช้อยู่แล้ว
   const applicantName = app.fullname || null;
+  const applicantEmail = app.email || null;
 
   const history = logs.map(log => {
     const actorType = classifyActorType(log.adminId, log.action);
     const adminEmail = adminMap.get(log.adminId) || log.adminId;
 
-    // actorLabel = ค่าที่ UI ใช้แสดง "ใครทำ" — ห้ามมี system@audit.local
+    // actorLabel = บรรทัดหลัก "ใครทำ" — ห้ามมี system@audit.local
     const actorLabel =
       actorType === 'APPLICANT'
         ? applicantName || 'ผู้สมัคร'
         : actorType === 'SYSTEM'
           ? 'ระบบ'
           : adminEmail;
+
+    // actorSecondary = บรรทัดรอง (ระบุตัวตนให้ชัดเมื่อชื่อซ้ำ)
+    // เฉพาะ APPLICANT เท่านั้น — ADMIN/SYSTEM ไม่มีบรรทัดรอง
+    //
+    // ⚠️ อีเมลผู้สมัครต้องไม่อยู่ใน adminEmail: ชื่อฟิลด์นั้นหมายถึงอีเมล
+    //    ของ admin_users (actor จริงของ audit log) การยัดอีเมลผู้สมัครลงไป
+    //    จะทำให้ความหมายผิดและทำให้ reserved-email guard ทำงานผิดตำแหน่ง
+    const actorSecondary = actorType === 'APPLICANT' ? applicantEmail : null;
 
     return {
       id: log.id,
@@ -2679,6 +2689,7 @@ adminRoutes.get('/applications/:id/history', async (c) => {
       adminEmail: actorType === 'ADMIN' ? adminEmail : null,
       actorType,
       actorLabel,
+      actorSecondary,
       payload: log.payload,
       createdAt: toUnixTimestamp(log.createdAt)
     };

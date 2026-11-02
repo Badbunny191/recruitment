@@ -18,6 +18,7 @@ import {
   getStatusReason,
   getStatusTransition,
   resolveActorLabel,
+  resolveActorSecondary,
   getActorType,
   type HistoryRow,
 } from '@/lib/application-history';
@@ -58,6 +59,8 @@ interface StatusHistoryItem {
   actorType?: 'APPLICANT' | 'ADMIN' | 'SYSTEM';
   /** ข้อความ "ใครทำ" ที่ backend resolve มาแล้ว */
   actorLabel?: string | null;
+  /** บรรทัดรอง — เฉพาะ APPLICANT (อีเมลผู้สมัคร) */
+  actorSecondary?: string | null;
   /** payload ดิบจาก DB — TEXT (JSON) หรือ object หรือ null ก็ได้ */
   payload: unknown;
   createdAt: number | null;
@@ -158,6 +161,8 @@ function HistorySingleRow({ item, isLatest }: { item: StatusHistoryItem; isLates
   // "ใครทำ" — APPLICANT → ชื่อผู้สมัคร, ADMIN → อีเมลเจ้าหน้าที่, SYSTEM → ระบบ
   // (ห้ามแสดง system@audit.local — resolveActorLabel กันไว้แล้ว)
   const actorLabel = resolveActorLabel(item as any);
+  // บรรทัดรอง — เฉพาะ APPLICANT (อีเมลผู้สมัคร) เพื่อแยกผู้สมัครชื่อซ้ำ
+  const actorSecondary = resolveActorSecondary(item as any);
 
   return (
     <div className="relative flex items-start gap-3 sm:gap-4">
@@ -190,12 +195,19 @@ function HistorySingleRow({ item, isLatest }: { item: StatusHistoryItem; isLates
           )}
         </div>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
-          <span className="flex items-center gap-1.5 min-w-0">
-            <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <span className="flex items-start gap-1.5 min-w-0">
+            <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
             </svg>
-            <span className="truncate">{actorLabel}</span>
-            <ActorBadge type={actorType} />
+            <span className="flex flex-col min-w-0">
+              <span className="flex items-center gap-1.5 min-w-0">
+                <span className="truncate">{actorLabel}</span>
+                <ActorBadge type={actorType} />
+              </span>
+              {actorSecondary && (
+                <span className="truncate text-xs text-gray-500">{actorSecondary}</span>
+              )}
+            </span>
           </span>
           <span className="flex items-center gap-1">
             <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -236,6 +248,9 @@ function HistoryGroupRow({
   // ทุกแถวในกลุ่มเป็น actor เดียวกัน จึงใช้ตัวแรกได้
   const actorType = getActorType(row.events[0] as any);
   const actorLabel = resolveActorLabel(row.events[0] as any);
+  // บรรทัดรองแสดงที่หัวกลุ่มครั้งเดียว — รายการที่กดขยายเป็นคนเดียวกัน
+  // ไม่ต้องพิมพ์อีเมลซ้ำทุกแถว
+  const actorSecondary = resolveActorSecondary(row.events[0] as any);
 
   return (
     <div className="relative flex items-start gap-3 sm:gap-4">
@@ -250,12 +265,19 @@ function HistoryGroupRow({
           <span className="text-sm font-semibold text-gray-900">{count} ครั้ง</span>
         </div>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
-          <span className="flex items-center gap-1.5 min-w-0">
-            <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <span className="flex items-start gap-1.5 min-w-0">
+            <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
             </svg>
-            <span className="truncate">{actorLabel}</span>
-            <ActorBadge type={actorType} />
+            <span className="flex flex-col min-w-0">
+              <span className="flex items-center gap-1.5 min-w-0">
+                <span className="truncate">{actorLabel}</span>
+                <ActorBadge type={actorType} />
+              </span>
+              {actorSecondary && (
+                <span className="truncate text-xs text-gray-500">{actorSecondary}</span>
+              )}
+            </span>
           </span>
           <span className="flex items-center gap-1">
             <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
