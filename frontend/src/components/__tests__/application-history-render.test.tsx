@@ -130,6 +130,7 @@ const STATUS_UPDATE_PAYLOAD = JSON.stringify({
 });
 
 const HISTORY = [
+  { id: '13', action: 'APPLICATION_SUBMIT', adminId: '00000000-0000-0000-0000-000000000000', adminEmail: null, actorType: 'APPLICANT', actorLabel: 'นายสมชาย ใจดี', payload: JSON.stringify({ applicationNo: 'APP-2026-5012' }), createdAt: localTs(2026, 10, 20, 10, 0) },
   { id: '12', action: 'PDF_DOWNLOAD', adminId: 'a1', adminEmail: ACTOR, payload: null, createdAt: localTs(2026, 10, 27, 10, 13) },
   { id: '11', action: 'PDF_DOWNLOAD', adminId: 'a1', adminEmail: ACTOR, payload: null, createdAt: localTs(2026, 10, 27, 2, 0) },
   { id: '10', action: 'PDF_DOWNLOAD', adminId: 'a1', adminEmail: ACTOR, payload: null, createdAt: localTs(2026, 10, 26, 0, 21) },
@@ -296,6 +297,20 @@ function findButtonByText(container: any, needle: string) {
     const text = textOf(container);
     assert(text.includes('ดาวน์โหลด PDF'), 'ต้องแสดง "ดาวน์โหลด PDF"');
     assert(!text.includes('PDF_DOWNLOAD'), 'ต้องไม่หลุด enum ดิบ');
+  });
+
+  await test('R8: APPLICANT → แสดงชื่อผู้สมัคร ไม่ใช่ system@audit.local', async () => {
+    const text = textOf(container);
+    assert(text.includes('นายสมชาย ใจดี'), 'ต้องแสดงชื่อผู้สมัคร');
+    assert(!text.includes('system@audit.local'), 'ห้ามแสดง system@audit.local');
+    assert(!text.includes('00000000-0000'), 'ห้ามแสดง reserved UUID');
+    assert(text.includes('ผู้สมัคร'), 'ต้องมี badge "ผู้สมัคร"');
+  });
+
+  await test('R9: ADMIN → ยังแสดงอีเมลเจ้าหน้าที่ + badge เจ้าหน้าที่', async () => {
+    const text = textOf(container);
+    assert(text.includes(ACTOR), 'ต้องแสดงอีเมลเจ้าหน้าที่ตามเดิม');
+    assert(text.includes('เจ้าหน้าที่'), 'ต้องมี badge "เจ้าหน้าที่"');
   });
 
   await act(async () => {

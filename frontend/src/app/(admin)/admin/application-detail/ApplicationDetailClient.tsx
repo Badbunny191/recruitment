@@ -17,8 +17,11 @@ import {
   formatTimeRange,
   getStatusReason,
   getStatusTransition,
+  resolveActorLabel,
+  getActorType,
   type HistoryRow,
 } from '@/lib/application-history';
+import { ACTOR_TYPE_BADGE } from '@/lib/actor-display';
 import { formatDateThai } from '@/lib/date';
 import {
   OTHER_KEY_SUFFIX,
@@ -49,7 +52,12 @@ interface StatusHistoryItem {
   id: string;
   action: string;
   adminId: string;
-  adminEmail: string;
+  /** email จริงของเจ้าหน้าที่ — null สำหรับ APPLICANT/SYSTEM */
+  adminEmail: string | null;
+  /** ประเภทผู้ทำ (backend ส่งมา) — APPLICANT / ADMIN / SYSTEM */
+  actorType?: 'APPLICANT' | 'ADMIN' | 'SYSTEM';
+  /** ข้อความ "ใครทำ" ที่ backend resolve มาแล้ว */
+  actorLabel?: string | null;
   /** payload ดิบจาก DB — TEXT (JSON) หรือ object หรือ null ก็ได้ */
   payload: unknown;
   createdAt: number | null;
@@ -121,11 +129,35 @@ function TimelineDot({ highlighted }: { highlighted: boolean }) {
   );
 }
 
+/**
+ * badge ประเภทผู้ทำ — ให้ HR แยก "ผู้สมัคร / เจ้าหน้าที่ / ระบบ" ด้วยสายตา
+ * เมื่อ timeline มีทั้งสองฝ่ายปนกัน (สีอย่างเดียวไม่พอสำหรับผู้ใช้ที่มองสีลำบาก)
+ */
+const ACTOR_BADGE_CLASS: Record<'APPLICANT' | 'ADMIN' | 'SYSTEM', string> = {
+  APPLICANT: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+  ADMIN: 'bg-slate-100 text-slate-600 border-slate-300',
+  SYSTEM: 'bg-zinc-100 text-zinc-600 border-zinc-300',
+};
+
+function ActorBadge({ type }: { type: 'APPLICANT' | 'ADMIN' | 'SYSTEM' }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium leading-none ${ACTOR_BADGE_CLASS[type]}`}
+    >
+      {ACTOR_TYPE_BADGE[type]}
+    </span>
+  );
+}
+
 /** 1 เหตุการณ์เดียว — คงหน้าตาเดิม (badge + ผู้ดำเนินการ + เวลา + เหตุผล) */
 function HistorySingleRow({ item, isLatest }: { item: StatusHistoryItem; isLatest: boolean }) {
   const actionCfg = getAuditActionConfig(item.action);
   const transition = getStatusTransition(item as any);
   const reason = getStatusReason(item as any);
+  const actorType = getActorType(item as any);
+  // "ใครทำ" — APPLICANT → ชื่อผู้สมัคร, ADMIN → อีเมลเจ้าหน้าที่, SYSTEM → ระบบ
+  // (ห้ามแสดง system@audit.local — resolveActorLabel กันไว้แล้ว)
+  const actorLabel = resolveActorLabel(item as any);
 
   return (
     <div className="relative flex items-start gap-3 sm:gap-4">
@@ -158,11 +190,12 @@ function HistorySingleRow({ item, isLatest }: { item: StatusHistoryItem; isLates
           )}
         </div>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
-          <span className="flex items-center gap-1 min-w-0">
+          <span className="flex items-center gap-1.5 min-w-0">
             <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
             </svg>
-            <span className="truncate">{item.adminEmail || item.adminId}</span>
+            <span className="truncate">{actorLabel}</span>
+            <ActorBadge type={actorType} />
           </span>
           <span className="flex items-center gap-1">
             <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -199,6 +232,10 @@ function HistoryGroupRow({
   const actionCfg = getAuditActionConfig(row.action);
   const count = row.events.length;
   const regionId = `history-group-${row.key.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+  // row.actor คือ grouping key (ไม่ใช่ข้อความที่แสดง) — resolve จาก event จริง
+  // ทุกแถวในกลุ่มเป็น actor เดียวกัน จึงใช้ตัวแรกได้
+  const actorType = getActorType(row.events[0] as any);
+  const actorLabel = resolveActorLabel(row.events[0] as any);
 
   return (
     <div className="relative flex items-start gap-3 sm:gap-4">
@@ -213,11 +250,12 @@ function HistoryGroupRow({
           <span className="text-sm font-semibold text-gray-900">{count} ครั้ง</span>
         </div>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
-          <span className="flex items-center gap-1 min-w-0">
+          <span className="flex items-center gap-1.5 min-w-0">
             <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
             </svg>
-            <span className="truncate">{row.actor}</span>
+            <span className="truncate">{actorLabel}</span>
+            <ActorBadge type={actorType} />
           </span>
           <span className="flex items-center gap-1">
             <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -251,7 +289,7 @@ function HistoryGroupRow({
             {chronological(row.events).map((event) => (
               <li key={event.id} className="flex flex-wrap items-baseline gap-x-2">
                 <span className="font-mono text-xs text-gray-700 tabular-nums">{formatTime(event.createdAt)}</span>
-                <span className="truncate">{event.adminEmail || event.adminId}</span>
+                <span className="truncate">{resolveActorLabel(event as any)}</span>
               </li>
             ))}
           </ul>

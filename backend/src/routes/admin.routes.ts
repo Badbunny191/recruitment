@@ -29,6 +29,7 @@ import { toUnixTimestamp, nowUnix } from '../utils/timestamp';
 import { adminUsers, fieldMaster, templates, templateVersions, templateFields, templateSections, recruitmentRounds, applications, applicationAttachments, auditLogs, organizations, jobFamilies, positionLevels, positions, roundSequences } from '../db/schema';
 import { buildAuditLogWhere, parseMultiParam } from '../lib/audit-log-query';
 import { parseHistoryLimit, computeHasMore } from '../lib/application-history-query';
+import { classifyActorType } from '../lib/actor-display';
 import {
   APPLICATION_LIST_COLUMNS,
   APPLICATIONS_LIST_UNPAGINATED_MAX,
@@ -2643,14 +2644,45 @@ adminRoutes.get('/applications/:id/history', async (c) => {
 
   const adminMap = new Map(admins.map(a => [a.id, a.email]));
 
-  const history = logs.map(log => ({
-    id: log.id,
-    action: log.action,
-    adminId: log.adminId,
-    adminEmail: adminMap.get(log.adminId) || log.adminId,
-    payload: log.payload,
-    createdAt: toUnixTimestamp(log.createdAt)
-  }));
+  // ── Actor display (Applicant Timeline UX) ────────────────────────────────
+  // เหตุการณ์ฝั่งผู้สมัครถูกเขียนด้วย reserved SYSTEM row (Migration 032) →
+  // adminEmail ที่ resolve ได้คือ 'system@audit.local' ซึ่งเป็นข้อมูลเชิง
+  // เทคนิค ไม่มีความหมายต่อผู้ใช้ และห้ามหลุดออกไป
+  //
+  // กติกาการแสดงผล:
+  //   APPLICANT → ชื่อผู้สมัคร (applications.fullname — resolve ณ ตอนอ่าน)
+  //   ADMIN     → email เจ้าหน้าที่ (ตามเดิม)
+  //   SYSTEM    → 'ระบบ'
+  //
+  // ชื่อผู้สมัคร resolve จากใบสมัครของ history นี้เอง (entityId = app.id)
+  // ไม่ต้อง query เพิ่ม — ใช้ app ที่ตรวจ existence ไปแล้วด้านบน
+  const applicantName = app.fullname || null;
+
+  const history = logs.map(log => {
+    const actorType = classifyActorType(log.adminId, log.action);
+    const adminEmail = adminMap.get(log.adminId) || log.adminId;
+
+    // actorLabel = ค่าที่ UI ใช้แสดง "ใครทำ" — ห้ามมี system@audit.local
+    const actorLabel =
+      actorType === 'APPLICANT'
+        ? applicantName || 'ผู้สมัคร'
+        : actorType === 'SYSTEM'
+          ? 'ระบบ'
+          : adminEmail;
+
+    return {
+      id: log.id,
+      action: log.action,
+      adminId: log.adminId,
+      // adminEmail: คงความหมายเดิม (email จริงของ actor) แต่ไม่ส่ง reserved
+      // email ออกไป — reserved row ไม่ใช่บัญชีผู้ใช้ที่ผู้ใช้ควรเห็น
+      adminEmail: actorType === 'ADMIN' ? adminEmail : null,
+      actorType,
+      actorLabel,
+      payload: log.payload,
+      createdAt: toUnixTimestamp(log.createdAt)
+    };
+  });
 
   return c.json({ data: history, hasMore, limit });
 });

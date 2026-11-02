@@ -22,12 +22,25 @@
  * ไม่แตะ API: input คือ array ที่ endpoint เดิมส่งมาอยู่แล้ว
  */
 
+import {
+  ACTOR_TYPE_FALLBACK_LABEL,
+  classifyActorType,
+  isReservedActorEmail,
+  type ActorType,
+} from './actor-display';
+
 /** เหตุการณ์ 1 แถวจาก GET /admin/applications/:id/history */
 export interface HistoryEvent {
   id: string;
   action: string;
   adminId: string;
-  adminEmail: string;
+  /** email จริงของเจ้าหน้าที่ — null สำหรับ APPLICANT/SYSTEM (backend ไม่ส่ง
+   *  reserved email ออกมา) */
+  adminEmail: string | null;
+  /** ประเภทผู้ทำ — backend ส่งมา; ถ้าไม่มี (response เก่า) คำนวณเองได้ */
+  actorType?: ActorType;
+  /** ค่าที่พร้อมแสดง "ใครทำ" — backend resolve มาแล้ว (ชื่อผู้สมัคร/อีเมล/ระบบ) */
+  actorLabel?: string | null;
   /** payload ดิบจาก DB — string (JSON) หรือ object หรือ null */
   payload: unknown;
   /** unix seconds (backend แปลงด้วย toUnixTimestamp) */
@@ -184,7 +197,45 @@ export function formatTime(timestamp: number | null): string {
 }
 
 function actorKey(event: HistoryEvent): string {
+  // grouping key ต้องอิง "ตัวตน" ไม่ใช่ "ข้อความที่แสดง" — เปลี่ยน label
+  // การแสดงผลต้องไม่ทำให้กลุ่มยุบผิด/แยกผิด
+  // APPLICANT ทุกแถวของใบนี้เป็นคนเดียวกัน → คีย์เดียวกันเสมอ
+  const type = getActorType(event);
+  if (type === 'APPLICANT') return 'APPLICANT';
+  if (type === 'SYSTEM') return 'SYSTEM';
   return event.adminEmail || event.adminId || '';
+}
+
+// =============================================================================
+// Actor display (Applicant Timeline UX)
+// =============================================================================
+
+/** ประเภทผู้ทำของ 1 เหตุการณ์ — ใช้ค่าจาก backend ก่อน แล้วคำนวณเองถ้าไม่มี */
+export function getActorType(event: HistoryEvent): ActorType {
+  if (event.actorType) return event.actorType;
+  return classifyActorType(event.adminId, event.action);
+}
+
+/**
+ * ข้อความ "ใครทำ" ที่พร้อมแสดง — ห้ามคืน `system@audit.local` เด็ดขาด
+ *
+ * ลำดับความเชื่อถือ:
+ *   1. actorLabel จาก backend (resolve ชื่อผู้สมัคร/อีเมลเจ้าหน้าที่มาแล้ว)
+ *   2. ค่าที่คำนวณได้เองจาก adminEmail + ประเภท
+ *   3. fallback ต่อประเภท: ผู้สมัคร / เจ้าหน้าที่ / ระบบ
+ */
+export function resolveActorLabel(event: HistoryEvent): string {
+  const type = getActorType(event);
+  const fallback = ACTOR_TYPE_FALLBACK_LABEL[type];
+
+  const raw = (event.actorLabel ?? event.adminEmail ?? '').trim();
+  // ด่านสุดท้าย: ข้อมูลเก่าอาจยังส่ง reserved email มา — ห้ามแสดง
+  if (!raw || isReservedActorEmail(raw)) return fallback;
+
+  // APPLICANT ที่ได้ email มาแทนชื่อ (ข้อมูลเก่า) → ใช้ fallback ที่อ่านรู้เรื่อง
+  if (type === 'APPLICANT' && raw.includes('@')) return fallback;
+
+  return raw;
 }
 
 function rowKey(dayKeyStr: string, action: string, actor: string): string {

@@ -209,6 +209,23 @@ for (let i = 0; i < 12; i++) {
     null, 1760400000);
 }
 
+// ── Applicant Timeline UX: reserved SYSTEM row (Migration 032) ──────────────
+// app-applicant: 1 APPLICATION_SUBMIT ที่เขียนด้วย reserved row + 1 UPDATE
+// โดยเจ้าหน้าที่ → พิสูจน์ว่า APPLICANT ไม่หลุด system@audit.local และ
+// เจ้าหน้าที่ยังแสดงอีเมลจริง
+const APPLICANT = 'app-applicant';
+insertApplication(APPLICANT);
+sqlite.prepare(
+  `INSERT INTO admin_users (id, email, password_hash, role, is_active)
+   VALUES ('00000000-0000-0000-0000-000000000000', 'system@audit.local', 'x', 'VIEWER', 0)`
+).run();
+sqlite.prepare(`UPDATE applications SET fullname = ? WHERE id = ?`)
+  .run('นายสมชาย ใจดี', APPLICANT);
+insertLog.run('appl-0001', '00000000-0000-0000-0000-000000000000', 'APPLICATION_SUBMIT',
+  'APPLICATION', APPLICANT, JSON.stringify({ applicationNo: 'APP-2569-APPL' }), 1760600000);
+insertLog.run('appl-0002', 'admin-a', 'UPDATE', 'APPLICATION', APPLICANT,
+  JSON.stringify({ changes: [], summary: '' }), 1760600100);
+
 // log ของ entity อื่น — ต้องไม่หลุดเข้ามา (entity_type filter)
 for (let i = 0; i < 20; i++) {
   insertLog.run(`other-${i}`, 'admin-a', 'UPDATE', 'RECRUITMENT_ROUND', HEAVY, null, 1760500000 + i);
@@ -331,14 +348,53 @@ async function runAllTests() {
   });
 
   // ---- H9 ----
-  await test('H9: response contract เดิม — 6 คีย์ต่อแถว ไม่มีเพิ่ม ไม่มีขาด', async () => {
+  await test('H9: response contract — 6 คีย์เดิมครบ + actorType/actorLabel (เพิ่มเท่านั้น)', async () => {
     const res = await getJson(historyPath(ONE));
     assertDeepEqual(
       Object.keys(res.body.data[0]).sort(),
-      ['action', 'adminEmail', 'adminId', 'createdAt', 'id', 'payload'].sort(),
-      'ชุดคีย์ต่อแถวต้องตรงเดิมเป๊ะ',
+      ['action', 'actorLabel', 'actorType', 'adminEmail', 'adminId', 'createdAt', 'id', 'payload'].sort(),
+      'ชุดคีย์ต่อแถว: 6 เดิม + actorType/actorLabel',
     );
     assertTrue(Array.isArray(res.body.data), 'data เป็น array (contract เดิม)');
+  });
+
+  // ---- H17 ----
+  await test('H17: APPLICANT → actorType=APPLICANT, ชื่อผู้สมัคร, ไม่มี system@audit.local', async () => {
+    const res = await getJson(historyPath(APPLICANT));
+    const submit = res.body.data.find((r) => r.action === 'APPLICATION_SUBMIT');
+    assertTrue(submit, 'พบแถว APPLICATION_SUBMIT');
+    assertEqual(submit.actorType, 'APPLICANT', 'actorType');
+    assertEqual(submit.actorLabel, 'นายสมชาย ใจดี', 'actorLabel = ชื่อผู้สมัคร');
+    assertEqual(submit.adminEmail, null, 'adminEmail ต้องเป็น null (ไม่ส่ง reserved email)');
+
+    // adminId คงไว้ตามจริง (FK ของ audit log) แต่ต้องไม่ถูกใช้เป็นข้อความแสดงผล
+    assertEqual(submit.adminId, '00000000-0000-0000-0000-000000000000', 'adminId คงค่าจริง');
+    assertTrue(
+      !String(submit.actorLabel).includes('00000000-0000'),
+      'actorLabel ต้องไม่ใช่ reserved UUID',
+    );
+
+    const raw = JSON.stringify(res.body);
+    assertTrue(!raw.includes('system@audit.local'), 'ต้องไม่มี system@audit.local ใน response');
+  });
+
+  // ---- H18 ----
+  await test('H18: ADMIN → actorType=ADMIN, อีเมลเจ้าหน้าที่ตามเดิม', async () => {
+    const res = await getJson(historyPath(APPLICANT));
+    const upd = res.body.data.find((r) => r.action === 'UPDATE');
+    assertTrue(upd, 'พบแถว UPDATE');
+    assertEqual(upd.actorType, 'ADMIN', 'actorType');
+    assertEqual(upd.actorLabel, 'alpha@test.local', 'actorLabel = อีเมลเจ้าหน้าที่');
+    assertEqual(upd.adminEmail, 'alpha@test.local', 'adminEmail คงเดิม');
+  });
+
+  // ---- H19 ----
+  await test('H19: APPLICANT ที่ resolve ชื่อไม่ได้ → "ผู้สมัคร" (ไม่ใช่ email/UUID)', async () => {
+    sqlite.prepare(`UPDATE applications SET fullname = '' WHERE id = ?`).run(APPLICANT);
+    const res = await getJson(historyPath(APPLICANT));
+    const submit = res.body.data.find((r) => r.action === 'APPLICATION_SUBMIT');
+    assertEqual(submit.actorLabel, 'ผู้สมัคร', 'fallback label');
+    sqlite.prepare(`UPDATE applications SET fullname = ? WHERE id = ?`).run('นายสมชาย ใจดี', APPLICANT);
   });
 
   // ---- H10 ----

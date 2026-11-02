@@ -20,6 +20,7 @@ import {
   buildAuditDescription,
   type AuditLogForDisplay,
 } from '@/lib/audit-log-display';
+import { classifyActorType, isReservedActorEmail } from '@/lib/actor-display';
 
 // =============================================================================
 // Types
@@ -218,8 +219,15 @@ function formatDateTime(value: string | number | Date): string {
   });
 }
 
-function resolveAdminEmail(adminId: string, adminLookup: AdminLookup): string {
-  return adminLookup[adminId] || adminId;
+function resolveAdminEmail(adminId: string, adminLookup: AdminLookup, action: string): string {
+  // APPLICANT/SYSTEM ใช้ reserved row (email system@audit.local) — ต้องไม่หลุด
+  // ถึงผู้ใช้ แม้หน้านี้จะเห็นเฉพาะ SUPER_ADMIN ก็ตาม: มันไม่ใช่บัญชีผู้ใช้จริง
+  const type = classifyActorType(adminId, action);
+  if (type === 'APPLICANT') return 'ผู้สมัคร';
+  if (type === 'SYSTEM') return 'ระบบ';
+
+  const email = adminLookup[adminId] || adminId;
+  return isReservedActorEmail(email) ? 'ระบบ' : email;
 }
 
 function parsePayload(payload: string | null | undefined): ParsedPayload | null {
@@ -666,7 +674,7 @@ export default function AuditLogsPage() {
               <TableBody>
                 {items.map((log) => {
                   const resolved = resolveAuditEntity(log, resolveEntityName);
-                  const adminEmail = resolveAdminEmail(log.adminId, lookup.ADMIN);
+                  const adminEmail = resolveAdminEmail(log.adminId, lookup.ADMIN, log.action);
                   const payload = parsePayload(log.payload);
                   const hasChanges = hasChangeTracking(payload);
                   const tableChangeSummary = getTableChangeSummary(payload);
@@ -790,7 +798,7 @@ export default function AuditLogsPage() {
 
                 {/* Metadata */}
                 <div className="flex items-center justify-between text-xs text-slate-500 pt-4 border-t">
-                  <span>👤 {resolveAdminEmail(selectedLog.adminId, lookup.ADMIN)}</span>
+                  <span>👤 {resolveAdminEmail(selectedLog.adminId, lookup.ADMIN, selectedLog.action)}</span>
                   <span>{formatDateTime(selectedLog.createdAt)}</span>
                 </div>
               </div>

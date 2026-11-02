@@ -25,7 +25,10 @@ import {
   chronological,
   formatDayLabel,
   formatTime,
+  resolveActorLabel,
+  getActorType,
 } from '../application-history';
+import { SYSTEM_ACTOR_ID, SYSTEM_ACTOR_EMAIL } from '../actor-display';
 
 let passed = 0;
 let failed = 0;
@@ -267,6 +270,98 @@ test('G3: createdAt null → ยังไม่ crash และจัดกล�
   const days = groupHistory([ev('1', 'PDF_DOWNLOAD', ACTOR_A, null)]);
   assertEqual(days.length, 1, '1 วัน');
   assertEqual(days[0].label, 'ไม่ระบุวันที่', 'label');
+});
+
+console.log('\n[H] actor display — APPLICANT / ADMIN / SYSTEM');
+
+/** เหตุการณ์ฝั่งผู้สมัคร — เขียนด้วย reserved SYSTEM row */
+function evApplicant(id, action, ts, extra = {}) {
+  return {
+    id,
+    action,
+    adminId: SYSTEM_ACTOR_ID,
+    adminEmail: null,
+    actorType: 'APPLICANT',
+    actorLabel: 'นายสมชาย ใจดี',
+    payload: null,
+    createdAt: ts,
+    ...extra,
+  };
+}
+
+test('H1: classify — reserved row + APPLICATION_SUBMIT → APPLICANT', () => {
+  assertEqual(getActorType(evApplicant('1', 'APPLICATION_SUBMIT', 1)), 'APPLICANT', 'type');
+});
+
+test('H2: classify — reserved row + action อื่น → SYSTEM', () => {
+  const e = { id: '1', action: 'SOMETHING_ELSE', adminId: SYSTEM_ACTOR_ID, adminEmail: null, payload: null, createdAt: 1 };
+  assertEqual(getActorType(e), 'SYSTEM', 'type');
+});
+
+test('H3: classify — admin จริง → ADMIN แม้ action จะเป็นฝั่งผู้สมัคร', () => {
+  const e = { id: '1', action: 'APPLICATION_SUBMIT', adminId: 'admin-a', adminEmail: ACTOR_A, payload: null, createdAt: 1 };
+  assertEqual(getActorType(e), 'ADMIN', 'type');
+});
+
+test('H4: APPLICANT → แสดงชื่อผู้สมัคร', () => {
+  assertEqual(resolveActorLabel(evApplicant('1', 'APPLICATION_SUBMIT', 1)), 'นายสมชาย ใจดี', 'label');
+});
+
+test('H5: APPLICANT ที่ไม่มีชื่อ → "ผู้สมัคร" (ไม่ใช่ email/UUID)', () => {
+  const e = evApplicant('1', 'APPLICATION_SUBMIT', 1, { actorLabel: null });
+  assertEqual(resolveActorLabel(e), 'ผู้สมัคร', 'fallback');
+});
+
+test('H6: ห้ามแสดง system@audit.local — ข้อมูลเก่าที่ส่งมา ต้องถูกกัน', () => {
+  const e = {
+    id: '1',
+    action: 'APPLICATION_SUBMIT',
+    adminId: SYSTEM_ACTOR_ID,
+    adminEmail: SYSTEM_ACTOR_EMAIL,
+    payload: null,
+    createdAt: 1,
+  };
+  const label = resolveActorLabel(e);
+  assertEqual(label, 'ผู้สมัคร', 'label');
+  assert(!label.includes('@'), 'ต้องไม่มี @ ใน label');
+});
+
+test('H7: SYSTEM → "ระบบ"', () => {
+  const e = {
+    id: '1',
+    action: 'AUTO_ARCHIVE',
+    adminId: SYSTEM_ACTOR_ID,
+    adminEmail: SYSTEM_ACTOR_EMAIL,
+    payload: null,
+    createdAt: 1,
+  };
+  assertEqual(resolveActorLabel(e), 'ระบบ', 'label');
+});
+
+test('H8: ADMIN → อีเมลเจ้าหน้าที่ตามเดิม', () => {
+  assertEqual(resolveActorLabel(ev('1', 'UPDATE', ACTOR_A, 1)), ACTOR_A, 'label');
+});
+
+test('H9: APPLICANT ทุกแถวมี grouping key เดียวกัน แม้ label ต่างกัน', () => {
+  // actorKey ต้องอิงตัวตน ไม่ใช่ข้อความที่แสดง — ไม่ให้กลุ่มแตกเพราะ label ต่าง
+  // (ใช้ PDF_DOWNLOAD เพราะเป็น action เดียวที่ถูกยุบ — พิสูจน์ key จริง)
+  const events = [
+    evApplicant('2', 'PDF_DOWNLOAD', localTs(2026, 10, 25, 23, 18)),
+    evApplicant('1', 'PDF_DOWNLOAD', localTs(2026, 10, 25, 22, 38), { actorLabel: null }),
+  ];
+  const days = groupHistory(events);
+  assertEqual(days[0].rows.length, 1, 'ต้องเหลือ 1 แถว (ยุบรวม)');
+  assertEqual(days[0].rows[0].kind, 'group', 'kind');
+  assertEqual(days[0].rows[0].events.length, 2, 'รวม 2 เหตุการณ์');
+});
+
+test('H10: APPLICANT กับ ADMIN ในวันเดียวกัน ไม่ถูกยุบข้ามกัน', () => {
+  const events = [
+    evApplicant('2', 'PDF_DOWNLOAD', localTs(2026, 10, 25, 23, 18)),
+    ev('1', 'PDF_DOWNLOAD', ACTOR_A, localTs(2026, 10, 25, 22, 38)),
+  ];
+  const days = groupHistory(events);
+  assertEqual(days[0].rows.length, 2, 'ต้องแยกเป็น 2 แถว');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
