@@ -6,8 +6,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { eq, and, ne, isNull, count, or, like, inArray, sql, asc, desc } from 'drizzle-orm';
 import { Bindings, AppVariables, isSuperAdmin } from '../types';
 import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middleware';
-import { auditMiddleware, setAuditPayload, setAuditBatchId, writeLoginAudit } from '../middlewares/audit.middleware';
-import { writeAudit } from '../services/audit.service';
+import { auditMiddleware, setAuditPayload, writeLoginAudit } from '../middlewares/audit.middleware';
+import { writeAudit, writeAuditBatch } from '../services/audit.service';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { handleApplicationStatusChange, buildAuditPayload } from '../lib/change-tracking';
 import { getApplicationPdf } from '../lib/pdf.service';
@@ -2704,14 +2704,25 @@ adminRoutes.get('/applications/:id/history', async (c) => {
 //   - { selector: { kind: 'ids', ... } } → เหมือน { ids } เป๊ะ
 //   - { selector: { kind: 'filter', ... } } → ทุกใบที่ตรงตัวกรอง ณ เวลาที่กด
 //     (resolve ที่ server — ไม่รับ id ทั้งชุดจาก client)
-adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddleware('APPLICATION', { action: 'UPDATE' }), async (c) => {
+// ── Bulk Status Timeline (C-bulk) ───────────────────────────────────────────
+// ⚠️ route นี้ "ไม่" ใช้ auditMiddleware อีกต่อไป
+//
+// เหตุผล: auditMiddleware เขียนได้ 1 แถวต่อ 1 request และ entityId ของ route
+// ที่ไม่มี :id ใน path จะตกเป็น sentinel 'BULK/NEW' (audit.middleware.ts:26)
+// แต่ GET /applications/:id/history กรองด้วย entityType='APPLICATION' AND
+// entityId=<appId> ตรง ๆ → แถว bulk ไม่มีทาง match timeline ของใบไหนเลย
+//
+// ทางแก้คือเขียนเองใน handler: 1 แถวต่อ 1 ใบที่ถูกอัปเดตจริง (entityId = app.id)
+// ผ่าน writeAuditBatch (D1 batch = 1 round trip ไม่ใช่ N subrequests)
+// ไม่มีการแก้ query ของ timeline และไม่ใช้ JSON LIKE ที่ไหนทั้งสิ้น
+adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, async (c) => {
   const db = drizzle(c.env.DB);
   const adminId = c.get('jwtPayload').id;
 
   // batch_id (Migration 032) — 1 request = 1 batch ทั้ง 2 branch (matched=0 และปกติ)
   // ใช้เชื่อมโยงเหตุการณ์ในกลุ่มเดียวกันตอนตรวจ audit ย้อนหลัง
   const batchId = uuidv4();
-  setAuditBatchId(c, batchId);
+  const ipAddress = c.req.header('cf-connecting-ip') || 'unknown';
 
   const body = await c.req.json().catch(() => null);
 
@@ -2794,16 +2805,29 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
       }
       // kind 'ids' — คง behavior เดิมของ HTTP (200) แต่รายงานเลขตามจริง
       // matched = 0, updated = 0 (เดิมตอบ updated = จำนวน id ที่ส่งมา)
-      setAuditPayload(c, {
-        action: 'BULK_STATUS_UPDATE',
-        applicationIds: selector.ids,
-        previousStatus,
-        newStatus: status,
-        reason: reason || null,
-        matched: 0,
-        updatedCount: 0,
-        selector: describeSelector(selector),
-        actor: adminId,
+      //
+      // audit: ไม่มีใบไหนถูกแตะ → ไม่มี timeline ของใครให้ผูก จึงคงแถวเดียวที่
+      // entityId = 'BULK/NEW' ไว้เป็นร่องรอยของ "ความพยายามที่ไม่มีผล"
+      // (หน้า /admin/audit-logs อ่าน payload.action = BULK_STATUS_UPDATE อยู่แล้ว)
+      await writeAudit({
+        db,
+        action: 'UPDATE',
+        entityType: 'APPLICATION',
+        entityId: 'BULK/NEW',
+        actorId: adminId,
+        payload: {
+          action: 'BULK_STATUS_UPDATE',
+          applicationIds: selector.ids,
+          previousStatus,
+          newStatus: status,
+          reason: reason || null,
+          matched: 0,
+          updatedCount: 0,
+          selector: describeSelector(selector),
+          actor: adminId,
+          batchId,
+        },
+        ipAddress,
         batchId,
       });
       return c.json({
@@ -2833,19 +2857,51 @@ adminRoutes.post('/applications/bulk-status', adminOnlyMiddleware, auditMiddlewa
 
     const updatedCount = matched;
 
-    // Audit payload ครบสำหรับการตรวจสอบย้อนหลัง (actor บันทึกแยกคอลัมน์ admin_id ด้วย)
-    setAuditPayload(c, {
-      action: 'BULK_STATUS_UPDATE',
-      applicationIds: selector.kind === 'ids' ? selector.ids : targetIds,
-      previousStatus,
-      newStatus: status,
-      reason: reason || null,
-      matched,
-      updatedCount,
-      selector: describeSelector(selector),
-      actor: adminId,
-      batchId,
+    // ── Audit per application (Bulk Status Timeline) ──────────────────────
+    // 1 แถวต่อ 1 ใบที่ถูกอัปเดตจริง — entityId = app.id ทำให้ timeline ของใบนั้น
+    // เห็นเหตุการณ์นี้ทันที (query เดิมไม่ต้องแก้)
+    //
+    // payload ต่อใบใส่ changes[] จาก handleApplicationStatusChange() แบบเดียวกับ
+    // PATCH /applications/:id/status → getStatusTransition() ฝั่ง frontend อ่าน
+    // "เดิม → ใหม่" ได้ (เดิม bulk ไม่มี changes[] และใช้คีย์ newStatus ทำให้
+    // timeline แสดงสถานะใหม่ไม่ได้)
+    //
+    // ยังคงคีย์ของ bulk ไว้ครบ (action/applicationIds/selector/matched/...) เพื่อ
+    // ให้หน้า /admin/audit-logs และการตรวจย้อนหลังอ่านได้เหมือนเดิม
+    const selectorDescription = describeSelector(selector);
+    const auditEntries = targetIds.map((targetId) => {
+      const oldStatus = previousStatus[targetId];
+      // ไม่เดาสถานะเดิม: ถ้าคอลัมน์เป็น null (ข้อมูลผิดปกติ) ให้ changes[] ว่าง
+      // ดีกว่าใส่ 'DRAFT' ปลอมลง audit trail — timeline จะแสดงเฉพาะสถานะใหม่
+      const changeData =
+        typeof oldStatus === 'string' && oldStatus
+          ? handleApplicationStatusChange(oldStatus, status, reason)
+          : { changes: [] as any[], summary: '' };
+      return {
+        action: 'UPDATE',
+        entityType: 'APPLICATION',
+        entityId: targetId,
+        actorId: adminId,
+        payload: buildAuditPayload(changeData.changes, {
+          action: 'BULK_STATUS_UPDATE',
+          applicationIds: selector.kind === 'ids' ? selector.ids : targetIds,
+          previousStatus,
+          newStatus: status,
+          reason: reason || null,
+          matched,
+          updatedCount,
+          selector: selectorDescription,
+          actor: adminId,
+          batchId,
+          bulk: true,
+        }),
+        ipAddress,
+        batchId,
+      };
     });
+
+    // fail-soft ภายใน: audit ล้มไม่ทำให้ bulk update ที่สำเร็จแล้วกลายเป็น 500
+    await writeAuditBatch({ db, entries: auditEntries });
 
     return c.json({
       success: true,

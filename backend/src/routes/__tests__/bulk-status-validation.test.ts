@@ -249,10 +249,17 @@ async function runAllTests() {
     assertEqual(appRow(id1).verified_by, ADMIN_ID, 'row1 verified_by');
 
     const audits = auditRows();
-    assertEqual(audits.length, 1, 'audit row count');
-    assertEqual(audits[0].action, 'UPDATE', 'audit action = UPDATE (ไม่ใช่ CREATE)');
-    assertEqual(audits[0].entity_type, 'APPLICATION', 'audit entity_type');
-    assertEqual(audits[0].admin_id, ADMIN_ID, 'audit actor column');
+    // Bulk Status Timeline: 1 แถวต่อ 1 ใบที่ถูกอัปเดตจริง (ไม่ใช่แถวเดียวรวม)
+    assertEqual(audits.length, 2, 'audit row count = จำนวนใบที่ถูกอัปเดต');
+    // entity_id ต้องเป็น id ของใบจริง — sentinel 'BULK/NEW' ทำให้ timeline ไม่เห็น
+    const entityIds = audits.map((a) => a.entity_id).sort();
+    assertEqual(entityIds.join(','), [id1, id2].sort().join(','), 'entity_id ต้องเป็น id ของใบจริงทั้งคู่');
+    assertTrue(!entityIds.includes('BULK/NEW'), "ห้ามมี entity_id = 'BULK/NEW'");
+    for (const a of audits) {
+      assertEqual(a.action, 'UPDATE', 'audit action = UPDATE (ไม่ใช่ CREATE)');
+      assertEqual(a.entity_type, 'APPLICATION', 'audit entity_type');
+      assertEqual(a.admin_id, ADMIN_ID, 'audit actor column');
+    }
 
     sqlite.prepare('DELETE FROM audit_logs').run();
   });
@@ -296,7 +303,7 @@ async function runAllTests() {
     assertEqual(res.status, 200, 'HTTP status');
 
     const audits = auditRows();
-    assertEqual(audits.length, 1, 'audit row count');
+    assertEqual(audits.length, 2, 'audit row count = จำนวนใบ (1 แถวต่อใบ)');
     // Audit Log Foundation Phase 1: payload ถูก normalize ที่ audit.service →
     // เก็บ single-encode (parse ครั้งเดียวได้ object — เดิม double-encode ต้อง parse สองชั้น)
     const payload = JSON.parse(audits[0].payload);
@@ -310,8 +317,28 @@ async function runAllTests() {
     assertEqual(payload.actor, ADMIN_ID, 'มี actor');
     assertEqual(payload.reason, 'เอกสารไม่ครบ', 'มี reason');
     // batch_id (Migration 032) — 1 bulk request = 1 batch ทั้งในคอลัมน์และ payload
-    assertTrue(typeof audits[0].batch_id === 'string' && audits[0].batch_id.length > 0, 'มี batch_id ในคอลัมน์');
-    assertEqual(payload.batchId, audits[0].batch_id, 'payload.batchId ตรงกับคอลัมน์');
+    // ทุกแถวของ request เดียวกันต้องได้ batch_id เดียวกัน (ใช้เชื่อมกลุ่ม)
+    const batchIds = new Set(audits.map((a) => a.batch_id));
+    assertEqual(batchIds.size, 1, 'ทุกแถวใน request เดียวกันมี batch_id เดียว');
+    const batchId = audits[0].batch_id;
+    assertTrue(typeof batchId === 'string' && batchId.length > 0, 'มี batch_id ในคอลัมน์');
+    assertEqual(payload.batchId, batchId, 'payload.batchId ตรงกับคอลัมน์');
+
+    // ── Bulk Status Timeline: changes[] ต่อใบ (ให้ timeline แสดง เดิม → ใหม่) ──
+    // แต่ละแถวเป็นของใบของตัวเอง → changes[status] ต้องเป็นของใบนั้นจริง
+    for (const a of audits) {
+      const rowPayload = JSON.parse(a.payload);
+      assertEqual(rowPayload.bulk, true, 'payload.bulk');
+      assertTrue(Array.isArray(rowPayload.changes), 'มี changes[] เป็น array');
+      const statusChange = rowPayload.changes.find((ch) => ch.field === 'status');
+      assertTrue(!!statusChange, 'มี changes[field=status]');
+      assertEqual(statusChange.newValue, 'REJECTED', 'changes.status.newValue = สถานะใหม่');
+      assertEqual(
+        statusChange.oldValue,
+        rowPayload.previousStatus[a.entity_id],
+        'changes.status.oldValue = สถานะเดิมของใบนั้น',
+      );
+    }
 
     sqlite.prepare('DELETE FROM audit_logs').run();
   });
@@ -579,12 +606,17 @@ async function runAllTests() {
     assertEqual(res.status, 200, 'HTTP status');
 
     const audits = auditRows();
-    assertEqual(audits.length, 1, 'audit 1 รายการ');
+    // 1 แถวต่อ 1 ใบ (filter ตรง 2 ใบ) — selector describe ต้องอยู่ครบทุกแถว
+    assertEqual(audits.length, 2, 'audit 2 รายการ (1 แถวต่อใบ)');
     const payload = JSON.parse(audits[0].payload);
     assertEqual(payload.selector.kind, 'filter', 'audit.selector.kind');
     assertEqual(payload.selector.roundId, 'round-1', 'audit.selector.roundId');
     assertEqual(payload.selector.status, 'SUBMITTED', 'audit.selector.status');
     assertEqual(payload.updatedCount, 2, 'audit.updatedCount');
+    // entity_id ต้องเป็น id จริง ไม่ใช่ sentinel — ไม่งั้น timeline ไม่เห็น
+    for (const a of audits) {
+      assertTrue(a.entity_id !== 'BULK/NEW', "ห้ามมี entity_id = 'BULK/NEW'");
+    }
 
     sqlite.prepare('DELETE FROM audit_logs').run();
   });

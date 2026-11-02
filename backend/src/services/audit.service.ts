@@ -80,6 +80,54 @@ export function normalizeAuditPayload(payload: unknown): Record<string, unknown>
   return { raw: String(payload) };
 }
 
+/** 1 รายการใน batch — รูปแบบเดียวกับ WriteAuditInput ยกเว้น db (ใช้ร่วมกัน) */
+export type WriteAuditBatchEntry = Omit<WriteAuditInput, 'db'>;
+
+export interface WriteAuditBatchInput {
+  db: DB;
+  entries: WriteAuditBatchEntry[];
+}
+
+/**
+ * เขียน audit log หลายแถวในครั้งเดียว (D1 batch = 1 round trip)
+ *
+ * ใช้กับ bulk operations ที่ต้องมี 1 แถวต่อ 1 entity เพื่อให้ timeline ของ
+ * แต่ละ entity เห็นเหตุการณ์ (entityId ต้องเป็น id จริง ไม่ใช่ sentinel
+ * 'BULK/NEW' — query ของ timeline กรองด้วย entityId ตรง ๆ)
+ *
+ * FAIL-SOFT เหมือน writeAudit: audit ล้มได้ งานจริงห้ามพัง
+ * entries ว่าง → ถือว่าสำเร็จ (ไม่มีอะไรต้องเขียน ไม่ต้องยิง DB)
+ *
+ * @returns true = เขียนสำเร็จ (หรือไม่มีอะไรต้องเขียน), false = ล้ม
+ */
+export async function writeAuditBatch(input: WriteAuditBatchInput): Promise<boolean> {
+  if (input.entries.length === 0) return true;
+  try {
+    const statements = input.entries.map((entry) => {
+      const values: Record<string, unknown> = {
+        id: uuidv4(),
+        adminId: entry.actorId,
+        action: entry.action,
+        entityType: entry.entityType,
+        entityId: entry.entityId,
+        payload: normalizeAuditPayload(entry.payload),
+        ipAddress: entry.ipAddress === undefined ? 'unknown' : entry.ipAddress,
+      };
+      if (entry.batchId) {
+        values.batchId = entry.batchId;
+      }
+      return input.db.insert(auditLogs).values(values as any);
+    });
+    // drizzle ต้องการ tuple type แต่ runtime รับ any[] ได้ (pattern เดียวกับ
+    // insertApplicationWithRetry ใน public.routes.ts)
+    await input.db.batch(statements as [any, ...any[]]);
+    return true;
+  } catch (auditErr) {
+    console.error('[AUDIT_SERVICE] Failed to write audit batch:', auditErr);
+    return false;
+  }
+}
+
 /**
  * เขียน audit log 1 แถว — fail-soft เสมอ
  * @returns true = เขียนสำเร็จ, false = ล้ม (error ถูก log แล้ว)
