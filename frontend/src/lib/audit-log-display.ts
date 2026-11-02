@@ -21,9 +21,19 @@
  *                   (1 แถวครอบหลายใบ — รายละเอียดจาก payload ไม่ใช่ entityId)
  */
 
+import { statusConfig, type ApplicationStatus } from '@/components/ui/status-badge';
+import { classifyActorType, isReservedActorEmail } from '@/lib/actor-display';
+
+export interface AuditApplicantDisplay {
+  name: string | null;
+  email: string | null;
+  applicationNo: string | null;
+}
+
 export interface AuditEntityDisplay {
   name: string | null;
   secondary: string | null;
+  applicant?: AuditApplicantDisplay | null;
 }
 
 export interface AuditLogForDisplay {
@@ -101,6 +111,43 @@ export const AUDIT_ENTITY_LABELS: Record<string, string> = {
 
 export function getAuditEntityLabel(entityType: string): string {
   return AUDIT_ENTITY_LABELS[entityType] || entityType;
+}
+
+export function getApplicationStatusLabel(status: unknown): string {
+  if (typeof status !== 'string' || !status) return '';
+  return statusConfig[status as ApplicationStatus]?.label || status;
+}
+
+export interface ResolvedAuditActor {
+  primary: string;
+  secondary?: string;
+}
+
+export function resolveAuditActor(
+  log: AuditLogForDisplay & { adminId?: string | null },
+  adminLookup: Record<string, string> = {},
+): ResolvedAuditActor {
+  const type = classifyActorType(log.adminId, log.action);
+  if (type === 'APPLICANT') {
+    const applicant = log.display?.applicant;
+    if (applicant?.name) {
+      return {
+        primary: applicant.name,
+        secondary: applicant.email || undefined,
+      };
+    }
+    if (applicant?.email) {
+      return { primary: applicant.email };
+    }
+    return { primary: 'ผู้สมัคร' };
+  }
+  if (type === 'SYSTEM') {
+    return { primary: 'ระบบ' };
+  }
+
+  const id = log.adminId || '';
+  const email = adminLookup[id] || id;
+  return { primary: isReservedActorEmail(email) ? 'ระบบ' : email || '-' };
 }
 
 /** UUID ย่อสำหรับ fallback เช่น "65ef…c4ed" */
@@ -222,13 +269,14 @@ export function buildAuditDescription(
     const count =
       bulk && typeof bulk.updatedCount === 'number' ? bulk.updatedCount : null;
     const status = bulk && typeof bulk.newStatus === 'string' ? bulk.newStatus : null;
+    const statusLabel = status ? getApplicationStatusLabel(status) : null;
     const reason =
       bulk && typeof bulk.reason === 'string' && bulk.reason ? ` (${bulk.reason})` : '';
     const head =
       count != null
-        ? `เปลี่ยนสถานะใบสมัคร (กลุ่ม ${count} รายการ)`
+        ? `เปลี่ยนสถานะใบสมัคร ${count} รายการ`
         : 'เปลี่ยนสถานะใบสมัคร (กลุ่ม)';
-    return status ? `${head} → ${status}${reason}` : head;
+    return statusLabel ? `${head} → ${statusLabel}${reason}` : head;
   }
   if (
     log.entityType === 'APPLICATION' &&
@@ -237,8 +285,9 @@ export function buildAuditDescription(
     typeof payload === 'object' &&
     payload.status
   ) {
+    const statusLabel = getApplicationStatusLabel(payload.status);
     const reason = payload.statusReason ? ` (${payload.statusReason})` : '';
-    return `เปลี่ยนสถานะใบสมัคร → ${payload.status}${reason}`;
+    return `เปลี่ยนสถานะใบสมัคร → ${statusLabel}${reason}`;
   }
 
   switch (log.action) {

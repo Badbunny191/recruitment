@@ -42,6 +42,8 @@ import {
   shortId,
   resolveAuditEntity,
   buildAuditDescription,
+  getApplicationStatusLabel,
+  resolveAuditActor,
 } from '../audit-log-display';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -213,7 +215,7 @@ test('J: CREATE/UPDATE/DELETE คงรูปแบบเดิมด้วย�
 //  K–L. พฤติกรรมเดิมที่ต้องคงไว้
 // =========================================================
 
-test('K: APPLICATION status change (payload.status) คงพฤติกรรมเดิม', () => {
+test('K: APPLICATION status change (payload.status) แสดงสถานะภาษาไทย', () => {
   const log = {
     action: 'UPDATE',
     entityType: 'APPLICATION',
@@ -222,13 +224,13 @@ test('K: APPLICATION status change (payload.status) คงพฤติกรร�
   };
   assertEqual(
     buildAuditDescription(log, { primary: 'APP-2026-5012' }, { status: 'QUALIFIED' }),
-    'เปลี่ยนสถานะใบสมัคร → QUALIFIED',
-    'เคสไม่มี reason',
+    'เปลี่ยนสถานะใบสมัคร → ผ่านการตรวจสอบ',
+    'เคสไม่มี reason (QUALIFIED → ผ่านการตรวจสอบ)',
   );
   assertEqual(
     buildAuditDescription(log, { primary: 'APP-2026-5012' }, { status: 'REJECTED', statusReason: 'ไม่ผ่านคุณสมบัติ' }),
-    'เปลี่ยนสถานะใบสมัคร → REJECTED (ไม่ผ่านคุณสมบัติ)',
-    'เคสมี reason',
+    'เปลี่ยนสถานะใบสมัคร → ข้อมูลไม่ครบถ้วน (ไม่ผ่านคุณสมบัติ)',
+    'เคสมี reason (REJECTED → ข้อมูลไม่ครบถ้วน)',
   );
 });
 
@@ -539,7 +541,7 @@ test('Q: resolveAuditEntity APPLICATION+BULK/NEW → "กลุ่มใบส�
   assertEqual(resolved?.secondary, undefined, 'ไม่มี secondary');
 });
 
-test('Q2: UPDATE + payload รูปแบบ prod → "เปลี่ยนสถานะใบสมัคร (กลุ่ม 2 รายการ) → SUBMITTED"', () => {
+test('Q2: UPDATE + payload รูปแบบ prod → "เปลี่ยนสถานะใบสมัคร 2 รายการ → รอการตรวจสอบ"', () => {
   // payload ตรงตามที่ setAuditPayload ของ POST /applications/bulk-status เขียนจริง
   const log = {
     action: 'UPDATE',
@@ -562,12 +564,12 @@ test('Q2: UPDATE + payload รูปแบบ prod → "เปลี่ยนส
   };
   assertEqual(
     buildAuditDescription(log, resolveAuditEntity(log, () => null), payload),
-    'เปลี่ยนสถานะใบสมัคร (กลุ่ม 2 รายการ) → SUBMITTED',
-    'ต้องโชว์จำนวนรายการ + สถานะใหม่ ไม่ใช่ "แก้ไขใบสมัคร BULK/NEW"',
+    'เปลี่ยนสถานะใบสมัคร 2 รายการ → รอการตรวจสอบ',
+    'ต้องโชว์จำนวนรายการ + สถานะใหม่ภาษาไทย',
   );
 });
 
-test('Q3: payload มี reason → "เปลี่ยนสถานะใบสมัคร (กลุ่ม N รายการ) → REJECTED (<เหตุผล>)"', () => {
+test('Q3: payload มี reason → "เปลี่ยนสถานะใบสมัคร 5 รายการ → ข้อมูลไม่ครบถ้วน (<เหตุผล>)"', () => {
   const log = { action: 'UPDATE', entityType: 'APPLICATION', entityId: 'BULK/NEW' };
   assertEqual(
     buildAuditDescription(
@@ -585,7 +587,7 @@ test('Q3: payload มี reason → "เปลี่ยนสถานะใบ�
         actor: 'admin-1',
       },
     ),
-    'เปลี่ยนสถานะใบสมัคร (กลุ่ม 5 รายการ) → REJECTED (ไม่ผ่านคุณสมบัติ)',
+    'เปลี่ยนสถานะใบสมัคร 5 รายการ → ข้อมูลไม่ครบถ้วน (ไม่ผ่านคุณสมบัติ)',
     'ต้องแนบเหตุผลจาก payload.reason',
   );
 });
@@ -617,6 +619,73 @@ test('Q6: ผลลัพธ์ห้ามมี raw sentinel BULK/NEW ทุ�
     const desc = buildAuditDescription(log, resolveAuditEntity(log, () => null), payload);
     assertTrue(!desc.includes('BULK/NEW'), `description ห้ามมี sentinel: ${desc}`);
   }
+});
+
+// =========================================================
+//  S. getApplicationStatusLabel & resolveAuditActor
+// =========================================================
+
+test('S1: getApplicationStatusLabel แปลง enum สถานะเป็นภาษาไทยตาม statusConfig', () => {
+  assertEqual(getApplicationStatusLabel('QUALIFIED'), 'ผ่านการตรวจสอบ', 'QUALIFIED');
+  assertEqual(getApplicationStatusLabel('SUBMITTED'), 'รอการตรวจสอบ', 'SUBMITTED');
+  assertEqual(getApplicationStatusLabel('REJECTED'), 'ข้อมูลไม่ครบถ้วน', 'REJECTED');
+  assertEqual(getApplicationStatusLabel('CANCELED'), 'ยกเลิกใบสมัคร', 'CANCELED');
+  assertEqual(getApplicationStatusLabel('ARCHIVED'), 'เก็บเข้าคลัง', 'ARCHIVED');
+  assertEqual(getApplicationStatusLabel('DRAFT'), 'ฉบับร่าง', 'DRAFT');
+  assertEqual(getApplicationStatusLabel('CUSTOM_STATUS'), 'CUSTOM_STATUS', 'unknown fallback');
+});
+
+test('S2: resolveAuditActor ผู้สมัครแสดง ชื่อ + อีเมล', () => {
+  const log = {
+    action: 'APPLICATION_SUBMIT',
+    entityType: 'APPLICATION',
+    entityId: 'app-1',
+    adminId: '00000000-0000-0000-0000-000000000000',
+    display: {
+      name: '2026-CC01-0005',
+      secondary: 'นางอ่อนหัด มากมาก',
+      applicant: {
+        name: 'นางอ่อนหัด มากมาก',
+        email: 'aonhud@oag.go.th',
+        applicationNo: '2026-CC01-0005',
+      },
+    },
+  };
+  const actor = resolveAuditActor(log);
+  assertEqual(actor.primary, 'นางอ่อนหัด มากมาก', 'primary ต้องเป็นชื่อ');
+  assertEqual(actor.secondary, 'aonhud@oag.go.th', 'secondary ต้องเป็นอีเมล');
+});
+
+test('S3: resolveAuditActor ผู้สมัคร fallback เมื่อไม่มี display.applicant', () => {
+  const log = {
+    action: 'ATTACHMENT_UPLOAD',
+    entityType: 'ATTACHMENT',
+    entityId: 'att-1',
+    adminId: '00000000-0000-0000-0000-000000000000',
+  };
+  const actor = resolveAuditActor(log);
+  assertEqual(actor.primary, 'ผู้สมัคร', 'fallback เป็นผู้สมัคร');
+  assertEqual(actor.secondary, undefined, 'ไม่มี secondary');
+});
+
+test('S4: resolveAuditActor เจ้าหน้าที่แสดงอีเมล และระบบแสดง "ระบบ"', () => {
+  const adminLog = {
+    action: 'UPDATE',
+    entityType: 'APPLICATION',
+    entityId: 'app-1',
+    adminId: 'admin-uuid-1',
+  };
+  const adminActor = resolveAuditActor(adminLog, { 'admin-uuid-1': 'officer@oag.go.th' });
+  assertEqual(adminActor.primary, 'officer@oag.go.th', 'admin email');
+
+  const systemLog = {
+    action: 'UPDATE',
+    entityType: 'RECRUITMENT_ROUND',
+    entityId: 'round-1',
+    adminId: '00000000-0000-0000-0000-000000000000',
+  };
+  const systemActor = resolveAuditActor(systemLog);
+  assertEqual(systemActor.primary, 'ระบบ', 'system actor');
 });
 
 // =========================================================

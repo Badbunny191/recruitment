@@ -18,6 +18,7 @@ import {
   shortId,
   resolveAuditEntity,
   buildAuditDescription,
+  resolveAuditActor,
   type AuditLogForDisplay,
 } from '@/lib/audit-log-display';
 import { classifyActorType, isReservedActorEmail } from '@/lib/actor-display';
@@ -664,7 +665,7 @@ export default function AuditLogsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[160px]">เวลา</TableHead>
-                  <TableHead className="w-[200px]">Admin</TableHead>
+                  <TableHead className="w-[200px]">ผู้ดำเนินการ</TableHead>
                   <TableHead className="w-[110px]">Action</TableHead>
                   <TableHead className="min-w-[220px]">Entity</TableHead>
                   <TableHead>รายละเอียด</TableHead>
@@ -674,7 +675,7 @@ export default function AuditLogsPage() {
               <TableBody>
                 {items.map((log) => {
                   const resolved = resolveAuditEntity(log, resolveEntityName);
-                  const adminEmail = resolveAdminEmail(log.adminId, lookup.ADMIN, log.action);
+                  const actor = resolveAuditActor(log, lookup.ADMIN);
                   const payload = parsePayload(log.payload);
                   const hasChanges = hasChangeTracking(payload);
                   const tableChangeSummary = getTableChangeSummary(payload);
@@ -685,10 +686,17 @@ export default function AuditLogsPage() {
                         {formatDateTime(log.createdAt)}
                       </TableCell>
                       <TableCell className="text-xs text-slate-600">
-                        <span className="inline-flex items-center gap-1">
-                          <span>👤</span>
-                          <span className="font-medium">{adminEmail}</span>
-                        </span>
+                        <div className="flex flex-col gap-0.5 min-w-0">
+                          <span className="inline-flex items-center gap-1 min-w-0">
+                            <span>👤</span>
+                            <span className="font-medium text-slate-900 truncate">{actor.primary}</span>
+                          </span>
+                          {actor.secondary && (
+                            <span className="text-xs text-slate-500 pl-5 truncate">
+                              {actor.secondary}
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>{renderActionBadge(log.action)}</TableCell>
                       <TableCell>{renderEntity(log)}</TableCell>
