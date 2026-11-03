@@ -30,45 +30,29 @@ import { turnstileMiddleware } from '../middlewares/turnstile.middleware';
 import { lookupApplication, getLookupRoundOptions } from '../services/applicant-lookup.service';
 import { getApplicationPdf } from '../lib/pdf.service';
 import { validateTextareaAnswer } from '../lib/textarea-validation';
+import {
+  groupRounds,
+  resolveRoundPhase,
+  type RoundVisibilityInput,
+} from '../lib/round-visibility';
 
 const publicRoutes = new Hono<{ Bindings: Bindings }>();
 
 // =============================================================
-//  Timezone source of truth: Asia/Bangkok (UTC+7)
+//  Timezone: Asia/Bangkok (UTC+7)
 //
-//  The `openDate` / `closeDate` columns are stored as `integer` in
-//  `unixepoch()` seconds. The admin form saves these values as wall-clock
-//  times in THAI time (Asia/Bangkok). That means the integer is *already*
-//  offset by -7h relative to true UTC — i.e. the stored value represents
-//  "what the wall clock in Bangkok would show at that UTC instant".
+//  `open_date` / `close_date` เป็น integer (unixepoch) ของค่าที่แอดมินกรอก
+//  ผ่าน <input type="datetime-local"> ซึ่งเบราว์เซอร์ตีความเป็นเวลาไทย
+//  → ค่าที่เก็บจึงเป็น UTC instant ที่ถูกต้องอยู่แล้ว
+//  การเทียบทำบน UTC ms ตรง ๆ ไม่ต้องบวก offset
 //
-//  Because we are forbidden from using the client's local timezone, we
-//  compute the *current* "Bangkok wall-clock" as: Date.now() + 7h.
-//  Comparing against `round.openDate` / `round.closeDate` in the same
-//  Bangkok wall-clock scale gives us a correct comparison that is
-//  independent of the client machine's timezone.
-//
-//  Notes:
-//  - `Date` arithmetic is in UTC ms; we only convert to a Bangkok offset
-//    at the comparison boundary.
-//  - This keeps the policy enforced server-side. The client can lie
-//    about its clock and the gate still works.
+//  ⚠️ กติกาเปิด/ปิด **ไม่ได้อยู่ที่ไฟล์นี้แล้ว**
+//  ย้ายไปที่ backend/src/lib/round-visibility.ts (resolveRoundPhase)
+//  เพื่อให้ endpoint /rounds/active, gate ตอน submit และ unit test
+//  ใช้กติกาเดียวกัน — แก้ที่เดียว
 // =============================================================
-const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
-
-const nowBangkokMs = (): number => Date.now() + BANGKOK_OFFSET_MS;
 
 type DateLike = Date | number | string | null | undefined;
-
-const toDate = (d: DateLike): Date | null => {
-  if (d === null || d === undefined || d === '') return null;
-  if (d instanceof Date) return d;
-  if (typeof d === 'number') {
-    // drizzle mode:'timestamp' returns Date already, but be defensive.
-    return new Date(d < 1e12 ? d * 1000 : d);
-  }
-  return new Date(d);
-};
 
 /**
  * Evaluate a round's lifecycle for the public API.
@@ -84,38 +68,21 @@ const evaluateRound = (round: {
   openDate: DateLike;
   closeDate: DateLike;
 }): GateResult => {
-  const status = (round.status ?? 'DRAFT').toUpperCase();
-  // 1. DRAFT and CLOSED short-circuit before any date comparison.
-  if (status === 'DRAFT') {
-    return { ok: false, reason: 'DRAFT', message: 'ขณะนี้ยังไม่เปิดรับสมัคร' };
-  }
-  if (status === 'CLOSED') {
-    return { ok: false, reason: 'CLOSED', message: 'ปิดรับสมัครแล้ว' };
-  }
+  // กติกาเปิด/ปิดอยู่ที่ lib/round-visibility.ts ที่เดียว — ไฟล์นี้ไม่คำนวณเวลาเอง
+  // (เดิมมี BANGKOK_OFFSET_MS สองฝั่งที่ตัดกันเอง เก็บไว้เป็น dead code ไม่มีประโยชน์)
+  const phase = resolveRoundPhase(round, Date.now());
 
-  // 2. status === 'ACTIVE' → enforce the open/close window in Bangkok time.
-  const open = toDate(round.openDate);
-  const close = toDate(round.closeDate);
-  if (!open || !close) {
-    return { ok: false, reason: 'ALREADY_CLOSED', message: 'ปิดรับสมัครแล้ว' };
+  switch (phase) {
+    case 'OPEN':
+      return { ok: true };
+    case 'DRAFT':
+      return { ok: false, reason: 'DRAFT', message: 'ขณะนี้ยังไม่เปิดรับสมัคร' };
+    case 'UPCOMING':
+      return { ok: false, reason: 'NOT_OPEN_YET', message: 'ยังไม่ถึงวันเปิดรับสมัคร' };
+    case 'CLOSED':
+    default:
+      return { ok: false, reason: 'ALREADY_CLOSED', message: 'ปิดรับสมัครแล้ว' };
   }
-
-  const now = nowBangkokMs();
-
-  // `open`/`close` are UTC instants. To compare in the Bangkok wall-clock
-  // scale, shift the round endpoints by +7h so they line up with the
-  // shifted-now value.
-  const openBkk = open.getTime() + BANGKOK_OFFSET_MS;
-  const closeBkk = close.getTime() + BANGKOK_OFFSET_MS;
-
-  if (now < openBkk) {
-    return { ok: false, reason: 'NOT_OPEN_YET', message: 'ยังไม่ถึงวันเปิดรับสมัคร' };
-  }
-  if (now > closeBkk) {
-    return { ok: false, reason: 'ALREADY_CLOSED', message: 'ปิดรับสมัครแล้ว' };
-  }
-
-  return { ok: true };
 };
 
 /**
@@ -234,12 +201,62 @@ publicRoutes.get('/master-data/organizations', async (c) => {
   return c.json({ data: rows });
 });
 
+/**
+ * GET /api/v1/public/rounds/active
+ * -----------------------------------------------------------------------------
+ * รอบรับสมัครสำหรับหน้าแรก — backend เป็น source of truth ของ "สถานะที่ผู้ใช้เห็น"
+ *
+ * ปัญหาเดิม: endpoint นี้กรองแค่ status = 'ACTIVE' ไม่ได้เทียบ closeDate
+ * ทำให้รอบที่เลยกำหนดปิดไปแล้วยังถูกส่งขึ้นหน้าแรก และไปโผล่ใต้หัวข้อ
+ * "รอบรับสมัครที่เปิดอยู่" — frontend ต้องเดาเองว่าอันไหนปิดแล้ว
+ *
+ * Response ใหม่ (ไม่มี migration / ไม่เพิ่ม column):
+ *   {
+ *     data: {
+ *       open:     [...],   // ACTIVE + openDate <= now <= closeDate  (closeDate ASC)
+ *       upcoming: [...],   // ACTIVE + now < openDate               (openDate ASC)
+ *       closed:   [...],   // CLOSED หรือ ACTIVE ที่เลย closeDate   (closeDate DESC)
+ *       serverTime: 1762...  // epoch ms ฝั่งเซิร์ฟเวอร์ ใช้ทำ countdown
+ *     }
+ *   }
+ *
+ * กติกาอยู่ที่ backend/src/lib/round-visibility.ts (ใช้ร่วมกับ unit test)
+ *
+ * ⚠️ Backward compatibility
+ *   `data` เดิมเป็น array — ผู้ใช้รายเดิมมี /lookup ที่เรียก endpoint นี้เป็น
+ *   fallback จึงคงรูป array ไว้ที่ `data` เหมือนเดิม (แต่กรองเฉพาะที่ยังเปิดจริง)
+ *   และเพิ่ม `groups` เป็นก้อนใหม่สำหรับหน้าแรก
+ *   → ไม่มีใครพัง และหน้าแรกอ่าน `groups` ได้ตรง ๆ
+ */
 publicRoutes.get('/rounds/active', async (c) => {
   const db = drizzle(c.env.DB);
-  // Exclude archived rounds (deletedAt IS NOT NULL)
+
+  // DRAFT ไม่ถูกดึงมาเลย (ยังไม่ประกาศ) — ที่เหลือปล่อยให้ groupRounds จัดกลุ่ม
   const rounds = await db.select().from(recruitmentRounds)
-    .where(and(eq(recruitmentRounds.status, 'ACTIVE'), isNull(recruitmentRounds.deletedAt)));
-  return c.json({ data: rounds });
+    .where(
+      and(
+        ne(recruitmentRounds.status, 'DRAFT'),
+        isNull(recruitmentRounds.deletedAt),
+      ),
+    );
+
+  const nowMs = Date.now();
+  const groups = groupRounds(
+    rounds as unknown as Array<RoundVisibilityInput & Record<string, unknown>>,
+    nowMs,
+  );
+
+  return c.json({
+    // legacy shape — array ของรอบที่สมัครได้จริงตอนนี้
+    data: groups.open,
+    // shape ใหม่สำหรับหน้าแรก
+    groups: {
+      open: groups.open,
+      upcoming: groups.upcoming,
+      closed: groups.closed,
+    },
+    serverTime: nowMs,
+  });
 });
 
 publicRoutes.get('/rounds/:id/schema', async (c) => {

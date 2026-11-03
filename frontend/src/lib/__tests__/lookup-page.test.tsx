@@ -31,19 +31,47 @@ console.log('\n========================================');
 console.log('Applicant Lookup UI Component Tests');
 console.log('========================================\n');
 
-test('HomePage renders the lookup box above recruitment rounds', () => {
+test('HomePage puts recruitment rounds above the lookup box', () => {
   const html = renderToStaticMarkup(<HomePage />);
+
+  // ยังมี lookup อยู่ (ห้ามลบ) — แค่ลดความเด่นลงเป็น secondary action
   assert(html.includes('ค้นหาใบสมัคร'), 'Home page should have "ค้นหาใบสมัคร"');
-  assert(html.includes('สมัครแล้วและต้องการกลับมาดูข้อมูล?'), 'Home page should have subtitle 1');
-  assert(html.includes('ตรวจสอบสถานะการสมัครย้อนหลังได้ที่นี่'), 'Home page should have subtitle 2');
   assert(html.includes('href="/lookup"'), 'Home page lookup button links to /lookup');
-  assert(html.includes('รอบรับสมัครที่เปิดอยู่'), 'Home page still has "รอบรับสมัครที่เปิดอยู่" header');
-  
-  // Verify order: lookup box appears before the round list header
+  assert(
+    html.includes('สมัครแล้วต้องการตรวจสอบสถานะ?'),
+    'Home page should have the lookup subtitle',
+  );
+
+  // section หลักของหน้าแรกคือการสมัคร
+  assert(
+    html.includes('กำลังเปิดรับสมัคร'),
+    'Home page should have the "กำลังเปิดรับสมัคร" section',
+  );
+  assert(
+    !html.includes('รอบรับสมัครที่เปิดอยู่'),
+    'Old header "รอบรับสมัครที่เปิดอยู่" must be gone (it was misleading)',
+  );
+
+  // ลำดับ: rounds มาก่อน lookup (Primary = สมัคร, Secondary = ค้นหา)
+  const roundsIndex = html.indexOf('กำลังเปิดรับสมัคร');
   const lookupIndex = html.indexOf('ค้นหาใบสมัคร');
-  const roundsHeaderIndex = html.indexOf('รอบรับสมัครที่เปิดอยู่');
-  assert(lookupIndex !== -1 && roundsHeaderIndex !== -1 && lookupIndex < roundsHeaderIndex,
-    'Lookup card must appear above "รอบรับสมัครที่เปิดอยู่"');
+  assert(
+    roundsIndex !== -1 && lookupIndex !== -1 && roundsIndex < lookupIndex,
+    'Recruitment rounds must appear above the lookup box',
+  );
+});
+
+test('HomePage has exactly one h1 and no emoji icons', () => {
+  const html = renderToStaticMarkup(<HomePage />);
+
+  // PHASE 6: h1 หลักมีตัวเดียว (เดิม layout มี h1 + หน้าแรกมี h1 อีก = ซ้ำ)
+  const h1Count = (html.match(/<h1[\s>]/g) || []).length;
+  assert(h1Count === 0, `HomePage must not render its own <h1> (found ${h1Count})`);
+
+  // PHASE 5: เลิกใช้ emoji ในหน้าแรก
+  for (const emoji of ['🔍', '📅', '⏳']) {
+    assert(!html.includes(emoji), `HomePage must not use emoji ${emoji}`);
+  }
 });
 
 test('LookupPage renders the form fields required by spec', () => {
