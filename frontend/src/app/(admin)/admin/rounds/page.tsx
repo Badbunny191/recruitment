@@ -43,7 +43,41 @@ interface Round {
   // Migration 019 - Application Number Pattern
   applicationPattern?: string | null;
   roundCode?: string | null;
+  // Application Number Governance (2026-11-03)
+  // backend เป็นผู้ตัดสินการล็อก — frontend ห้าม derive เอง
+  numberingPolicy?: NumberingPolicyPayload | null;
 }
+
+/**
+ * Application Number Governance (2026-11-03)
+ * mirror ของ NumberingPolicy ฝั่ง backend (round-numbering-policy.service)
+ *
+ * - locked = activeApplicationCount > 0 (ไม่ขึ้นกับ status)
+ * - legacy (applicationPattern = null) เป็น state ไม่ใช่ lock
+ * - POLICY_UNAVAILABLE = อ่าน count ไม่ได้ → ต้องล็อก (fail-closed)
+ */
+export interface NumberingPolicyPayload {
+  locked: boolean;
+  reason: 'HAS_APPLICATIONS' | 'LEGACY_NO_PATTERN' | 'EDITABLE' | 'POLICY_UNAVAILABLE';
+  activeApplicationCount: number;
+  isLegacy: boolean;
+  editable: {
+    applicationPattern: boolean;
+    roundCode: boolean;
+  };
+}
+
+/**
+ * Fail-closed default: ใช้เมื่อยังไม่รู้ policy หรือโหลดไม่สำเร็จ
+ * ห้ามใช้ค่า editable: true เป็น default เด็ดขาด
+ */
+const LOCKED_POLICY: NumberingPolicyPayload = {
+  locked: true,
+  reason: 'POLICY_UNAVAILABLE',
+  activeApplicationCount: 0,
+  isLegacy: false,
+  editable: { applicationPattern: false, roundCode: false },
+};
 
 interface FormState {
   title: string;
@@ -266,8 +300,7 @@ export default function RoundsPage() {
   const [cloneRoundId, setCloneRoundId] = useState('');
 
   // Active Round Protection
-  const [editingAppCount, setEditingAppCount] = useState<number | null>(null);
-  const [loadingAppCount, setLoadingAppCount] = useState(false);
+  const [editingPolicy, setEditingPolicy] = useState<NumberingPolicyPayload | null>(null);
 
   // View filter
   const [view, setView] = useState<'all' | 'active' | 'archived'>(urlView);
@@ -292,32 +325,22 @@ export default function RoundsPage() {
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   useEffect(() => {
-    if (editing && editing.status === 'ACTIVE') {
-      loadApplicationCount(editing.id);
+    // Application Number Governance (2026-11-03)
+    // ใช้ numberingPolicy ที่ backend แนบมากับ GET /rounds
+    // ไม่โหลด count แยก และไม่จำกัดเฉพาะ status === 'ACTIVE' อีกต่อไป
+    if (editing) {
+      setEditingPolicy(editing.numberingPolicy ?? LOCKED_POLICY);
     } else {
-      setEditingAppCount(null);
+      setEditingPolicy(null);
     }
   }, [editing]);
 
-  const loadApplicationCount = async (roundId: string) => {
-    setLoadingAppCount(true);
-    try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/admin/rounds/${roundId}/clone-options`,
-        { headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` } }
-      ).then(r => r.json()).catch(() => ({ data: null }));
-      setEditingAppCount(res?.data?.applicationCount || 0);
-    } catch {
-      setEditingAppCount(0);
-    } finally {
-      setLoadingAppCount(false);
-    }
-  };
-
-  // ===== Derived: รอบถูกล็อก (มีผู้สมัครแล้ว) =====
-  // ใช้ทั้งกับรหัสรอบ (round_code) และรูปแบบเลขที่ใบสมัคร
-  // ค่ายังถูกส่งไป backend ตามปกติ แต่ UI แสดงเป็น Read Only
-  const isRoundLocked = editingAppCount !== null && editingAppCount > 0;
+  // ===== Derived: สิทธิ์แก้ไข numbering settings (มาจาก backend เท่านั้น) =====
+  // fail-closed: ถ้ายังไม่รู้ policy ถือว่าล็อกไว้ก่อน
+  const effectivePolicy: NumberingPolicyPayload = editingPolicy ?? LOCKED_POLICY;
+  const isRoundLocked = effectivePolicy.locked;
+  const canEditPattern = effectivePolicy.editable.applicationPattern;
+  const canEditRoundCode = effectivePolicy.editable.roundCode;
 
   const loadRounds = async () => {
     setLoading(true);
@@ -609,6 +632,21 @@ export default function RoundsPage() {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
+        // Application Number Governance (2026-11-03)
+        // backend เป็นผู้ตัดสินสุดท้าย — ถ้าตอบ 409 เพราะล็อก ให้บอกตรง ๆ
+        // และรีเฟรช policy เพื่อให้ UI ตรงกับ backend ทันที
+        if (err.reason === 'PATTERN_LOCKED' || err.reason === 'ROUND_CODE_LOCKED') {
+          await loadRounds();
+          throw new Error(
+            err.error ||
+              'ไม่สามารถแก้ไขการตั้งค่าหมายเลขได้ เนื่องจากมีผู้สมัครในรอบนี้แล้ว',
+          );
+        }
+        if (err.reason === 'POLICY_UNAVAILABLE') {
+          throw new Error(
+            err.error || 'ไม่สามารถตรวจสอบจำนวนผู้สมัครได้ กรุณาลองใหม่อีกครั้ง',
+          );
+        }
         throw new Error(err.error || err.message || (editing ? 'update failed' : 'create failed'));
       }
       setDialogOpen(false);
@@ -985,30 +1023,41 @@ export default function RoundsPage() {
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-5">
             {/* ====== LOCK WARNING (เฉพาะตอน edit + มี application) ====== */}
-            {editing && editingAppCount !== null && editingAppCount > 0 && (
+            {editing && isRoundLocked && (
               <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-4 space-y-2">
                 <div className="flex items-center gap-2">
                   <span className="text-xl">🔒</span>
                   <div className="text-sm font-semibold text-amber-900">
-                    รอบนี้มีผู้สมัครแล้ว {editingAppCount} คน
+                    {effectivePolicy.reason === 'POLICY_UNAVAILABLE'
+                      ? 'ไม่สามารถตรวจสอบจำนวนผู้สมัครได้'
+                      : `รอบนี้มีผู้สมัครแล้ว ${effectivePolicy.activeApplicationCount} คน`}
                   </div>
                 </div>
                 <div className="text-xs text-amber-800 space-y-1">
-                  <p>ไม่สามารถแก้ไข:</p>
-                  <ul className="list-disc list-inside ml-1 space-y-0.5">
-                    <li>รหัสรอบ (Round Code)</li>
-                    <li>รูปแบบเลขที่ใบสมัคร</li>
-                  </ul>
-                  <p className="pt-1">
-                    หากต้องการรูปแบบใหม่{' '}
-                    <button
-                      type="button"
-                      onClick={() => openCloneModal(editing.id)}
-                      className="underline font-semibold hover:text-amber-950"
-                    >
-                      กรุณา Clone Round
-                    </button>
-                  </p>
+                  {effectivePolicy.reason === 'POLICY_UNAVAILABLE' ? (
+                    <p>
+                      ระบบล็อกการแก้ไขการตั้งค่าหมายเลขไว้ชั่วคราวเพื่อความปลอดภัย
+                      กรุณารีเฟรชหน้าใหม่อีกครั้ง
+                    </p>
+                  ) : (
+                    <>
+                      <p>ไม่สามารถแก้ไข:</p>
+                      <ul className="list-disc list-inside ml-1 space-y-0.5">
+                        <li>รหัสรอบ (Round Code)</li>
+                        <li>รูปแบบเลขที่ใบสมัคร</li>
+                      </ul>
+                      <p className="pt-1">
+                        หากต้องการรูปแบบใหม่{' '}
+                        <button
+                          type="button"
+                          onClick={() => openCloneModal(editing.id)}
+                          className="underline font-semibold hover:text-amber-950"
+                        >
+                          กรุณา Clone Round
+                        </button>
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -1031,7 +1080,7 @@ export default function RoundsPage() {
                     onChange={(e) => setForm({ ...form, title: e.target.value })}
                     required
                     placeholder="เช่น รับสมัครนักตรวจเงินแผ่นดิน รุ่นที่ 12"
-                    disabled={editingAppCount !== null && editingAppCount > 0}
+                    disabled={isRoundLocked}
                   />
                 </div>
 
@@ -1044,7 +1093,7 @@ export default function RoundsPage() {
                       onChange={(e) => setForm({ ...form, positionLevel: e.target.value })}
                       required
                       placeholder="เช่น ปฏิบัติการ / ชำนาญการ"
-                      disabled={editingAppCount !== null && editingAppCount > 0}
+                      disabled={isRoundLocked}
                     />
                   </div>
 
@@ -1062,7 +1111,11 @@ export default function RoundsPage() {
                           </div>
                           <p className="text-xs text-amber-700 flex items-center gap-1">
                             <span>🔒</span>
-                            <span>ล็อกเนื่องจากมีผู้สมัครแล้ว</span>
+                            <span>
+                              {effectivePolicy.reason === 'POLICY_UNAVAILABLE'
+                                ? 'ล็อกชั่วคราว — ตรวจสอบจำนวนผู้สมัครไม่ได้'
+                                : 'ล็อกเนื่องจากมีผู้สมัครแล้ว'}
+                            </span>
                           </p>
                         </div>
                       </>
@@ -1114,9 +1167,12 @@ export default function RoundsPage() {
                   roundCode: form.roundCode || '?',
                 }}
                 locked={isRoundLocked}
+                isLegacy={effectivePolicy.isLegacy}
                 lockedReason={
                   isRoundLocked
-                    ? `ล็อกเนื่องจากมีผู้สมัครแล้ว ${editingAppCount} คน (หากต้องการรูปแบบใหม่ กรุณา Clone Round)`
+                    ? effectivePolicy.reason === 'POLICY_UNAVAILABLE'
+                      ? 'ล็อกชั่วคราว เนื่องจากตรวจสอบจำนวนผู้สมัครไม่ได้ กรุณารีเฟรชหน้าใหม่'
+                      : `ล็อกเนื่องจากมีผู้สมัครแล้ว ${effectivePolicy.activeApplicationCount} คน (หากต้องการรูปแบบใหม่ กรุณา Clone Round)`
                     : undefined
                 }
               />
@@ -1163,10 +1219,10 @@ export default function RoundsPage() {
                     ) : editing.status === 'ACTIVE' ? (
                       <div className="p-3 bg-slate-100 rounded-lg">
                         <span className="text-sm font-medium">{formatTemplateVersionLabel(form.templateVersionId)}</span>
-                        {loadingAppCount ? (
-                          <p className="text-[11px] text-slate-500 mt-2">กำลังโหลด...</p>
-                        ) : editingAppCount !== null && editingAppCount > 0 ? (
-                          <p className="text-[11px] text-amber-700 mt-2">ล็อก — มีผู้สมัครแล้ว {editingAppCount} คน</p>
+                        {effectivePolicy.reason === 'POLICY_UNAVAILABLE' ? (
+                          <p className="text-[11px] text-amber-700 mt-2">ล็อกชั่วคราว — ตรวจสอบจำนวนผู้สมัครไม่ได้</p>
+                        ) : effectivePolicy.activeApplicationCount > 0 ? (
+                          <p className="text-[11px] text-amber-700 mt-2">ล็อก — มีผู้สมัครแล้ว {effectivePolicy.activeApplicationCount} คน</p>
                         ) : (
                           <p className="text-[11px] text-red-600 mt-2">ไม่สามารถเปลี่ยน Template Version ได้ เนื่องจากรอบเปิดรับสมัครแล้ว</p>
                         )}

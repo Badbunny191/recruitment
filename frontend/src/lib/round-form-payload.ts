@@ -10,7 +10,13 @@
  *     frontend จึง "ไม่ส่ง" field ทั้งสอง
  *   - ยังไม่มีผู้สมัคร → แก้ได้ ต้อง "ส่งค่าจริง" เพื่อให้ backend validate + บันทึก
  *   - legacy round (roundCode ว่าง / applicationPattern null) → ไม่ส่ง field นั้น
- *     (UI เป็นแบนเนอร์อ่านอย่างเดียว แก้ไม่ได้อยู่แล้ว)
+ *     (ส่ง roundCode: '' จะโดน Zod min(3) ปฏิเสธ)
+ *
+ * Application Number Governance (2026-11-03):
+ *   - `isRoundLocked` ต้องมาจาก numberingPolicy.locked ของ backend เท่านั้น
+ *     ห้าม derive จาก status หรือ count ที่ frontend เดาเอง
+ *   - legacy (applicationPattern = null) ไม่ใช่ lock → ส่ง pattern ใหม่ได้
+ *     เมื่อยังไม่มีผู้สมัคร
  */
 
 export interface RoundFormValues {

@@ -138,6 +138,38 @@ test('RP5: templateVersionId ว่าง → ไม่ส่ง (กติก�
   assertEqual('templateVersionId' in payload, false);
 });
 
+// ===========================================================================
+// Application Number Governance (2026-11-03)
+// legacy ≠ lock: legacy round ที่ยังไม่มีผู้สมัครต้องส่ง pattern ใหม่ได้
+// ===========================================================================
+
+test('RP6: legacy (pattern null) + ไม่ล็อก + ตั้ง pattern ใหม่ → ส่ง pattern', () => {
+  const payload = buildRoundPatchPayload(
+    { ...baseForm, applicationPattern: '{YEAR}-{ROUND_CODE}-{RUNNING:4}', roundCode: 'CHM01' },
+    { isRoundLocked: false, openDateUnix: 1780000000, closeDateUnix: 1780300000 }
+  );
+  assertEqual(payload.applicationPattern, '{YEAR}-{ROUND_CODE}-{RUNNING:4}', 'pattern ใหม่ต้องถูกส่ง');
+  assertEqual(payload.roundCode, 'CHM01', 'roundCode ต้องถูกส่ง');
+});
+
+test('RP7: legacy + ล็อก (มีผู้สมัคร) → ไม่ส่งทั้งสองfield', () => {
+  const payload = buildRoundPatchPayload(
+    { ...baseForm, applicationPattern: null, roundCode: '' },
+    { isRoundLocked: true, openDateUnix: 1780000000, closeDateUnix: 1780300000 }
+  );
+  assertEqual('applicationPattern' in payload, false, 'ห้ามส่ง pattern เมื่อล็อก');
+  assertEqual('roundCode' in payload, false, 'ห้ามส่ง roundCode เมื่อล็อก');
+});
+
+test('RP8: legacy + ไม่ล็อก + ตั้ง roundCode อย่างเดียว → ส่ง roundCode', () => {
+  const payload = buildRoundPatchPayload(
+    { ...baseForm, applicationPattern: null, roundCode: 'GV01A' },
+    { isRoundLocked: false, openDateUnix: 1780000000, closeDateUnix: 1780300000 }
+  );
+  assertEqual(payload.roundCode, 'GV01A', 'roundCode ต้องถูกส่ง');
+  assertEqual('applicationPattern' in payload, false, 'pattern null ห้ามส่ง');
+});
+
 // ========== SUMMARY ==========
 
 console.log(`\n=== round-form-payload: ${passed} passed, ${failed} failed ===\n`);

@@ -56,6 +56,10 @@ import {
   DEFAULT_APPLICATION_PATTERN,
 } from '../utils/application-pattern';
 import {
+  resolveNumberingPolicy,
+  type NumberingPolicy,
+} from '../services/round-numbering-policy.service';
+import {
   validatePdfFilenamePattern,
   normalizePdfFilenamePattern,
   buildApplicationPdfFilename,
@@ -1722,7 +1726,36 @@ adminRoutes.get('/rounds', async (c) => {
     .leftJoin(templates, eq(templates.id, templateVersions.templateId))
     .where(whereClause);
 
-  return c.json({ data });
+  // ========================================================================
+  // Application Number Governance (2026-11-03)
+  // แนบ numberingPolicy ให้ทุกแถว เพื่อให้ UI ใช้ rule เดียวกับ backend
+  // (เดิม UI derive เองจาก status === 'ACTIVE' + count ที่นับ deleted ด้วย)
+  //
+  // Fail-closed: แถวที่อ่าน count ไม่ได้ → locked = true, reason = POLICY_UNAVAILABLE
+  // ห้ามตีเป็น 0 เพราะ 0 = ปลดล็อก
+  // ========================================================================
+  const dataWithPolicy = await Promise.all(
+    data.map(async (row) => {
+      try {
+        const policy = await resolveNumberingPolicy(db, row);
+        return { ...row, numberingPolicy: policy };
+      } catch (err: any) {
+        return {
+          ...row,
+          numberingPolicy: {
+            locked: true,
+            reason: 'POLICY_UNAVAILABLE' as const,
+            activeApplicationCount: 0,
+            isLegacy: !row.applicationPattern,
+            editable: { applicationPattern: false, roundCode: false },
+            error: err?.message ?? String(err),
+          },
+        };
+      }
+    }),
+  );
+
+  return c.json({ data: dataWithPolicy });
 });
 adminRoutes.post('/rounds', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_ROUND'), zValidator('json', RecruitmentRoundCreateSchema), async (c) => {
   const db = drizzle(c.env.DB);
@@ -1831,15 +1864,25 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
   }
 
   // ========================================================================
-  // Migration 019 - Lock application_pattern เมื่อมี application
-  // round_code ล็อกเสมอ (Business Data) — ห้ามเปลี่ยนเมื่อมี application
+  // Application Number Governance (2026-11-03)
+  // Source of truth เดียว: round-numbering-policy.service
+  //   locked = activeApplicationCount > 0   (ไม่ขึ้นกับ status ของรอบ)
+  //   legacy (applicationPattern = NULL) เป็น state ไม่ใช่ lock
+  //
+  // Fail-closed: ถ้าอ่านจำนวนผู้สมัครไม่ได้ ให้ตอบ 500 แทนการเดาว่า 0
+  // (เดิมปล่อยผ่าน = ปลดล็อกเงียบ ๆ)
   // ========================================================================
-  const appCountResult = await db
-    .select({ count: count() })
-    .from(applications)
-    .where(and(eq(applications.roundId, id), isNull(applications.deletedAt)))
-    .get();
-  const hasApplications = (appCountResult?.count ?? 0) > 0;
+  let numberingPolicy: NumberingPolicy;
+  try {
+    numberingPolicy = await resolveNumberingPolicy(db, round);
+  } catch (err: any) {
+    return c.json({
+      error: 'ไม่สามารถตรวจสอบจำนวนผู้สมัครของรอบนี้ได้ จึงยังแก้ไขการตั้งค่าหมายเลขไม่ได้',
+      reason: 'POLICY_UNAVAILABLE',
+      details: err?.message ?? String(err),
+    }, 500);
+  }
+  const hasApplications = numberingPolicy.locked;
 
   // Lock check: ถ้ามี application แล้ว ห้ามเปลี่ยน application_pattern หรือ round_code
   if (hasApplications) {
@@ -1847,7 +1890,7 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
       return c.json({
         error: 'ไม่สามารถแก้ไขรูปแบบเลขที่ใบสมัครได้ เนื่องจากมีผู้สมัครในรอบนี้แล้ว',
         reason: 'PATTERN_LOCKED',
-        applicationCount: appCountResult?.count ?? 0,
+        applicationCount: numberingPolicy.activeApplicationCount,
         message: 'หากต้องการรูปแบบใหม่ กรุณา Clone Round หรือสร้าง Round ใหม่',
       }, 409);
     }
@@ -1855,7 +1898,7 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
       return c.json({
         error: 'ไม่สามารถแก้ไขรหัสรอบได้ เนื่องจากมีผู้สมัครในรอบนี้แล้ว',
         reason: 'ROUND_CODE_LOCKED',
-        applicationCount: appCountResult?.count ?? 0,
+        applicationCount: numberingPolicy.activeApplicationCount,
         message: 'หากต้องการรหัสใหม่ กรุณา Clone Round หรือสร้าง Round ใหม่',
       }, 409);
     }
@@ -1872,6 +1915,24 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
         field: validation.errorField,
       }, 400);
     }
+  }
+
+  // ========================================================================
+  // Application Number Governance (2026-11-03)
+  // pattern ที่อ้าง {ROUND_CODE} ต้องมี roundCode จริง ไม่งั้น render เป็น
+  // "2569--0001" (ค่าว่าง) = เลขเสีย
+  // ตรวจจากค่าที่ "จะมีผลจริง" หลัง PATCH (request หรือค่าเดิม)
+  // ========================================================================
+  const effectivePattern =
+    data.applicationPattern !== undefined ? data.applicationPattern : round.applicationPattern;
+  const effectiveRoundCode =
+    data.roundCode !== undefined ? data.roundCode : round.roundCode;
+  if (effectivePattern && effectivePattern.includes('{ROUND_CODE}') && !effectiveRoundCode) {
+    return c.json({
+      error: 'รูปแบบเลขที่ใบสมัครอ้างอิง {ROUND_CODE} แต่รอบนี้ยังไม่มีรหัสรอบ กรุณากำหนดรหัสรอบด้วย',
+      reason: 'ROUND_CODE_REQUIRED_FOR_PATTERN',
+      field: 'roundCode',
+    }, 400);
   }
 
   // Validate round_code ถ้ามีการเปลี่ยน
@@ -3533,12 +3594,22 @@ adminRoutes.get('/rounds/:id/clone-options', async (c) => {
     : [];
   
   // Get application count for protection message
-  const appCountResult = await db
-    .select({ count: count() })
-    .from(applications)
-    .where(eq(applications.roundId, roundId))
-    .get();
-  const appCount = Number(appCountResult?.count ?? 0);
+  // Application Number Governance (2026-11-03): ตัด soft-deleted ออกให้ตรงกับ
+  // เงื่อนไขล็อกของ round-numbering-policy.service (เดิมนับรวม deleted
+  // → UI ล็อกแต่ backend ปล่อยผ่าน)
+  let appCount: number;
+  let numberingPolicy: NumberingPolicy;
+  try {
+    numberingPolicy = await resolveNumberingPolicy(db, round);
+    appCount = numberingPolicy.activeApplicationCount;
+  } catch (err: any) {
+    // Fail-closed: อ่านไม่ได้ → ล็อกไว้ก่อน ห้ามเดาว่า 0
+    return c.json({
+      error: 'ไม่สามารถตรวจสอบจำนวนผู้สมัครของรอบนี้ได้',
+      reason: 'POLICY_UNAVAILABLE',
+      details: err?.message ?? String(err),
+    }, 500);
+  }
   
   // Get comparison data for each version option
   const versionOptions = await Promise.all(
@@ -3595,6 +3666,9 @@ adminRoutes.get('/rounds/:id/clone-options', async (c) => {
       } : null,
       applicationCount: appCount,
       needsProtection: round.status === 'ACTIVE' && appCount > 0,
+      // Application Number Governance (2026-11-03)
+      // UI ใช้ค่านี้ตัดสินการล็อก ห้าม derive จาก status เองอีก
+      numberingPolicy,
       // R10 - null เมื่อรอบต้นทางไม่มี round_code (legacy) หรือหา candidate ไม่ได้
       suggestedRoundCode,
       versionOptions,

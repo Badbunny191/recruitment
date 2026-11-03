@@ -17,6 +17,12 @@ interface ApplicationPatternFieldProps {
   locked?: boolean;
   /** Message แสดงเมื่อ lock */
   lockedReason?: string;
+  /**
+   * Application Number Governance (2026-11-03)
+   * true = รอบนี้ยังไม่มี application_pattern (legacy state)
+   * legacy เป็น "state" ไม่ใช่ "lock" — ถ้าไม่ locked ต้องแก้ไขได้
+   */
+  isLegacy?: boolean;
 }
 
 // =============================================================================
@@ -204,11 +210,43 @@ export function ApplicationPatternField({
   context,
   locked = false,
   lockedReason,
+  isLegacy = false,
 }: ApplicationPatternFieldProps) {
-  // ===== Legacy round: ไม่มี application_pattern (null) =====
-  if (value === null) {
-    return <LegacyBanner reason={lockedReason} />;
+  // ===========================================================================
+  // Application Number Governance (2026-11-03)
+  // ===========================================================================
+  // ลำดับการตัดสินเปลี่ยนจากเดิม (เดิมเช็ก legacy ก่อน → legacy กลายเป็น lock ถาวร)
+  //   1. locked (มีผู้สมัครแล้ว)  → read-only เสมอ
+  //   2. legacy + ไม่ locked      → แบนเนอร์ "ยังใช้รูปแบบเดิม" + แก้ไขได้
+  //   3. ปกติ                     → ฟอร์มแก้ไขเต็ม
+  //
+  // legacy round ที่ยังไม่มีผู้สมัครต้องกำหนด pattern ได้ (Scope ข้อ 2)
+  // ===========================================================================
+
+  // ===== 1. Locked state (round has applications) =====
+  // แสดงค่าเป็น Read Only ไม่มี input / helper text / ปุ่มใด ๆ
+  if (locked) {
+    return (
+      <div className="space-y-1.5">
+        <Label>รูปแบบเลขที่ใบสมัคร</Label>
+        <div className="p-3 bg-slate-100 rounded-lg space-y-1">
+          <div className="text-sm font-mono text-slate-900 break-all">
+            {value ?? 'APP-YYYY-NNNN (format เดิม)'}
+          </div>
+          {lockedReason && (
+            <p className="text-xs text-amber-700 flex items-center gap-1">
+              <span>🔒</span>
+              <span>{lockedReason}</span>
+            </p>
+          )}
+        </div>
+      </div>
+    );
   }
+
+  // ===== 2. Legacy แต่ยังแก้ได้ → แบนเนอร์บอกความจริง + ฟอร์มด้านล่าง =====
+  // ไม่ return ทิ้ง เพราะต้องให้ admin กำหนด pattern ใหม่ได้
+  const legacyNotice = isLegacy || value === null;
 
   // ===========================================================================
   // STATE ARCHITECTURE (กัน reset bug)
@@ -221,17 +259,27 @@ export function ApplicationPatternField({
   // ===========================================================================
 
   // Helper: detect preset จาก pattern
-  const detectPreset = useCallback((pattern: string): PresetId => {
+  const detectPreset = useCallback((pattern: string | null): PresetId => {
+    if (pattern === null) return 'custom';
     const match = PRESETS.find((p) => p.id !== 'custom' && p.pattern === pattern);
     return match?.id ?? 'custom';
   }, []);
 
   // Initial state (lazy - ทำครั้งเดียวตอน mount)
-  const [selectedPreset, setSelectedPreset] = useState<PresetId>(() => detectPreset(value));
-  const [customPattern, setCustomPattern] = useState<string>(() => value || '');
+  // Application Number Governance (2026-11-03):
+  // legacy round (value = null) ต้องมีจุดเริ่มต้นให้แก้ไขได้ ไม่ใช่ช่องว่าง
+  // ใช้ local state เป็น seed — form ยังเป็น null จนกว่า admin จะเลือกเอง
+  // (กันการ migrate pattern เงียบ ๆ ตอนกดบันทึกโดยไม่ได้แตะ)
+  const LEGACY_SEED_PATTERN = '{YEAR}-{ROUND_CODE}-{RUNNING:4}';
+  const [selectedPreset, setSelectedPreset] = useState<PresetId>(() =>
+    value === null ? 'custom' : detectPreset(value),
+  );
+  const [customPattern, setCustomPattern] = useState<string>(() =>
+    value === null ? LEGACY_SEED_PATTERN : value || '',
+  );
 
   // Track previous value เพื่อแยก "value เปลี่ยนจากภายนอก" vs "value เปลี่ยนจาก user"
-  const prevValueRef = useRef<string>(value);
+  const prevValueRef = useRef<string | null>(value);
 
   // ===========================================================================
   // SYNC จาก external value
@@ -261,15 +309,16 @@ export function ApplicationPatternField({
 
     // ถ้า value ตรง preset → set customPattern = preset pattern (เป็น starting point)
     // ถ้า value เป็น custom → set customPattern = value (เก็บสิ่งที่ user พิมพ์ไว้)
+    // legacy (null) → seed ด้วย pattern มาตรฐาน เพื่อให้แก้ไขได้ทันที
     if (detected === 'custom') {
-      setCustomPattern(value);
+      setCustomPattern(value ?? LEGACY_SEED_PATTERN);
     } else {
       setCustomPattern(PRESETS.find((p) => p.id === detected)!.pattern);
     }
   }, [value, detectPreset]);
 
   const parsed = useMemo(
-    () => (selectedPreset === 'custom' ? parsePattern(customPattern) : parsePattern(value)),
+    () => (selectedPreset === 'custom' ? parsePattern(customPattern) : parsePattern(value ?? '')),
     [selectedPreset, customPattern, value],
   );
 
@@ -322,31 +371,31 @@ export function ApplicationPatternField({
     onChange(next);
   };
 
-  // ===== Locked state (round has applications) =====
-  // แสดงเป็นข้อมูล Read Only ไม่ใช่ฟอร์ม (ไม่มี input / helper text /
-  // เครื่องหมาย *) เพื่อให้สื่อว่าไม่ต้องแก้ไขอีก
-  if (locked) {
-    return (
-      <div className="space-y-1.5">
-        <Label>รูปแบบเลขที่ใบสมัคร</Label>
-        <div className="p-3 bg-slate-100 rounded-lg space-y-1">
-          <div className="text-sm font-mono text-slate-900 break-all">
-            {value ?? 'APP-YYYY-NNNN (format เดิม)'}
-          </div>
-          {lockedReason && (
-            <p className="text-xs text-amber-700 flex items-center gap-1">
-              <span>🔒</span>
-              <span>{lockedReason}</span>
-            </p>
-          )}
-        </div>
-      </div>
-    );
-  }
-
   // ===== Active editing state =====
   return (
     <div className="space-y-4">
+      {/* Application Number Governance (2026-11-03)
+          legacy round ที่ยังไม่มีผู้สมัคร: แจ้งว่าใช้รูปแบบเดิมอยู่
+          แต่ยังแก้ไขได้ (legacy = state ไม่ใช่ lock) */}
+      {legacyNotice && (
+        <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-4 space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xl">🔓</span>
+            <div>
+              <div className="text-sm font-semibold text-amber-900">
+                รอบนี้ยังใช้รูปแบบเดิม
+              </div>
+              <div className="font-mono text-base font-bold text-amber-900 mt-0.5">
+                APP-YYYY-NNNN
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-amber-800 leading-relaxed">
+            รอบนี้ถูกสร้างก่อนมีระบบ Pattern ใหม่ และยังไม่มีผู้สมัคร
+            จึงยังกำหนดรูปแบบเลขที่ใบสมัครได้
+          </p>
+        </div>
+      )}
       {/* Preset cards (Card Selection) */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         {PRESETS.map((preset) => {
@@ -479,6 +528,11 @@ export function ApplicationPatternField({
 // =============================================================================
 // Legacy Banner (สำหรับ round เก่าที่ application_pattern = null)
 // =============================================================================
+// Application Number Governance (2026-11-03)
+// แบนเนอร์นี้ใช้เฉพาะกรณี "ล็อก" (มีผู้สมัครแล้ว) เท่านั้น
+// กรณี legacy ที่ยังไม่มีผู้สมัคร ใช้ notice ในฟอร์มแก้ไข (legacy ≠ lock)
+// ห้ามใช้ข้อความ "เนื่องจากมีผู้สมัครอยู่แล้ว" เป็น default อีก เพราะเคย
+// แสดงผิดในรอบที่ไม่มีผู้สมัครเลย
 
 function LegacyBanner({ reason }: { reason?: string }) {
   return (
@@ -489,7 +543,7 @@ function LegacyBanner({ reason }: { reason?: string }) {
           <span className="text-xl">🔒</span>
           <div>
             <div className="text-sm font-semibold text-amber-900">
-              รอบนี้ใช้ Legacy Format
+              รอบนี้ยังใช้รูปแบบเดิม
             </div>
             <div className="font-mono text-base font-bold text-amber-900 mt-0.5">
               APP-YYYY-NNNN
@@ -498,7 +552,7 @@ function LegacyBanner({ reason }: { reason?: string }) {
         </div>
         <p className="text-xs text-amber-800 leading-relaxed">
           {reason ||
-            'ไม่สามารถเปลี่ยนเป็น Pattern ใหม่ได้ เนื่องจากมีผู้สมัครอยู่แล้ว'}
+            'รอบนี้ถูกสร้างก่อนมีระบบ Pattern ใหม่ และถูกล็อกไว้เพราะมีผู้สมัครแล้ว'}
         </p>
       </div>
     </div>
