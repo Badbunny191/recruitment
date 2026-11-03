@@ -190,6 +190,12 @@ function FormInner() {
   // When set, the page shows a friendly error card instead of the form.
   const [roundError, setRoundError] = useState<{ message: string; status: string } | null>(null);
 
+  // ✅ 404 gate — round id ไม่มีอยู่จริง (URL ถูกแก้เอง / roundId มั่ว / ถูกลบ):
+  // /schema ตอบ 404 เมื่อ set flag นี้ หน้าต้อง render Error State เต็มรูปแบบ
+  // ("ไม่พบรอบรับสมัคร" + ปุ่มกลับ) — ห้ามเหลือฟอร์มหรือปุ่มใดที่ชวนให้ผู้ใช้
+  // คิดว่ายังสมัครได้ (โค้ดเดิม 404 หลุดเข้า catch → alert แล้วยัง render ฟอร์มเปล่า)
+  const [roundNotFound, setRoundNotFound] = useState(false);
+
   // Round detail fetched from /public/rounds/:id/detail (works for all statuses
   // including DRAFT/CLOSED — unlike /rounds/active which only lists ACTIVE).
   // Used by the announcement block (ACTIVE) and the Error Page (DRAFT/CLOSED).
@@ -298,6 +304,9 @@ function FormInner() {
       setLoading(false);
       return;
     }
+    // roundId เปลี่ยน (แก้ URL โดยไม่ remount) — เคลียร์ not-found flag เดิม
+    // ก่อน fetch รอบใหม่ ไม่อย่างนั้น error page จะค้างจากรอบก่อน
+    setRoundNotFound(false);
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
     fetch(`${apiUrl}/public/rounds/${roundId}/schema`)
     .then(res => {
@@ -313,6 +322,15 @@ function FormInner() {
           setLoading(false);
           return null; // signal: stop processing
         });
+      }
+      // ✅ Round not found (public.routes.ts:265 → { error: 'Not found' }, 404):
+      // mark the page as not-found so it renders the full Error State — no form,
+      // no "ตรวจสอบข้อมูล", no "ล้างข้อมูลทั้งหมด". Never fall through to the
+      // empty-schema form skeleton.
+      if (res.status === 404) {
+        setRoundNotFound(true);
+        setLoading(false);
+        return null; // signal: stop processing
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
@@ -1300,6 +1318,45 @@ function FormInner() {
   
   // Check if there are any fields in the schema
   const hasSchemaFields = schema.length > 0;
+
+  // ✅ 404 — Round not found: render Error State เต็มรูปแบบ ONLY — no form card,
+  // no ApplyBackBar, no announcement block, no "ตรวจสอบข้อมูล"/"ล้างข้อมูลทั้งหมด".
+  // URL ที่ถูกแก้เอง / roundId ที่ไม่มีในระบบ ต้องไม่ทำให้ผู้ใช้เข้าใจผิดว่ายังสมัครได้
+  if (roundNotFound) {
+    return (
+      <div className="max-w-3xl mx-auto p-4 md:p-8">
+        <Card>
+          <CardHeader className="bg-rose-50 border-b border-rose-200">
+            <CardTitle className="text-xl text-rose-800">ไม่พบรอบรับสมัคร</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-6 space-y-4">
+            <div className="rounded-md bg-rose-100 border border-rose-300 px-4 py-3 text-base text-rose-900">
+              รอบรับสมัครที่ต้องการอาจถูกลบ ปิดรับสมัครแล้ว หรือไม่มีอยู่ในระบบ
+            </div>
+            <p className="text-sm text-slate-500">
+              กรุณาตรวจสอบลิงก์อีกครั้ง หรือเลือกรอบรับสมัครจากหน้ารายการ
+            </p>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <Button
+                variant="brand"
+                className="w-full sm:flex-1 h-11"
+                onClick={() => router.push('/')}
+              >
+                กลับหน้าแรก
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full sm:flex-1 h-11"
+                onClick={() => router.push('/#open-rounds-heading')}
+              >
+                กลับหน้ารายการรอบรับสมัคร
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   // ✅ UX: When the round is DRAFT/CLOSED, the page renders an Error Page
   // ONLY — no form card, no announcement block, no submit button. This
