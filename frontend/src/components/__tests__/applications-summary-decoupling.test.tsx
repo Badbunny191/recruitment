@@ -613,6 +613,60 @@ async function main() {
     await ui.unmount();
   });
 
+  // ── 9. Card Interaction (2026-11-03): การ์ดต้องกรองได้จริง ─────────────────
+  await test('การ์ด KPI กดได้ และกรองด้วย statusFilter เดียวกับ pill', async () => {
+    setSession();
+    const net = installFetch(makeHandler());
+    const ui = await renderApplications();
+
+    const cards = Array.from(win.document.querySelectorAll('[data-testid="kpi-card"]'));
+    assertEqual(cards.length, 6, 'ต้องมี KPI 6 ใบ');
+    // การ์ดทุกใบต้องเป็นปุ่มจริง (กดได้) ไม่ใช่ div เฉย ๆ
+    cards.forEach((c: any) => {
+      assertEqual(c.tagName, 'BUTTON', 'การ์ด KPI ต้องเป็น <button>');
+    });
+    // ค่าเริ่มต้น statusFilter = ALL → การ์ด "ทั้งหมด" ต้องถูกเลือกอยู่แล้ว
+    assertEqual(cards[0].getAttribute('aria-pressed'), 'true', 'ค่าเริ่มต้น "ทั้งหมด" ต้องถูกเลือก');
+    assertEqual(cards[1].getAttribute('aria-pressed'), 'false', 'การ์ดอื่นต้องยังไม่ถูกเลือก');
+
+    // การ์ด "ผ่านการตรวจสอบ" = ใบที่ 3 (index 2) → QUALIFIED
+    const qualifiedCard = cards[2] as any;
+    assert((qualifiedCard.textContent || '').includes('ผ่านการตรวจสอบ'), 'การ์ดใบที่ 3 ต้องเป็นผ่านการตรวจสอบ');
+
+    const listCallsBefore = net.listCalls().length;
+    await act(async () => { qualifiedCard.click(); });
+    await settle();
+
+    // ต้องยิง list ใหม่ด้วย status=QUALIFIED
+    const listCalls = net.listCalls();
+    assert(listCalls.length > listCallsBefore, 'กดการ์ดต้องยิง list ใหม่');
+    const lastUrl = listCalls[listCalls.length - 1].url;
+    assert(lastUrl.includes('status=QUALIFIED'), `list ต้องถูกกรองด้วย QUALIFIED (ได้ ${lastUrl})`);
+
+    // การ์ดที่เลือกต้องมี aria-pressed=true และใบอื่นเป็น false
+    const after = Array.from(win.document.querySelectorAll('[data-testid="kpi-card"]'));
+    assertEqual(after[2].getAttribute('aria-pressed'), 'true', 'การ์ดที่เลือกต้อง aria-pressed=true');
+    assertEqual(after[0].getAttribute('aria-pressed'), 'false', 'การ์ดอื่นต้องไม่ถูกเลือก');
+
+    // summary ต้องไม่ถูกยิงซ้ำ (ตัวเลข KPI ไม่ขึ้นกับ filter)
+    assertEqual(net.summaryCalls().length, 1, 'กดการ์ดต้องไม่ยิง summary ซ้ำ');
+    await ui.unmount();
+  });
+
+  await test('ระหว่าง summary ยังโหลด การ์ดต้องไม่ผูก onClick (กดไม่ได้)', async () => {
+    setSession();
+    installFetch(makeHandler({ summary: 'PENDING' }));
+    const ui = await renderApplications();
+
+    const cards = Array.from(win.document.querySelectorAll('[data-testid="kpi-card"]'));
+    assertEqual(cards.length, 6, 'ต้องมี KPI 6 ใบ');
+    // ตัวเลขยังไม่จริง → ต้องไม่เปิดให้กดกรอง (กันกรองด้วยข้อมูลที่ยังไม่รู้)
+    cards.forEach((c: any) => {
+      assertEqual(c.tagName, 'DIV', 'ระหว่างโหลดการ์ดต้องยังเป็น div (กดไม่ได้)');
+    });
+    await ui.unmount();
+  });
+
   // ───────────────────────────────────────────────────────────────────────────
   console.log('\n' + '='.repeat(50));
   console.log(`Results: ${passed} passed, ${failed} failed`);

@@ -157,6 +157,11 @@ const CARD_STYLE = {
 // Phase 1.2: KPI มี loading state ของตัวเอง (skeleton) — ไม่ผูกกับ loading ของตาราง
 // ⚠️ skeleton ต้องกินพื้นที่เท่าค่าจริง (h-... เท่ากับ text-3xl) ไม่งั้นการ์ดจะกระโดด
 //   ตอนตัวเลขมาถึง
+//
+// Card Interaction (2026-11-03): การ์ดทำหน้าที่เป็น filter ได้
+// — ตัวเลขบนการ์ดคือผลลัพธ์ของ filter เดียวกันกับ Filter Pill ด้านล่าง
+//   การ์ดที่กดไม่ได้ทั้งที่ตัวเลขสื่อ "กลุ่มนี้มีกี่ใบ" คือ affordance ที่หายไป
+// — ใช้ statusFilter ตัวเดียวกัน ไม่มี state ใหม่ → การ์ดกับ pill ไม่มีทางไม่ตรงกัน
 function KpiCard({
   icon,
   value,
@@ -164,6 +169,8 @@ function KpiCard({
   variant = 'default',
   loading = false,
   error = false,
+  onClick,
+  isActive = false,
 }: {
   icon: string;
   value: number | string;
@@ -171,6 +178,9 @@ function KpiCard({
   variant?: 'default' | 'success' | 'muted' | 'warning' | 'danger' | 'info';
   loading?: boolean;
   error?: boolean;
+  /** มีค่า = การ์ดกดได้ (ทำหน้าที่เป็น filter) */
+  onClick?: () => void;
+  isActive?: boolean;
 }) {
   const valueColor = {
     default: 'text-slate-900',
@@ -181,14 +191,8 @@ function KpiCard({
     info: 'text-blue-600',
   }[variant];
 
-  return (
-    <div
-      className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4"
-      data-testid="kpi-card"
-      data-kpi-loading={loading ? 'true' : 'false'}
-      data-kpi-error={error ? 'true' : 'false'}
-      aria-busy={loading || undefined}
-    >
+  const body = (
+    <>
       <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center text-2xl shrink-0">
         {icon}
       </div>
@@ -214,7 +218,45 @@ function KpiCard({
         )}
         <span className="text-sm text-slate-500 mt-1.5">{label}</span>
       </div>
-    </div>
+    </>
+  );
+
+  const sharedProps = {
+    'data-testid': 'kpi-card',
+    'data-kpi-loading': loading ? 'true' : 'false',
+    'data-kpi-error': error ? 'true' : 'false',
+    'aria-busy': loading || undefined,
+  } as const;
+
+  // ไม่มี onClick → div เหมือนเดิม (ไม่ใส่ role ที่กดไม่ได้จริง)
+  if (!onClick) {
+    return (
+      <div
+        {...sharedProps}
+        className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4"
+      >
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      {...sharedProps}
+      onClick={onClick}
+      aria-pressed={isActive}
+      title={`กรองเฉพาะ "${label}"`}
+      className={cn(
+        "bg-white rounded-2xl border shadow-sm px-6 py-5 flex items-center gap-4 text-left transition-colors cursor-pointer",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900/30 focus-visible:ring-offset-1",
+        isActive
+          ? "border-slate-900 ring-1 ring-slate-900"
+          : "border-slate-200/70 hover:border-slate-300 hover:bg-slate-50/60"
+      )}
+    >
+      {body}
+    </button>
   );
 }
 
@@ -1357,13 +1399,69 @@ export default function ApplicationsClient() {
           </button>
         </div>
       )}
+      {/* Card Interaction (2026-11-03): การ์ดกดได้ = filter เดียวกับ pill ด้านล่าง
+          ตัวเลขบนการ์ดจึงต้องตรงกับจำนวนแถวที่ได้หลังกดเสมอ (ใช้ statusFilter เดียวกัน)
+          ระหว่าง loading/error ไม่ผูก onClick — กดการ์ดที่ตัวเลขยังไม่จริงไม่มีประโยชน์ */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
-        <KpiCard icon="📊" value={summary.total} label="ทั้งหมด" loading={kpiLoading} error={!!summaryError} />
-        <KpiCard icon="📥" value={summary.byStatus.SUBMITTED || 0} label="รอการตรวจสอบ" variant="info" loading={kpiLoading} error={!!summaryError} />
-        <KpiCard icon="✅" value={summary.byStatus.QUALIFIED || 0} label="ผ่านการตรวจสอบ" variant="success" loading={kpiLoading} error={!!summaryError} />
-        <KpiCard icon="⚠️" value={summary.byStatus.REJECTED || 0} label="ข้อมูลไม่ครบถ้วน" variant="danger" loading={kpiLoading} error={!!summaryError} />
-        <KpiCard icon="🚫" value={summary.byStatus.CANCELED || 0} label="ยกเลิกใบสมัคร" variant="muted" loading={kpiLoading} error={!!summaryError} />
-        <KpiCard icon="📦" value={summary.byStatus.ARCHIVED || 0} label="เก็บเข้าคลัง" variant="muted" loading={kpiLoading} error={!!summaryError} />
+        <KpiCard
+          icon="📊"
+          value={summary.total}
+          label="ทั้งหมด"
+          loading={kpiLoading}
+          error={!!summaryError}
+          onClick={kpiLoading || summaryError ? undefined : () => handleStatusFilterChange('ALL')}
+          isActive={statusFilter === 'ALL'}
+        />
+        <KpiCard
+          icon="📥"
+          value={summary.byStatus.SUBMITTED || 0}
+          label="รอการตรวจสอบ"
+          variant="info"
+          loading={kpiLoading}
+          error={!!summaryError}
+          onClick={kpiLoading || summaryError ? undefined : () => handleStatusFilterChange('SUBMITTED')}
+          isActive={statusFilter === 'SUBMITTED'}
+        />
+        <KpiCard
+          icon="✅"
+          value={summary.byStatus.QUALIFIED || 0}
+          label="ผ่านการตรวจสอบ"
+          variant="success"
+          loading={kpiLoading}
+          error={!!summaryError}
+          onClick={kpiLoading || summaryError ? undefined : () => handleStatusFilterChange('QUALIFIED')}
+          isActive={statusFilter === 'QUALIFIED'}
+        />
+        <KpiCard
+          icon="⚠️"
+          value={summary.byStatus.REJECTED || 0}
+          label="ข้อมูลไม่ครบถ้วน"
+          variant="danger"
+          loading={kpiLoading}
+          error={!!summaryError}
+          onClick={kpiLoading || summaryError ? undefined : () => handleStatusFilterChange('REJECTED')}
+          isActive={statusFilter === 'REJECTED'}
+        />
+        <KpiCard
+          icon="🚫"
+          value={summary.byStatus.CANCELED || 0}
+          label="ยกเลิกใบสมัคร"
+          variant="muted"
+          loading={kpiLoading}
+          error={!!summaryError}
+          onClick={kpiLoading || summaryError ? undefined : () => handleStatusFilterChange('CANCELED')}
+          isActive={statusFilter === 'CANCELED'}
+        />
+        <KpiCard
+          icon="📦"
+          value={summary.byStatus.ARCHIVED || 0}
+          label="เก็บเข้าคลัง"
+          variant="muted"
+          loading={kpiLoading}
+          error={!!summaryError}
+          onClick={kpiLoading || summaryError ? undefined : () => handleStatusFilterChange('ARCHIVED')}
+          isActive={statusFilter === 'ARCHIVED'}
+        />
       </div>
 
       {/* Bulk Action Bar */}

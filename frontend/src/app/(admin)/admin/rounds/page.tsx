@@ -18,6 +18,7 @@ import { ActionMenu } from '@/components/ui/action-menu';
 import { NoDataEmptyState, NoResultsEmptyState } from '@/components/ui/empty-state';
 import { ApplicationPatternField } from '@/components/ApplicationPatternField';
 import { buildRoundPatchPayload } from '@/lib/round-form-payload';
+import { resolveRoundLifecycle, type RoundLifecycle } from '@/lib/round-lifecycle';
 import { cn } from '@/lib/utils';
 import { useRole } from '@/lib/useRole';
 import {
@@ -155,29 +156,65 @@ const STATUS_CONFIG = {
 } as const;
 
 // ============================================
+// ROUND LIFECYCLE — นิยามเดียวสำหรับ Card และ Filter
+// ============================================
+// logic อยู่ใน src/lib/round-lifecycle.ts (Next.js ห้าม page export ชื่ออื่น)
+// ที่นี่เก็บเฉพาะ mapping ระหว่าง lifecycle กับ view filter ของหน้านี้
+
+// ============================================
+// VIEW FILTER — ต้องตรงกับ Card/Pill ที่แสดง
+// ============================================
+// 'active' เดิม (status === 'ACTIVE' ล้วน) ยังรับเป็น alias ของ 'open'
+// เพื่อไม่ให้ bookmark/ลิงก์เก่าที่ค้างอยู่ใน URL พัง
+type ViewFilter = 'all' | 'open' | 'draft' | 'closed' | 'scheduled' | 'archived';
+
+const parseViewFilter = (raw: string | null): ViewFilter => {
+  if (raw === 'active') return 'open';
+  if (raw === 'open' || raw === 'draft' || raw === 'closed' || raw === 'scheduled' || raw === 'archived') {
+    return raw;
+  }
+  return 'all';
+};
+
+// filter ที่อ้าง lifecycle → ใช้ resolveRoundLifecycle ตัวเดียวกันกับ Card
+// (กันปัญหา Card กับ Filter นับไม่ตรงกัน)
+const LIFECYCLE_BY_VIEW: Record<'open' | 'draft' | 'closed' | 'scheduled', RoundLifecycle> = {
+  open: 'OPEN',
+  draft: 'DRAFT',
+  closed: 'CLOSED',
+  scheduled: 'SCHEDULED',
+};
+
+// ============================================
 // SUB-COMPONENTS
 // ============================================
 
-/** KPI Card - Smart Family Style */
+/** KPI Card - Smart Family Style — กดได้เพื่อ filter (ใช้ lifecycle เดียวกับ Filter Pill) */
 function KpiCard({ 
   icon, 
   value, 
   label, 
-  variant = 'default' 
+  variant = 'default',
+  onClick,
+  isActive = false,
 }: { 
   icon: string; 
   value: number | string; 
   label: string; 
-  variant?: 'default' | 'success' | 'muted';
+  variant?: 'default' | 'success' | 'muted' | 'warning' | 'danger';
+  onClick?: () => void;
+  isActive?: boolean;
 }) {
   const valueColor = {
     default: 'text-slate-900',
     success: 'text-emerald-600',
     muted: 'text-slate-500',
+    warning: 'text-amber-600',
+    danger: 'text-rose-600',
   }[variant];
-  
-  return (
-    <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4">
+
+  const body = (
+    <>
       <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center text-2xl shrink-0">
         {icon}
       </div>
@@ -185,7 +222,34 @@ function KpiCard({
         <span className={cn("text-3xl font-bold tabular-nums leading-none", valueColor)}>{value}</span>
         <span className="text-sm text-slate-500 mt-1.5">{label}</span>
       </div>
-    </div>
+    </>
+  );
+
+  // ไม่มี onClick → render เป็น div เหมือนเดิม (ไม่ใส่ role/affordance ที่กดไม่ได้จริง)
+  if (!onClick) {
+    return (
+      <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm px-6 py-5 flex items-center gap-4">
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={isActive}
+      title={`กรองเฉพาะ "${label}"`}
+      className={cn(
+        "bg-white rounded-2xl border shadow-sm px-6 py-5 flex items-center gap-4 text-left transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900/20",
+        isActive
+          ? "border-slate-900 ring-1 ring-slate-900"
+          : "border-slate-200/70 hover:border-slate-300 hover:bg-slate-50/60"
+      )}
+    >
+      {body}
+    </button>
   );
 }
 
@@ -274,9 +338,7 @@ export default function RoundsPage() {
   // URL State — page/pageSize/search/view/sort อยู่ใน URL ทั้งหมด
   // (ออกจากหน้าแล้วกด Back → remount → hydrate จาก URL → ได้ตำแหน่งเดิม)
   const urlSearch = searchParams.get('q') || '';
-  const urlViewParam = searchParams.get('view');
-  const urlView: 'all' | 'active' | 'archived' =
-    urlViewParam === 'active' || urlViewParam === 'archived' ? urlViewParam : 'all';
+  const urlView: ViewFilter = parseViewFilter(searchParams.get('view'));
   const urlSort = sortOptionsById(searchParams.get('sort') || '');
   const urlPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
   const urlPageSizeRaw = parseInt(searchParams.get('pageSize') || '10', 10) || 10;
@@ -303,7 +365,10 @@ export default function RoundsPage() {
   const [editingPolicy, setEditingPolicy] = useState<NumberingPolicyPayload | null>(null);
 
   // View filter
-  const [view, setView] = useState<'all' | 'active' | 'archived'>(urlView);
+  const [view, setView] = useState<ViewFilter>(urlView);
+  // เวลาอ้างอิงสำหรับคำนวณ lifecycle — freeze ต่อ render เพื่อให้ Card/Filter/ตาราง
+  // ใช้ "now" ค่าเดียวกัน (ไม่ให้ตัวเลขขยับกันกลางคัน)
+  const [nowMs] = useState(() => Date.now());
 
   // Search & Sort state — hydrate ค่าเริ่มต้นจาก URL
   const [search, setSearch] = useState(urlSearch);
@@ -482,7 +547,7 @@ export default function RoundsPage() {
     updateUrl({ q: value.trim() ? value : null });
   }, [updateUrl]);
 
-  const handleViewChange = useCallback((next: 'all' | 'active' | 'archived') => {
+  const handleViewChange = useCallback((next: ViewFilter) => {
     setView(next);
     updateUrl({ view: next === 'all' ? null : next });
   }, [updateUrl]);
@@ -707,10 +772,12 @@ export default function RoundsPage() {
     let result = [...rounds];
 
     // View filter (ทำฝั่ง client — ไม่กระทบ KPI)
-    if (view === 'active') {
-      result = result.filter(r => r.status === 'ACTIVE' && !r.deletedAt);
-    } else if (view === 'archived') {
+    // ใช้ resolveRoundLifecycle ตัวเดียวกับ Card → Card กับตารางนับตรงกันเสมอ
+    if (view === 'archived') {
       result = result.filter(r => !!r.deletedAt);
+    } else if (view !== 'all') {
+      const target = LIFECYCLE_BY_VIEW[view];
+      result = result.filter(r => !r.deletedAt && resolveRoundLifecycle(r, nowMs) === target);
     }
 
     if (search.trim()) {
@@ -743,7 +810,7 @@ export default function RoundsPage() {
     });
 
     return result;
-  }, [rounds, view, search, sortField, sortDirection]);
+  }, [rounds, view, search, sortField, sortDirection, nowMs]);
 
   const totalItems = filteredAndSortedRounds.length;
   const paginatedRounds = filteredAndSortedRounds.slice(
@@ -761,13 +828,37 @@ export default function RoundsPage() {
     }
   }, [loading, totalItems, pageSize, currentPage, handlePageChange]);
 
-  const totalRounds = rounds.length;
-  const activeRounds = rounds.filter(r => r.status === 'ACTIVE' && !r.deletedAt).length;
-  const archivedRounds = rounds.filter(r => r.deletedAt).length;
+  // ============================================
+  // SUMMARY COUNTS — partition ที่บวกกันได้เต็ม
+  // ============================================
+  // "ทั้งหมด" = ทุกรอบที่ยังไม่ถูกจัดเก็บ (lifecycle ยัง active อยู่)
+  // "จัดเก็บแล้ว" = แกน storage แยกออกมาเป็น Filter Pill ไม่ใช่ sibling ของ lifecycle
+  // เพราะมันเป็น subset ของทุกรอบ ไม่ใช่สถานะที่บวกเพิ่มได้
+  //
+  // จึงรับประกันว่า: เปิดรับ + ร่าง + ปิดรับ + กำหนดไว้ = ทั้งหมด (เสมอ)
+  const lifecycleCounts = useMemo(() => {
+    const counts: Record<RoundLifecycle, number> = { OPEN: 0, DRAFT: 0, CLOSED: 0, SCHEDULED: 0 };
+    let archived = 0;
+    for (const r of rounds) {
+      if (r.deletedAt) {
+        archived += 1;
+        continue;
+      }
+      counts[resolveRoundLifecycle(r, nowMs)] += 1;
+    }
+    return { ...counts, archived };
+  }, [rounds, nowMs]);
 
-  const viewCounts = {
+  const totalRounds =
+    lifecycleCounts.OPEN + lifecycleCounts.DRAFT + lifecycleCounts.CLOSED + lifecycleCounts.SCHEDULED;
+  const archivedRounds = lifecycleCounts.archived;
+
+  const viewCounts: Record<ViewFilter, number> = {
     all: totalRounds,
-    active: activeRounds,
+    open: lifecycleCounts.OPEN,
+    draft: lifecycleCounts.DRAFT,
+    closed: lifecycleCounts.CLOSED,
+    scheduled: lifecycleCounts.SCHEDULED,
     archived: archivedRounds,
   };
 
@@ -801,12 +892,52 @@ export default function RoundsPage() {
       )}
 
       {/* ============================================ */}
-      {/* 2. KPI CARDS - Ultra Compact */}
+      {/* 2. SUMMARY CARDS - lifecycle partition (กดเพื่อกรองได้) */}
       {/* ============================================ */}
-      <div className="grid grid-cols-3 gap-2">
-        <KpiCard icon="📊" value={totalRounds} label="ทั้งหมด" />
-        <KpiCard icon="✅" value={activeRounds} label="ใช้งานอยู่" variant="success" />
-        <KpiCard icon="📁" value={archivedRounds} label="จัดเก็บแล้ว" variant="muted" />
+      {/* ทั้งหมด = เปิดรับ + ร่าง + ปิดรับ (+ กำหนดไว้ ถ้ามี) — บวกกันได้เสมอ */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <KpiCard
+          icon="📊"
+          value={totalRounds}
+          label="ทั้งหมด"
+          onClick={() => handleViewChange('all')}
+          isActive={view === 'all'}
+        />
+        <KpiCard
+          icon="✅"
+          value={lifecycleCounts.OPEN}
+          label="เปิดรับ"
+          variant="success"
+          onClick={() => handleViewChange('open')}
+          isActive={view === 'open'}
+        />
+        <KpiCard
+          icon="📝"
+          value={lifecycleCounts.DRAFT}
+          label="ร่าง"
+          variant="warning"
+          onClick={() => handleViewChange('draft')}
+          isActive={view === 'draft'}
+        />
+        <KpiCard
+          icon="🔒"
+          value={lifecycleCounts.CLOSED}
+          label="ปิดรับ"
+          variant="muted"
+          onClick={() => handleViewChange('closed')}
+          isActive={view === 'closed'}
+        />
+        {/* ACTIVE ที่ตั้งวันเปิดไว้ในอนาคต — โผล่เฉพาะเมื่อมีจริง ไม่ให้ Card เปล่าเปลืองที่ */}
+        {lifecycleCounts.SCHEDULED > 0 && (
+          <KpiCard
+            icon="🗓"
+            value={lifecycleCounts.SCHEDULED}
+            label="กำหนดไว้"
+            variant="warning"
+            onClick={() => handleViewChange('scheduled')}
+            isActive={view === 'scheduled'}
+          />
+        )}
       </div>
 
       {/* ============================================ */}
@@ -838,10 +969,16 @@ export default function RoundsPage() {
           
           {/* Row 2: Filter Pills + Result Count */}
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 flex-wrap">
               <FilterPill label="ทั้งหมด" isActive={view === 'all'} onClick={() => handleViewChange('all')} count={viewCounts.all} />
-              <FilterPill label="ใช้งานอยู่" isActive={view === 'active'} onClick={() => handleViewChange('active')} count={viewCounts.active} />
-              <FilterPill label="จัดเก็บแล้ว" isActive={view === 'archived'} onClick={() => handleViewChange('archived')} count={viewCounts.archived} />
+              <FilterPill label="เปิดรับ" isActive={view === 'open'} onClick={() => handleViewChange('open')} count={viewCounts.open} />
+              <FilterPill label="ร่าง" isActive={view === 'draft'} onClick={() => handleViewChange('draft')} count={viewCounts.draft} />
+              <FilterPill label="ปิดรับ" isActive={view === 'closed'} onClick={() => handleViewChange('closed')} count={viewCounts.closed} />
+              {viewCounts.scheduled > 0 && (
+                <FilterPill label="กำหนดไว้" isActive={view === 'scheduled'} onClick={() => handleViewChange('scheduled')} count={viewCounts.scheduled} />
+              )}
+              {/* จัดเก็บแล้ว = แกน storage (subset) จึงอยู่ที่ Filter ไม่ใช่ Card */}
+              <FilterPill label="📁 จัดเก็บแล้ว" isActive={view === 'archived'} onClick={() => handleViewChange('archived')} count={viewCounts.archived} />
             </div>
             <span className="text-[11px] text-slate-500 whitespace-nowrap">
               {search.trim() ? `พบทั้งหมด ${totalItems} รายการ` : `ทั้งหมด ${totalItems} รายการ`}
