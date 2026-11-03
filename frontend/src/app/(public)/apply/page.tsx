@@ -1284,7 +1284,7 @@ function FormInner() {
     return (
       <div className="p-8 flex items-center justify-center min-h-[400px]">
         <div className="text-center">
-          <svg className="animate-spin h-8 w-8 text-blue-500 mx-auto mb-4" fill="none" viewBox="0 0 24 24">
+          <svg className="animate-spin h-8 w-8 text-brand mx-auto mb-4" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
@@ -1376,7 +1376,7 @@ function FormInner() {
           Rendered ABOVE the application form (per spec). Only shows when
           roundInfo loaded and the matching field is non-empty. */}
       {roundInfo && (roundInfo.announcementTitle || roundInfo.announcementDescription || roundInfo.contactInformation || roundInfo.remark) && (
-        <div className="mb-4 rounded-md border border-blue-200 bg-blue-50/60 p-4 md:p-5 space-y-3">
+        <div className="mb-4 rounded-md border border-brand/20 bg-brand/5 p-4 md:p-5 space-y-3">
           {roundInfo.announcementTitle && (
             <div>
               <h2 className="text-base md:text-lg font-semibold text-slate-900">
@@ -1487,7 +1487,8 @@ function FormInner() {
                 the user ticks the confirmation checkbox. */}
             <Button
               type="submit"
-              className="w-full bg-blue-600 hover:bg-blue-700 h-12 text-lg"
+              variant="brand"
+              className="w-full h-12 text-lg"
               disabled={isSubmitting}
               aria-busy={isSubmitting}
             >

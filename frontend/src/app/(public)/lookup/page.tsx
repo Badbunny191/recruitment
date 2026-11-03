@@ -185,7 +185,7 @@ export default function LookupPage() {
       <div>
         <Link
           href="/"
-          className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 font-medium transition-colors"
+          className="inline-flex items-center gap-1.5 text-sm text-brand hover:text-brand-hover font-medium transition-colors"
         >
           <span>←</span> กลับหน้ารอบรับสมัคร
         </Link>
@@ -274,8 +274,9 @@ export default function LookupPage() {
             <div className="pt-2">
               <Button
                 type="submit"
+                variant="brand"
                 disabled={isSearching || roundsLoading}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 text-base shadow-sm"
+                className="w-full font-medium py-2.5 text-base shadow-sm"
               >
                 {isSearching ? 'กำลังค้นหา...' : 'ค้นหาใบสมัคร'}
               </Button>
@@ -303,7 +304,7 @@ export default function LookupPage() {
                       <span className="text-xs text-slate-500 font-medium block">
                         เลขที่ใบสมัคร
                       </span>
-                      <span className="text-xl font-mono font-bold text-blue-900 block tracking-tight">
+                      <span className="text-xl font-mono font-bold text-brand block tracking-tight">
                         {result.applicationNo}
                       </span>
                     </div>
@@ -373,7 +374,8 @@ export default function LookupPage() {
                       type="button"
                       onClick={handleDownloadPdf}
                       disabled={isDownloadingPdf}
-                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 shadow-sm inline-flex items-center justify-center gap-2"
+                      variant="brand"
+                      className="w-full font-medium py-2.5 shadow-sm inline-flex items-center justify-center gap-2"
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />

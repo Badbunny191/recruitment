@@ -8,6 +8,13 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        // สีแบรนด์ สตง. — ค่าจริงอ้างจาก CSS variables ใน src/app/globals.css (:root)
+        // ใช้: bg-brand / text-brand / ring-brand/40 / hover:bg-brand-hover / bg-brand-accent
+        brand: {
+          DEFAULT: 'rgb(var(--brand-primary) / <alpha-value>)',
+          hover: 'rgb(var(--brand-primary-hover) / <alpha-value>)',
+          accent: 'rgb(var(--brand-accent) / <alpha-value>)',
+        },
         primary: {
           DEFAULT: '#2563eb',
           50: '#eff6ff',

@@ -1,15 +1,17 @@
 import * as React from 'react';
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'default' | 'secondary' | 'outline' | 'ghost' | 'destructive';
+  variant?: 'default' | 'brand' | 'secondary' | 'outline' | 'ghost' | 'destructive';
   size?: 'default' | 'sm' | 'lg' | 'icon';
 }
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className = '', variant = 'default', size = 'default', ...props }, ref) => {
     const baseStyles = 'inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 disabled:opacity-50 disabled:pointer-events-none';
-    
+
     const variants = {
+      // หน้า public ใช้ "brand" (Crimson จาก brand token) — "default" คง blue ไว้ให้ฝั่ง admin
+      brand: 'bg-brand text-white hover:bg-brand-hover',
       default: 'bg-blue-600 text-white hover:bg-blue-700',
       secondary: 'bg-gray-200 text-gray-900 hover:bg-gray-300',
       outline: 'border border-gray-300 bg-white hover:bg-gray-100 text-gray-900',

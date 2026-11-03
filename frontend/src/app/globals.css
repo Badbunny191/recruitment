@@ -6,6 +6,26 @@
   --foreground-rgb: 0, 0, 0;
   --background-start-rgb: 255, 255, 255;
   --background-end-rgb: 255, 255, 255;
+
+  /* ─────────────────────────────────────────────────────────────────────
+     SAO Brand Tokens — Single Source of Truth
+     -------------------------------------------------------------------------
+     สีจากตราสำนักงานการตรวจเงินแผ่นดิน (แดงเลือดหมู + ทอง)
+     เก็บเป็น RGB triplet เพื่อให้ Tailwind ใช้กับ <alpha-value> ได้
+     (opacity เช่น bg-brand/10, ring-brand/40 อ้างชุดตัวแปรนี้เสมอ)
+
+     กติกาการใช้ (ห้าม hardcode hex ที่อื่น):
+       brand        = Crimson #9A1B2F — CTA / ลิงก์ / focus ring / header / footer
+       brand-hover  = Crimson เข้ม #7E1425 — hover ของปุ่ม + พื้น footer
+       brand-accent = Gold #C9A227 — เฉพาะเส้นคั่น/ขอบตกแต่ง
+                      ❌ ห้ามใช้เป็นสีข้อความ, สีปุ่ม, สีสถานะ
+                      (contrast บนขาว ~2.4:1 ไม่ผ่าน WCAG สำหรับ text)
+
+     ฝั่ง Admin ยังใช้ palette blue เดิม (primary) — ไม่เปลี่ยนธีม admin
+     ───────────────────────────────────────────────────────────────────── */
+  --brand-primary: 154 27 47;        /* #9A1B2F */
+  --brand-primary-hover: 126 20 37;  /* #7E1425 */
+  --brand-accent: 201 162 39;        /* #C9A227 */
 }
 
 * {

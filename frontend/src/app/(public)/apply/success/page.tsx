@@ -75,7 +75,7 @@ function SuccessContent() {
         </CardContent>
         <CardFooter className="flex flex-col gap-2.5 pb-8 pt-2">
           <Link href="/lookup" className="w-full">
-            <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 shadow-sm">
+            <Button variant="brand" className="w-full font-medium py-2.5 shadow-sm">
               ค้นหาใบสมัคร
             </Button>
           </Link>
@@ -146,7 +146,7 @@ function SuccessContent() {
 
         {/* คีย์ค้นหาภายหลัง — lookup ต้องมีครบทั้ง 3 (รอบ + อีเมล + เบอร์)
             จึงแสดง "ค่าจริง" เป็น checklist แทนชื่อ field อย่างเดียว */}
-        <div className="space-y-2.5 text-slate-600 bg-blue-50/60 border border-blue-100 rounded-lg p-4 text-left">
+        <div className="space-y-2.5 text-slate-600 bg-brand/5 border border-brand/20 rounded-lg p-4 text-left">
           <p className="font-medium text-slate-800 text-sm">
             ค้นหาใบสมัครในภายหลัง ต้องใช้ข้อมูล 3 อย่างนี้
           </p>
@@ -169,7 +169,7 @@ function SuccessContent() {
               <span className="font-medium text-slate-900">{application.phone || '—'}</span>
             </p>
           </div>
-          <p className="text-xs text-slate-600 leading-relaxed pt-2 border-t border-blue-100">
+          <p className="text-xs text-slate-600 leading-relaxed pt-2 border-t border-brand/20">
             อีเมลและเบอร์โทรศัพท์ต้องเป็นข้อมูลเดียวกับที่กรอกในใบสมัคร จึงจะค้นหาได้
           </p>
         </div>
@@ -180,7 +180,7 @@ function SuccessContent() {
       </CardContent>
       <CardFooter className="flex flex-col gap-2.5 pb-8 pt-2">
         <Link href="/lookup" className="w-full">
-          <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 shadow-sm">
+          <Button variant="brand" className="w-full font-medium py-2.5 shadow-sm">
             ค้นหาใบสมัคร
           </Button>
         </Link>

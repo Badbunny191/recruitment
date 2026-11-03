@@ -142,7 +142,7 @@ function FormInner() {
             )}
 
             {/* Submit Button */}
-            <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 h-12 text-lg" disabled={isSubmitting}>
+            <Button type="submit" variant="brand" className="w-full h-12 text-lg" disabled={isSubmitting}>
               {isSubmitting ? 'กำลังส่งข้อมูล...' : 'ยืนยันการส่งใบสมัคร'}
             </Button>
           </form>

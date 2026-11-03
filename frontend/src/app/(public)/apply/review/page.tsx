@@ -311,7 +311,7 @@ function ReviewContent() {
             className="flex items-center gap-3 p-2 rounded-md border border-slate-200 bg-slate-50 min-w-0"
           >
             {/* File-type icon (PDF / image / generic) */}
-            <div className="flex-shrink-0 w-8 h-8 rounded bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold uppercase">
+            <div className="flex-shrink-0 w-8 h-8 rounded bg-brand/10 text-brand flex items-center justify-center text-xs font-semibold uppercase">
               {guessTypeBadge(att)}
             </div>
             <div className="flex-1 min-w-0">
@@ -330,7 +330,7 @@ function ReviewContent() {
               }
               target="_blank"
               rel="noopener noreferrer"
-              className="flex-shrink-0 text-blue-600 hover:text-blue-800 text-sm font-medium underline whitespace-nowrap"
+              className="flex-shrink-0 text-brand hover:text-brand-hover text-sm font-medium underline whitespace-nowrap"
             >
               เปิดดู →
             </a>
@@ -587,7 +587,7 @@ function ReviewContent() {
     return (
       <div className="p-8 flex items-center justify-center min-h-[400px]">
         <div className="text-center">
-          <svg className="animate-spin h-8 w-8 text-blue-500 mx-auto mb-4" fill="none" viewBox="0 0 24 24">
+          <svg className="animate-spin h-8 w-8 text-brand mx-auto mb-4" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
@@ -751,6 +751,7 @@ function ReviewContent() {
             </Button>
             <Button
               type="button"
+              variant="brand"
               onClick={handleSubmit}
               disabled={submitDisabled}
               aria-busy={submitting}
@@ -759,7 +760,7 @@ function ReviewContent() {
                   ? 'กรุณายืนยันว่าท่านไม่ใช่โปรแกรมอัตโนมัติ'
                   : undefined
               }
-              className="w-full md:w-auto bg-green-600 hover:bg-green-700 disabled:bg-slate-300"
+              className="w-full md:w-auto disabled:bg-slate-300"
             >
               {submitting ? (
                 <span className="flex items-center gap-2">

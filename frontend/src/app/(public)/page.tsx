@@ -147,15 +147,19 @@ function ThaiDateTime({ value }: { value: PublicRound['closeDate'] }) {
 
 function OpenRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) {
   return (
-    <article className="flex flex-col rounded-lg border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md focus-within:ring-2 focus-within:ring-blue-500/40">
-      <div className="flex flex-1 flex-col gap-4 p-5">
-        <div className="flex items-start justify-between gap-3">
-          <h3 className="text-lg font-bold leading-snug text-slate-900">
-            {round.title}
-          </h3>
-          <PhaseBadge phase="OPEN" />
-        </div>
+    // โครงการ์ด: หัวการ์ด (ชื่อรอบ) โตตามยาวของข้อความ ส่วนที่เหลือยึดขอบล่าง
+    // → เนื้อหาหลัก + ปุ่มอยู่ระดับเดียวกันทุกการ์ดใน grid แม้ชื่อรอบจะ
+    //   กินจำนวนบรรทัดต่างกัน (แก้ด้วย layout ล้วน ไม่ truncate ข้อความ)
+    <article className="flex flex-col rounded-lg border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md focus-within:ring-2 focus-within:ring-brand/40">
+      <div className="flex items-start justify-between gap-3 p-5 pb-0">
+        <h3 className="text-lg font-bold leading-snug text-slate-900">
+          {round.title}
+        </h3>
+        <PhaseBadge phase="OPEN" />
+      </div>
 
+      {/* เนื้อหาหลัก — flex-1 + justify-end ดันกลุ่มนี้ไปชิดล่างของพื้นที่ที่เหลือ */}
+      <div className="flex flex-1 flex-col justify-end gap-4 px-5 pt-5">
         <div className="flex items-center gap-1.5 text-sm text-slate-600">
           <BadgeIcon className="h-4 w-4 shrink-0 text-slate-400" />
           <span>
@@ -184,9 +188,9 @@ function OpenRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) 
         </p>
       </div>
 
-      <div className="px-5 pb-5">
+      <div className="px-5 pb-5 pt-4">
         <Link href={`/apply?id=${round.id}`} className="block">
-          <Button size="lg" className="w-full gap-2 text-base font-semibold">
+          <Button variant="brand" size="lg" className="w-full gap-2 text-base font-semibold">
             สมัครเข้ารับการคัดเลือก
             <ArrowRightIcon className="h-4 w-4" />
           </Button>
@@ -202,15 +206,16 @@ function OpenRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) 
 
 function UpcomingRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) {
   return (
+    // โครงเดียวกับ OpenRoundCard — ชื่อรอบโตด้านบน เนื้อหาหลักยึดขอบล่าง
     <article className="flex flex-col rounded-lg border border-amber-200 bg-white shadow-sm">
-      <div className="flex flex-1 flex-col gap-4 p-5">
-        <div className="flex items-start justify-between gap-3">
-          <h3 className="text-base font-semibold leading-snug text-slate-800">
-            {round.title}
-          </h3>
-          <PhaseBadge phase="UPCOMING" />
-        </div>
+      <div className="flex items-start justify-between gap-3 p-5 pb-0">
+        <h3 className="text-base font-semibold leading-snug text-slate-800">
+          {round.title}
+        </h3>
+        <PhaseBadge phase="UPCOMING" />
+      </div>
 
+      <div className="flex flex-1 flex-col justify-end gap-4 px-5 pt-5">
         <div className="flex items-center gap-1.5 text-sm text-slate-600">
           <BadgeIcon className="h-4 w-4 shrink-0 text-slate-400" />
           <span>
@@ -233,7 +238,7 @@ function UpcomingRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number
         </div>
       </div>
 
-      <div className="px-5 pb-5">
+      <div className="px-5 pb-5 pt-4">
         <Button
           size="lg"
           variant="secondary"
@@ -281,13 +286,11 @@ function SectionHeading({
   id,
   title,
   description,
-  count,
   tone = 'default',
 }: {
   id: string;
   title: string;
   description?: string;
-  count?: number;
   tone?: 'primary' | 'default';
 }) {
   return (
@@ -307,11 +310,6 @@ function SectionHeading({
           <p className="mt-1 text-sm text-slate-500">{description}</p>
         )}
       </div>
-      {typeof count === 'number' && count > 0 && (
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
-          {count} รอบ
-        </span>
-      )}
     </div>
   );
 }
@@ -355,14 +353,15 @@ export default function HomePage() {
     <div className="mx-auto max-w-5xl space-y-10 px-4 py-8">
       {/* ============================================================
           PRIMARY — กำลังเปิดรับสมัคร (มีเฉพาะรอบที่สมัครได้จริง)
+          จำนวนรอบอยู่ในหัวข้อ ("กำลังเปิดรับสมัคร 2 รอบ") ไม่ใช่ badge ลอย
+          การ์ด: 1 รอบ = เต็มความกว้าง, 2+ รอบ = grid 2 คอลัมน์บน desktop
           ============================================================ */}
       <section aria-labelledby="open-rounds-heading">
         <SectionHeading
           id="open-rounds-heading"
           tone="primary"
-          title="กำลังเปิดรับสมัคร"
+          title={open.length > 0 ? `กำลังเปิดรับสมัคร ${open.length} รอบ` : 'กำลังเปิดรับสมัคร'}
           description="เลือกรอบที่ต้องการแล้วสมัครออนไลน์ได้ทันที"
-          count={open.length}
         />
 
         {loading ? (
@@ -391,7 +390,7 @@ export default function HomePage() {
             </p>
           </div>
         ) : (
-          <div className="grid gap-5 md:grid-cols-2">
+          <div className={`grid gap-5 ${open.length > 1 ? 'md:grid-cols-2' : ''}`}>
             {open.map((round) => (
               <OpenRoundCard key={round.id} round={round} nowMs={nowMs} />
             ))}
@@ -407,10 +406,9 @@ export default function HomePage() {
           <SectionHeading
             id="upcoming-rounds-heading"
             title="กำหนดเปิดรับสมัคร"
-            description="รอบที่ประกาศแล้ว แต่ยังไม่ถึงวันเปิดรับสมัคร"
-            count={upcoming.length}
+            description="ประกาศแล้ว รอวันเปิดรับสมัคร"
           />
-          <div className="grid gap-5 md:grid-cols-2">
+          <div className={`grid gap-5 ${upcoming.length > 1 ? 'md:grid-cols-2' : ''}`}>
             {upcoming.map((round) => (
               <UpcomingRoundCard key={round.id} round={round} nowMs={nowMs} />
             ))}
@@ -426,7 +424,6 @@ export default function HomePage() {
           <SectionHeading
             id="closed-rounds-heading"
             title="ปิดรับสมัครแล้ว"
-            count={closed.length}
           />
           <ul className="space-y-2">
             {closed.map((round) => (
