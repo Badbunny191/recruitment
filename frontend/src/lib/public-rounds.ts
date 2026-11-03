@@ -69,7 +69,16 @@ export const toEpochMs = (value: string | number | Date | null | undefined): num
  *
  * รูปแบบภาษาไทยเต็ม: มีคำว่า "เวลา" คั่น และปิดท้ายด้วย "น."
  * ใช้มาตรฐานเดียวกันทุกจุดที่แสดงวันเวลาในหน้า public
+ *
+ * ⚠️ ช่องว่างใน "เวลา 09:00 น." เป็น NBSP (U+00A0) ไม่ใช่ space ปกติ
+ *    space ปกติเป็นจุดตัดบรรทัด ทำให้ "น." ตกไปบรรทัดใหม่เมื่อการ์ดแคบ
+ *    NBSP ผูกสามส่วนนี้ไว้ด้วยกัน → "09:00 น." อยู่บรรทัดเดียวกันเสมอ
+ *    ส่วนช่องว่างระหว่างวัน/เดือน/ปี ยังเป็น space ปกติ เพื่อให้ตัดบรรทัดได้ตามธรรมชาติ
  */
+
+/** non-breaking space (U+00A0) */
+const NBSP = '\u00A0';
+
 export const formatThaiDateTime = (
   value: string | number | Date | null | undefined,
 ): string => {
@@ -85,7 +94,7 @@ export const formatThaiDateTime = (
   const year = d.getUTCFullYear() + 543;
   const hh = String(d.getUTCHours()).padStart(2, '0');
   const mm = String(d.getUTCMinutes()).padStart(2, '0');
-  return `${day} ${month} ${year} เวลา ${hh}:${mm} น.`;
+  return `${day} ${month} ${year} เวลา${NBSP}${hh}:${mm}${NBSP}น.`;
 };
 
 // =============================================================

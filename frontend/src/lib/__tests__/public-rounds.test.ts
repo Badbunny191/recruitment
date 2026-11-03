@@ -316,12 +316,12 @@ console.log('\n=== formatThaiDateTime ===');
 
 test('D1: แสดงเวลาไทยตามที่แอดมินกรอก (09:00 ไม่ใช่ 02:00)', () => {
   const ms = bkk(2026, 11, 1, 9, 0);
-  assertEqual(formatThaiDateTime(new Date(ms).toISOString()), '1 พ.ย. 2569 เวลา 09:00 น.');
+  assertEqual(formatThaiDateTime(new Date(ms).toISOString()), '1 พ.ย. 2569 เวลา\u00A009:00\u00A0น.');
 });
 
 test('D2: รับ unix seconds ได้', () => {
   const ms = bkk(2026, 11, 1, 9, 0);
-  assertEqual(formatThaiDateTime(Math.floor(ms / 1000)), '1 พ.ย. 2569 เวลา 09:00 น.');
+  assertEqual(formatThaiDateTime(Math.floor(ms / 1000)), '1 พ.ย. 2569 เวลา\u00A009:00\u00A0น.');
 });
 
 test('D3: ค่าเพี้ยน → "ไม่กำหนด"', () => {
@@ -331,11 +331,26 @@ test('D3: ค่าเพี้ยน → "ไม่กำหนด"', () => {
 
 test('D4: เที่ยงคืนไทย = 00:00 ไม่ใช่ 17:00 ของวันก่อน', () => {
   const ms = bkk(2026, 11, 1, 0, 0);
-  assertEqual(formatThaiDateTime(new Date(ms).toISOString()), '1 พ.ย. 2569 เวลา 00:00 น.');
+  assertEqual(formatThaiDateTime(new Date(ms).toISOString()), '1 พ.ย. 2569 เวลา\u00A000:00\u00A0น.');
+});
+
+test('D5: REGRESSION — "น." ต้องไม่ตกบรรทัดใหม่ (ใช้ NBSP ผูกเวลาไว้)', () => {
+  const ms = bkk(2026, 11, 6, 16, 30);
+  const out = formatThaiDateTime(new Date(ms).toISOString());
+
+  // ต้องมี NBSP คั่นระหว่าง "เวลา" กับตัวเลข และระหว่างตัวเลขกับ "น."
+  assertTrue(out.includes('\u00A016:30'), 'ต้องมี NBSP ก่อนเวลา');
+  assertTrue(out.includes('16:30\u00A0น.'), 'ต้องมี NBSP ระหว่างเวลาและ น.');
+
+  // ต้องไม่มี space ปกติในส่วน "เวลา HH:MM น." เลย (นั่นคือจุดที่ทำให้ตัดบรรทัด)
+  const timePart = out.slice(out.indexOf('เวลา'));
+  assertTrue(!timePart.includes(' '), `ส่วนเวลาต้องไม่มี space ปกติ: ${JSON.stringify(timePart)}`);
+
+  // หน้าตาที่ผู้ใช้อ่านยังเหมือนเดิม
+  assertEqual(out.replace(/\u00A0/g, ' '), '6 พ.ย. 2569 เวลา 16:30 น.');
 });
 
 // ========== 6. toEpochMs ==========
-
 test('E1: รับได้ทุกทรง', () => {
   assertEqual(toEpochMs(1762000000), 1762000000000);
   assertEqual(toEpochMs(1762000000000), 1762000000000);

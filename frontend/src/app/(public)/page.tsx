@@ -114,6 +114,31 @@ function CountdownBlock({
 }
 
 // =================================================================
+//  วันที่ + เวลา — "6 พ.ย. 2569 เวลา 16:30 น."
+//
+//  ปัญหา: "น." ตกบรรทัดใหม่เมื่อการ์ดแคบ เพราะช่องว่างปกติเป็นจุดตัดบรรทัด
+//  แก้ 2 ชั้น:
+//    1. formatter ใช้ NBSP ผูก "เวลา / 16:30 / น." ไว้ด้วยกันแล้ว
+//    2. span นี้ใส่ whitespace-nowrap ครอบส่วนเวลา → กันการตัดบรรทัดซ้ำอีกชั้น
+//       แม้ฟอนต์หรือเบราว์เซอร์จะยุบ NBSP ก็ยังไม่แตก
+//
+//  ส่วนวันที่ (6 พ.ย. 2569) ยังตัดบรรทัดได้ตามธรรมชาติ ไม่ล้นการ์ด
+// =================================================================
+
+function ThaiDateTime({ value }: { value: PublicRound['closeDate'] }) {
+  const full = formatThaiDateTime(value);
+  const timeIndex = full.indexOf('เวลา');
+  if (timeIndex === -1) return <span>{full}</span>;
+
+  return (
+    <span>
+      {full.slice(0, timeIndex)}
+      <span className="whitespace-nowrap">{full.slice(timeIndex)}</span>
+    </span>
+  );
+}
+
+// =================================================================
 //  การ์ดรอบที่เปิดอยู่ — ต้องตอบ 3 คำถามให้จบในการ์ดเดียว
 //    1. สมัครได้ไหม   → badge + ปุ่มที่กดได้จริง
 //    2. เหลือเวลาเท่าไร → countdown ตัวใหญ่
@@ -147,7 +172,7 @@ function OpenRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) 
               <span className="text-xs font-medium text-slate-500">ปิดรับสมัคร</span>
             </div>
             <p className="mt-1 text-base font-bold leading-tight text-slate-900">
-              {formatThaiDateTime(round.closeDate)}
+              <ThaiDateTime value={round.closeDate} />
             </p>
           </div>
           <CountdownBlock phase="OPEN" round={round} nowMs={nowMs} />
@@ -155,7 +180,7 @@ function OpenRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) 
 
         {/* วันเปิดรับสมัคร — ลดความเด่นลงเพราะรอบเปิดอยู่แล้ว */}
         <p className="text-xs text-slate-400">
-          เปิดรับสมัครตั้งแต่ {formatThaiDateTime(round.openDate)}
+          เปิดรับสมัครตั้งแต่ <ThaiDateTime value={round.openDate} />
         </p>
       </div>
 
@@ -201,7 +226,7 @@ function UpcomingRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number
               <span className="text-xs font-medium text-slate-500">เปิดรับสมัคร</span>
             </div>
             <p className="mt-1 text-base font-bold leading-tight text-slate-900">
-              {formatThaiDateTime(round.openDate)}
+              <ThaiDateTime value={round.openDate} />
             </p>
           </div>
           <CountdownBlock phase="UPCOMING" round={round} nowMs={nowMs} />
@@ -237,7 +262,7 @@ function ClosedRoundRow({ round }: { round: PublicRound }) {
       </div>
       <div className="flex items-center gap-3">
         <span className="text-xs text-slate-500">
-          ปิดเมื่อ {formatThaiDateTime(round.closeDate)}
+          ปิดเมื่อ <ThaiDateTime value={round.closeDate} />
         </span>
         <span className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
           <LockIcon className="h-3 w-3" />
