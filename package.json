@@ -10,7 +10,17 @@
     "build:backend": "cd backend && npm run build || true",
     "build:frontend": "cd frontend && npm run build",
     "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
-    "migration:check": "node scripts/check-migrations.js"
+    "migration:check": "node scripts/check-migrations.js",
+    "loadtest:setup": "node load-test/setup-round.mjs",
+    "loadtest:run": "node load-test/run-load-test.mjs",
+    "loadtest:headed": "node load-test/run-load-test.mjs --headed",
+    "loadtest:stress-50": "node load-test/run-load-test.mjs --users 50 --think 0",
+    "loadtest:stress-100": "node load-test/run-load-test.mjs --users 100 --think 0",
+    "loadtest:stress-250": "node load-test/run-load-test.mjs --users 250 --think 0",
+    "loadtest:seed": "node load-test/seed.mjs",
+    "loadtest:check": "node load-test/admin-check.mjs",
+    "loadtest:report": "node load-test/report.mjs",
+    "cleanup:test-data": "node load-test/cleanup-test-data.mjs"
   },
   "devDependencies": {
     "concurrently": "^8.2.0"

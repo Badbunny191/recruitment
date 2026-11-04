@@ -64,3 +64,6 @@ backend/.wrangler/
 *.sqlite
 *.sqlite3
 *.db
+
+# load test results (sensitive: screenshots, urls, test data)
+load-test/results/

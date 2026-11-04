@@ -101,7 +101,7 @@ head_sampling_rate = 1
 # =============================================================================
 HONEYPOT_FIELD_NAME = "website_url"
 RATE_LIMIT_ENABLED = "true"
-RATE_LIMIT_PER_MINUTE = "5"
+RATE_LIMIT_PER_MINUTE = "20"
 RATE_LIMIT_LOOKUP_PER_MINUTE = "30"
 IDEMPOTENCY_ENABLED = "true"
 IDEMPOTENCY_TTL_SECONDS = "900"

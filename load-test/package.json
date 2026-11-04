@@ -1,0 +1,27 @@
+{
+  "name": "sao-recruitment-load-test",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Load test harness: จำลองผู้สมัคร 250 คน ผ่านหน้าเว็บจริงของ SAO Recruitment (Playwright) + Seeder + Cleanup",
+  "scripts": {
+    "assets:generate": "node test-assets/generate-assets.mjs",
+    "setup": "node setup-round.mjs",
+    "setup:dry-run": "node setup-round.mjs --dry-run",
+    "seed": "node seed.mjs",
+    "load-test": "node run-load-test.mjs",
+    "load-test:smoke": "node run-load-test.mjs --users 5",
+    "load-test:headed": "node run-load-test.mjs --headed",
+    "load-test:stress-50": "node run-load-test.mjs --users 50 --think 0",
+    "load-test:stress-100": "node run-load-test.mjs --users 100 --think 0",
+    "load-test:stress-250": "node run-load-test.mjs --users 250 --think 0",
+    "admin-check": "node admin-check.mjs",
+    "report": "node report.mjs",
+    "cleanup": "node cleanup-test-data.mjs",
+    "cleanup:dry-run": "node cleanup-test-data.mjs --dry-run",
+    "playwright:smoke": "playwright test"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
