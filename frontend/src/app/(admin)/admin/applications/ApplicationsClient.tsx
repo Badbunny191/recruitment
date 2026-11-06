@@ -527,6 +527,7 @@ export default function ApplicationsClient() {
   // Export Excel (โหมดตามตัวกรอง) — ส่งตัวกรองเดียวกับที่ผู้ใช้เลือกอยู่บนหน้าจอ
   // statusFilter → status param ให้ผลลัพธ์ตรงกับ chip ที่เห็น:
   //   สถานะเดี่ยว = enum ตรง ๆ, ทั้งหมด = ไม่ส่ง status (backend คืนทุกสถานะ ตัด DRAFT ให้)
+  // sort → WYSIWYE: ลำดับแถวใน Excel ต้องตรงกับตารางที่กำลังเห็น (sortId เดิมเป๊ะ)
   const handleExportExcel = async () => {
     if (!selectedRoundId || exporting || exportingSelected) return;
     setExporting(true);
@@ -536,6 +537,7 @@ export default function ApplicationsClient() {
       if (search.trim()) params.append('search', search.trim());
       const exportStatus = statusFilterToExportStatusParam(statusFilter);
       if (exportStatus) params.append('status', exportStatus);
+      params.append('sort', sortId);
 
       const res = await fetch(`${API_URL}/admin/applications/export?${params}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
@@ -558,6 +560,7 @@ export default function ApplicationsClient() {
   // Export Excel (โหมดรายการที่เลือก) — Phase 4
   // selection อยู่ข้ามหน้าได้ → explicit ส่ง applicationIds, all-filtered ส่ง selector
   // (backend รองรับ selector ตั้งแต่ Phase 2 — ไม่มีการแก้ API ในเฟสนี้)
+  // sort → WYSIWYE: ลำดับแถวใน Excel ตรงกับตาราง ณ ตอนเลือก (ทั้งเส้นทาง ids/filter)
   const handleExportSelected = async () => {
     const selector = buildSelectionSelector(selection, {
       roundId: selectedRoundId,
@@ -575,8 +578,8 @@ export default function ApplicationsClient() {
         },
         body: JSON.stringify(
           selector.kind === 'ids'
-            ? { roundId: selectedRoundId, applicationIds: selector.ids }
-            : { roundId: selectedRoundId, selector },
+            ? { roundId: selectedRoundId, applicationIds: selector.ids, sort: sortId }
+            : { roundId: selectedRoundId, selector, sort: sortId },
         ),
       });
 
@@ -1129,7 +1132,8 @@ export default function ApplicationsClient() {
     });
   };
 
-  // Sort options — 4 ตัวเดิม (ย้ายไป lib เพื่อให้ parse/normalize อยู่ที่เดียว)
+  // Sort options — 6 ตัวจาก lib (parse/normalize อยู่ที่เดียว, id ตรงกับ whitelist
+  // backend และ Export Excel ส่ง id เดียวกัน → WYSIWYE)
   const sortOptions = [...APPLICATIONS_SORT_OPTIONS];
 
   // Phase 1: sort + pagination ทำที่ server แล้ว
@@ -1464,9 +1468,11 @@ export default function ApplicationsClient() {
         />
       </div>
 
-      {/* Bulk Action Bar */}
-      {selectedCount > 0 && canWrite && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center justify-between gap-3">
+      {/* Bulk Action Bar — ศูนย์ปฏิบัติการของ "ขอบเขตที่เลือก" (Option C):
+          แสดงเมื่อมีการเลือก ทุก role (PDF ที่เลือกใช้ได้ทุก role — สิทธิ์เดิมไม่เปลี่ยน)
+          ส่วนปุ่มที่ต้องสิทธิ์เขียน (Excel/เปลี่ยนสถานะ) gate รายปุ่มด้วย canWrite */}
+      {selectedCount > 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <span className="text-sm text-slate-700">
               {describeSelectionCount(selection, totalItems)}
@@ -1478,20 +1484,86 @@ export default function ApplicationsClient() {
               ยกเลิก
             </button>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {canWrite && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExportSelected}
+                disabled={exporting || exportingSelected || !selectedRoundId || !canSubmitSelection(selection, { roundId: selectedRoundId, statusFilter, search })}
+                className="whitespace-nowrap"
+                title={selectionBlocker ?? 'ส่งออกเฉพาะใบสมัครที่เลือก (รวมทุกหน้า) เป็นไฟล์ Excel'}
+              >
+                <svg
+                  className="h-3.5 w-3.5 shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  {/* table/spreadsheet — สัญลักษณ์ Excel เดียวกับ toolbar */}
+                  <path d="M12 3v18" />
+                  <rect width="18" height="18" x="3" y="3" rx="2" />
+                  <path d="M3 9h18" />
+                  <path d="M3 15h18" />
+                </svg>
+                {exportingSelected ? 'กำลังสร้าง Excel...' : 'Export ที่เลือก'}
+              </Button>
+            )}
+            {/* Bulk PDF (Browser ZIP) — ใช้ได้ทุก role เช่นเดียวกับ PDF รายคน */}
             <Button
               variant="outline"
               size="sm"
-              onClick={openBulkModal}
-              disabled={!canSubmitSelection(selection, {
-                roundId: selectedRoundId,
-                statusFilter,
-                search,
-              })}
-              title={selectionBlocker ?? undefined}
+              onClick={() => openPdfBulkDialog('selected')}
+              disabled={pdfBulkDialog !== null}
+              className="whitespace-nowrap"
+              title="ดาวน์โหลด PDF เฉพาะใบสมัครที่เลือก (รวมทุกหน้า) เป็นไฟล์ ZIP"
             >
-              เปลี่ยนสถานะ
+              <svg
+                className="h-3.5 w-3.5 shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                {/* file-text — สัญลักษณ์ PDF เดียวกับ toolbar */}
+                <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+                <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+                <path d="M10 9H8" />
+                <path d="M16 13H8" />
+                <path d="M16 17H8" />
+              </svg>
+              PDF ที่เลือก
             </Button>
+            {canWrite && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={openBulkModal}
+                disabled={!canSubmitSelection(selection, {
+                  roundId: selectedRoundId,
+                  statusFilter,
+                  search,
+                })}
+                className="whitespace-nowrap"
+                title={selectionBlocker ?? undefined}
+              >
+                <svg
+                  className="h-3.5 w-3.5 shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  {/* refresh — เปลี่ยนสถานะเป็นกลุ่ม */}
+                  <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+                  <path d="M21 3v5h-5" />
+                  <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+                  <path d="M8 16H3v5" />
+                </svg>
+                เปลี่ยนสถานะ
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -1519,9 +1591,12 @@ export default function ApplicationsClient() {
       <div className={cn(CARD_STYLE.container, "overflow-hidden")}>
         {/* 3.1 UNIFIED TOOLBAR */}
         <div className={cn(CARD_STYLE.header, "flex flex-col gap-2")}>
-          {/* Row 1: Search + Sort */}
-          <div className="flex items-center gap-2">
-            <div className="flex-1 min-w-0">
+          {/* Row 1: Search + Sort — search โตได้แต่มีเพดาน (max-w-md) ไม่กินทั้งแถว
+              จึงไม่ดัน sort ไปชนขอบขวา (เมนู sort เปิดลงมาบนพื้นที่ search ไม่ทับ
+              Action Toolbar ฝั่งขวา); sort อยู่ติดกับ search เป็นกลุ่ม query controls
+              (จอ <sm ซ้อนแนวตั้ง — search ได้กว้างเต็มแถว) */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <div className="w-full sm:w-auto sm:flex-1 sm:max-w-md min-w-0">
               <SearchInput
                 value={search}
                 onChange={handleSearchChange}
@@ -1532,16 +1607,20 @@ export default function ApplicationsClient() {
                 hideResultCount
               />
             </div>
-            <SortDropdown
-              value={sortId}
-              onChange={handleSortChange}
-              options={sortOptions}
-              size="sm"
-            />
+            <div className="shrink-0">
+              <SortDropdown
+                value={sortId}
+                onChange={handleSortChange}
+                options={sortOptions}
+                size="sm"
+              />
+            </div>
           </div>
 
-          {/* Row 2: Filter Pills + Export + Result Count */}
-          <div className="flex items-center justify-between gap-2">
+          {/* Row 2: Filter Pills + Actions ระดับ "ตามตัวกรอง" + Result Count
+              (Option C — action ขอบเขต "ที่เลือก" ย้ายไป Bulk Action Bar ด้านบน
+               ตามขอบเขตของข้อมูล: toolbar = ทั้งชุดตามที่เห็น, bar = เฉพาะที่เลือก) */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-1 flex-wrap">
               {STATUS_FILTER_OPTIONS.map((option) => (
                 <FilterPill
@@ -1555,51 +1634,56 @@ export default function ApplicationsClient() {
                 />
               ))}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap ml-auto">
               {canWrite && (
-                <>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleExportExcel}
-                    disabled={exporting || exportingSelected || !selectedRoundId}
-                    title="ส่งออกใบสมัครตามตัวกรองปัจจุบันเป็นไฟล์ Excel"
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleExportExcel}
+                  disabled={exporting || exportingSelected || !selectedRoundId}
+                  className="whitespace-nowrap"
+                  title="ส่งออกใบสมัครตามตัวกรองปัจจุบันเป็นไฟล์ Excel (ใช้ search/filter/sort เดียวกับหน้าจอ)"
+                >
+                  <svg
+                    className="h-3.5 w-3.5 shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
                   >
-                    <span aria-hidden>📊</span>
-                    {exporting ? 'กำลังสร้าง Excel...' : 'Export Excel'}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleExportSelected}
-                    disabled={selectedCount === 0 || exporting || exportingSelected || !selectedRoundId || !canSubmitSelection(selection, { roundId: selectedRoundId, statusFilter, search })}
-                    title={selectionBlocker ?? 'ส่งออกเฉพาะใบสมัครที่เลือก (รวมทุกหน้า) เป็นไฟล์ Excel'}
-                  >
-                    <span aria-hidden>📑</span>
-                    {exportingSelected ? 'กำลังสร้าง Excel...' : `Export ที่เลือก (${selectedCount})`}
-                  </Button>
-                </>
+                    {/* table/spreadsheet — สัญลักษณ์ Excel */}
+                    <path d="M12 3v18" />
+                    <rect width="18" height="18" x="3" y="3" rx="2" />
+                    <path d="M3 9h18" />
+                    <path d="M3 15h18" />
+                  </svg>
+                  {exporting ? 'กำลังสร้าง Excel...' : 'Export Excel'}
+                </Button>
               )}
               {/* Bulk PDF (Browser ZIP) — ใช้ได้ทุก role เช่นเดียวกับ PDF รายคน */}
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => openPdfBulkDialog('selected')}
-                disabled={selectedCount === 0 || pdfBulkDialog !== null}
-                title="ดาวน์โหลด PDF เฉพาะใบสมัครที่เลือก (รวมทุกหน้า) เป็นไฟล์ ZIP"
-              >
-                <span aria-hidden>📄</span>
-                ดาวน์โหลด PDF ที่เลือก ({selectedCount})
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
                 onClick={() => openPdfBulkDialog('filtered')}
                 disabled={totalItems === 0 || pdfBulkDialog !== null}
+                className="whitespace-nowrap"
                 title="ดาวน์โหลด PDF ทุกใบที่ตรงตัวกรองปัจจุบัน (ทุกหน้า) เป็นไฟล์ ZIP"
               >
-                <span aria-hidden>🗂️</span>
-                ดาวน์โหลด PDF ตามตัวกรอง ({totalItems})
+                <svg
+                  className="h-3.5 w-3.5 shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  {/* file-text — สัญลักษณ์ PDF */}
+                  <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+                  <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+                  <path d="M10 9H8" />
+                  <path d="M16 13H8" />
+                  <path d="M16 17H8" />
+                </svg>
+                PDF ตามตัวกรอง
               </Button>
               <span className="text-[11px] text-slate-500 whitespace-nowrap">
                 {search.trim() ? `พบ ${totalItems}` : `ทั้งหมด ${totalItems}`}

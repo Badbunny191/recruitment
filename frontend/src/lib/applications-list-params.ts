@@ -8,23 +8,31 @@
  *   1. page/pageSize/sort "ต้องส่งขึ้น server ทุกครั้ง" — ห้ามพึ่ง default
  *      ของ backend (pageSize default 50 ไม่ตรงกับ UI default 10; ไม่ส่ง page
  *      = backend คืนทุกแถว)
- *   2. sort id 4 ตัวตรงกับ SortDropdown เดิม — parse/format อยู่ที่เดียว
+ *   2. sort id 6 ตัวตรงกับ SortDropdown + whitelist ฝั่ง backend — parse/format
+ *      อยู่ที่เดียว (Export Excel ส่ง id เดียวกัน → WYSIWYE)
  *   3. total/totalPages มาจาก response เท่านั้น ไม่คำนวณจาก array ที่โหลดมา
  */
 
 // ── Sort ────────────────────────────────────────────────────────────────────
 
-/** 4 ตัวเลือกเดิมของ SortDropdown — ห้ามเพิ่ม/ลดใน Phase 1 */
+/**
+ * ตัวเลือกของ SortDropdown — 6 ตัว ตรงกับ whitelist
+ * APPLICATIONS_LIST_SORT_IDS ฝั่ง backend (applications-list-query.ts) ทุกตัว
+ * (id/field ห้ามแก้ฝ่ายเดียว — sort ทำที่ server และ Export Excel ใช้ id เดียวกัน
+ * ตามหลัก WYSIWYE: หน้าเรียงแบบไหน Excel เรียงแบบเดียวกัน)
+ */
 export const APPLICATIONS_SORT_OPTIONS = [
-  { id: 'submittedAt-desc', field: 'submittedAt', label: 'ล่าสุด', direction: 'desc' as const },
-  { id: 'submittedAt-asc', field: 'submittedAt', label: 'เก่าสุด', direction: 'asc' as const },
+  { id: 'applicationNo-desc', field: 'applicationNo', label: 'เลขที่ใบสมัคร (ใหม่ → เก่า)', direction: 'desc' as const },
+  { id: 'applicationNo-asc', field: 'applicationNo', label: 'เลขที่ใบสมัคร (เก่า → ใหม่)', direction: 'asc' as const },
+  { id: 'submittedAt-desc', field: 'submittedAt', label: 'วันที่สมัคร (ใหม่ → เก่า)', direction: 'desc' as const },
+  { id: 'submittedAt-asc', field: 'submittedAt', label: 'วันที่สมัคร (เก่า → ใหม่)', direction: 'asc' as const },
   { id: 'fullname-asc', field: 'fullname', label: 'ชื่อ A-Z', direction: 'asc' as const },
   { id: 'fullname-desc', field: 'fullname', label: 'ชื่อ Z-A', direction: 'desc' as const },
 ] as const;
 
 export type ApplicationsSortId = (typeof APPLICATIONS_SORT_OPTIONS)[number]['id'];
 
-export const APPLICATIONS_SORT_DEFAULT: ApplicationsSortId = 'submittedAt-desc';
+export const APPLICATIONS_SORT_DEFAULT: ApplicationsSortId = 'applicationNo-desc';
 
 /** ตัวเลือกจำนวนรายการต่อหน้า — ค่า default คือ 10 (ไม่เขียนลง URL) */
 export const APPLICATIONS_PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
@@ -32,23 +40,23 @@ export const APPLICATIONS_PAGE_SIZE_DEFAULT = 10;
 
 /**
  * แยก sortId (format "<field>-<direction>") เป็น field/direction
- * ค่าที่ไม่รู้จัก → fallback submittedAt-desc (ตรงกับ sortOptions)
+ * ค่าที่ไม่รู้จัก → fallback applicationNo-desc (ตรงกับ APPLICATIONS_SORT_DEFAULT)
  */
 export function parseSortId(sortId: string): {
-  field: 'submittedAt' | 'fullname';
+  field: 'applicationNo' | 'submittedAt' | 'fullname';
   direction: 'asc' | 'desc';
 } {
   const idx = sortId.lastIndexOf('-');
-  if (idx <= 0) return { field: 'submittedAt', direction: 'desc' };
+  if (idx <= 0) return { field: 'applicationNo', direction: 'desc' };
   const field = sortId.slice(0, idx);
   const direction = sortId.slice(idx + 1);
   if (
-    (field === 'submittedAt' || field === 'fullname') &&
+    (field === 'applicationNo' || field === 'submittedAt' || field === 'fullname') &&
     (direction === 'asc' || direction === 'desc')
   ) {
     return { field, direction };
   }
-  return { field: 'submittedAt', direction: 'desc' };
+  return { field: 'applicationNo', direction: 'desc' };
 }
 
 /** sortId ที่รู้จัก → ตัวเอง, ค่าอื่น → default */

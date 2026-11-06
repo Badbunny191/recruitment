@@ -98,18 +98,27 @@ export function SortDropdown({
           isOpen && 'ring-2 ring-blue-500 ring-offset-1 border-blue-500'
         )}
       >
-        {/* Sort Icon */}
+        {/* Sort icon — ลูกศรเดียวชี้ตามทิศทางที่เลือก (เดิมแสดง ⇅ + ↑/↓ ตัวอักษร
+            ซ้อนกับ chevron จนไอคอนตีกัน — รวมเหลือตัวเดียวสื่อทิศทางชัดเจน) */}
         <svg
-          className={cn('h-3.5 w-3.5 text-slate-500')}
+          className={cn(
+            'h-3.5 w-3.5 shrink-0',
+            selectedOption ? 'text-blue-600' : 'text-slate-500',
+          )}
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
+          aria-hidden="true"
         >
           <path
             strokeLinecap="round"
             strokeLinejoin="round"
             strokeWidth={2}
-            d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"
+            d={
+              selectedOption?.direction === 'asc'
+                ? 'M3 8l7-5 7 5M10 3v18' // ↑ เรียงจากน้อยไปมาก
+                : 'M3 16l7 5 7-5M10 21V3' // ↓ เรียงจากมากไปน้อย
+            }
           />
         </svg>
 
@@ -118,22 +127,16 @@ export function SortDropdown({
           {selectedOption ? selectedOption.label : label}
         </span>
 
-        {/* Direction Indicator */}
-        {selectedOption && (
-          <span className="text-blue-600 font-medium">
-            {selectedOption.direction === 'asc' ? '↑' : '↓'}
-          </span>
-        )}
-
         {/* Chevron */}
         <svg
           className={cn(
-            'h-3.5 w-3.5 text-slate-400 transition-transform',
+            'h-3.5 w-3.5 text-slate-400 transition-transform shrink-0',
             isOpen && 'rotate-180'
           )}
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
+          aria-hidden="true"
         >
           <path
             strokeLinecap="round"
@@ -144,9 +147,12 @@ export function SortDropdown({
         </svg>
       </button>
 
-      {/* Dropdown Menu */}
+      {/* Dropdown Menu — เปิดขยาย "ไปทางซ้าย" จากขอบขวา trigger (right-0 เสมอ
+          เดิมมี sm:left-0 ทำให้ left+right ตรึงความกว้าง = กว้าง trigger เท่านั้น
+          label ยาวจึงถูกบีบ wrap) — w-max ให้กว้างตาม label ยาวสุดจริง และ
+          max-w กันหลุดจอบน viewport เล็กมาก */}
       {isOpen && (
-        <div className="absolute z-50 mt-1 right-0 sm:left-0 min-w-[160px] rounded-lg border border-slate-200 bg-white shadow-lg overflow-hidden">
+        <div className="absolute z-50 mt-1 right-0 w-max min-w-[180px] max-w-[calc(100vw-2rem)] rounded-lg border border-slate-200 bg-white shadow-lg overflow-hidden">
           <div className="py-1">
             {/* Header */}
             <div className="px-3 py-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-wider border-b bg-slate-50/50">
@@ -166,7 +172,8 @@ export function SortDropdown({
                     value === option.id && 'bg-blue-50 text-blue-700 font-medium'
                   )}
                 >
-                  <span>{option.label}</span>
+                  {/* nowrap — item ต้องบรรทัดเดียวเสมอ (เมนูกว้างพอจาก w-max แล้ว) */}
+                  <span className="whitespace-nowrap">{option.label}</span>
                   {value === option.id && (
                     <span className="text-blue-600 font-bold">
                       {option.direction === 'asc' ? '↑' : '↓'}

@@ -10,6 +10,8 @@
  *   - คอลัมน์ dynamic ตามลำดับ sections (displayOrder) → fields (displayOrder)
  *   - ไม่ hardcode field ตามประเภทตำแหน่ง — โครงสร้างมาจาก template เท่านั้น
  *   - Generate ใหม่ทุกครั้ง ไม่เก็บไฟล์ใน D1 / R2
+ *   - WYSIWYE: ลำดับแถว = sort ที่ผู้ใช้เห็นบนหน้ารายชื่อ (ORDER BY builder
+ *     กลาง applications-list-query ตัวเดียว — default applicationNo-desc)
  *   - Cap 1,000 แถวต่อครั้ง (เกิน → TOO_MANY_ROWS → HTTP 422)
  *   - D1 limit: ทุก query ที่รับ array (IN (...)) แบ่ง chunk ≤ 90 bind
  *     ต่อ statement (D1 จำกัด 100 bound parameters ต่อ statement)
@@ -32,7 +34,7 @@
  *     เก็บเป็น text เพื่อไม่ให้ Excel ตัดค่า
  */
 
-import { eq, and, isNull, or, like, desc, sql, inArray, gte, lte, count } from 'drizzle-orm';
+import { eq, and, isNull, or, like, sql, inArray, gte, lte, count } from 'drizzle-orm';
 import { drizzle as drizzleD1 } from 'drizzle-orm/d1';
 import type { drizzle as drizzleFn } from 'drizzle-orm/d1';
 import ExcelJS from 'exceljs';
@@ -65,6 +67,13 @@ import {
   resolveSelectorWhere,
   type ApplicationsSelector,
 } from '../lib/applications-selector';
+import {
+  applicationsListSortId,
+  buildApplicationsListOrderBy,
+  parseApplicationsListSort,
+  type ApplicationsListSort,
+} from '../lib/applications-list-query';
+import { extractRunningNumber } from '../utils/application-no';
 
 type DB = ReturnType<typeof drizzleFn<any>>;
 
@@ -341,6 +350,11 @@ export interface ExportFilters {
   /** YYYY-MM-DD (ตีความตามเวลา Asia/Bangkok) */
   dateFrom?: string;
   dateTo?: string;
+  /**
+   * WYSIWYE — sort id เดียวกับหน้ารายชื่อ (applicationNo-desc ฯลฯ)
+   * ไม่ส่ง = applicationNo-desc (default เดียวกับหน้ารายชื่อ)
+   */
+  sort?: string;
 }
 
 function parseStatusList(status?: string): string[] | null {
@@ -480,6 +494,9 @@ async function loadExportRound(db: DB, roundId: string) {
 const EXPORT_APP_COLUMNS = {
   id: applications.id,
   applicationNo: applications.applicationNo,
+  // seqInRound: key ของ sort "เลขที่ใบสมัคร" (running number) — workbook
+  // builder ไม่ใช้ แต่ comparator ของเส้นทาง ids (เรียงใน JS) ใช้
+  seqInRound: applications.seqInRound,
   fullname: applications.fullname,
   email: applications.email,
   status: applications.status,
@@ -492,6 +509,7 @@ const EXPORT_APP_COLUMNS = {
 interface ExportAppRow {
   id: string;
   applicationNo: string | null;
+  seqInRound: number | null;
   fullname: string | null;
   email: string | null;
   status: string | null;
@@ -641,6 +659,70 @@ async function writeExportAudit(
   });
 }
 
+// ── Row comparator เส้นทาง ids (เรียงใน JS) — mirror ของ ORDER BY ฝั่ง SQL ──
+// WYSIWYE: Excel ต้องเรียงเหมือนหน้ารายชื่อ (buildApplicationsListOrderBy)
+// ทุก field — เลขที่ใบสมัครใช้ running number (extractRunningNumber) ไม่ใช่
+// string sort; แถวไม่มีค่าของ field ที่เรียงไปท้ายเสมอทั้งสองทิศทาง
+// (สมมูล key แรก `X IS NULL ASC` ของ SQL)
+
+/** tie-break กลาง: id ASC — ตรง tie-break ท้ายสุดของ SQL ทุก branch */
+function tieBreakIdAsc(a: { id: string }, b: { id: string }): number {
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
+}
+
+function compareExportAppRows(a: ExportAppRow, b: ExportAppRow, sort: ApplicationsListSort): number {
+  const asc = sort.direction === 'asc';
+
+  if (sort.field === 'applicationNo') {
+    const an = extractRunningNumber(a.applicationNo, a.seqInRound);
+    const bn = extractRunningNumber(b.applicationNo, b.seqInRound);
+    // ไม่มีเลขที่ → ท้ายเสมอ (nullsLast ของ SQL)
+    if (an === null || bn === null) {
+      if (an === bn) return tieBreakIdAsc(a, b);
+      return an === null ? 1 : -1;
+    }
+    if (an !== bn) return asc ? an - bn : bn - an;
+    return tieBreakIdAsc(a, b);
+  }
+
+  if (sort.field === 'fullname') {
+    // COLLATE NOCASE พับเฉพาะ ASCII — toLowerCase ของ JS ครอบกรณีจริง
+    // (ชื่อไทยไม่ถูกพับทั้งสองฝั่ง จึงเทียบ code-point เหมือนกัน)
+    const an = a.fullname ? a.fullname.toLowerCase() : null;
+    const bn = b.fullname ? b.fullname.toLowerCase() : null;
+    // SQLite: NULL เล็กสุด → asc null มาก่อน, desc null อยู่หลัง (ตรง SQL เป๊ะ)
+    if (an === null || bn === null) {
+      if (an === bn) return tieBreakIdAsc(a, b);
+      return asc ? (an === null ? -1 : 1) : (an === null ? 1 : -1);
+    }
+    if (an !== bn) {
+      if (an < bn) return asc ? -1 : 1;
+      if (an > bn) return asc ? 1 : -1;
+    }
+    // secondary ของ SQL: submittedAt null ท้าย → DESC → id ASC
+    const at = toUnixTimestamp(a.submittedAt);
+    const bt = toUnixTimestamp(b.submittedAt);
+    if (at === null || bt === null) {
+      if ((at === null) === (bt === null)) return tieBreakIdAsc(a, b);
+      return at === null ? 1 : -1;
+    }
+    if (at !== bt) return bt - at;
+    return tieBreakIdAsc(a, b);
+  }
+
+  // submittedAt: null ท้ายเสมอ (key แรก IS NULL ASC ของ SQL)
+  const at = toUnixTimestamp(a.submittedAt);
+  const bt = toUnixTimestamp(b.submittedAt);
+  if (at === null || bt === null) {
+    if ((at === null) === (bt === null)) return tieBreakIdAsc(a, b);
+    return at === null ? 1 : -1;
+  }
+  if (at !== bt) return asc ? at - bt : bt - at;
+  return tieBreakIdAsc(a, b);
+}
+
 // ── Main entry: Filtered export (GET) ──────────────────────────────────────
 export async function exportApplicationsExcel(
   env: Bindings,
@@ -686,14 +768,16 @@ export async function exportApplicationsExcel(
   }
 
   // ── 3.1) Applications ตาม filters (ไม่มี DRAFT โดย default) ──────────
-  // orderBy แบบ deterministic: submittedAt desc แล้ว id desc เป็น tie-breaker
+  // WYSIWYE — ORDER BY จาก builder กลางตัวเดียวกับ GET /admin/applications
+  // (sort id เดียวกับ SortDropdown หน้ารายชื่อ; ไม่ส่ง sort = default
+  // applicationNo-desc) — หน้าเรียงแบบไหน Excel เรียงแบบเดียวกัน
   // .limit(cap): ใต้ cap ผลเหมือนเดิมทุกประการ — กรณีเดียวที่ต่างคือแถวใหม่
   // บวมระหว่าง COUNT กับ SELECT ซึ่งตัดท้ายแทนการ 422 (ยัง deterministic)
   const appRows = await db
     .select(EXPORT_APP_COLUMNS)
     .from(applications)
     .where(exportWhere)
-    .orderBy(desc(applications.submittedAt), desc(applications.id))
+    .orderBy(...buildApplicationsListOrderBy(parseApplicationsListSort(filters.sort)))
     .limit(MAX_EXPORT_ROWS);
 
   // ── 4) Build workbook (shared builder) ────────────────────────────────
@@ -716,6 +800,8 @@ export async function exportApplicationsExcel(
         : null,
       dateFrom: filters.dateFrom ?? null,
       dateTo: filters.dateTo ?? null,
+      // sort canonical ที่ถูกใช้จริง (ค่าไม่รู้จัก → default) — id enum ไม่มี PII
+      sort: applicationsListSortId(parseApplicationsListSort(filters.sort)),
     },
     rowCount: appRows.length,
     columnCount,
@@ -747,6 +833,11 @@ export interface SelectedExportRequest {
   applicationIds?: string[];
   /** Phase 2: selector (ids | filter) — ใช้แทน applicationIds ได้ */
   selector?: ApplicationsSelector;
+  /**
+   * WYSIWYE — sort id เดียวกับหน้ารายชื่อ ณ ตอนเลือก (ไม่ส่ง = default
+   * applicationNo-desc) — ลำดับแถวใน Excel ตรงกับที่ผู้ใช้เห็นบนหน้าจอ
+   */
+  sort?: string;
 }
 
 /**
@@ -754,7 +845,8 @@ export interface SelectedExportRequest {
  *   - ทุก ID ต้องอยู่ใน roundId ที่ระบุ (ห้ามข้ามรอบ) + ไม่ถูกลบ + ไม่ใช่ DRAFT
  *   - ID ซ้ำถูก deduplicate (contract: รวบเป็นรายการเดียว ไม่ reject)
  *   - มี ID ใด export ไม่ได้ → reject ทั้งชุด (422) ไม่ export บางส่วน
- *   - ลำดับแถว deterministic เหมือน filtered: submittedAt desc, id desc
+ *   - ลำดับแถว = sort ที่ผู้ใช้เลือก (WYSIWYE) — ORDER BY builder กลางเดียวกับ
+ *     หน้ารายชื่อ; เส้นทาง ids เรียงใน JS ด้วย comparator สมมูล SQL
  *
  * Phase 2 — selector:
  *   - kind 'ids'    → เส้นทางเดียวกับ applicationIds เดิมเป๊ะ (กฎ reject ทั้งชุดคงอยู่)
@@ -840,7 +932,7 @@ export async function exportSelectedApplicationsExcel(
       .select(EXPORT_APP_COLUMNS)
       .from(applications)
       .where(selectorWhere)
-      .orderBy(desc(applications.submittedAt), desc(applications.id))
+      .orderBy(...buildApplicationsListOrderBy(parseApplicationsListSort(request.sort)))
       .limit(MAX_EXPORT_ROWS);
 
     const { buffer, columnCount } = await buildWorkbookBuffer(db, round.templateVersionId, appRows);
@@ -855,6 +947,7 @@ export async function exportSelectedApplicationsExcel(
       roundId: request.roundId,
       exportMode: 'SELECTED' as const,
       selector: describeSelector(selector),
+      sort: applicationsListSortId(parseApplicationsListSort(request.sort)),
       selectedCount: appRows.length,
       rowCount: appRows.length,
       columnCount,
@@ -936,16 +1029,10 @@ export async function exportSelectedApplicationsExcel(
     return true;
   });
 
-  // ลำดับ deterministic เหมือน filtered (submittedAt DESC, id DESC) —
-  // ORDER BY ต่อ chunk รวมกันไม่ได้ลำดับ global จึงเรียงใน JS ชุดเดียวจบ
-  appRows.sort((a, b) => {
-    const at = toUnixTimestamp(a.submittedAt) ?? 0;
-    const bt = toUnixTimestamp(b.submittedAt) ?? 0;
-    if (at !== bt) return bt - at;
-    if (a.id < b.id) return 1;
-    if (a.id > b.id) return -1;
-    return 0;
-  });
+  // ลำดับ = sort ที่ผู้ใช้เลือก (WYSIWYE) — ORDER BY ต่อ chunk รวมกันไม่ได้
+  // ลำดับ global จึงเรียงใน JS ชุดเดียวจบด้วย comparator สมมูล SQL ของ builder
+  // กลาง (applicationNo = running number ไม่ใช่ string sort)
+  appRows.sort((a, b) => compareExportAppRows(a, b, parseApplicationsListSort(request.sort)));
 
   // ── 3) ID ใดไม่พบ / ถูกลบ / คนละรอบ / DRAFT → reject ทั้งชุด ──────────
   const missingCount = uniqueIds.length - appRows.length;

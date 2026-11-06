@@ -111,3 +111,35 @@ export function isValidApplicationNo(
 ): boolean {
   return parseApplicationNo(applicationNo) !== null;
 }
+
+/**
+ * Running number สำหรับการเรียงลำดับ (JS side) — mirror ของ
+ * buildApplicationRunningNoExpr() ใน lib/applications-list-query.ts (SQL)
+ *
+ * ทำไมต้องมีสองร่าง: SQL เรียงใน ORDER BY ได้ แต่ export เส้นทาง "เลือกเป็น
+ * รายการ" ดึงทีละ chunk แล้วรวมเรียงใน JS จึงต้องมี parser เดียวกัน —
+ * ทั้งสองฝั่งต้องคง semantics เดียวกัน:
+ *   1. seqInRound มีค่า → ใช้เลย (snapshot หลัง migration 019)
+ *   2. ไม่มี → ตัดเลขท้ายจาก application_no (trailing digits) ครอบทั้ง
+ *      APP-YYYY-NNNN และรอบ pattern เช่น SAO-0001 — parse ได้ 0 (เช่น -0000
+ *      ที่ไม่มีใครผลิต หรือไม่มีเลขท้ายเลย) → null เหมือน NULLIF ฝั่ง SQL
+ *   3. ไม่มีทั้งคู่ → null (caller จัดไว้ท้ายเสมอ)
+ *
+ * เรียงด้วยค่านี้ = ตามรันนิ่งจริง ไม่ใช่ string sort (APP-2026-9999 ต้อง
+ * มาก่อน APP-2026-12345 เมื่อเรียง ใหม่ → เก่า)
+ */
+export function extractRunningNumber(
+  applicationNo: string | null | undefined,
+  seqInRound: number | null | undefined,
+): number | null {
+  if (typeof seqInRound === 'number' && Number.isFinite(seqInRound)) {
+    return seqInRound;
+  }
+  if (!applicationNo || typeof applicationNo !== 'string') return null;
+  const prefix = applicationNo.replace(/\d+$/, '');
+  const digits = applicationNo.slice(prefix.length);
+  if (!digits) return null;
+  const n = Number.parseInt(digits, 10);
+  if (!Number.isFinite(n) || n === 0) return null;
+  return n;
+}

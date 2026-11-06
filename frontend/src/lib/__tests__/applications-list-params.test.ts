@@ -4,7 +4,7 @@
  * Run: node --import tsx src/lib/__tests__/applications-list-params.test.ts
  *
  * ครอบคลุม:
- *   - sort: 4 ตัวเลือกเดิม, parse/normalize, fallback ค่าที่ไม่รู้จัก
+ *   - sort: 6 ตัวเลือก (เลขที่ใบสมัคร/วันที่สมัคร/ชื่อ), parse/normalize, fallback ค่าที่ไม่รู้จัก
  *   - page/pageSize: parse จาก URL, ค่าที่ไม่ valid → default, pageSize นอกชุด → 10
  *   - buildApplicationsListParams: ส่ง page/pageSize/sort ทุกครั้ง (ห้ามพึ่ง default
  *     ของ backend), search/status ส่งเมื่อมีค่า
@@ -59,11 +59,13 @@ console.log('Phase 1: Applications List params — Tests');
 console.log('=================================================\n');
 
 // ============================================================
-// sort options — 4 ตัวเดิมต้องไม่เปลี่ยน
+// sort options — 6 ตัว (WYSIWYE: id ตรงกับ whitelist backend ทุกตัว)
 // ============================================================
 
-test('sort: มี 4 ตัวเลือกตามที่ UI เดิมมี', () => {
+test('sort: มี 6 ตัวเลือก (เลขที่ใบสมัคร/วันที่สมัคร/ชื่อ × 2 ทิศทาง)', () => {
   eq(APPLICATIONS_SORT_OPTIONS.map((o) => o.id), [
+    'applicationNo-desc',
+    'applicationNo-asc',
     'submittedAt-desc',
     'submittedAt-asc',
     'fullname-asc',
@@ -71,32 +73,36 @@ test('sort: มี 4 ตัวเลือกตามที่ UI เดิม�
   ]);
 });
 
-test('sort: label/direction ตรงกับของเดิม', () => {
+test('sort: label/field/direction ตรงสเปก', () => {
   eq(
     APPLICATIONS_SORT_OPTIONS.map((o) => [o.label, o.field, o.direction]),
     [
-      ['ล่าสุด', 'submittedAt', 'desc'],
-      ['เก่าสุด', 'submittedAt', 'asc'],
+      ['เลขที่ใบสมัคร (ใหม่ → เก่า)', 'applicationNo', 'desc'],
+      ['เลขที่ใบสมัคร (เก่า → ใหม่)', 'applicationNo', 'asc'],
+      ['วันที่สมัคร (ใหม่ → เก่า)', 'submittedAt', 'desc'],
+      ['วันที่สมัคร (เก่า → ใหม่)', 'submittedAt', 'asc'],
       ['ชื่อ A-Z', 'fullname', 'asc'],
       ['ชื่อ Z-A', 'fullname', 'desc'],
     ],
   );
 });
 
-test('sort: default = submittedAt-desc', () => {
-  eq(APPLICATIONS_SORT_DEFAULT, 'submittedAt-desc');
+test('sort: default = applicationNo-desc (เลขที่ใบสมัคร ใหม่ → เก่า)', () => {
+  eq(APPLICATIONS_SORT_DEFAULT, 'applicationNo-desc');
 });
 
 test('sort: parseSortId แยก field/direction ถูกทุกค่า', () => {
+  eq(parseSortId('applicationNo-desc'), { field: 'applicationNo', direction: 'desc' });
+  eq(parseSortId('applicationNo-asc'), { field: 'applicationNo', direction: 'asc' });
   eq(parseSortId('submittedAt-desc'), { field: 'submittedAt', direction: 'desc' });
   eq(parseSortId('submittedAt-asc'), { field: 'submittedAt', direction: 'asc' });
   eq(parseSortId('fullname-asc'), { field: 'fullname', direction: 'asc' });
   eq(parseSortId('fullname-desc'), { field: 'fullname', direction: 'desc' });
 });
 
-test('sort: parseSortId ค่าที่ไม่รู้จัก → submittedAt-desc', () => {
+test('sort: parseSortId ค่าที่ไม่รู้จัก → applicationNo-desc', () => {
   for (const bad of ['', 'unknown', 'fullname', 'id-asc', 'submittedAt-up', '-desc']) {
-    eq(parseSortId(bad), { field: 'submittedAt', direction: 'desc' }, `"${bad}"`);
+    eq(parseSortId(bad), { field: 'applicationNo', direction: 'desc' }, `"${bad}"`);
   }
 });
 

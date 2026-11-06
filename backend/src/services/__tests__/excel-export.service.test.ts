@@ -125,7 +125,8 @@ function makeTestDb() {
       id TEXT PRIMARY KEY, application_no TEXT UNIQUE, round_id TEXT NOT NULL,
       email TEXT NOT NULL, fullname TEXT NOT NULL, national_id TEXT,
       status TEXT DEFAULT 'SUBMITTED', status_reason TEXT,
-      form_data TEXT NOT NULL, submitted_at INTEGER, deleted_at INTEGER
+      form_data TEXT NOT NULL, submitted_at INTEGER, deleted_at INTEGER,
+      year INTEGER, round_code TEXT, seq_in_round INTEGER
     );
     CREATE TABLE application_attachments (
       id TEXT PRIMARY KEY, application_id TEXT NOT NULL, field_id TEXT NOT NULL,
@@ -1051,9 +1052,9 @@ async function runAllTests() {
   // ═══════════════════════════════════════════════════════════════════════
   // SELECTED EXPORT SUITE (SEL-L–Z + RBAC) — POST /applications/export-selected
   // ═══════════════════════════════════════════════════════════════════════
-  const runSelected = (ids, roundId = ROUND_ID) => exportSelectedApplicationsExcel(
+  const runSelected = (ids, roundId = ROUND_ID, sort?: string) => exportSelectedApplicationsExcel(
     { JWT_SECRET: SECRET }, // env stub — DB ถูกแทนที่ด้วย seam
-    { roundId, applicationIds: ids },
+    { roundId, applicationIds: ids, sort },
     'admin-1',
     '203.0.113.9',
   );
@@ -1137,15 +1138,88 @@ async function runAllTests() {
     assertEqual(onlyDeleted.code, 'APPLICATIONS_NOT_EXPORTABLE');
   });
 
-  t('SEL-V: ลำดับแถว deterministic (submittedAt desc) ไม่ขึ้นกับลำดับ input', async () => {
+  t('SEL-V: ลำดับแถว deterministic (default applicationNo-desc) ไม่ขึ้นกับลำดับ input', async () => {
     const r = await runSelected(['app-1', 'app-8', 'app-2']);
     const w = await readWorkbook(r.buffer);
-    assertEqual(String(w.getRow(2).getCell(2).value), 'APP-2026-0008', 'ล่าสุดก่อน');
+    assertEqual(String(w.getRow(2).getCell(2).value), 'APP-2026-0008', 'เลขมากสุดก่อน (running number desc)');
     assertEqual(String(w.getRow(3).getCell(2).value), 'APP-2026-0002');
     assertEqual(String(w.getRow(4).getCell(2).value), 'APP-2026-0001');
     const r2 = await runSelected(['app-2', 'app-1', 'app-8']); // สลับลำดับที่ส่ง
     const w2 = await readWorkbook(r2.buffer);
     assertEqual(String(w2.getRow(2).getCell(2).value), 'APP-2026-0008', 'ผลลัพธ์เหมือนเดิม');
+  });
+
+  // ── EX-SORT: WYSIWYE — export เรียงตาม sort ที่ผู้ใช้เห็นบนหน้ารายชื่อ ──
+  // seed: app-1..8 (เลข = ลำดับ insert), submittedAt = NOW..NOW+7200 ยกเว้น
+  // app-5 ที่เก่ากว่า (2025) → submittedAt-desc เดิมให้แถวแรก = app-3 (7200)
+  // แต่ applicationNo-desc ให้ app-8 — สองลำดับต่างกันชัดเจน ใช้พิสูจน์ fail-when-no-fix
+  t('EX-S1: filtered export ไม่ส่ง sort → default applicationNo-desc (แถวแรก 0008 ไม่ใช่ 0003)', async () => {
+    const r = await runExport();
+    assertTrue(r.ok, `export ควรสำเร็จ: ${JSON.stringify(r)}`);
+    const w = await readWorkbook(r.buffer);
+    assertEqual(String(w.getRow(2).getCell(2).value), 'APP-2026-0008', 'แถวแรก = เลขที่มากสุด');
+    assertEqual(String(w.getRow(3).getCell(2).value), 'APP-2026-0007', 'แถวที่สอง = เลขถัดลงมา');
+    assertEqual(String(w.getRow(w.rowCount).getCell(2).value), 'APP-2026-0001', 'แถวท้าย = เลขที่น้อยสุด');
+  });
+
+  t('EX-S2: filtered export sort=submittedAt-desc → แถวแรก 0003 (submittedAt สูงสุดจริง)', async () => {
+    const r = await runExport({ sort: 'submittedAt-desc' });
+    assertTrue(r.ok);
+    const w = await readWorkbook(r.buffer);
+    assertEqual(String(w.getRow(2).getCell(2).value), 'APP-2026-0003', 'submittedAt = NOW+7200 สูงสุด');
+    assertEqual(String(w.getRow(3).getCell(2).value), 'APP-2026-0008', 'รองลงมา NOW+6000');
+  });
+
+  t('EX-S3: filtered export sort=applicationNo-asc → 0001 แรก และ sort ไม่รู้จัก → default', async () => {
+    const r = await runExport({ sort: 'applicationNo-asc' });
+    assertTrue(r.ok);
+    const w = await readWorkbook(r.buffer);
+    assertEqual(String(w.getRow(2).getCell(2).value), 'APP-2026-0001', 'เลขน้อยสุดก่อน');
+
+    const rBad = await runExport({ sort: 'ไม่รู้จัก' });
+    assertTrue(rBad.ok);
+    const wBad = await readWorkbook(rBad.buffer);
+    assertEqual(String(wBad.getRow(2).getCell(2).value), 'APP-2026-0008', 'ค่าไม่รู้จัก → default applicationNo-desc');
+  });
+
+  t('EX-S4: selected export (ids) รับ sort — comparator JS สมมูล SQL', async () => {
+    const asc = await runSelected(['app-1', 'app-8', 'app-3'], ROUND_ID, 'applicationNo-asc');
+    const wA = await readWorkbook(asc.buffer);
+    assertEqual(String(wA.getRow(2).getCell(2).value), 'APP-2026-0001', 'asc: 0001 แรก');
+    assertEqual(String(wA.getRow(4).getCell(2).value), 'APP-2026-0008', 'asc: 0008 ท้าย');
+
+    const timeDesc = await runSelected(['app-1', 'app-8', 'app-3'], ROUND_ID, 'submittedAt-desc');
+    const wT = await readWorkbook(timeDesc.buffer);
+    assertEqual(String(wT.getRow(2).getCell(2).value), 'APP-2026-0003', 'desc: 0003 (submittedAt สูงสุด) แรก');
+    assertEqual(String(wT.getRow(3).getCell(2).value), 'APP-2026-0008');
+    assertEqual(String(wT.getRow(4).getCell(2).value), 'APP-2026-0001');
+  });
+
+  t('EX-S5: selected export selector kind=filter รับ sort ด้วย (WYSIWYE ครบทุกเส้นทาง)', async () => {
+    // ชุด {0001 QUALIFIED (NOW), 0002 REJECTED (+3600), 0003 ARCHIVED (+7200)} —
+    // เลขกับเวลา "สลับลำดับกัน" จึงแยกแยะ sort ที่ถูกส่งจริงได้
+    const byNo = await runSelectedSelector(
+      { kind: 'filter', roundId: ROUND_ID, status: 'QUALIFIED,REJECTED,ARCHIVED' }, ROUND_ID, 'applicationNo-asc',
+    );
+    assertTrue(byNo.ok);
+    const wN = await readWorkbook(byNo.buffer);
+    assertEqual(String(wN.getRow(2).getCell(2).value), 'APP-2026-0001', 'applicationNo-asc → เลขน้อยสุดก่อน (0001)');
+
+    const byTime = await runSelectedSelector(
+      { kind: 'filter', roundId: ROUND_ID, status: 'QUALIFIED,REJECTED,ARCHIVED' }, ROUND_ID, 'submittedAt-desc',
+    );
+    assertTrue(byTime.ok);
+    const wT = await readWorkbook(byTime.buffer);
+    assertEqual(String(wT.getRow(2).getCell(2).value), 'APP-2026-0003', 'submittedAt-desc → ใหม่สุดก่อน (0003 ไม่ใช่ 0001 ที่เลขน้อยสุด)');
+  });
+
+  t('EX-S6: audit payload มี sort canonical ที่ใช้จริง', async () => {
+    await runExport({ sort: 'fullname-asc' });
+    const payload = latestAudit();
+    assertEqual(payload.filters.sort, 'fullname-asc', 'sort ถูกบันทึกใน audit');
+    await runExport({ sort: 'ไม่รู้จัก' });
+    const fallback = latestAudit();
+    assertEqual(fallback.filters.sort, 'applicationNo-desc', 'ค่าไม่รู้จัก → audit บันทึก default ที่ใช้จริง');
   });
 
   t('SEL-W+AU: workbook mapping เหมือน filtered + เปิดอ่านกลับด้วย ExcelJS ได้', async () => {
@@ -1240,9 +1314,9 @@ async function runAllTests() {
   // ═══════════════════════════════════════════════════════════════════════
   // PHASE 2 SELECTOR SUITE (SEL-SEL-*) — POST /export-selected รับ { selector }
   // ═══════════════════════════════════════════════════════════════════════
-  const runSelectedSelector = (selector, roundId = ROUND_ID) => exportSelectedApplicationsExcel(
+  const runSelectedSelector = (selector, roundId = ROUND_ID, sort?: string) => exportSelectedApplicationsExcel(
     { JWT_SECRET: SECRET },
-    { roundId, selector },
+    { roundId, selector, sort },
     'admin-1',
     '203.0.113.9',
   );
@@ -1574,7 +1648,7 @@ async function runAllTests() {
     const r = await runSelected(reversed, D1_ROUND);
     assertTrue(r.ok);
     const w = await readWorkbook(r.buffer);
-    assertEqual(String(w.getRow(2).getCell(2).value), 'SEL-0999', 'แถวแรก = ล่าสุด (submittedAt desc)');
+    assertEqual(String(w.getRow(2).getCell(2).value), 'SEL-0999', 'แถวแรก = เลขที่มากสุด (default applicationNo-desc)');
     assertEqual(String(w.getRow(w.rowCount).getCell(2).value), 'SEL-0000', 'แถวสุดท้าย = เก่าสุด');
     const r2 = await runSelected(selIds(1000), D1_ROUND); // ลำดับ input ตรงข้าม → ผลต้องเหมือน
     const w2 = await readWorkbook(r2.buffer);

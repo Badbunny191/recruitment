@@ -8,7 +8,9 @@
  *   PG2.  response มี 7 คอลัมน์ที่อนุมัติเท่านั้น (ไม่มี formData / nationalId /
  *         statusReason / verifiedBy / verifiedAt / deletedAt / year /
  *         roundCode / seqInRound)
- *   PG3.  sort default = submittedAt DESC (tie-break id ASC)
+ *   PG3.  sort default = applicationNo DESC (เลขที่ใบสมัคร ใหม่→เก่า, tie-break
+ *         id ASC) — seed ตั้ง seq_in_round เพิ่มตาม insert order เท่ากับ
+ *         submittedAt จึงตรวจ default ใหม่ด้วยลำดับชุดเดิมได้
  *   PG4.  page=1&pageSize=N → data N แถว + pagination {page,pageSize,total,totalPages}
  *   PG5.  page=2 → แถวต่อจากหน้า 1, ไม่ซ้ำ, ครบทุกแถวเมื่อรวมกัน
  *   PG6.  page เกินขอบ → data ว่าง แต่ pagination.total ยังถูกต้อง
@@ -283,11 +285,13 @@ async function runAllTests() {
     assertEqual(row.roundId, 'round-1', 'roundId ตรง');
   });
 
-  // ---- PG3: sort default = submittedAt DESC ----
-  await test('PG3: default sort = submittedAt DESC (tie-break id ASC)', async () => {
+  // ---- PG3: sort default = applicationNo DESC (เลขที่ใบสมัคร ใหม่→เก่า) ----
+  // seq_in_round ของ seed เพิ่มตาม insert order เท่ากับ submittedAt จึงได้
+  // ลำดับเดียวกับ ROUND1_DESC — พิสูจน์ default ใหม่โดยไม่ส่ง ?sort
+  await test('PG3: default sort = applicationNo DESC (tie-break id ASC)', async () => {
     const res = await getJson('/api/v1/admin/applications?roundId=round-1');
     const ids = res.body.data.map((r) => r.id);
-    assertDeepEqual(ids, ROUND1_DESC, 'ลำดับ submittedAt DESC');
+    assertDeepEqual(ids, ROUND1_DESC, 'ลำดับ default (running number DESC)');
     // ตรวจ submittedAt ไม่เพิ่ม
     const times = res.body.data.map((r) => r.submittedAt);
     for (let i = 1; i < times.length; i++) {
@@ -442,7 +446,7 @@ async function runAllTests() {
   });
 
   // ---- PG15: sort ที่ไม่รู้จัก → default (ไม่ 400) ----
-  await test('PG15: sort ที่ไม่รู้จัก/ว่าง → fallback default submittedAt-desc', async () => {
+  await test('PG15: sort ที่ไม่รู้จัก/ว่าง → fallback default applicationNo-desc', async () => {
     for (const qs of ['sort=', 'sort=unknown', 'sort=fullname', 'sort=id-asc', 'sort=submittedAt']) {
       const res = await getJson(`/api/v1/admin/applications?roundId=round-1&${qs}`);
       assertEqual(res.status, 200, `?${qs} → 200 (ไม่ throw)`);
@@ -456,7 +460,14 @@ async function runAllTests() {
 
   // ---- PG16: sort + pagination ต่อเนื่อง ไม่ซ้ำ ไม่หาย ----
   await test('PG16: sort ทุกค่า + page 1..N → union = ชุดเต็ม ไม่ซ้ำ ไม่หาย', async () => {
-    for (const sort of ['submittedAt-desc', 'submittedAt-asc', 'fullname-asc', 'fullname-desc']) {
+    for (const sort of [
+      'applicationNo-desc',
+      'applicationNo-asc',
+      'submittedAt-desc',
+      'submittedAt-asc',
+      'fullname-asc',
+      'fullname-desc',
+    ]) {
       const full = await getJson(`/api/v1/admin/applications?roundId=round-3&sort=${sort}`);
       const expected = full.body.data.map((r) => r.id);
 
@@ -474,7 +485,14 @@ async function runAllTests() {
 
   // ---- PG17: /ids รับ sort เดียวกัน ----
   await test('PG17: /applications/ids รับ ?sort= และลำดับตรงกับ list', async () => {
-    for (const sort of ['submittedAt-desc', 'submittedAt-asc', 'fullname-asc', 'fullname-desc']) {
+    for (const sort of [
+      'applicationNo-desc',
+      'applicationNo-asc',
+      'submittedAt-desc',
+      'submittedAt-asc',
+      'fullname-asc',
+      'fullname-desc',
+    ]) {
       const [list, ids] = await Promise.all([
         getJson(`/api/v1/admin/applications?roundId=round-3&sort=${sort}`),
         getJson(`/api/v1/admin/applications/ids?roundId=round-3&sort=${sort}`),
@@ -485,6 +503,26 @@ async function runAllTests() {
         `sort=${sort}: ids = list ids`,
       );
     }
+  });
+
+  // ---- PG18: sort=applicationNo-desc/asc (running number) ----
+  // seq_in_round ของ round-3 เพิ่มตาม insert order (alpha=12 .. r3Null=18)
+  // และทุกแถวมี application_no = APP-2569-00NN → desc = 18..12, asc = กลับด้าน
+  await test('PG18: sort=applicationNo-desc → เลขมากก่อน (ใหม่→เก่า) + asc กลับด้าน', async () => {
+    const descRes = await getJson('/api/v1/admin/applications?roundId=round-3&sort=applicationNo-desc');
+    assertEqual(descRes.status, 200, 'HTTP status');
+    assertDeepEqual(
+      descRes.body.data.map((r) => r.id),
+      [r3Null, r3.dupNew, r3.dupOld, r3.delta, r3.charlie, r3.bravo, r3.alpha],
+      'running number DESC',
+    );
+
+    const ascRes = await getJson('/api/v1/admin/applications?roundId=round-3&sort=applicationNo-asc');
+    assertDeepEqual(
+      ascRes.body.data.map((r) => r.id),
+      [r3.alpha, r3.bravo, r3.charlie, r3.delta, r3.dupOld, r3.dupNew, r3Null],
+      'running number ASC',
+    );
   });
 
   // ---- PG18: sort + filter + pagination ทำงานร่วมกัน ----

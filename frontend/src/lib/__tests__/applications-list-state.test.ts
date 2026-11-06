@@ -73,7 +73,7 @@ function base(over: Partial<ApplicationsListState> = {}): ApplicationsListState 
     roundId: 'round-1',
     search: '',
     status: 'ALL',
-    sort: 'submittedAt-desc',
+    sort: 'applicationNo-desc',
     page: 1,
     pageSize: 10,
     ...over,
@@ -192,7 +192,7 @@ test('LS4: hydrate URL ว่าง → ค่า default ทั้งหมด'
     roundId: '',
     search: '',
     status: 'ALL',
-    sort: 'submittedAt-desc',
+    sort: 'applicationNo-desc',
     page: 1,
     pageSize: 10,
   });
@@ -203,7 +203,7 @@ test('LS4: hydrate ค่าเพี้ยน → fallback ไม่ throw', ()
     'sort=bogus&page=abc&pageSize=999&status=nonsense',
   );
   const s = hydrateListState(params);
-  eq(s.sort, 'submittedAt-desc', 'sort เพี้ยน → default');
+  eq(s.sort, 'applicationNo-desc', 'sort เพี้ยน → default');
   eq(s.page, 1, 'page เพี้ยน → 1');
   eq(s.pageSize, 10, 'pageSize นอกชุด → 10');
   eq(s.status, 'ALL', 'status เพี้ยน → ALL');

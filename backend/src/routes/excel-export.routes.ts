@@ -1,11 +1,12 @@
 /**
  * Excel Export Route Handlers
  * ============================================================================
- * GET  /api/v1/admin/applications/export?roundId=&status=&search=&dateFrom=&dateTo=
+ * GET  /api/v1/admin/applications/export?roundId=&status=&search=&dateFrom=&dateTo=&sort=
  *      Export ตามตัวกรอง (โหมด FILTERED — contract เดิมไม่เปลี่ยน)
+ *      sort = sort id เดียวกับหน้ารายชื่อ (WYSIWYE) — ไม่ส่ง = default
  * POST /api/v1/admin/applications/export-selected
- *      body: { roundId, applicationIds: string[] }
- *      Export เฉพาะใบสมัครที่เลือก (โหมด SELECTED)
+ *      body: { roundId, applicationIds: string[], sort? }
+ *      Export เฉพาะใบสมัครที่เลือก (โหมด SELECTED) — sort WYSIWYE เช่นกัน
  *
  * - ติดตั้งใน admin.routes.ts (ถูก authMiddleware ครอบอยู่แล้วที่ use('/*'))
  *   + adminOnlyMiddleware → เฉพาะ ADMIN / SUPER_ADMIN (VIEWER ได้ 403)
@@ -41,6 +42,7 @@ export const XLSX_CONTENT_TYPE =
  *   - roundId บังคับ
  *   - applicationIds: array ต้องมีอย่างน้อย 1 ไม่เกิน 1,000 รายการ  (legacy)
  *   - selector: { kind: 'ids' | 'filter', ... }                     (Phase 2)
+ *   - sort: sort id WYSIWYE (optional — ไม่รู้จัก → default ฝั่ง service)
  *   - ID ซ้ำไม่ reject — service จะ deduplicate
  *
  * ⚠️ ต้องมี applicationIds หรือ selector อย่างใดอย่างหนึ่ง (ห้ามมีทั้งคู่)
@@ -63,6 +65,9 @@ export const ExcelExportSelectedSchema = z
       .max(MAX_EXPORT_ROWS, `เลือกได้สูงสุด ${MAX_EXPORT_ROWS} รายการต่อการ export หนึ่งครั้ง`)
       .optional(),
     selector: ApplicationsSelectorSchema.optional(),
+    // WYSIWYE: sort id เดียวกับหน้ารายชื่อ — validate อย่างหลวมที่ขอบ (string)
+    // แล้วให้ parseApplicationsListSort ตีความ (ค่าไม่รู้จัก → default)
+    sort: z.string().max(64).optional(),
   })
   .refine((d) => (d.selector !== undefined) !== (d.applicationIds !== undefined), {
     message: 'กรุณาระบุ selector หรือ applicationIds อย่างใดอย่างหนึ่ง',
@@ -120,6 +125,8 @@ export async function handleExcelExport(
     search: c.req.query('search') || undefined,
     dateFrom: c.req.query('dateFrom') || undefined,
     dateTo: c.req.query('dateTo') || undefined,
+    // WYSIWYE — sort id เดียวกับหน้ารายชื่อ (ตีความใน service; ไม่ส่ง = default)
+    sort: c.req.query('sort') || undefined,
   };
 
   if (!filters.roundId) {
@@ -170,6 +177,7 @@ export async function handleExcelExportSelected(
       selector: parsed.data.selector
         ? canonicalizeSelector(parsed.data.selector as ApplicationsSelector)
         : undefined,
+      sort: parsed.data.sort,
     },
     user?.id ?? 'unknown',
     c.req.header('cf-connecting-ip') ?? null,
