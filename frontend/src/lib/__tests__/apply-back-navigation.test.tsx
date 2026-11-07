@@ -69,38 +69,37 @@ console.log('========================================\n');
 //  1. ApplyBackBar — markup contract (A / I / M / P)
 // =========================================================
 
-test('A: ปุ่มกลับมีข้อความ "กลับ", ไอคอนลูกศรซ้าย และ aria-label', () => {
+test('A: ปุ่มกลับเป็น Text Link "← กลับหน้ารอบรับสมัคร" (มาตรฐานเดียวกับหน้า /lookup) และมี aria-label', () => {
   const html = renderToStaticMarkup(<ApplyBackBar onBack={() => {}} />);
-  assert(html.includes('>กลับ</button>') || /กลับ<\/button>/.test(html), 'button label "กลับ"');
+  assert(html.includes('<span aria-hidden="true">←</span> กลับหน้ารอบรับสมัคร'), 'label "← กลับหน้ารอบรับสมัคร"');
   assert(html.includes('aria-label="กลับไปหน้ารายการรอบรับสมัคร"'), 'aria-label');
-  assert(html.includes('<svg'), 'left-arrow icon (inline SVG, heroicon style เดิม)');
-  assert(html.includes('M10.5 19.5L3 12'), 'arrow-left path');
-  // ใช้ Button ของระบบเดิม (variant outline)
-  assert(html.includes('border border-gray-300'), 'Button variant="outline" ของระบบเดิม');
+  assert(html.includes('text-brand'), 'text link สี brand (มาตรฐานเดียวกับ /lookup)');
+  assert(html.includes('hover:text-brand-hover'), 'hover state ของ text link');
+  assert(html.includes('<button'), 'ยังเป็น <button> — มี onClick บันทึก draft ก่อน navigate');
+  assert(!html.includes('<svg'), 'ไม่ใช้ SVG icon แล้ว (ใช้ตัวอักษร ← ตาม /lookup)');
+  assert(!html.includes('border border-gray-300'), 'ไม่ใช่ outline button อีกต่อไป (Pattern A เดิมเลิกใช้)');
 });
 
-test('P: ปุ่มกลับรองรับ Keyboard — focus-visible ring จาก Button base styles', () => {
+test('P: ปุ่มกลับรองรับ Keyboard — เป็น <button> element (focusable) และ arrow ไม่รบกวน screen reader', () => {
   const html = renderToStaticMarkup(<ApplyBackBar onBack={() => {}} />);
-  assert(html.includes('focus-visible:ring-2'), 'focus-visible ring style');
-  assert(html.includes('aria-hidden="true"'), 'icon ไม่รบกวน screen reader');
+  assert(html.includes('<button'), 'button element — keyboard focusable');
+  assert(html.includes('aria-hidden="true"'), 'ตัว ← เป็น decorative ไม่รบกวน screen reader');
 });
 
-test('P: touch target เหมาะกับ Mobile (h-10)', () => {
+test('P: โครงสร้าง text link ตรงมาตรฐาน /lookup (inline-flex items-center gap-1.5)', () => {
   const html = renderToStaticMarkup(<ApplyBackBar onBack={() => {}} />);
-  assert(html.includes('h-10'), 'ความสูงขั้นต่ำ 40px สำหรับ touch target');
+  assert(html.includes('inline-flex items-center gap-1.5'), 'โครงสร้าง text link เดียวกับ /lookup');
 });
 
 test('I: ปุ่มกลับ Disabled ได้ (ระหว่าง isSubmitting / "กำลังเตรียมข้อมูล...")', () => {
   const disabledHtml = renderToStaticMarkup(
     <ApplyBackBar onBack={() => {}} disabled={true} />
   );
-  assert(disabledHtml.includes('disabled'), 'disabled attribute เมื่อ disabled=true');
+  assert(disabledHtml.includes('disabled=""'), 'disabled attribute เมื่อ disabled=true');
   const enabledHtml = renderToStaticMarkup(
     <ApplyBackBar onBack={() => {}} disabled={false} />
   );
-  // เช็คเป็น attribute (disabled=) ไม่ใช่คำว่า disabled ทั้งเลข
-  // เพราะ class ของ Button มี disabled:opacity-50 อยู่แล้ว
-  assert(!/ disabled(=|\s|>)/.test(enabledHtml), 'ไม่มี disabled attribute เมื่อ disabled=false');
+  assert(!enabledHtml.includes('disabled=""'), 'ไม่มี disabled attribute เมื่อ disabled=false');
 });
 
 test('P: แสดง error alert (role=alert) เมื่อบันทึก draft ล้มเหลว', () => {

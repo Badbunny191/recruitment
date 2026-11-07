@@ -154,11 +154,11 @@ try {
   assert(text().includes(NOT_FOUND_TITLE), 'N1-1 [CRITICAL]: ต้องแสดงหัวข้อ "ไม่พบรอบรับสมัคร"');
   assert(text().includes(NOT_FOUND_DESC), 'N1-2: ต้องแสดงคำอธิบายสาเหตุ');
   assert(buttons().includes('กลับหน้าแรก'), 'N1-3: ต้องมีปุ่ม "กลับหน้าแรก"');
-  assert(buttons().includes('กลับหน้ารายการรอบรับสมัคร'), 'N1-4: ต้องมีปุ่ม "กลับหน้ารายการรอบรับสมัคร"');
+  assert(buttons().includes('← กลับหน้ารายการรอบรับสมัคร'), 'N1-4: ต้องมีปุ่มกลับ "← กลับหน้ารายการรอบรับสมัคร" (text link มาตรฐาน)');
   for (const f of FORBIDDEN_STRINGS) {
     assert(!text().includes(f), `N1-5 [CRITICAL]: ห้ามแสดง "${f}" เมื่อ round ไม่มีอยู่จริง`);
   }
-  assert(!buttons().includes('กลับ'), 'N1-5b: Error State เต็มรูปแบบ ต้องไม่ render ApplyBackBar (ปุ่ม "กลับ" ของฟอร์ม)');
+  assert(!buttons().includes('← กลับหน้ารอบรับสมัคร'), 'N1-5b: Error State เต็มรูปแบบ ต้องไม่ render ApplyBackBar (text link "กลับหน้ารอบรับสมัคร" ของฟอร์ม)');
   assert(!alerted.some((a) => a.includes('ไม่สามารถโหลดแบบฟอร์มได้')), 'N1-6: ห้าม alert "ไม่สามารถโหลดแบบฟอร์มได้: HTTP 404" (ต้องเป็น error page แทน)');
   assert(routerCalls.every(([kind]) => kind !== 'push' || !String(routerCalls).includes('/apply/review')), 'N1-7: ต้องไม่พาไปหน้า review');
 
@@ -186,9 +186,9 @@ try {
   await flushAll();
   assert(routerCalls.some(([kind, href]) => kind === 'push' && href === '/'), 'N2-1 [CRITICAL]: "กลับหน้าแรก" ต้อง push "/"');
 
-  clickButtonByText('กลับหน้ารายการรอบรับสมัคร');
+  clickButtonByText('← กลับหน้ารายการรอบรับสมัคร');
   await flushAll();
-  assert(routerCalls.some(([kind, href]) => kind === 'push' && href.startsWith('/') && href.includes('#')), 'N2-2: "กลับหน้ารายการรอบรับสมัคร" ต้อง push ไปยังหน้ารายการรอบ (anchor)');
+  assert(routerCalls.some(([kind, href]) => kind === 'push' && href.startsWith('/') && href.includes('#')), 'N2-2: "← กลับหน้ารายการรอบรับสมัคร" ต้อง push ไปยังหน้ารายการรอบ (anchor)');
 
   unmount();
   passed++;

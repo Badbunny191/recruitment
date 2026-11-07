@@ -79,10 +79,11 @@ function SuccessContent() {
               ค้นหาใบสมัคร
             </Button>
           </Link>
-          <Link href="/" className="w-full">
-            <Button variant="outline" className="w-full py-2.5 text-slate-700 border-slate-300 hover:bg-slate-50">
-              กลับหน้าแรก
-            </Button>
+          <Link
+            href="/"
+            className="inline-flex items-center gap-1.5 self-start text-sm text-brand hover:text-brand-hover font-medium transition-colors"
+          >
+            <span aria-hidden="true">←</span> กลับหน้ารอบรับสมัคร
           </Link>
         </CardFooter>
       </Card>
@@ -184,10 +185,11 @@ function SuccessContent() {
             ค้นหาใบสมัคร
           </Button>
         </Link>
-        <Link href="/" className="w-full">
-          <Button variant="outline" className="w-full py-2.5 text-slate-700 border-slate-300 hover:bg-slate-50">
-            กลับหน้าแรก
-          </Button>
+        <Link
+          href="/"
+          className="inline-flex items-center gap-1.5 self-start text-sm text-brand hover:text-brand-hover font-medium transition-colors"
+        >
+          <span aria-hidden="true">←</span> กลับหน้ารอบรับสมัคร
         </Link>
       </CardFooter>
     </Card>

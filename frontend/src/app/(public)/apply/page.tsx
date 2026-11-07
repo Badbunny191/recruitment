@@ -1344,13 +1344,13 @@ function FormInner() {
               >
                 กลับหน้าแรก
               </Button>
-              <Button
-                variant="outline"
-                className="w-full sm:flex-1 h-11"
+              <button
+                type="button"
                 onClick={() => router.push('/#open-rounds-heading')}
+                className="inline-flex items-center justify-center gap-1.5 w-full sm:w-auto text-sm text-brand hover:text-brand-hover font-medium transition-colors"
               >
-                กลับหน้ารายการรอบรับสมัคร
-              </Button>
+                <span aria-hidden="true">←</span> กลับหน้ารายการรอบรับสมัคร
+              </button>
             </div>
           </CardContent>
         </Card>

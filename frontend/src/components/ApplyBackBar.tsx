@@ -1,7 +1,5 @@
 'use client';
 
-import { Button } from '@/components/ui/button';
-
 /**
  * Back bar for the application form header (/apply).
  *
@@ -12,7 +10,14 @@ import { Button } from '@/components/ui/button';
  * mechanism as "ตรวจสอบข้อมูล" before navigating, so nothing the user
  * typed is lost.
  *
- * Exported (not inline in the page) so the markup contract — icon,
+ * UX standard (public flow): back navigation is a Text Link
+ * "← กลับหน้ารอบรับสมัคร" — same pattern as the /lookup back link —
+ * not an outlined button, so it takes less space and does not compete
+ * with the primary form actions. It stays a <button> element (not a
+ * <Link>) because it runs the draft-save handler before navigating and
+ * supports the disabled state while submitting.
+ *
+ * Exported (not inline in the page) so the markup contract — arrow,
  * Thai label, aria-label, disabled state, error alert — is testable
  * with plain SSR rendering, following the repo's test conventions.
  */
@@ -27,30 +32,15 @@ export function ApplyBackBar({
 }) {
   return (
     <div className="mb-4 space-y-2">
-      <Button
+      <button
         type="button"
-        variant="outline"
         onClick={onBack}
         disabled={disabled}
         aria-label="กลับไปหน้ารายการรอบรับสมัคร"
-        className="h-10 gap-2 px-3"
+        className="inline-flex items-center gap-1.5 text-sm text-brand hover:text-brand-hover font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none"
       >
-        <svg
-          className="h-4 w-4"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18"
-          />
-        </svg>
-        กลับ
-      </Button>
+        <span aria-hidden="true">←</span> กลับหน้ารอบรับสมัคร
+      </button>
       {error && (
         <div
           role="alert"

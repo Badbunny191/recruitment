@@ -573,8 +573,11 @@ function ReviewContent() {
           <CardContent className="pt-6 space-y-4">
             <p className="text-slate-700">{loadError}</p>
             <div className="flex gap-3">
-              <Link href="/">
-                <Button variant="outline">กลับหน้าหลัก</Button>
+              <Link
+                href="/"
+                className="inline-flex items-center gap-1.5 text-sm text-brand hover:text-brand-hover font-medium transition-colors"
+              >
+                <span aria-hidden="true">←</span> กลับหน้ารอบรับสมัคร
               </Link>
             </div>
           </CardContent>
@@ -739,16 +742,15 @@ function ReviewContent() {
             )}
           </CardContent>
           <CardFooter className="flex flex-col-reverse md:flex-row gap-3 md:justify-between">
-            <Button
+            <button
               type="button"
-              variant="outline"
               onClick={handleEdit}
               disabled={submitting}
               aria-label="กลับไปหน้าสมัครเพื่อแก้ไขข้อมูล"
-              className="w-full md:w-auto"
+              className="inline-flex items-center gap-1.5 text-sm text-brand hover:text-brand-hover font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none"
             >
-              ← กลับไปแก้ไข
-            </Button>
+              <span aria-hidden="true">←</span> กลับหน้ารับสมัคร
+            </button>
             <Button
               type="button"
               variant="brand"
