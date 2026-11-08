@@ -81,6 +81,14 @@ export const templateVersions = sqliteTable('template_versions', {
   pdfFilenamePattern: text('pdf_filename_pattern'),
 }, (table) => ({
   unqVersion: uniqueIndex('unq_template_version').on(table.templateId, table.versionNumber),
+  // ── Publish Invariant (Migration 033, 2026-11-08) ─────────────────────
+  // 1 template = 1 PUBLISHED version — partial unique index เป็น backstop
+  // ระดับ DB (code-level enforcement = conditional db.batch ใน publish
+  // endpoint) ⚠️ apply ได้เฉพาะเมื่อ invariant สะอาดแล้ว — ลำดับและ runbook:
+  // docs/ZOMBIE_CLEANUP_RUNBOOK.md; rollback = DROP INDEX unq_template_published
+  unqPublished: uniqueIndex('unq_template_published')
+    .on(table.templateId)
+    .where(sql`status = 'PUBLISHED'`),
   checkStatus: check('chk_version_status', sql`${table.status} IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')`),
   descriptorVersionIdx: index('idx_tpl_versions_descriptor_version').on(table.descriptorSchemaVersion),
 }));

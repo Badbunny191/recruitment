@@ -49,6 +49,16 @@
  *   R6. (fail-when-no-fix) POST /rounds ด้วย version ไม่มีจริง → 404
  *       TEMPLATE_VERSION_NOT_FOUND (เดิม 201)
  *
+ * Migration 033 (partial unique index — DB-level backstop):
+ *   M1. ไฟล์ migration มี partial unique index ตรงตามแผน
+ *   M2. apply บน state สะอาดสำเร็จ + publish flow (conditional batch)
+ *       ยังทำงานถูกเมื่อมี index (archive-others รันก่อน publish-self
+ *       จึงไม่ชน constraint)
+ *   M3. (backstop) UPDATE ตรง ๆ ให้ version ที่สองเป็น PUBLISHED โดน
+ *       UNIQUE constraint ยิงกลับ — ห้าม state แตกแบบเงียบ ๆ
+ *   M4. (fail-closed) apply บน state สกปรก (2 PUBLISHED) ต้องล้มเหลว
+ *       — ไม่มีทางสร้าง index ทับ zombie ได้
+ *
  * ใช้ข้อมูลสังเคราะห์ 100% — รัน route จริงบน Hono กับ D1 จำลอง (better-sqlite3
  * in-memory, batch ห่อ transaction จริงเลียน D1 atomicity) แบบเดียวกับ
  * round-clone-numbering.test.ts ไม่ deploy ไม่แตะ D1 จริง
@@ -60,6 +70,9 @@
 import { Hono } from 'hono';
 import Database from 'better-sqlite3';
 import { sign } from 'hono/jwt';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { adminRoutes } from '../admin.routes';
 
 let passed = 0;
@@ -144,8 +157,7 @@ function createD1Adapter(sqlite) {
 
 const TEST_JWT_SECRET = 'test-secret-publish-invariant';
 
-const sqlite = new Database(':memory:');
-sqlite.exec(`
+const TEST_DDL = `
   CREATE TABLE admin_users (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
@@ -224,7 +236,10 @@ sqlite.exec(`
     round_code TEXT,
     seq_in_round INTEGER
   );
-`);
+`;
+
+const sqlite = new Database(':memory:');
+sqlite.exec(TEST_DDL);
 
 const d1 = createD1Adapter(sqlite);
 
@@ -571,6 +586,96 @@ async function runAllTests() {
 
     const count = sqlite.prepare(`SELECT COUNT(*) AS c FROM recruitment_rounds WHERE round_code = 'R6NO'`).get().c;
     assertEqual(count, 0, 'ห้ามสร้างรอบค้างไว้');
+  });
+
+  // ── M: Migration 033 — partial unique index (DB-level backstop) ─────────
+  // อ่านไฟล์ migration จริงมา execute บน sqlite จำลอง → test ผูกกับไฟล์
+  // ที่ wrangler d1 migrations apply จะรันจริง 1:1 (ไม่มี drift)
+
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  // backend/src/routes/__tests__ → backend/migrations
+  const MIGRATION_PATH = join(__dirname, '../../../migrations/033_template_published_invariant.sql');
+
+  await test('M1: ไฟล์ migration 033 มี partial unique index ตรงตามแผน', async () => {
+    const sqlText = readFileSync(MIGRATION_PATH, 'utf8');
+    const normalized = sqlText.toLowerCase();
+    assertTrue(normalized.includes('create unique index unq_template_published'), 'ต้องมี CREATE UNIQUE INDEX unq_template_published');
+    assertTrue(normalized.includes("where status = 'published'"), 'ต้องเป็น partial index WHERE status = PUBLISHED');
+    assertTrue(normalized.includes('template_id'), 'index ต้องอยู่บน template_id');
+  });
+
+  await test('M2: apply บน state สะอาดสำเร็จ + publish flow ยังถูกเมื่อมี index', async () => {
+    const migrationSql = readFileSync(MIGRATION_PATH, 'utf8');
+    const sqlite2 = new Database(':memory:');
+    sqlite2.exec(TEST_DDL);
+    sqlite2.exec(migrationSql); // index อยู่แล้วตั้งแต่ก่อนมีข้อมูล
+
+    sqlite2
+      .prepare(`INSERT INTO admin_users (id, email, password_hash, role, is_active) VALUES (?, ?, 'x', 'ADMIN', 1)`)
+      .run(ADMIN_ID, 'admin2@test.local');
+    sqlite2.prepare(`INSERT INTO templates (id, name) VALUES ('tpl-m2', 'M2 fixture')`).run();
+    sqlite2.prepare(`INSERT INTO template_versions (id, template_id, version_number, status) VALUES ('m2-old', 'tpl-m2', 1, 'PUBLISHED')`).run();
+    sqlite2.prepare(`INSERT INTO template_versions (id, template_id, version_number, status) VALUES ('m2-new', 'tpl-m2', 2, 'DRAFT')`).run();
+
+    const d1b = createD1Adapter(sqlite2);
+    const app2 = new Hono();
+    app2.route('/api/v1/admin', adminRoutes);
+    const token = await sign(
+      { id: ADMIN_ID, email: 'admin2@test.local', role: 'ADMIN', exp: Math.floor(Date.now() / 1000) + 3600 },
+      TEST_JWT_SECRET
+    );
+
+    const res = await app2.request(`/api/v1/admin/template-versions/m2-new/publish`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    }, { DB: d1b, JWT_SECRET: TEST_JWT_SECRET });
+    assertEqual(res.status, 200, 'HTTP status');
+    const json = await res.json();
+    assertEqual(json.archivedCount, 1, 'archivedCount');
+
+    const published = sqlite2.prepare(`SELECT * FROM template_versions WHERE template_id = 'tpl-m2' AND status = 'PUBLISHED'`).all();
+    assertEqual(published.length, 1, 'เหลือ 1 PUBLISHED');
+    assertEqual(published[0].id, 'm2-new', 'ตัวที่เหลือคือ version ใหม่');
+  });
+
+  await test('M3 (backstop): UPDATE ตรง ๆ ให้ PUBLISHED ที่สองโดน UNIQUE constraint', async () => {
+    const migrationSql = readFileSync(MIGRATION_PATH, 'utf8');
+    const sqlite3 = new Database(':memory:');
+    sqlite3.exec(TEST_DDL);
+    sqlite3.exec(migrationSql);
+    sqlite3.prepare(`INSERT INTO templates (id, name) VALUES ('tpl-m3', 'M3 fixture')`).run();
+    sqlite3.prepare(`INSERT INTO template_versions (id, template_id, version_number, status) VALUES ('m3-a', 'tpl-m3', 1, 'PUBLISHED')`).run();
+    sqlite3.prepare(`INSERT INTO template_versions (id, template_id, version_number, status) VALUES ('m3-b', 'tpl-m3', 2, 'DRAFT')`).run();
+
+    let threw = false;
+    try {
+      sqlite3.prepare(`UPDATE template_versions SET status = 'PUBLISHED' WHERE id = 'm3-b'`).run();
+    } catch (e) {
+      threw = true;
+      assertTrue(String(e.message).toUpperCase().includes('UNIQUE'), `ต้องเป็น UNIQUE constraint (ได้: ${e.message})`);
+    }
+    assertTrue(threw, 'UPDATE ที่จะทำให้มี 2 PUBLISHED ต้องโดน index ยิงกลับ');
+
+    const published = sqlite3.prepare(`SELECT * FROM template_versions WHERE template_id = 'tpl-m3' AND status = 'PUBLISHED'`).all();
+    assertEqual(published.length, 1, 'ยังเหลือ 1 PUBLISHED (state ไม่แตกได้)');
+  });
+
+  await test('M4 (fail-closed): apply migration บน state สกปรก (2 PUBLISHED) ต้องล้มเหลว', async () => {
+    const migrationSql = readFileSync(MIGRATION_PATH, 'utf8');
+    const sqlite4 = new Database(':memory:');
+    sqlite4.exec(TEST_DDL);
+    sqlite4.prepare(`INSERT INTO templates (id, name) VALUES ('tpl-m4', 'M4 dirty fixture')`).run();
+    sqlite4.prepare(`INSERT INTO template_versions (id, template_id, version_number, status) VALUES ('m4-a', 'tpl-m4', 1, 'PUBLISHED')`).run();
+    sqlite4.prepare(`INSERT INTO template_versions (id, template_id, version_number, status) VALUES ('m4-b', 'tpl-m4', 2, 'PUBLISHED')`).run();
+
+    let threw = false;
+    try {
+      sqlite4.exec(migrationSql);
+    } catch (e) {
+      threw = true;
+      assertTrue(String(e.message).toUpperCase().includes('UNIQUE'), `ต้องล้มด้วย UNIQUE (ได้: ${e.message})`);
+    }
+    assertTrue(threw, 'สร้าง index ทับ zombie state ต้องล้มเหลว (fail-closed precondition)');
   });
 
   console.log('');
