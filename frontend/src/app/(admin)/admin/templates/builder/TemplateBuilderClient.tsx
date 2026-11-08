@@ -17,6 +17,7 @@ import { TemplatePreviewModal } from '@/components/TemplatePreviewModal';
 import { FieldSortableItem } from '@/components/FieldSortableItem';
 import { SectionFieldList } from '@/components/SectionFieldList';
 import { useRole } from '@/lib/useRole';
+import { useOptionalToast } from '@/components/ui/toast';
 import { OTHER_OPTION_LABEL, withOtherOption } from '@/lib/otherOption';
 import { validateFieldSettings } from '@/lib/fieldSettings';
 import {
@@ -186,6 +187,7 @@ function BuilderInner() {
   const router = useRouter();
   const templateId = searchParams.get('id') || '';
   const { canWrite } = useRole();
+  const toast = useOptionalToast();
 
   const [masterFields, setMasterFields] = useState<MasterField[]>([]);
 
@@ -195,6 +197,13 @@ function BuilderInner() {
   const [draftVersionId, setDraftVersionId] = useState<string | null>(null);
   const [publishedVersionId, setPublishedVersionId] = useState<string | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
+  // ── Archive Published Version (2026-11-08) ──
+  // เซ็ต version ids ที่ถูก Recruitment Round อ้างอิง (snapshot policy ฝั่ง backend)
+  // ใช้กำหนดว่าปุ่ม Archive ใน Version History กดได้หรือไม่ — fail-closed:
+  // ถ้าโหลดข้อมูล rounds ไม่สำเร็จ → ถือว่า "ตรวจสอบไม่ได้" ปุ่มจะ disabled
+  const [referencedVersionIds, setReferencedVersionIds] = useState<Set<string>>(new Set());
+  const [roundsUsageLoaded, setRoundsUsageLoaded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
@@ -265,6 +274,39 @@ function BuilderInner() {
   const watchedFields = watch('fields');
   const watchedSections = watch('sections');
 
+  // Toast helper — admin layout มี ToastProvider อยู่แล้ว; ถ้าถูก mount นอก
+  // provider (unit test) fallback เป็น alert แทน (useOptionalToast contract)
+  const notify = (variant: 'success' | 'error' | 'info' | 'warning', title: string, description?: string) => {
+    if (toast) {
+      toast.showToast({ variant, title, description });
+    } else {
+      alert(description ? `${title}\n${description}` : title);
+    }
+  };
+
+  // Archive UI: โหลดรายการ rounds เพื่อเช็คว่า version ไหนถูกอ้างอิง
+  // view=all ให้ตรงกับ backend ที่นับรวมรอบ soft-delete ด้วย (snapshot policy)
+  const loadRoundsUsage = async () => {
+    try {
+      const res = await fetch(process.env.NEXT_PUBLIC_API_URL + '/admin/rounds?view=all', {
+        headers: { Authorization: `Bearer ${localStorage.getItem('adminToken')}` },
+      });
+      if (!res.ok) throw new Error('load rounds failed');
+      const json = await res.json();
+      const ids = new Set<string>(
+        ((json.data || []) as Array<{ templateVersionId?: string | null }>)
+          .map((r) => r.templateVersionId)
+          .filter((id): id is string => !!id)
+      );
+      setReferencedVersionIds(ids);
+      setRoundsUsageLoaded(true);
+    } catch {
+      // fail-closed: อ่านข้อมูลไม่ได้ → ปุ่ม Archive disabled (ไม่เดาแทน server)
+      setReferencedVersionIds(new Set());
+      setRoundsUsageLoaded(false);
+    }
+  };
+
   const loadAll = async () => {
     if (!templateId) return;
     try {
@@ -286,6 +328,9 @@ function BuilderInner() {
       
       const allVersions: TemplateVersion[] = versionsRes.data || [];
       setVersions(allVersions);
+
+      // Archive UI: โหลดข้อมูลการอ้างอิง rounds (non-fatal — error จัดการภายใน)
+      await loadRoundsUsage();
       
       // Find the latest Draft version (editable)
       const draftVersions = allVersions
@@ -859,12 +904,20 @@ function BuilderInner() {
     }
   };
 
-  // Archive Published → Archived
+  // Archive Published → Archived (PATCH /admin/template-versions/:id/archive)
+  // เงื่อนไข backend: status = PUBLISHED + ไม่มี Recruitment Round อ้างอิง
   const onArchive = async (versionId: string, versionNumber: number) => {
-    if (!confirm(`ต้องการ Archive v${versionNumber}?\n\nVersion ที่ Archived จะเก็บไว้อ้างอิงเท่านั้น ไม่สามารถใช้สร้าง Round ใหม่ได้`)) {
+    // เหมือน Publish — loadAll หลัง archive จะโหลดฟิลด์ใหม่ทับ edit ที่ยังไม่ save
+    if (isEditMode && hasUnsavedChanges) {
+      alert('มีการเปลี่ยนแปลงที่ยังไม่บันทึก\n\nกรุณากด "Save Draft" ก่อน Archive มิฉะนั้นการแก้ไขจะหายทั้งหมด');
       return;
     }
-    
+
+    // Confirmation dialog — ระบุ version + ผลกระทบก่อนยืนยัน
+    if (!confirm(`ต้องการ Archive v${versionNumber}?\n\nผลกระทบ:\n- Version นี้จะเปลี่ยนสถานะเป็น Archived เก็บไว้อ้างอิงเท่านั้น\n- ไม่สามารถใช้สร้างรอบรับสมัครใหม่ได้`)) {
+      return;
+    }
+
     setSubmitting(true);
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/template-versions/${versionId}/archive`, {
@@ -874,16 +927,30 @@ function BuilderInner() {
           Authorization: `Bearer ${localStorage.getItem('adminToken')}`,
         },
       });
-      
+
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'archive failed');
+        // อ่าน error body แบบทนทาน (บาง response อาจไม่ใช่ JSON)
+        const errBody = await res.json().catch(() => null);
+
+        if (res.status === 404) {
+          notify('error', 'ไม่พบ Version ที่ต้องการ Archive', 'Version อาจถูกลบไปแล้ว กำลังโหลดรายการใหม่');
+          await loadAll();
+        } else if (res.status === 409) {
+          notify('error', `Archive v${versionNumber} ไม่สำเร็จ`, 'Version ถูกเปลี่ยนสถานะโดยผู้ใช้งานอื่น กำลังโหลดข้อมูลใหม่');
+          await loadAll();
+        } else if (res.status === 400 && errBody?.roundsCount != null) {
+          notify('error', `Archive v${versionNumber} ไม่สำเร็จ`, `ไม่สามารถ Archive ได้ เนื่องจากมีรอบรับสมัครอ้างอิงอยู่ ${errBody.roundsCount} รอบ`);
+        } else {
+          notify('error', `Archive v${versionNumber} ไม่สำเร็จ`, errBody?.error || `เกิดข้อผิดพลาด (HTTP ${res.status})`);
+        }
+        return;
       }
-      
-      alert(`Archive v${versionNumber} สำเร็จ!`);
+
+      notify('success', `Archive v${versionNumber} สำเร็จ`, 'ประวัติ Version ถูกโหลดใหม่แล้ว');
       await loadAll();
-    } catch (err) {
-      alert('เกิดข้อผิดพลาด: ' + (err as Error).message);
+    } catch {
+      // network error / fetch throw
+      notify('error', 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้', 'กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่อีกครั้ง');
     } finally {
       setSubmitting(false);
     }
@@ -1273,6 +1340,10 @@ function BuilderInner() {
                   .map((v) => {
                     const isLatestPublished = latestPublished?.id === v.id;
                     const isLatestDraft = latestDraft?.id === v.id;
+                    // Archive UI: ปุ่ม Archive เปิดเฉพาะ PUBLISHED ที่ไม่มีรอบอ้างอิง
+                    // (fail-closed — ถ้าโหลดข้อมูล rounds ไม่สำเร็จ ถือว่าตรวจไม่ได้)
+                    const isReferenced = referencedVersionIds.has(v.id);
+                    const archiveBlocked = !roundsUsageLoaded || isReferenced;
                     return (
                       <div key={v.id} className="border rounded-lg p-4 bg-slate-50">
                         <div className="flex items-start justify-between">
@@ -1296,6 +1367,17 @@ function BuilderInner() {
                               {v.status === 'PUBLISHED' && `เผยแพร่เมื่อ ${formatDate(v.createdAt)}`}
                               {v.status === 'ARCHIVED' && `เก็บไว้เมื่อ ${formatDate(v.createdAt)}`}
                             </div>
+                            {/* Archive UI: ข้อความอธิบายเมื่อ Archive ไม่ได้ */}
+                            {v.status === 'PUBLISHED' && canWrite && isReferenced && (
+                              <p className="text-xs text-slate-500 mt-1">
+                                ไม่สามารถ Archive ได้ เนื่องจากมีรอบรับสมัครอ้างอิงอยู่
+                              </p>
+                            )}
+                            {v.status === 'PUBLISHED' && canWrite && !roundsUsageLoaded && (
+                              <p className="text-xs text-slate-500 mt-1">
+                                ไม่สามารถตรวจสอบการอ้างอิงรอบรับสมัครได้ (โหลดข้อมูลไม่สำเร็จ)
+                              </p>
+                            )}
                           </div>
                           <div className="flex gap-2">
                             {/* View button - all versions */}
@@ -1322,6 +1404,30 @@ function BuilderInner() {
                             >
                               Compare
                             </Button>
+                            {/* PUBLISHED: Archive — เฉพาะเมื่อไม่มีรอบรับสมัครอ้างอิง */}
+                            {v.status === 'PUBLISHED' && canWrite && (
+                              archiveBlocked ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled
+                                  title={isReferenced
+                                    ? 'ไม่สามารถ Archive ได้ เนื่องจากมีรอบรับสมัครอ้างอิงอยู่'
+                                    : 'ไม่สามารถตรวจสอบการอ้างอิงรอบรับสมัครได้ (โหลดข้อมูลไม่สำเร็จ)'}
+                                >
+                                  Archive
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => onArchive(v.id, v.versionNumber)}
+                                  disabled={submitting}
+                                >
+                                  Archive
+                                </Button>
+                              )
+                            )}
                             {/* PUBLISHED: สร้าง Draft ใหม่จาก Published */}
                             {v.status === 'PUBLISHED' && (
                               <Button
