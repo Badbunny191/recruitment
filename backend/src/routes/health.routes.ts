@@ -5,7 +5,8 @@
  *
  *   GET /health        (liveness)  — อยู่ใน src/index.ts เดิม ไม่แตะ DB
  *                                    ตอบเร็ว ไม่มี dependency
- *   GET /health/ready  (readiness) — ไฟล์นี้ ตรวจ D1 จริง + secret ที่จำเป็น
+ *   GET /health/ready  (readiness) — ไฟล์นี้ ตรวจ D1 จริง + R2 (head sentinel)
+ *                                    + secret ที่จำเป็น
  *
  * ## ทำไมต้องแยก
  *
@@ -51,6 +52,19 @@ export const healthRoutes = new Hono<{ Bindings: Bindings }>();
  * uptime monitor (10-15 วิ) พอที่จะได้ 503 กลับไปก่อน monitor ตัดเอง
  */
 export const DB_PROBE_TIMEOUT_MS = 3000;
+
+/**
+ * R2 probe key — sentinel ที่จงใจใช้ key ที่ "ไม่ควรมีอยู่จริง"
+ *
+ * `head()` ต่อ object ที่ไม่มีคืน `null` โดยไม่ throw → ถือว่า binding/auth
+ * ปกติ (เข้าถึง bucket ได้ แค่ object นั้นไม่มี) การตัดสินจึงง่ายและไม่พึ่ง
+ * ข้อมูลจริงใน bucket เลย ห้ามเปลี่ยนเป็น list/first เพราะจะอ่านข้อมูลผู้ใช้
+ * (ไฟล์แนบผู้สมัคร) และกิน quota โดยไม่จำเป็น
+ *
+ * ต้นทุน: head = Class B op (free tier 1M/เดือน) — monitor ยิง 10-15 นาที
+ * ครั้ง ≈ 3-4K ops/เดือน แทบไม่มีผล
+ */
+export const R2_PROBE_KEY = '__health__probe';
 
 type CheckStatus = 'ok' | 'error' | 'timeout' | 'missing';
 
@@ -107,6 +121,40 @@ async function probeD1(env: Bindings): Promise<CheckStatus> {
 }
 
 /**
+ * ตรวจ R2 binding ด้วย `head(sentinel key)`
+ *
+ * ผลลัพธ์ที่เป็นไปได้ทั้งหมดหมายถึง binding ใช้งานได้:
+ *   - `null`      = object ไม่มีอยู่ (ผลที่คาดหวังกับ sentinel key)
+ *   - R2Object    = มี object นี้อยู่จริง (ก็ยังหมายถึง binding ปกติ)
+ * throw เท่านั้นที่แปลว่าพัง: credential/binding หาย, R2 ล่ม, ค้าง
+ *
+ * คืนสถานะระดับหมวดเท่านั้น ไม่คืน error message ออก client
+ * (endpoint เป็น public — ดูหัวไฟล์)
+ */
+async function probeR2(env: Bindings): Promise<CheckStatus> {
+  try {
+    await withTimeout(
+      env.R2_BUCKET.head(R2_PROBE_KEY),
+      DB_PROBE_TIMEOUT_MS
+    );
+
+    return 'ok';
+  } catch (err) {
+    const isTimeout = (err as Error)?.message === 'HEALTH_PROBE_TIMEOUT';
+
+    // TypeError จาก env.R2_BUCKET.head ที่ไม่มีจริง (deploy config ผิด) ก็เข้า
+    // catch นี้เช่นกัน — รายงานเป็น 'error' ให้ตรงกับ "binding ใช้ไม่ได้"
+    // log ฝั่ง server เท่านั้น — ห้ามหลุดออก response
+    console.error('[HEALTH] r2_probe_failed', {
+      reason: isTimeout ? 'timeout' : 'error',
+      name: (err as Error)?.name,
+    });
+
+    return isTimeout ? 'timeout' : 'error';
+  }
+}
+
+/**
  * GET /health/ready
  *
  * 200 → ทุกอย่างพร้อมรับ traffic
@@ -121,7 +169,11 @@ healthRoutes.get('/ready', async (c) => {
   // 1) D1 — dependency ที่เจ็บที่สุดถ้าล่ม
   checks.db = await probeD1(c.env);
 
-  // 2) JWT_SECRET — ตรวจใน memory ราคา 0
+  // 2) R2 — storage ของไฟล์แนบผู้สมัคร (upload/download) — เดิมพังแล้ว
+  //    health เขียว (MONITORING_SETUP.md §1) probe ด้วย head sentinel key
+  checks.r2 = await probeR2(c.env);
+
+  // 3) JWT_SECRET — ตรวจใน memory ราคา 0
   //    ถ้าหาย login พังทั้งระบบ แต่ /health เดิมไม่มีทางรู้
   checks.jwt_secret = c.env.JWT_SECRET ? 'ok' : 'missing';
 

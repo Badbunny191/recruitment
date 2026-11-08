@@ -76,6 +76,7 @@
 | GPG ไม่ได้ตั้ง | อัปโหลด plain (ทั้ง raw และ ordered) + `::warning::` ใน log เตือนชัดเจน |
 | รันซ้อน | `concurrency: d1-backup` + `cancel-in-progress: false` — รอบใหม่รอรอบเดิมจบ |
 | Health snapshot write fail (2026-11-01) | step "Write health snapshot" เป็น best-effort — `::warning::` + job ยังเขียว (raw + manifest ขึ้น R2 และ verify ผ่านแล้ว); รอบตรวจ Backup Health คืนถัดไปจับเป็น `BACKUP_FRESH` แดงแทน |
+| Publish invariant probe fail (2026-11-08) | step "Publish invariant check" เป็น best-effort เช่นเดียวกัน — `::warning::` + job ยังเขียว; manifest/snapshot บันทึก `invariant.error_code: "QUERY_FAILED"` และ Backup Health รายงาน `INVARIANT_UNAVAILABLE` แดงแทน (fail-closed — probe พังไม่เคยแปลว่า "ผ่าน") |
 
 ### 5.1 Ordered dump failure policy (Phase 2 — ตัดสินใจ 2026-11-01)
 
@@ -88,7 +89,7 @@
 
 การตรวจติดตามประจำวัน: ดู Actions tab (หรือเปิด email notification ของ GitHub สำหรับ workflow failure) — แนะนำให้แอดมินสั่ง "send notification for failed workflows only" ให้ครบ
 
-ตั้งแต่ 2026-11-01 มี **Backup Health** (`.github/workflows/backup-health.yml`) ตรวจอัตโนมัติทุกเช้า 04:30 ICT — อ่าน `d1/health/latest.json` (stable key ที่ D1 Backup เขียนหลัง manifest ผ่าน verify) แล้วเช็ค 4 ข้อ: อายุ backup ≤ `MAX_BACKUP_AGE_HOURS` (24 ชม.) / raw object อยู่จริง / `ordered.available` / `ordered.verified` — ผิดปกติ = เปิด/อัปเดต GitHub Issue (`[backup-health]`) **และ job แดง**, กลับมาปกติ = ปิด issue เอง; runbook + drill: `docs/BACKUP_HEALTH_MONITORING.md` (การอ่านตาราง job summary ด้านบนยังใช้ได้เป็นวิธีเสริม)
+ตั้งแต่ 2026-11-01 มี **Backup Health** (`.github/workflows/backup-health.yml`) ตรวจอัตโนมัติทุกเช้า 04:30 ICT — อ่าน `d1/health/latest.json` (stable key ที่ D1 Backup เขียนหลัง manifest ผ่าน verify) แล้วเช็ค 5 ข้อ: อายุ backup ≤ `MAX_BACKUP_AGE_HOURS` (24 ชม.) / raw object อยู่จริง / `ordered.available` / `ordered.verified` / **publish invariant `violations == 0`** (1 template = 1 PUBLISHED — พิสูจน์จาก snapshot ที่ backup เขียนจาก probe read-only ทุกคืน) — ผิดปกติ = เปิด/อัปเดต GitHub Issue (`[backup-health]`) **และ job แดง**, กลับมาปกติ = ปิด issue เอง; runbook + drill: `docs/BACKUP_HEALTH_MONITORING.md` (การอ่านตาราง job summary ด้านบนยังใช้ได้เป็นวิธีเสริม)
 
 ## 6. Manifest v2 (ไฟล์ที่อัปโหลดคู่กันทุกวัน — Phase 2, additive)
 
@@ -126,6 +127,12 @@
     "replay": { "orderedFkOn": true, "foreignKeyCheckRows": 0, "rawFkOffCountMatch": true },
     "warnings": [],
     "error_code": null
+  },
+  "invariant": {
+    "violations": 0,
+    "templates": [],
+    "checked_at_utc": "2026-10-31T19:02:00Z",
+    "error_code": null
   }
 }
 ```
@@ -136,11 +143,12 @@
 - consumer ใหม่ต้องอ่าน ordered ผ่าน **`.ordered.available // false`** เสมอ — ถ้า `false` จะมี `file/r2_key/sha256 = null` + `error_code` บอกสาเหตุ (`SETUP`, `PARSE`, `UNSUPPORTED`, `CYCLE`, `PARITY`, `INVARIANT`, `VERIFY`, `IO`, `GPG`, `UPLOAD`)
 - `sha256`/`size_bytes` ทั้งของ raw และ ordered อ้างถึง **ไฟล์ plaintext ก่อน GPG** (convention เดิม) — `encrypted: true` บอกว่าไฟล์บน R2 คือ `.gpg` การเทียบ checksum ต้องถอดรหัสก่อน
 - `ordered.replay` = ผล verify ที่ utility รันทุกคืน (replay FK-ON ผ่าน + `foreign_key_check` ว่าง + row count ตรง raw ทุกตาราง) — พิสูจน์ว่าไฟล์นี้ restore ได้ในตัวเอง
+- `invariant` (2026-11-08) = ผล probe read-only ของ **publish invariant "1 template = 1 PUBLISHED version"** — `violations` = จำนวน template ที่มี PUBLISHED หลาย version, `templates` = ราย id; probe พัง → `error_code: "QUERY_FAILED"` + `violations: null` (step best-effort ไม่ล้ม backup — Backup Health รายงาน `INVARIANT_UNAVAILABLE` แทน) — ที่มา: incident 2026-10 `tpl-general-001` มี v2-v5 PUBLISHED พร้อมกัน (audit: publish ยุคก่อน auto-archive 8cd02f59 + auto-archive `.get()` เก็บแถว arbitrary)
 - `error.message` ของ utility *ไม่* ถูกบันทึกลง manifest (มีเฉพาะ `error_code`) — กัน SQL snippet หลุดเข้า artifact ที่เก็บถาวร, message เต็มอยู่ใน job log
 
 `facts` ใช้เป็น baseline เทียบตอน restore (ขั้นตอนที่ 3 ของ `RESTORE_DRILL.md`) และ `migration_head` ใช้ตัดสินว่า dump นั้นมาจาก schema ไหน (สำคัญมากกับ migration 030 ที่ rebuild ตาราง applications) — **การ restore ให้ใช้ ordered dump ก่อนเสมอเมื่อ `ordered.available == true`** (ดู `RESTORE_DRILL.md` §1-2)
 
-**Health snapshot (2026-11-01):** หลัง step verify ผ่าน workflow derive `d1/health/latest.json` (stable key, overwrite ทุกคืน, `schema_version: 1`) จาก manifest ไฟล์นี้ทั้งหมด — เป็น key เดียวที่ Backup Health อ่าน จึงไม่ต้อง list R2; การเขียน best-effort — พัง = `::warning` + รอบตรวจคืนถัดไปจับเป็น stale (schema และกฎ: `BACKUP_HEALTH_MONITORING.md` §2)
+**Health snapshot (2026-11-01, schema v2 ตั้งแต่ 2026-11-08):** หลัง step verify ผ่าน workflow derive `d1/health/latest.json` (stable key, overwrite ทุกคืน, `schema_version: 2` — v2 เพิ่ม `invariant` block เท่านั้น field เดิมคงความหมายเดิม) จาก manifest ไฟล์นี้ทั้งหมด — เป็น key เดียวที่ Backup Health อ่าน จึงไม่ต้อง list R2; การเขียน best-effort — พัง = `::warning` + รอบตรวจคืนถัดไปจับเป็น stale (schema และกฎ: `BACKUP_HEALTH_MONITORING.md` §2)
 
 ## 7. ขั้นตอนเปิดใช้งานครั้งแรก (แอดมิน)
 

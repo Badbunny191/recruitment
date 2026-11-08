@@ -11,12 +11,17 @@
 #   3. Build ordered dump — FK-safe reorder via backend/scripts/reorder-dump
 #      (topology + multiset parity + in-memory replay with foreign_keys=ON)
 #   4. Collect manifest facts (row counts + migration ledger head)
-#   5. Ensure the backup bucket exists + 90-day expire lifecycle rule
-#   6. Optional GPG encryption when secrets.BACKUP_GPG_RECIPIENT is set
+#   5. Publish invariant probe (read-only: 1 template = 1 PUBLISHED version)
+#      recorded into manifest + health snapshot — Backup Health alerts
+#      INVARIANT_OK when a template drifts back to multiple PUBLISHED
+#      versions (the 2026-10 production incident: tpl-general-001 had
+#      v2-v5 PUBLISHED at once)
+#   6. Ensure the backup bucket exists + 90-day expire lifecycle rule
+#   7. Optional GPG encryption when secrets.BACKUP_GPG_RECIPIENT is set
 #      (strongly recommended — the dumps contain full applicant PII)
-#   7. Upload raw dump + ordered dump + manifest v2
+#   8. Upload raw dump + ordered dump + manifest v2
 #      to  R2_BACKUP_BUCKET/d1/daily/YYYY/MM/DD/
-#   8. Re-download manifest to verify the upload landed
+#   9. Re-download manifest to verify the upload landed
 #
 # Failure policy (Phase 2, 2026-11-01):
 #   The RAW dump is the source of truth — its pipeline stays fatal on error.
@@ -153,6 +158,38 @@ jobs:
           # ([{ results: [row], success, meta }]) — ยืนยันจาก prod วันที่ 2026-10-31;
           # .results[0] บน array root จะได้ null เงียบ ๆ ต้อง .[0].results[0]
           jq '.[0].results[0]' facts.json > facts-flat.json
+
+      - name: Publish invariant check (read-only, best-effort)
+        run: |
+          set -uo pipefail
+          # Invariant "1 template = 1 PUBLISHED version" — read-only probe,
+          # same read cost as the manifest facts step above (17 rows on prod).
+          # Best-effort by design (set -u, NOT -e): a failed probe must never
+          # degrade tonight's backup — it degrades to error_code and the
+          # Backup Health workflow reports INVARIANT_UNAVAILABLE instead.
+          # Result lives in manifest + health snapshot; the alert itself is
+          # raised by backup-health.yml (read-only reader per its header).
+          INV_EXIT=0
+          npx wrangler d1 execute "$D1_DATABASE" --remote --json --command \
+            "SELECT template_id, COUNT(*) AS published_count FROM template_versions \
+             WHERE status = 'PUBLISHED' GROUP BY template_id HAVING COUNT(*) > 1" \
+            > invariant.json || INV_EXIT=$?
+          if [ "$INV_EXIT" -eq 0 ]; then
+            jq -n \
+              --arg checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --slurpfile rows invariant.json \
+              '{violations: ($rows[0].results | length),
+                templates: ($rows[0].results | map(.template_id)),
+                checked_at_utc: $checked_at,
+                error_code: null}' \
+              > invariant-block.json
+            echo "publish invariant: violations = $(jq -r '.violations' invariant-block.json)"
+          else
+            jq -n '{violations: null, templates: [],
+                    checked_at_utc: null, error_code: "QUERY_FAILED"}' \
+              > invariant-block.json
+            echo "::warning::publish invariant probe failed (exit $INV_EXIT) — backup continues; Backup Health will report INVARIANT_UNAVAILABLE"
+          fi
 
       - name: Ensure backup bucket exists
         run: |
@@ -320,9 +357,11 @@ jobs:
             --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --slurpfile facts facts-flat.json \
             --slurpfile ordered ordered-block.json \
+            --slurpfile invariant invariant-block.json \
             '{schema_version: 2, generated_at_utc: $generated_at, database: $database,
               file: $file, r2_key: $key, size_bytes: $size_bytes, sha256: $sha256,
-              run_url: $run_url, facts: $facts[0], ordered: $ordered[0]}' \
+              run_url: $run_url, facts: $facts[0], ordered: $ordered[0],
+              invariant: $invariant[0]}' \
             > "manifest-$TS.json"
 
           npx wrangler r2 object put "$R2_BACKUP_BUCKET/$PREFIX/manifest-$TS.json" --file "manifest-$TS.json"
@@ -358,7 +397,7 @@ jobs:
           jq -n \
             --arg updated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --slurpfile manifest "manifest-$TS.json" \
-            '{schema_version: 1,
+            '{schema_version: 2,
               updated_at_utc: $updated_at,
               database: $manifest[0].database,
               backup: {generated_at_utc: $manifest[0].generated_at_utc,
@@ -371,6 +410,10 @@ jobs:
                         verified: $manifest[0].ordered.verified,
                         r2_key: $manifest[0].ordered.r2_key,
                         error_code: $manifest[0].ordered.error_code},
+              invariant: {violations: $manifest[0].invariant.violations,
+                          templates: $manifest[0].invariant.templates,
+                          checked_at_utc: $manifest[0].invariant.checked_at_utc,
+                          error_code: $manifest[0].invariant.error_code},
               facts: {migration_head: $manifest[0].facts.migration_head}}' \
             > health-latest.json || HEALTH_EXIT=$?
           if [ "$HEALTH_EXIT" -eq 0 ]; then
@@ -400,6 +443,9 @@ jobs:
                 echo "| ordered verify | FK-ON replay + parity OK |"
               else
                 echo "| ordered | unavailable (${ORDERED_ERROR_CODE:-?}) — raw-only backup tonight |"
+              fi
+              if [ -f "invariant-block.json" ]; then
+                echo "| publish invariant | violations = $(jq -r '.violations' invariant-block.json) (error_code: $(jq -r '.error_code' invariant-block.json)) |"
               fi
             else
               echo "Backup failed before export completed — see the failing step above."

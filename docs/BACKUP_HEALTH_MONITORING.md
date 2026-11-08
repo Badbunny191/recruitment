@@ -22,18 +22,18 @@
 
 ```
 d1-backup.yml (02:00 ICT)                        backup-health.yml (04:30 ICT)
-  export → validate → ordered → manifest →       1. GET  d1/health/latest.json
-  verify →                                        2. GET  <backup.r2_key> (known key)
-    ✚ PUT d1/health/latest.json  ──────R2──────►  3. ประเมิน 4 เช็ค
-    (best-effort — พัง = warning, job เขียว)       4. Issue: เปิด/อัปเดต/ปิด + fingerprint
-                                                  5. เช็คแดง → job แดง (D1)
+  export → validate → ordered → facts →          1. GET  d1/health/latest.json
+  ✚ invariant probe (read-only) → manifest →     2. GET  <backup.r2_key> (known key)
+  verify →                                       3. ประเมิน 5 เช็ค
+    ✚ PUT d1/health/latest.json  ──────R2──────► 4. Issue: เปิด/อัปเดต/ปิด + fingerprint
+    (best-effort — พัง = warning, job เขียว)       5. เช็คแดง → job แดง (D1)
 ```
 
-## 2. Health snapshot — `d1/health/latest.json` (schema v1)
+## 2. Health snapshot — `d1/health/latest.json` (schema v2 — 2026-11-08)
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "updated_at_utc": "2026-11-01T19:05:00Z",
   "database": "sao-db",
   "backup": {
@@ -47,6 +47,10 @@ d1-backup.yml (02:00 ICT)                        backup-health.yml (04:30 ICT)
     "r2_key": "…/dump-20261101T190000Z.ordered.sql.gpg",
     "error_code": null
   },
+  "invariant": {
+    "violations": 0, "templates": [],
+    "checked_at_utc": "2026-11-01T19:02:00Z", "error_code": null
+  },
   "facts": { "migration_head": "031_applications_submitted_at_sort_indexes.sql" }
 }
 ```
@@ -54,11 +58,12 @@ d1-backup.yml (02:00 ICT)                        backup-health.yml (04:30 ICT)
 กฎ:
 
 - derive จาก `manifest-<TS>.json` ที่ผ่าน verify ทั้งหมด — `backup.*` = raw dump (source of truth), `ordered.*` = restore-ready artifact, `facts.migration_head` = schema ตอน dump
+- **v2 (2026-11-08) เพิ่ม `invariant` เท่านั้น** — field เดิมทุกตัวคงความหมายเดิม 100% จึง backward compatible; `invariant.violations` มาจาก probe read-only ที่ d1-backup.yml รันทุกคืน (`SELECT template_id, COUNT(*) … HAVING COUNT(*) > 1` — อ่าน 17 rows บน prod = 0 cost); probe พัง = `violations: null` + `error_code: "QUERY_FAILED"` — Backup Health fail-closed เป็น `INVARIANT_UNAVAILABLE` ไม่เคยแปลว่า "ผ่าน" เงียบ ๆ
 - ค่า sha256/size_bytes อ้างถึงไฟล์ **plaintext ก่อน GPG** ตาม convention ของ manifest v2 (`D1_BACKUP_AUTOMATION.md` §6)
 - อยู่ภายใต้ lifecycle rule 90 วันเดิม (ไม่ได้แก้ lifecycle) — ถ้าไม่ถูกอัปเดต 90 วัน = ระบบแดงมานานแล้ว ไม่มีผลเพิ่ม
 - **การเขียนเป็น best-effort**: พัง = `::warning` + job ยังเขียว (raw + manifest ขึ้น R2 และ verify ผ่านแล้วทั้งคู่) — รอบตรวจคืนถัดไปเช็ค `BACKUP_FRESH` จะจับแทน (self-covering)
 
-## 3. เช็คทั้ง 4 + เกณฑ์อายุ
+## 3. เช็คทั้ง 5 + เกณฑ์อายุ
 
 | เช็ค | ผ่านเมื่อ | หมายเหตุ |
 |---|---|---|
@@ -66,8 +71,10 @@ d1-backup.yml (02:00 ICT)                        backup-health.yml (04:30 ICT)
 | `RAW_PRESENT` | `wrangler r2 object get <backup.r2_key>` สำเร็จ + ไฟล์ไม่ว่าง | known-key GET — ไม่ list; ไม่เทียบ checksum เพราะไฟล์บน R2 อาจเป็น `.gpg` (sha256 ของ manifest อ้าง plaintext ก่อนเข้ารหัส) |
 | `ORDERED_AVAILABLE` | `ordered.available == true` | แดง → แสดง `error_code` (`SETUP`/`PARSE`/`UNSUPPORTED`/`CYCLE`/`PARITY`/`INVARIANT`/`VERIFY`/`IO`/`GPG`/`UPLOAD`) |
 | `ORDERED_VERIFIED` | `ordered.verified == true` | ปกติมาพร้อมกัน (available=false → ทั้งคู่แดง) |
+| `INVARIANT_OK` | `invariant.violations == 0` | publish invariant "1 template = 1 PUBLISHED version" — probe read-only ใน d1-backup.yml ทุกคืน, ที่นี่อ่านจาก snapshot เท่านั้น (ยังคง guarantee "no d1 command in this file"); แดง → แสดงราย template id ที่ผิด |
+| `INVARIANT_UNAVAILABLE` | (สถานะแดง ไม่ใช่เช็คอิสระ) snapshot ไม่มี `invariant` block หรือ `error_code != null` | **fail-closed** — snapshot เก่า (v1) หรือ probe ล้ม ต้องแดง ห้าม skip เงียบ; วิธีแก้ = dispatch "D1 Backup" 1 ครั้ง |
 
-กรณีอ่าน `d1/health/latest.json` ไม่ได้เลย (404 / JSON เสีย) → สถานะพิเศษ `HEALTH_MISSING` แทนที่ทั้ง 4 เช็ค แล้วรายงานเป็นแดงเดียว
+กรณีอ่าน `d1/health/latest.json` ไม่ได้เลย (404 / JSON เสีย) → สถานะพิเศษ `HEALTH_MISSING` แทนที่ทั้ง 5 เช็ค แล้วรายงานเป็นแดงเดียว
 
 **ทำไม cron 04:30 ICT:** buffer 2.5 ชม. หลัง backup 02:00 — รอบปกติอายุ ≈ 2.5 ชม.; คืนที่ backup ไม่สำเร็จ/ไม่ยิง รอบเช้าจะอ่านอายุ ≈ 26.5 ชม. > 24 → แดงพอดี
 
@@ -105,6 +112,7 @@ d1-backup.yml (02:00 ICT)                        backup-health.yml (04:30 ICT)
 | `stale` | แดงเฉพาะ `BACKUP_FRESH` | เปิด issue + job แดง |
 | `ordered_unavailable` | แดง `ORDERED_AVAILABLE` + `ORDERED_VERIFIED` | เส้นทาง error_code |
 | `raw_missing` | แดงเฉพาะ `RAW_PRESENT` | เส้นทาง object-get fail |
+| `invariant_violation` | แดงเฉพาะ `INVARIANT_OK` | เส้นทาง publish invariant (2026-11-08) |
 | `healthy` | ผ่านทั้งหมด | ปิด issue อัตโนมัติ |
 
 - run ที่เป็น drill มีหมายเหตุกำกับใน issue body; ค่าที่ไม่รู้จัก = ตรวจของจริง
@@ -118,6 +126,8 @@ d1-backup.yml (02:00 ICT)                        backup-health.yml (04:30 ICT)
 | `RAW_PRESENT` | manifest ชี้ raw object ที่อ่านไม่ได้ (ถูกลบ/เสียหาย) | ตรวจ R2 dashboard; พิจารณาใช้ backup ก่อนหน้า (`d1/daily/…` วันก่อน) หรือ D1 Time Travel — อย่าปล่อยทิ้งเพราะนี่คือ source of truth |
 | `ORDERED_AVAILABLE` | คืนนั้นไม่มี ordered dump (`error_code` บอกสาเหตุ) | raw ยังอยู่ = **ไม่ใช่ข้อมูลหาย** — ตาม `backend/scripts/reorder-dump/SPEC.md` §7-8; UNSUPPORTED หลัง migration ใหม่ = เพิ่ม capability ให้ utility ไม่ใช่เหตุฉุกเฉิน |
 | `ORDERED_VERIFIED` | ordered มีแต่ไม่ผ่าน verify (ปริศนา — ปกติเป็นคู่กับ AVAILABLE) | ตามเหมือนแถวบน + ดู job log รอบ backup คืนนั้น |
+| `INVARIANT_OK` | มี template ที่ PUBLISHED มากกว่า 1 version (รายชื่อ id ในรายละเอียดเช็ค) | รอบ publish ถัดไปจะ auto-archive แถว arbitrary → สถานะไม่หายเอง — ตาม runbook publish-invariant: archive version เก่าเหลือตัวล่าสุด (ทาง API จะได้ audit trail) แล้ว dispatch "D1 Backup" 1 ครั้ง |
+| `INVARIANT_UNAVAILABLE` | snapshot เก่า (v1) ยังไม่มี block หรือ probe ใน backup ล้ม | dispatch "D1 Backup" 1 ครั้ง; ล้มซ้ำ = ดู log รอบ backup คืนนั้น (probe เป็น best-effort — backup หลักไม่ถูกกระทบ) |
 | `HEALTH_MISSING` | อ่าน `d1/health/latest.json` ไม่ได้ | backup อาจยังสำเร็จ — dispatch "D1 Backup" 1 ครั้งเพื่อ seed; ถ้า backup เขียวอยู่แล้วให้ดู warning step health snapshot |
 
 ## 8. ขอบเขต & ความปลอดภัย
@@ -130,17 +140,19 @@ d1-backup.yml (02:00 ICT)                        backup-health.yml (04:30 ICT)
 
 ## 9. Rollout & Acceptance
 
-**Rollout:** merge → dispatch "D1 Backup" 1 ครั้ง (seed `d1/health/latest.json`) → dispatch "Backup Health" (คาดหวังเขียว 4/4, ไม่มี issue) → drill ตาม §6 → ปล่อย cron ทำงาน
+**Rollout:** merge → dispatch "D1 Backup" 1 ครั้ง (seed `d1/health/latest.json` เป็น schema v2 พร้อม `invariant` block) → dispatch "Backup Health" (คาดหวังเขียว 5/5, ไม่มี issue) → drill ตาม §6 → ปล่อย cron ทำงาน
+
+> หมายเหตุ (2026-11-08): snapshot แรกหลัง merge ที่ยังเป็น v1 (ยังไม่ได้ dispatch backup) จะแดง `INVARIANT_UNAVAILABLE` หนึ่งรอบ — เจตนา (fail-closed §3) หายเองเมื่อ dispatch "D1 Backup" แล้ว; ถ้า prod ยังมี template ที่ PUBLISHED ซ้ำจริง ตัวเลขจะแดง `INVARIANT_OK` ตรงตามความจริงของข้อมูล
 
 **Acceptance criteria:**
 
 | # | เกณฑ์ |
 |---|---|
 | A1 | backup รอบใหม่มี `d1/health/latest.json` ตรง manifest ของรอบนั้นทุกฟิลด์ (เทียบด้วย jq) |
-| A2 | สถานะปกติ → job เขียว, ไม่เปิด issue, summary ผ่าน 4/4 |
+| A2 | สถานะปกติ → job เขียว, ไม่เปิด issue, summary ผ่าน 5/5 |
 | A3 | drill `ordered_unavailable` → เปิด 1 ใบ; รันซ้ำ → ยัง 1 ใบ (ไม่เปิดซ้ำ), body อัปเดต, ไม่มี comment ใหม่เมื่อ fingerprint เดิม |
 | A4 | drill `healthy` ขณะ issue เปิด → comment "กลับมาปกติ" + issue ถูกปิด |
-| A5 | drill `stale` / `raw_missing` → issue ระบุเช็คที่แดง + อายุ + `run_url` ถูกต้อง |
+| A5 | drill `stale` / `raw_missing` / `invariant_violation` → issue ระบุเช็คที่แดง + อายุ + `run_url` ถูกต้อง |
 | A6 | grep พิสูจน์ read-only (§8) และ job แดงเมื่อเช็คแดง (D1) |
-| A7 | step เดิมของ `d1-backup.yml` ไม่ถูกแก้ — diff มีเฉพาะ step "Write health snapshot" |
+| A7 | diff ของ `d1-backup.yml` (2026-11-08) มีเฉพาะ: step "Publish invariant check" เพิ่มใหม่ + บล็อค `invariant` เข้า manifest/health snapshot + แถว summary — dump/encrypt/upload steps เดิมไม่ถูกแก้ |
 | A8 | drill_scenario ว่าง (default) = ตรวจของจริงเสมอ |
