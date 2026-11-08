@@ -17,15 +17,22 @@
  *   H8.  response มี latency_ms + timestamp ตาม contract
  *   H9.  /health ยังตอบได้แม้ D1 พัง (liveness ต้องไม่ผูก dependency)
  *   H10. log ที่เขียนตอน probe ล้มไม่มี PII (national_id/password/token)
+ *   H11. /health/ready → 200 + checks.r2 = ok เมื่อ R2 binding ใช้ได้ (head
+ *        sentinel key คืน null — ไม่มี object ก็ถือว่า binding/auth ปกติ)
+ *   H12. /health/ready → 503 + checks.r2 = error เมื่อ R2 throw (upload พัง
+ *        ต้องไม่มีวันที่ health เขียว) + ไม่ leak error message
+ *   H13. /health/ready → 503 + checks.r2 = timeout เมื่อ R2 ค้าง
+ *   H14. /health/ready → 503 + checks.r2 = error เมื่อ binding หายเป๊ะ
+ *        (env.R2_BUCKET ไม่มี head — deploy config ผิด)
  *
- * ใช้ D1 จำลอง 100% — ไม่ deploy ไม่แตะ D1 จริง ไม่ต้องมี network
+ * ใช้ D1/R2 จำลอง 100% — ไม่ deploy ไม่แตะ D1/R2 จริง ไม่ต้องมี network
  *
  * รัน: node --import tsx src/routes/__tests__/health-readiness.test.ts
  */
 
 // @ts-nocheck — tsx run-time; keep simple, no project type plumbing
 import worker from '../../index';
-import { DB_PROBE_TIMEOUT_MS } from '../health.routes';
+import { DB_PROBE_TIMEOUT_MS, R2_PROBE_KEY } from '../health.routes';
 
 let passed = 0;
 let failed = 0;
@@ -119,12 +126,38 @@ function wrongResultD1() {
   };
 }
 
+// ── R2 stubs ────────────────────────────────────────────────────────────────
+
+/** R2 ปกติ — head() ต่อ sentinel key คืน null (binding/auth ผ่าน, ไม่มี object) */
+function healthyR2() {
+  return {
+    calls: [] as string[],
+    async head(key) { this.calls.push(key); return null; },
+  };
+}
+
+/** R2 ที่ throw ทันที — จำลอง credential พัง / bucket ถูกลบ */
+function throwingR2(message = 'R2_ERROR: access denied') {
+  return {
+    calls: [] as string[],
+    async head() { throw new Error(message); },
+  };
+}
+
+/** R2 ที่ค้างไม่ยอม return — จำลอง R2 hang */
+function hangingR2() {
+  return {
+    calls: [] as string[],
+    async head() { return new Promise(() => {}); },
+  };
+}
+
 const ctx = { waitUntil: () => {}, passThroughOnException: () => {} };
 
 function makeEnv(overrides = {}) {
   return {
     DB: healthyD1(),
-    R2_BUCKET: { delete: async () => {} },
+    R2_BUCKET: healthyR2(),
     JWT_SECRET: 'test-secret-health',
     ...overrides,
   };
@@ -289,6 +322,63 @@ async function runAllTests() {
       assertTrue(!joined.includes(pii), `log ห้ามมี "${pii}": ${joined}`);
     }
     assertTrue(logs.length > 0, 'ยังต้อง log เพื่อ debug ได้');
+  });
+
+  // ---- H11: R2 happy path ----
+  await test('H11: /health/ready → 200 + checks.r2 = ok เมื่อ R2 binding ใช้ได้', async () => {
+    const env = makeEnv();
+    const res = await get('/health/ready', env);
+
+    assertEqual(res.status, 200, 'HTTP status');
+    assertEqual(res.body.checks.r2, 'ok', 'checks.r2');
+    assertEqual(env.R2_BUCKET.calls.length, 1, `ต้อง head ครั้งเดียว (ได้ ${env.R2_BUCKET.calls.length})`);
+    assertEqual(env.R2_BUCKET.calls[0], R2_PROBE_KEY, 'ต้อง head sentinel key ที่ไม่มีข้อมูลผู้ใช้');
+  });
+
+  // ---- H12: R2 throw → 503 (upload พังไม่มีวันที่ health เขียว) ----
+  await test('H12: /health/ready → 503 + checks.r2 = error เมื่อ R2 throw + ไม่ leak message', async () => {
+    const env = makeEnv({ R2_BUCKET: throwingR2('R2_ERROR: secret bucket internals at /r2/path') });
+    const { logs, result: r } = await captureConsoleError(() => get('/health/ready', env));
+
+    assertEqual(r.status, 503, 'HTTP status ต้องเป็น 503');
+    assertEqual(r.body.status, 'degraded', 'body.status');
+    assertEqual(r.body.checks.r2, 'error', 'checks.r2');
+    assertEqual(r.body.checks.db, 'ok', 'db ยังต้องรายงานตามจริง');
+
+    const raw = r.text.toLowerCase();
+    for (const leak of ['r2_error', 'access denied', '/r2/path', 'internals']) {
+      assertTrue(!raw.includes(leak), `ห้ามมี "${leak}" ใน response: ${r.text}`);
+    }
+    assertTrue(logs.length > 0, 'ต้อง log ฝั่ง server เมื่อ R2 probe ล้ม');
+  });
+
+  // ---- H13: R2 ค้าง → timeout → 503 ----
+  await test('H13: /health/ready → 503 + checks.r2 = timeout เมื่อ R2 ค้าง', async () => {
+    const env = makeEnv({ R2_BUCKET: hangingR2() });
+    const startedAt = Date.now();
+
+    const { result: r } = await captureConsoleError(() => get('/health/ready', env));
+    const elapsed = Date.now() - startedAt;
+
+    assertEqual(r.status, 503, 'HTTP status');
+    assertEqual(r.body.checks.r2, 'timeout', 'checks.r2 ต้องแยก timeout ออกจาก error');
+    assertTrue(
+      elapsed >= DB_PROBE_TIMEOUT_MS - 100,
+      `ต้องรอจนครบ timeout (${DB_PROBE_TIMEOUT_MS} ms) — ใช้ไป ${elapsed} ms`
+    );
+    assertTrue(
+      elapsed < DB_PROBE_TIMEOUT_MS + 2000,
+      `ต้องไม่ค้างเกิน timeout มาก (ใช้ไป ${elapsed} ms)`
+    );
+  });
+
+  // ---- H14: binding หายเป๊ะ → error ----
+  await test('H14: /health/ready → 503 + checks.r2 = error เมื่อ env.R2_BUCKET ไม่มี head (config ผิด)', async () => {
+    const env = makeEnv({ R2_BUCKET: {} });
+    const { result: r } = await captureConsoleError(() => get('/health/ready', env));
+
+    assertEqual(r.status, 503, 'HTTP status');
+    assertEqual(r.body.checks.r2, 'error', 'checks.r2 — binding หาย = error ไม่ใช่ ok');
   });
 
   console.log('');

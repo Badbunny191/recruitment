@@ -5,7 +5,7 @@
 > อ่านคู่กับ [`RUNBOOK_INCIDENT_RESPONSE.md`](./RUNBOOK_INCIDENT_RESPONSE.md) (เจอ alert แล้วทำอะไร)
 > และ [`LOGS_AND_DEBUGGING.md`](./LOGS_AND_DEBUGGING.md) (หาสาเหตุจาก log)
 
-**Last Updated:** 2026-10-28
+**Last Updated:** 2026-11-08
 
 ---
 
@@ -33,8 +33,8 @@ https://sao-recruitment-frontend.pages.dev
 | องค์ประกอบ | readiness รู้ไหม | ถ้าพังจะเห็นอาการที่ไหน |
 |---|---|---|
 | D1 binding (`DB`) | ✅ ตรวจ | `checks.db` = `error` / `timeout` |
+| R2 binding (`R2_BUCKET`) | ✅ ตรวจ (2026-11-08 — head sentinel key) | `checks.r2` = `error` / `timeout` |
 | `JWT_SECRET` | ✅ ตรวจ (มี/ไม่มี) | `checks.jwt_secret` = `missing` |
-| R2 binding (`R2_BUCKET`) | ❌ ไม่ตรวจ | upload / ดาวน์โหลดไฟล์ผู้สมัครพัง แต่ health เขียว |
 | `TURNSTILE_SECRET_KEY` | ❌ ไม่ตรวจ | ขึ้นกับว่าเปิดใช้จริงหรือยัง (ดูข้อ 6) |
 | Cron GC (ลบ TEMP 7 วัน) | ❌ ไม่ตรวจ | ไม่มีสัญญาณเลย — รู้ตัวตอน R2 บวม |
 | PDF generation pipeline | ❌ ไม่ตรวจ | request-level error เท่านั้น ดูใน Workers Logs |
@@ -165,7 +165,7 @@ Monitor ที่ไม่มีใครดูคือ log ที่แพง�
 | Health signal สำหรับ cron GC | ❌ ไม่มี | `scheduled()` ล้มแล้วได้แค่ `console.error` — ดู `LOGS_AND_DEBUGGING.md` §5 |
 | Version/commit SHA ใน `/health/ready` | ❌ ไม่มี | ยืนยันไม่ได้ว่า deploy ไหน live อยู่ ต้องดู dashboard |
 | `Cache-Control: no-store` บน health response | ❌ ไม่มี | ถ้ามี CDN/proxy คั่นกลาง อาจ cache ผลเก่า |
-| R2 binding probe | ❌ ไม่มี | upload พังโดย health เขียว |
+| R2 binding probe | ✅ มีแล้ว (2026-11-08) | `checks.r2` = head sentinel key `__health__probe` — ดู `health.routes.ts` + test H11-H14 |
 | Synthetic check (login / submit จริง) | ❌ ไม่มี | readiness ไม่ได้ทดสอบ business flow |
 | Uptime SLO / error budget | ❌ ไม่มี | ยังไม่มีตัวเลข commitment |
 

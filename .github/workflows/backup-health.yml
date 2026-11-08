@@ -11,7 +11,14 @@
 #   RAW_PRESENT         raw object the snapshot points at still downloads
 #   ORDERED_AVAILABLE   snapshot recorded ordered.available == true
 #   ORDERED_VERIFIED    snapshot recorded ordered.verified == true
-#   HEALTH_MISSING      replaces all four when the snapshot is unreadable
+#   INVARIANT_OK        snapshot invariant.violations == 0 (1 template =
+#                       1 PUBLISHED version — probed read-only by
+#                       d1-backup.yml each night and recorded in the
+#                       snapshot; this workflow only reads the field)
+#   INVARIANT_UNAVAILABLE   snapshot has no invariant block (pre-v2
+#                       snapshot) or the probe itself failed — the check
+#                       can only fail closed, never silently skip
+#   HEALTH_MISSING      replaces all checks when the snapshot is unreadable
 #
 # Alert policy (docs/BACKUP_HEALTH_MONITORING.md §4):
 #   - one aggregate GitHub Issue, identified by title prefix "[backup-health]"
@@ -31,8 +38,9 @@
 # below.
 #
 # Drill support: workflow_dispatch input drill_scenario forces an outcome
-# (healthy / stale / ordered_unavailable / raw_missing) to exercise the
-# issue machinery without waiting for a real failure. Empty = real check.
+# (healthy / stale / ordered_unavailable / raw_missing / invariant_violation)
+# to exercise the issue machinery without waiting for a real failure.
+# Empty = real check.
 #
 # Required secrets: CF_BACKUP_API_TOKEN + CF_ACCOUNT_ID (reused from
 # d1-backup.yml — TODO: consider a dedicated read-only R2 token for this
@@ -57,7 +65,7 @@ on:
   workflow_dispatch:
     inputs:
       drill_scenario:
-        description: "Force an outcome for drills: healthy | stale | ordered_unavailable | raw_missing (empty = real check)"
+        description: "Force an outcome for drills: healthy | stale | ordered_unavailable | raw_missing | invariant_violation (empty = real check)"
         required: false
         default: ""
 
@@ -118,6 +126,7 @@ jobs:
           AGE_DETAIL="n/a"
           RAW_DETAIL="n/a"
           ORD_DETAIL="n/a"
+          INV_DETAIL="n/a"
           RAW_KEY=""
           BACKUP_RUN_URL=""
           HEALTH_UPDATED=""
@@ -127,6 +136,7 @@ jobs:
             AGE_DETAIL="ไม่ประเมินได้ — health snapshot หาย/JSON เสีย"
             RAW_DETAIL="ไม่ประเมินได้ — health snapshot หาย/JSON เสีย"
             ORD_DETAIL="ไม่ประเมินได้ — health snapshot หาย/JSON เสีย"
+            INV_DETAIL="ไม่ประเมินได้ — health snapshot หาย/JSON เสีย"
           else
             GEN_TS="$(jq -r '.backup.generated_at_utc // ""' health-latest.json)"
             RAW_KEY="$(jq -r '.backup.r2_key // ""' health-latest.json)"
@@ -186,6 +196,30 @@ jobs:
             if [ "$ORDERED_VER" != "true" ]; then
               FAILED="$FAILED ORDERED_VERIFIED"
             fi
+
+            # --- INVARIANT_OK / INVARIANT_UNAVAILABLE — publish invariant
+            #     (1 template = 1 PUBLISHED version), probed read-only by
+            #     d1-backup.yml and recorded in the snapshot's invariant block.
+            #     Fail-closed: missing block (pre-v2 snapshot) or probe error
+            #     is INVARIANT_UNAVAILABLE, never a silent pass.
+            INV_HAS="$(jq -r 'has("invariant")' health-latest.json)"
+            INV_ERR="$(jq -r '.invariant.error_code // ""' health-latest.json)"
+            INV_VIOL="$(jq -r '.invariant.violations // -1' health-latest.json)"
+            if [ "$INV_HAS" != "true" ]; then
+              INV_DETAIL="snapshot เก่า (schema v1) ยังไม่มี invariant block — dispatch \"D1 Backup\" 1 ครั้งเพื่อ seed"
+              FAILED="$FAILED INVARIANT_UNAVAILABLE"
+            elif [ -n "$INV_ERR" ] && [ "$INV_ERR" != "null" ]; then
+              INV_DETAIL="probe ใน d1-backup ล้ม (error_code: ${INV_ERR}) — dispatch \"D1 Backup\" ใหม่"
+              FAILED="$FAILED INVARIANT_UNAVAILABLE"
+            elif [ "$INV_VIOL" -lt 0 ]; then
+              INV_DETAIL="invariant.violations อ่านไม่ได้จาก snapshot"
+              FAILED="$FAILED INVARIANT_UNAVAILABLE"
+            elif [ "$INV_VIOL" -gt 0 ]; then
+              INV_DETAIL="มี ${INV_VIOL} template ที่ PUBLISHED มากกว่า 1 version: $(jq -r '.invariant.templates | join(", ")' health-latest.json)"
+              FAILED="$FAILED INVARIANT_OK"
+            else
+              INV_DETAIL="0 violations (checked_at_utc: $(jq -r '.invariant.checked_at_utc // "?"' health-latest.json))"
+            fi
           fi
 
           # --- drill override (per-dispatch input; never persists) ---
@@ -197,6 +231,7 @@ jobs:
               stale)               FAILED="BACKUP_FRESH"; DRILL_NOTE="yes (stale)";;
               ordered_unavailable) FAILED="ORDERED_AVAILABLE ORDERED_VERIFIED"; DRILL_NOTE="yes (ordered_unavailable)";;
               raw_missing)         FAILED="RAW_PRESENT"; DRILL_NOTE="yes (raw_missing)";;
+              invariant_violation) FAILED="INVARIANT_OK"; DRILL_NOTE="yes (invariant_violation)";;
               *) DRILL="";;  # unknown value → treat as a real check
             esac
           fi
@@ -218,6 +253,7 @@ jobs:
           echo "AGE_DETAIL=$AGE_DETAIL" >> "$GITHUB_ENV"
           echo "RAW_DETAIL=$RAW_DETAIL" >> "$GITHUB_ENV"
           echo "ORD_DETAIL=$ORD_DETAIL" >> "$GITHUB_ENV"
+          echo "INV_DETAIL=$INV_DETAIL" >> "$GITHUB_ENV"
           echo "BACKUP_RUN_URL=$BACKUP_RUN_URL" >> "$GITHUB_ENV"
           echo "HEALTH_UPDATED=$HEALTH_UPDATED" >> "$GITHUB_ENV"
           echo "DRILL_NOTE=$DRILL_NOTE" >> "$GITHUB_ENV"
@@ -289,6 +325,17 @@ jobs:
               printf '| RAW_PRESENT | %s | %s |\n' "$(mark RAW_PRESENT)" "$RAW_DETAIL"
               printf '| ORDERED_AVAILABLE | %s | %s |\n' "$(mark ORDERED_AVAILABLE)" "$ORD_DETAIL"
               printf '| ORDERED_VERIFIED | %s | %s |\n' "$(mark ORDERED_VERIFIED)" "$ORD_DETAIL"
+              # INVARIANT_OK / INVARIANT_UNAVAILABLE — แดงเมื่อชื่อไหนอยู่ใน
+              # FAILED_CHECKS; ❓เมื่อ snapshot หาย (ประเมินไม่ได้เลย)
+              INV_MARK="✅"
+              if [ "${HEALTH_MISSING:-0}" = "1" ]; then
+                INV_MARK="❓"
+              else
+                case " ${FAILED_CHECKS} " in
+                  *" INVARIANT_OK "*|*" INVARIANT_UNAVAILABLE "*) INV_MARK="❌" ;;
+                esac
+              fi
+              printf '| INVARIANT_OK | %s | %s |\n' "$INV_MARK" "$INV_DETAIL"
               if [ "${HEALTH_MISSING:-0}" = "1" ]; then
                 printf '| HEALTH_MISSING | ❌ | อ่าน `%s` ไม่สำเร็จ — dispatch "D1 Backup" หนึ่งครั้งเพื่อ seed ไฟล์ |\n' "$HEALTH_KEY"
               fi
@@ -306,6 +353,8 @@ jobs:
           - **BACKUP_FRESH** — เปิด Actions → "D1 Backup" ดูรอบคืนล่าสุดว่า fail หรือไม่ยิงเลย แล้ว dispatch ใหม่
           - **RAW_PRESENT** — object ที่ manifest ชี้กลับมาอ่านไม่ได้ → ตรวจ R2 dashboard; พิจารณา backup ก่อนหน้า / D1 Time Travel
           - **ORDERED_*** — raw ยังอยู่ = ไม่ใช่ข้อมูลหาย — ตาม error_code ใน `backend/scripts/reorder-dump/SPEC.md` §7-8 (UNSUPPORTED หลัง migration ใหม่ = เพิ่ม capability ให้ utility ไม่ใช่เหตุฉุกเฉิน)
+          - **INVARIANT_OK** — มี template ที่ PUBLISHED หลาย version (รายชื่อ id ในรายละเอียดเช็ค) — รอบ publish ถัดไปจะ auto-archive จะเก็บผิดตัว → ตาม runbook cleanup (archive zombie เหลือตัวล่าสุด) แล้ว dispatch "D1 Backup" 1 ครั้งเพื่อ seed ใหม่
+          - **INVARIANT_UNAVAILABLE** — probe ใน backup ล้ม หรือ snapshot เก่ายังไม่มี invariant block → dispatch "D1 Backup" 1 ครั้ง; ล้มซ้ำ = ดู log รอบ backup คืนนั้น
           - **HEALTH_MISSING** — ไฟล์ health หาย/เสีย (backup อาจยังสำเร็จ) → dispatch "D1 Backup" หนึ่งครั้ง
 
           issue นี้ถูกจัดการโดย workflow "Backup Health": อัปเดต body ทุกรอบ, comment เฉพาะ fingerprint เปลี่ยน, ปิดเองเมื่อผ่านครบทุกเช็ค
@@ -356,6 +405,7 @@ jobs:
             echo "| อายุ backup | ${AGE_HOURS:-?} ชม. (เกณฑ์ ≤ ${MAX_BACKUP_AGE_HOURS} ชม.) |"
             echo "| raw | ${RAW_DETAIL:-n/a} |"
             echo "| ordered | ${ORD_DETAIL:-n/a} |"
+            echo "| invariant | ${INV_DETAIL:-n/a} |"
             echo "| issue | ${ISSUE_URL:-—} (${ISSUE_ACTION:-—}) |"
             if [ -n "${DRILL_NOTE:-}" ]; then
               echo "| drill | ${DRILL_NOTE} |"
