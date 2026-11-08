@@ -1594,30 +1594,54 @@ adminRoutes.patch('/template-versions/:id/publish', adminOnlyMiddleware, auditMi
     return c.json({ error: 'Only DRAFT version can be published' }, 400);
   }
   
-  // RFC Policy: Auto-archive old Published version
-  // Find current Published version for this template
-  const currentPublished = await db.select().from(templateVersions)
-    .where(and(
-      eq(templateVersions.templateId, version.templateId),
-      eq(templateVersions.status, 'PUBLISHED')
-    )).get();
-
-  // Set new version as PUBLISHED
-  await db.update(templateVersions)
-    .set({ status: 'PUBLISHED' })
-    .where(eq(templateVersions.id, id));
-
-  // If there's an existing Published version, archive it
-  if (currentPublished) {
-    await db.update(templateVersions)
+  // RFC Policy: Only 1 Published version at a time — enforce atomically
+  // (publish invariant fix, 2026-11-08 — prod incident: tpl-general-001 มี
+  // v2-v5 PUBLISHED พร้อมกัน 4 ตัว)
+  //
+  // เดิม: 2 update แยกกัน + อ่าน "current published" ด้วย .get() ไม่มี ORDER BY:
+  //   - crash ระหว่าง update 1 ↔ 2 → 2 PUBLISHED ค้างถาวร (crash window)
+  //   - legacy multi-PUBLISHED เก็บได้แถวเดียว arbitrary → zombie ไม่หาย
+  //     (ที่ prod: publish v5 เก็บ v1 ตัวเก่าสุด ทิ้ง v2-v4)
+  //   - 2 concurrent publish อ่าน currentPublished ซ้ำ → 2 PUBLISHED (race)
+  //
+  // ใหม่: batch เดียว atomic (D1 batch = single transaction) —
+  //   [0] archive-others: เก็บ "ทุก" PUBLISHED ของ template ยกเว้นตัวใหม่
+  //       → publish ครั้งแรกสะสาง legacy state ทั้งก้อน; winner ของ race
+  //         ถูกตัวหลัง archive (converge เหลือ 1 PUBLISHED เสมอ)
+  //   [1] publish-self: guard status='DRAFT' → ถ้ามี request อื่ publish
+  //       version เดียวกันไปก่อน changes = 0 → 409 (ไม่เขียนทับ)
+  const batchResults = await db.batch([
+    db.update(templateVersions)
       .set({ status: 'ARCHIVED' })
-      .where(eq(templateVersions.id, currentPublished.id));
+      .where(and(
+        eq(templateVersions.templateId, version.templateId),
+        eq(templateVersions.status, 'PUBLISHED'),
+        ne(templateVersions.id, id),
+      )),
+    db.update(templateVersions)
+      .set({ status: 'PUBLISHED' })
+      .where(and(
+        eq(templateVersions.id, id),
+        eq(templateVersions.status, 'DRAFT'),
+      )),
+  ]);
+
+  const publishedChanges = (batchResults[1] as any)?.meta?.changes ?? 0;
+  if (publishedChanges === 0) {
+    // แพ้ race: version นี้ถูก publish (หรือเปลี่ยนสถานะ) ระหว่าง validate
+    // กับ batch — อ่านสถานะจริงปัจจุบันกลับไปให้ UI แสดง
+    const current = await db.select().from(templateVersions)
+      .where(eq(templateVersions.id, id)).get();
+    return c.json({
+      error: 'Version was published or changed by another request',
+      reason: 'VERSION_ALREADY_PUBLISHED',
+      currentStatus: current?.status ?? null,
+    }, 409);
   }
-  
-  return c.json({ 
+
+  return c.json({
     success: true,
-    previousPublishedArchived: !!currentPublished,
-    previousPublishedId: currentPublished?.id || null
+    archivedCount: (batchResults[0] as any)?.meta?.changes ?? 0,
   });
 });
 
@@ -1761,6 +1785,26 @@ adminRoutes.post('/rounds', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_RO
   const db = drizzle(c.env.DB);
   const data = c.req.valid('json') as any;
   const id = uuidv4();
+
+  // ── Publish invariant gate (2026-11-08) ─────────────────────────────────
+  // รอบใหม่ต้องผูกกับ template version ที่ PUBLISHED เท่านั้น — เดิมรับ id
+  // ใดก็ได้ (DRAFT/zombie) ทาง API; รอบเดิมที่ version ถูก archive ทีหลัง
+  // (snapshot policy) ไม่กระทบ — gate นี้คุมเฉพาะ "สร้างใหม่"
+  const targetVersion = await db.select().from(templateVersions)
+    .where(eq(templateVersions.id, data.templateVersionId)).get();
+  if (!targetVersion) {
+    return c.json({
+      error: 'ไม่พบ Template Version ที่ระบุ',
+      reason: 'TEMPLATE_VERSION_NOT_FOUND',
+    }, 404);
+  }
+  if (targetVersion.status !== 'PUBLISHED') {
+    return c.json({
+      error: 'รอบต้องผูกกับ Template Version ที่ PUBLISHED เท่านั้น',
+      reason: 'TEMPLATE_VERSION_NOT_PUBLISHED',
+      currentStatus: targetVersion.status,
+    }, 400);
+  }
 
   // Migration 019 - Validate application_pattern
   // ถ้าส่งมา: validate
@@ -3584,7 +3628,17 @@ adminRoutes.get('/rounds/:id/clone-options', async (c) => {
     ? await db.select().from(templates).where(eq(templates.id, currentVersion.templateId)).get()
     : null;
   
-  const publishedVersions = template
+  // ── Publish invariant protection (2026-11-08) ────────────────────────────
+  // เดิม: versionOptions สร้างจาก "ทุก" PUBLISHED version ของ template →
+  // zombie versions (tpl-general-001 v2-v5) โผล่เป็นเป้า clone ครบ และ
+  // FE fallback (CloneRoundModal เมื่อไม่มี isRecommended) เลือก
+  // versionOptions[0] = ตัวเก่าสุดตาม scan order → clone จาก CC01
+  // (current = v5) auto-select v2 zombie
+  // ใหม่: parity กับ template-version-options.ts ฝั่ง FE — เหลือ latest
+  // published ของ template + current version ของรอบถ้าไม่ใช่ตัวเดียวกัน
+  // (current ถูก archive ไปแล้วก็ยังแสดง มี isCurrentVersion กำกับ —
+  //  การ clone ด้วย version ที่ไม่ PUBLISHED โดยตรงถูก guard แยกด้านล่าง)
+  const publishedVersionsAll = template
     ? await db.select()
         .from(templateVersions)
         .where(and(
@@ -3592,7 +3646,13 @@ adminRoutes.get('/rounds/:id/clone-options', async (c) => {
           eq(templateVersions.status, 'PUBLISHED')
         ))
     : [];
-  
+  const latestPublished = [...publishedVersionsAll]
+    .sort((a, b) => b.versionNumber - a.versionNumber)[0] ?? null;
+  const publishedVersions = latestPublished ? [latestPublished] : [];
+  if (currentVersion && currentVersion.id !== latestPublished?.id) {
+    publishedVersions.push(currentVersion);
+  }
+
   // Get application count for protection message
   // Application Number Governance (2026-11-03): ตัด soft-deleted ออกให้ตรงกับ
   // เงื่อนไขล็อกของ round-numbering-policy.service (เดิมนับรวม deleted
