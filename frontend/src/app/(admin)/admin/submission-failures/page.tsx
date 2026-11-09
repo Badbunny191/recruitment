@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { SearchInput } from '@/components/ui/search-input';
 import { Pagination } from '@/components/ui/pagination';
@@ -9,6 +9,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
+import { SearchableDropdown, type SearchableOption } from '@/components/SearchableDropdown';
 import { useRole } from '@/lib/useRole';
 
 interface SubmissionFailureItem {
@@ -31,6 +32,7 @@ interface SubmissionFailureItem {
 interface RoundOption {
   id: string;
   title: string;
+  roundCode?: string | null;
 }
 
 const CATEGORY_MAP: Record<string, { label: string; variant: 'destructive' | 'secondary' | 'outline' | 'default' }> = {
@@ -82,7 +84,13 @@ export default function SubmissionFailuresPage() {
         if (res.ok) {
           const json = await res.json();
           if (json.success && Array.isArray(json.data)) {
-            setRounds(json.data.map((r: any) => ({ id: r.id, title: r.title })));
+            setRounds(
+              json.data.map((r: any) => ({
+                id: r.id,
+                title: r.title,
+                roundCode: r.roundCode || null,
+              }))
+            );
           }
         }
       } catch (err) {
@@ -91,6 +99,17 @@ export default function SubmissionFailuresPage() {
     };
     fetchRounds();
   }, []);
+
+  // Memoized options for SearchableDropdown
+  const roundOptions = useMemo<SearchableOption[]>(() => {
+    return [
+      { id: '', label: 'ทุกรอบรับสมัคร' },
+      ...rounds.map((r) => ({
+        id: r.id,
+        label: r.roundCode ? `[${r.roundCode}] ${r.title}` : r.title,
+      })),
+    ];
+  }, [rounds]);
 
   // Fetch submission failure records
   const fetchFailures = useCallback(async () => {
@@ -183,22 +202,18 @@ export default function SubmissionFailuresPage() {
                 }}
               />
             </div>
-            <div className="w-full md:w-64">
-              <select
-                className="w-full h-10 px-3 py-2 text-sm bg-white border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            <div className="w-full md:w-72">
+              <SearchableDropdown
+                options={roundOptions}
                 value={roundId}
-                onChange={(e) => {
-                  setRoundId(e.target.value);
+                onChange={(id) => {
+                  setRoundId(id || '');
                   setPage(1);
                 }}
-              >
-                <option value="">-- เลือกรอบรับสมัครทั้งหมด --</option>
-                {rounds.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.title}
-                  </option>
-                ))}
-              </select>
+                placeholder="ทุกรอบรับสมัคร"
+                emptyText="ไม่พบรอบรับสมัคร"
+                className="w-full"
+              />
             </div>
             {(search || roundId) && (
               <Button
