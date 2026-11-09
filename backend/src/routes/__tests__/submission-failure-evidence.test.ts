@@ -377,6 +377,59 @@ async function main() {
     assertTrue(recentRow, 'recent record must remain');
   });
 
+  // T7: GET /api/v1/admin/submission-failures returns human-readable round information (roundCode, roundTitle)
+  await test('T7. GET /api/v1/admin/submission-failures returns roundCode and roundTitle', async () => {
+    const { sign } = await import('hono/jwt');
+    const secret = 'test-secret-sfe';
+    const adminToken = await sign({ id: 'u-admin', email: 'admin@test.com', role: 'ADMIN' }, secret);
+
+    const res = await app.request('/api/v1/admin/submission-failures?pageSize=50', {
+      method: 'GET',
+      headers: { authorization: `Bearer ${adminToken}` },
+    }, makeEnv());
+
+    assertEqual(res.status, 200, 'status 200');
+    const json = await res.json();
+    assertTrue(json.success, 'response success');
+    assertTrue(Array.isArray(json.data), 'data is array');
+
+    // Find row from T1 (round-closed) and T2 (round-open)
+    const closedRow = json.data.find((r: any) => r.roundId === 'round-closed');
+    assertTrue(closedRow, 'closed round failure found');
+    assertEqual(closedRow.roundCode, 'CLOSED01', 'roundCode matches');
+    assertEqual(closedRow.roundTitle, 'รอบที่ปิดแล้ว', 'roundTitle matches');
+
+    const openRow = json.data.find((r: any) => r.roundId === 'round-open');
+    assertTrue(openRow, 'open round failure found');
+    assertEqual(openRow.roundCode, 'OPEN01', 'roundCode matches');
+    assertEqual(openRow.roundTitle, 'รอบเปิดรับสมัคร', 'roundTitle matches');
+  });
+
+  // T8: GET /api/v1/admin/rounds/:id returns single round by ID
+  await test('T8. GET /api/v1/admin/rounds/:id returns round information or 404', async () => {
+    const { sign } = await import('hono/jwt');
+    const secret = 'test-secret-sfe';
+    const adminToken = await sign({ id: 'u-admin', email: 'admin@test.com', role: 'ADMIN' }, secret);
+
+    // Existing round
+    const resFound = await app.request('/api/v1/admin/rounds/round-open', {
+      method: 'GET',
+      headers: { authorization: `Bearer ${adminToken}` },
+    }, makeEnv());
+    assertEqual(resFound.status, 200, 'found round -> 200');
+    const jsonFound = await resFound.json();
+    assertEqual(jsonFound.data.id, 'round-open');
+    assertEqual(jsonFound.data.roundCode, 'OPEN01');
+    assertEqual(jsonFound.data.title, 'รอบเปิดรับสมัคร');
+
+    // Non-existent round
+    const resNotFound = await app.request('/api/v1/admin/rounds/non-existent-uuid', {
+      method: 'GET',
+      headers: { authorization: `Bearer ${adminToken}` },
+    }, makeEnv());
+    assertEqual(resNotFound.status, 404, 'non-existent -> 404');
+  });
+
   console.log(`\nResults: ${passed} passed, ${failed} failed\n`);
   if (failed > 0) {
     console.error('Failed tests:\n' + failures.map((f) => ` - ${f}`).join('\n'));

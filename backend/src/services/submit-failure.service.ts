@@ -11,7 +11,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { eq, sql, desc, and, or, like } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
-import { applicationSubmitFailures } from '../db/schema';
+import { applicationSubmitFailures, recruitmentRounds } from '../db/schema';
 
 export type SubmitFailureCategory =
   | 'ROUND_CLOSED'
@@ -107,8 +107,26 @@ export async function querySubmitFailures(db: any, filters: QuerySubmitFailuresF
   const total = Number(totalRes?.count ?? 0);
 
   const query = db
-    .select()
+    .select({
+      id: applicationSubmitFailures.id,
+      refCode: applicationSubmitFailures.refCode,
+      roundId: applicationSubmitFailures.roundId,
+      email: applicationSubmitFailures.email,
+      fullname: applicationSubmitFailures.fullname,
+      submissionToken: applicationSubmitFailures.submissionToken,
+      category: applicationSubmitFailures.category,
+      reasonCode: applicationSubmitFailures.reasonCode,
+      errorMessage: applicationSubmitFailures.errorMessage,
+      httpStatus: applicationSubmitFailures.httpStatus,
+      ipAddress: applicationSubmitFailures.ipAddress,
+      cfRay: applicationSubmitFailures.cfRay,
+      userAgent: applicationSubmitFailures.userAgent,
+      createdAt: applicationSubmitFailures.createdAt,
+      roundCode: recruitmentRounds.roundCode,
+      roundTitle: recruitmentRounds.title,
+    })
     .from(applicationSubmitFailures)
+    .leftJoin(recruitmentRounds, eq(applicationSubmitFailures.roundId, recruitmentRounds.id))
     .orderBy(desc(applicationSubmitFailures.createdAt))
     .limit(pageSize)
     .offset(offset);

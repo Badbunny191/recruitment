@@ -16,6 +16,8 @@ interface SubmissionFailureItem {
   id: string;
   refCode: string;
   roundId: string | null;
+  roundCode?: string | null;
+  roundTitle?: string | null;
   email: string | null;
   fullname: string | null;
   submissionToken: string | null;
@@ -67,18 +69,20 @@ export default function SubmissionFailuresPage() {
   const [search, setSearch] = useState('');
   const [roundId, setRoundId] = useState('');
   const [rounds, setRounds] = useState<RoundOption[]>([]);
+  const [roundDetailsCache, setRoundDetailsCache] = useState<Record<string, RoundOption>>({});
+  const [loadingRoundDetail, setLoadingRoundDetail] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<SubmissionFailureItem | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Fetch rounds for filter dropdown
+  // Fetch rounds for filter dropdown (view=all includes active and archived rounds)
   useEffect(() => {
     const fetchRounds = async () => {
       try {
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
         const token = localStorage.getItem('adminToken');
-        const res = await fetch(`${apiUrl}/admin/rounds`, {
+        const res = await fetch(`${apiUrl}/admin/rounds?view=all`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         if (res.ok) {
@@ -99,6 +103,99 @@ export default function SubmissionFailuresPage() {
     };
     fetchRounds();
   }, []);
+
+  // Requirement 4: If API did not send round data, fetch from backend using roundId
+  useEffect(() => {
+    if (!selectedDetail?.roundId) return;
+    const rId = selectedDetail.roundId;
+
+    // 1. If API item already contains roundTitle, cache it
+    if (selectedDetail.roundTitle) {
+      setRoundDetailsCache((prev) => {
+        if (prev[rId]?.title === selectedDetail.roundTitle) return prev;
+        return {
+          ...prev,
+          [rId]: {
+            id: rId,
+            title: selectedDetail.roundTitle!,
+            roundCode: selectedDetail.roundCode || null,
+          },
+        };
+      });
+      return;
+    }
+
+    // 2. If already in local cache, no need to re-fetch
+    if (roundDetailsCache[rId]) return;
+
+    // 3. If in preloaded rounds list, store in cache
+    const existing = rounds.find((r) => r.id === rId);
+    if (existing) {
+      setRoundDetailsCache((prev) => ({
+        ...prev,
+        [rId]: existing,
+      }));
+      return;
+    }
+
+    // 4. Fetch round from backend using roundId
+    let isCancelled = false;
+    const fetchRound = async () => {
+      setLoadingRoundDetail(true);
+      try {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
+        const token = localStorage.getItem('adminToken');
+        let res = await fetch(`${apiUrl}/admin/rounds/${rId}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) {
+          // Fallback to public detail endpoint
+          res = await fetch(`${apiUrl}/public/rounds/${rId}/detail`);
+        }
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && json.data && !isCancelled) {
+            const fetchedRound: RoundOption = {
+              id: json.data.id,
+              title: json.data.title,
+              roundCode: json.data.roundCode || null,
+            };
+            setRoundDetailsCache((prev) => ({
+              ...prev,
+              [rId]: fetchedRound,
+            }));
+            setRounds((prev) => (prev.some((r) => r.id === rId) ? prev : [...prev, fetchedRound]));
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch round detail:', err);
+      } finally {
+        if (!isCancelled) {
+          setLoadingRoundDetail(false);
+        }
+      }
+    };
+
+    fetchRound();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedDetail, rounds, roundDetailsCache]);
+
+  // Active round information for selected detail
+  const activeRound: RoundOption | null = useMemo(() => {
+    if (!selectedDetail?.roundId) return null;
+    const rId = selectedDetail.roundId;
+    if (selectedDetail.roundTitle) {
+      return {
+        id: rId,
+        title: selectedDetail.roundTitle,
+        roundCode: selectedDetail.roundCode || null,
+      };
+    }
+    return roundDetailsCache[rId] || rounds.find((r) => r.id === rId) || null;
+  }, [selectedDetail, roundDetailsCache, rounds]);
 
   // Memoized options for SearchableDropdown
   const roundOptions = useMemo<SearchableOption[]>(() => {
@@ -157,13 +254,17 @@ export default function SubmissionFailuresPage() {
 
   const copyDetailSummary = () => {
     if (!selectedDetail) return;
+    const roundSummary = activeRound
+      ? `${activeRound.roundCode ? `[${activeRound.roundCode}] ` : ''}${activeRound.title}${selectedDetail.roundId ? ` (ID: ${selectedDetail.roundId})` : ''}`
+      : selectedDetail.roundId || '-';
+
     const summary = [
       `[รายงานหลักฐานการส่งใบสมัครไม่สำเร็จ]`,
       `รหัสอ้างอิง: ${selectedDetail.refCode}`,
       `วัน-เวลา (เซิร์ฟเวอร์): ${formatThaiDateTime(selectedDetail.createdAt)} (Asia/Bangkok)`,
       `ผู้สมัคร: ${selectedDetail.fullname || '-'}`,
       `อีเมล: ${selectedDetail.email || '-'}`,
-      `รอบรับสมัคร: ${selectedDetail.roundId || '-'}`,
+      `รอบรับสมัคร: ${roundSummary}`,
       `สาเหตุ: ${selectedDetail.errorMessage}`,
       `หมวดหมู่: ${selectedDetail.category} (Reason Code: ${selectedDetail.reasonCode || '-'})`,
       `HTTP Status: ${selectedDetail.httpStatus}`,
@@ -373,12 +474,51 @@ export default function SubmissionFailuresPage() {
                   <span className="font-semibold">{selectedDetail.email || '(ไม่ได้ระบุ)'}</span>
                 </div>
                 <div>
-                  <span className="text-xs text-slate-500 block">รหัสรอบรับสมัคร (Round ID):</span>
-                  <span className="font-mono text-xs">{selectedDetail.roundId || '-'}</span>
-                </div>
-                <div>
                   <span className="text-xs text-slate-500 block">Reason Code:</span>
                   <span className="font-mono text-xs font-semibold">{selectedDetail.reasonCode || '-'}</span>
+                </div>
+                <div>
+                  <span className="text-xs text-slate-500 block">หมวดหมู่:</span>
+                  <span className="text-xs font-medium text-slate-700">
+                    {CATEGORY_MAP[selectedDetail.category]?.label || selectedDetail.category}
+                  </span>
+                </div>
+
+                {/* ข้อมูลรอบรับสมัครที่มนุษย์อ่านรู้เรื่อง */}
+                <div className="col-span-2 border-t border-slate-200 pt-3">
+                  <span className="text-xs text-slate-500 block mb-1">รอบรับสมัคร:</span>
+                  {activeRound ? (
+                    <div className="space-y-1">
+                      {activeRound.roundCode && (
+                        <div className="font-mono font-bold text-sm text-blue-700" data-testid="modal-round-code">
+                          [{activeRound.roundCode}]
+                        </div>
+                      )}
+                      {activeRound.title && (
+                        <div className="font-semibold text-slate-900 text-sm leading-snug" data-testid="modal-round-title">
+                          {activeRound.title}
+                        </div>
+                      )}
+                      {selectedDetail.roundId && (
+                        <div className="text-xs text-slate-400 font-mono mt-1" data-testid="modal-round-id-secondary">
+                          Round ID: {selectedDetail.roundId}
+                        </div>
+                      )}
+                    </div>
+                  ) : loadingRoundDetail ? (
+                    <div className="text-xs text-slate-400 animate-pulse" data-testid="modal-round-loading">
+                      กำลังโหลดข้อมูลรอบรับสมัคร...
+                    </div>
+                  ) : selectedDetail.roundId ? (
+                    <div className="space-y-1">
+                      <div className="text-xs text-slate-400">(ไม่พบข้อมูลชื่อรอบรับสมัคร)</div>
+                      <div className="text-xs text-slate-400 font-mono">
+                        Round ID: {selectedDetail.roundId}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-400">(ไม่ได้ระบุรอบรับสมัคร)</div>
+                  )}
                 </div>
               </div>
 
@@ -393,6 +533,18 @@ export default function SubmissionFailuresPage() {
                 <span className="text-xs font-semibold text-slate-700 block">
                   ข้อมูลเครือข่ายและระบบ (Technical Telemetry Evidence):
                 </span>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <span className="text-slate-500">Round ID (UUID): </span>
+                    <span className="font-mono text-[11px] break-all" data-testid="technical-round-id">
+                      {selectedDetail.roundId || '-'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Reason Code: </span>
+                    <span className="font-mono font-semibold">{selectedDetail.reasonCode || '-'}</span>
+                  </div>
+                </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div>
                     <span className="text-slate-500">IP Address: </span>

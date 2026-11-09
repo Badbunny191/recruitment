@@ -3212,6 +3212,33 @@ adminRoutes.get('/rounds/comparison', async (c) => {
   return c.json({ data: comparison });
 });
 
+// GET /admin/rounds/:id - Get single round by ID (for admin lookups)
+adminRoutes.get('/rounds/:id', async (c) => {
+  const db = drizzle(c.env.DB);
+  const id = c.req.param('id');
+  if (id === 'comparison' || id === 'lookup-options') {
+    return c.json({ success: false, error: 'Not found' }, 404);
+  }
+
+  const round = await db
+    .select({
+      id: recruitmentRounds.id,
+      title: recruitmentRounds.title,
+      roundCode: recruitmentRounds.roundCode,
+      positionLevel: recruitmentRounds.positionLevel,
+      status: recruitmentRounds.status,
+      deletedAt: recruitmentRounds.deletedAt,
+    })
+    .from(recruitmentRounds)
+    .where(eq(recruitmentRounds.id, id))
+    .get();
+
+  if (!round) {
+    return c.json({ success: false, error: 'Round not found' }, 404);
+  }
+  return c.json({ success: true, data: round });
+});
+
 // =============================================================================
 // FEATURE 1: Version Update Warning - Get round with version comparison data
 // =============================================================================
