@@ -178,8 +178,8 @@ jobs:
             jq -n \
               --arg checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --slurpfile rows invariant.json \
-              '{violations: ($rows[0].results | length),
-                templates: ($rows[0].results | map(.template_id)),
+              '{violations: ($rows[0][0].results | length),
+                templates: ($rows[0][0].results | map(.template_id)),
                 checked_at_utc: $checked_at,
                 error_code: null}' \
               > invariant-block.json
