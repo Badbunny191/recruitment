@@ -71,6 +71,21 @@ let createRoot: any;
 let act: any;
 let SubmissionFailuresPage: any;
 
+function setNativeValue(el: any, value: string) {
+  const proto = Object.getPrototypeOf(el);
+  const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+  if (desc && desc.set) desc.set.call(el, value);
+  else el.value = value;
+}
+
+async function typeInto(el: any, value: string) {
+  await act(async () => {
+    setNativeValue(el, value);
+    el.dispatchEvent(new win.Event('input', { bubbles: true }));
+    el.dispatchEvent(new win.Event('change', { bubbles: true }));
+  });
+}
+
 async function bootstrap() {
   React = (await import('react')).default;
   ({ createRoot } = await import('react-dom/client'));
@@ -445,6 +460,97 @@ async function main() {
 
     root.unmount();
     container.remove();
+  });
+
+  // Test 5: Round options load from { data: [...] } without success: true, logs rounds.length > 0, and filters by title & code
+  await test('Test 5: Load round options from backend { data: [...] }, verify console log & search by code/title', async () => {
+    const mockRoundsData = [
+      { id: 'r-1', title: 'รับสมัครนักทรัพยากรบุคคล', roundCode: 'R67-001' },
+      { id: 'r-2', title: 'รับสมัครนิติกรปฏิบัติการ', roundCode: 'LAW-002' },
+    ];
+
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: any[]) => {
+      logs.push(args.join(' '));
+      origLog(...args);
+    };
+
+    globalAny.fetch = async (url: string) => {
+      if (url.includes('/admin/submission-failures')) {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            data: [],
+            pagination: { page: 1, pageSize: 20, total: 0 },
+          }),
+        };
+      }
+      if (url.includes('/admin/rounds')) {
+        // Backend contract: returns { data: [...] } without success: true
+        return {
+          ok: true,
+          json: async () => ({
+            data: mockRoundsData,
+          }),
+        };
+      }
+      return { ok: false, status: 404 };
+    };
+
+    const container = win.document.createElement('div');
+    win.document.body.appendChild(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(React.createElement(SubmissionFailuresPage));
+      });
+      await flushPromises();
+
+      // 1. Verify console log confirms rounds.length > 0
+      const roundLog = logs.find((l) => l.includes('[submission-failures] rounds.length: 2'));
+      assert(roundLog, `Console log must report rounds loaded. Logs: ${JSON.stringify(logs)}`);
+      assert(roundLog.includes('rounds.length > 0: true'), `Console log must confirm rounds.length > 0: ${roundLog}`);
+
+      // 2. Focus on SearchableDropdown input to open options list
+      const searchInput = container.querySelector('input[placeholder="ค้นหารอบรับสมัคร..."]') as HTMLInputElement;
+      assert(searchInput, 'SearchableDropdown input must exist');
+
+      await act(async () => {
+        searchInput.focus();
+        searchInput.dispatchEvent(new win.Event('focus', { bubbles: true }));
+      });
+      await flushPromises();
+
+      // 3. Verify total loaded options count (1 default + 2 rounds = 3)
+      const footer = container.querySelector('.border-t.border-slate-100');
+      assert(footer, 'Dropdown footer must exist');
+      assert(footer.textContent?.includes('/ 3 รายการ'), `Expected 3 total options in footer, got: ${footer.textContent}`);
+
+      // 4. Test searching by round code: "LAW"
+      await typeInto(searchInput, 'LAW');
+      await flushPromises();
+
+      const items = Array.from(container.querySelectorAll('li[role="option"]'));
+      assertEqual(items.length, 1, 'Should find exactly 1 matching round for code LAW');
+      assert(items[0].textContent?.includes('LAW-002'), 'Must show round with code LAW-002');
+      assert(items[0].textContent?.includes('รับสมัครนิติกรปฏิบัติการ'), 'Must show title of LAW round');
+
+      // 5. Test searching by round title: "ทรัพยากรบุคคล"
+      await typeInto(searchInput, 'ทรัพยากรบุคคล');
+      await flushPromises();
+
+      const items2 = Array.from(container.querySelectorAll('li[role="option"]'));
+      assertEqual(items2.length, 1, 'Should find exactly 1 matching round for title keyword');
+      assert(items2[0].textContent?.includes('R67-001'), 'Must show round with code R67-001');
+      assert(items2[0].textContent?.includes('รับสมัครนักทรัพยากรบุคคล'), 'Must show title');
+    } finally {
+      console.log = origLog;
+      root.unmount();
+      container.remove();
+    }
   });
 
   console.log(`\nResults: ${passed} passed, ${failed} failed\n`);

@@ -87,15 +87,14 @@ export default function SubmissionFailuresPage() {
         });
         if (res.ok) {
           const json = await res.json();
-          if (json.success && Array.isArray(json.data)) {
-            setRounds(
-              json.data.map((r: any) => ({
-                id: r.id,
-                title: r.title,
-                roundCode: r.roundCode || null,
-              }))
-            );
-          }
+          const rawList = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
+          const mappedRounds = rawList.map((r: any) => ({
+            id: r.id,
+            title: r.title,
+            roundCode: r.roundCode || null,
+          }));
+          setRounds(mappedRounds);
+          console.log(`[submission-failures] rounds.length: ${mappedRounds.length} (rounds.length > 0: ${mappedRounds.length > 0})`);
         }
       } catch (err) {
         console.error('Failed to fetch rounds:', err);
