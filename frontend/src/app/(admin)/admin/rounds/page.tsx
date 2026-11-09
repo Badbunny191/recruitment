@@ -71,6 +71,9 @@ export interface NumberingPolicyPayload {
 /**
  * Fail-closed default: ใช้เมื่อยังไม่รู้ policy หรือโหลดไม่สำเร็จ
  * ห้ามใช้ค่า editable: true เป็น default เด็ดขาด
+ *
+ * ⚠️ ใช้เฉพาะ "edit mode" เท่านั้น — create mode ไม่มีรอบให้ตรวจ policy
+ *    ดู CREATE_MODE_POLICY ด้านล่าง
  */
 const LOCKED_POLICY: NumberingPolicyPayload = {
   locked: true,
@@ -78,6 +81,24 @@ const LOCKED_POLICY: NumberingPolicyPayload = {
   activeApplicationCount: 0,
   isLegacy: false,
   editable: { applicationPattern: false, roundCode: false },
+};
+
+/**
+ * Policy ของ "สร้างรอบใหม่" (editing = null)
+ *
+ * create mode ไม่มีรอบในฐานข้อมูล จึงไม่มี application count ให้ตรวจ
+ * และไม่มีอะไรที่ต้องป้องกัน → ต้องแก้ไขได้เสมอ
+ *
+ * ห้ามใช้ LOCKED_POLICY ในโหมดนี้: fail-closed มีไว้กัน "อ่าน count ไม่ได้"
+ * ของรอบที่มีอยู่ ไม่ใช่กัน "ยังไม่มีรอบ" (bug production 2026-11-09:
+ * ใช้ LOCKED_POLICY เป็น fallback ของ create mode → ฟอร์มถูกล็อกตลอดเวลา)
+ */
+const CREATE_MODE_POLICY: NumberingPolicyPayload = {
+  locked: false,
+  reason: 'EDITABLE',
+  activeApplicationCount: 0,
+  isLegacy: false,
+  editable: { applicationPattern: true, roundCode: true },
 };
 
 interface FormState {
@@ -401,11 +422,13 @@ export default function RoundsPage() {
   }, [editing]);
 
   // ===== Derived: สิทธิ์แก้ไข numbering settings (มาจาก backend เท่านั้น) =====
-  // fail-closed: ถ้ายังไม่รู้ policy ถือว่าล็อกไว้ก่อน
-  const effectivePolicy: NumberingPolicyPayload = editingPolicy ?? LOCKED_POLICY;
+  // สองโหมดต้องแยกกัน:
+  //   create mode (editing = null) → ไม่มีรอบ → ไม่มีอะไรให้ล็อก (CREATE_MODE_POLICY)
+  //   edit mode                   → ใช้ policy ของรอบนั้น, ยังไม่รู้ = fail-closed
+  const effectivePolicy: NumberingPolicyPayload = editing
+    ? (editingPolicy ?? LOCKED_POLICY)
+    : CREATE_MODE_POLICY;
   const isRoundLocked = effectivePolicy.locked;
-  const canEditPattern = effectivePolicy.editable.applicationPattern;
-  const canEditRoundCode = effectivePolicy.editable.roundCode;
 
   const loadRounds = async () => {
     setLoading(true);
