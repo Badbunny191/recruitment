@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { SearchInput } from '@/components/ui/search-input';
 import { Pagination } from '@/components/ui/pagination';
@@ -9,6 +9,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
+import { SearchableDropdown, type SearchableOption } from '@/components/SearchableDropdown';
 import { useRole } from '@/lib/useRole';
 
 interface SubmissionFailureItem {
@@ -98,6 +99,19 @@ export default function SubmissionFailuresPage() {
     };
     fetchRounds();
   }, []);
+
+  // Memoized options for SearchableDropdown
+  const roundOptions = useMemo<SearchableOption[]>(() => {
+    return [
+      { id: '', label: 'ทุกรอบรับสมัคร' },
+      ...rounds.map((r) => ({
+        id: r.id,
+        label: r.roundCode ? `[${r.roundCode}] ${r.title}` : r.title,
+        code: r.roundCode || undefined,
+        subLabel: r.title,
+      })),
+    ];
+  }, [rounds]);
 
   // Fetch submission failure records
   const fetchFailures = useCallback(async () => {
@@ -190,22 +204,19 @@ export default function SubmissionFailuresPage() {
                 }}
               />
             </div>
-            <div className="w-full md:w-72">
-              <select
-                className="w-full h-10 px-3 py-2 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            <div className="w-full md:w-80">
+              <SearchableDropdown
+                searchFirst
+                options={roundOptions}
                 value={roundId}
-                onChange={(e) => {
-                  setRoundId(e.target.value);
+                onChange={(id) => {
+                  setRoundId(id || '');
                   setPage(1);
                 }}
-              >
-                <option value="">ทุกรอบรับสมัคร</option>
-                {rounds.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.roundCode ? `[${r.roundCode}] ${r.title}` : r.title}
-                  </option>
-                ))}
-              </select>
+                placeholder="ค้นหารอบรับสมัคร..."
+                emptyText="ไม่พบรอบรับสมัคร"
+                className="w-full"
+              />
             </div>
             {(search || roundId) && (
               <Button
