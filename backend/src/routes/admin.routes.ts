@@ -48,6 +48,7 @@ import { LoginRequestSchema, FieldMasterCreateSchema, FieldMasterUpdateSchema, T
 import { superAdminOnlyMiddleware } from '../middlewares/auth.middleware';
 import { accountStateGate } from '../middlewares/account-state.middleware';
 import { ensureNotLastSuperAdmin } from '../services/rbac.service';
+import { querySubmitFailures } from '../services/submit-failure.service';
 import templateDescriptorRoutes from './template-descriptor.routes';
 import { handleExcelExport, handleExcelExportSelected } from './excel-export.routes';
 import {
@@ -4981,5 +4982,33 @@ adminRoutes.post(
 // Mount descriptor routes under /admin/template-versions
 // =============================================================================
 adminRoutes.route('/template-versions', templateDescriptorRoutes);
+
+// ── SUBMISSION_FAILURE_EVIDENCE (Dispute & Evidence Defense) ──
+// Read-only endpoint for HR dispute defense. Accessible by SUPER_ADMIN, ADMIN, VIEWER.
+adminRoutes.get('/submission-failures', async (c) => {
+  const db = drizzle(c.env.DB);
+  const search = c.req.query('search');
+  const roundId = c.req.query('roundId');
+  const page = parseInt(c.req.query('page') || '1', 10);
+  const pageSize = parseInt(c.req.query('pageSize') || '20', 10);
+
+  const result = await querySubmitFailures(db, {
+    search,
+    roundId,
+    page,
+    pageSize,
+  });
+
+  return c.json({
+    success: true,
+    data: result.items,
+    pagination: {
+      page: result.page,
+      pageSize: result.pageSize,
+      total: result.total,
+      totalPages: result.totalPages,
+    },
+  });
+});
 
 export { adminRoutes };

@@ -46,6 +46,9 @@ export type Bindings = {
   TURNSTILE_SITE_KEY?: string;
   /** Server-side secret used to verify tokens. Default: "". */
   TURNSTILE_SECRET_KEY?: string;
+
+  /** Master switch for submission failure evidence logging. Default: "true". */
+  SUBMISSION_FAILURE_LOGGING_ENABLED?: string;
 };
 
 export type AppVariables = {

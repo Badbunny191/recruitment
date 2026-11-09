@@ -70,6 +70,8 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'ใบสมัคร', href: '/admin/applications', minRole: 'VIEWER' },
       // รอบรับสมัคร: VIEWER เห็น แต่ VIEWER เป็น read-only อยู่แล้ว
       { label: 'รอบรับสมัคร', href: '/admin/rounds', minRole: 'VIEWER' },
+      // ข้อร้องเรียนการส่งใบสมัคร (Submission Failure Evidence)
+      { label: 'ข้อร้องเรียนการส่งใบสมัคร', href: '/admin/submission-failures', minRole: 'VIEWER' },
     ],
   },
   {

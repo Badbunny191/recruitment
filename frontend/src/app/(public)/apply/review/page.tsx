@@ -418,12 +418,13 @@ function ReviewContent() {
         body: JSON.stringify(body),
       });
       const result = await res.json();
+      const refSuffix = result?.refCode ? ` (รหัสอ้างอิง: ${result.refCode})` : '';
 
       if (res.status === 403) {
         // Covers BOTH "round not open" AND "Human verification failed"
         // (Turnstile failure). The backend is intentionally opaque so
         // bots can't tell which one tripped.
-        setSubmitError(result?.error ?? 'การยืนยันตัวตนไม่สำเร็จ');
+        setSubmitError((result?.error ?? 'การยืนยันตัวตนไม่สำเร็จ') + refSuffix);
         // If Turnstile is enabled, the token may have been spent —
         // clear it so the user knows to verify again before retrying.
         if (turnstileEnabled) {
@@ -433,15 +434,15 @@ function ReviewContent() {
       }
       if (res.status === 409) {
         // Idempotency in-flight race — tell the user to try again.
-        setSubmitError('มีการส่งคำขอซ้ำ กรุณารอสักครู่แล้วลองอีกครั้ง');
+        setSubmitError('มีการส่งคำขอซ้ำ กรุณารอสักครู่แล้วลองอีกครั้ง' + refSuffix);
         return;
       }
       if (res.status === 429) {
-        setSubmitError('มีการส่งคำขอมากเกินไป กรุณารอสักครู่');
+        setSubmitError('มีการส่งคำขอมากเกินไป กรุณารอสักครู่' + refSuffix);
         return;
       }
       if (res.status === 503) {
-        setSubmitError('ระบบไม่สามารถสร้างเลขที่ใบสมัครได้ในขณะนี้ กรุณาลองอีกครั้ง');
+        setSubmitError((result?.error ?? 'ระบบไม่สามารถสร้างเลขที่ใบสมัครได้ในขณะนี้ กรุณาลองอีกครั้ง') + refSuffix);
         return;
       }
 
@@ -541,7 +542,7 @@ function ReviewContent() {
         succeeded = true;
         return;
       }
-      setSubmitError(result?.error ?? 'ไม่สามารถส่งใบสมัครได้');
+      setSubmitError((result?.error ?? 'ไม่สามารถส่งใบสมัครได้') + refSuffix);
     } catch (err) {
       console.error('Submit error:', err);
       setSubmitError(err instanceof Error ? err.message : 'ไม่ทราบสาเหตุ');

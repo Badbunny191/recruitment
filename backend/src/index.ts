@@ -10,6 +10,7 @@ import { adminRoutes } from './routes/admin.routes';
 import { uploadRoutes } from './routes/upload.routes';
 import { healthRoutes } from './routes/health.routes';
 import { cleanupExpiredTempAttachments } from './lib/attachment-cleanup';
+import { purgeOldSubmitFailures } from './services/submit-failure.service';
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -129,6 +130,17 @@ export default {
         })
         .catch((err) => {
           console.error('[AttachmentCleanup] scheduled run failed:', err);
+        })
+    );
+
+    // ── Retention Purge (Migration 034) — 180 วัน ──
+    ctx.waitUntil(
+      purgeOldSubmitFailures(env.DB, 180)
+        .then((count) => {
+          console.log('[SubmitFailureRetention] scheduled purge run:', count);
+        })
+        .catch((err) => {
+          console.error('[SubmitFailureRetention] scheduled purge run failed:', err);
         })
     );
   },

@@ -328,3 +328,25 @@ export const positions = sqliteTable('positions', {
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
 });
+
+// ── Migration 034: application_submit_failures ──
+export const applicationSubmitFailures = sqliteTable('application_submit_failures', {
+  id: text('id').primaryKey(),
+  refCode: text('ref_code').notNull(),
+  roundId: text('round_id'),
+  email: text('email'),
+  fullname: text('fullname'),
+  submissionToken: text('submission_token'),
+  category: text('category').notNull(),
+  reasonCode: text('reason_code'),
+  errorMessage: text('error_message').notNull(),
+  httpStatus: integer('http_status').notNull(),
+  ipAddress: text('ip_address'),
+  cfRay: text('cf_ray'),
+  userAgent: text('user_agent'),
+  createdAt: integer('created_at').notNull()
+}, (table) => ({
+  refCodeIdx: index('idx_submit_failures_ref_code').on(table.refCode),
+  roundEmailIdx: index('idx_submit_failures_round_email').on(table.roundId, table.email, sql`${table.createdAt} DESC`),
+  createdAtIdx: index('idx_submit_failures_created_at').on(table.createdAt)
+}));
