@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { SearchInput } from '@/components/ui/search-input';
 import { Pagination } from '@/components/ui/pagination';
@@ -9,7 +9,6 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
-import { SearchableDropdown, type SearchableOption } from '@/components/SearchableDropdown';
 import { useRole } from '@/lib/useRole';
 
 interface SubmissionFailureItem {
@@ -63,7 +62,7 @@ export default function SubmissionFailuresPage() {
   const [items, setItems] = useState<SubmissionFailureItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [pageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState('');
   const [roundId, setRoundId] = useState('');
   const [rounds, setRounds] = useState<RoundOption[]>([]);
@@ -99,17 +98,6 @@ export default function SubmissionFailuresPage() {
     };
     fetchRounds();
   }, []);
-
-  // Memoized options for SearchableDropdown
-  const roundOptions = useMemo<SearchableOption[]>(() => {
-    return [
-      { id: '', label: 'ทุกรอบรับสมัคร' },
-      ...rounds.map((r) => ({
-        id: r.id,
-        label: r.roundCode ? `[${r.roundCode}] ${r.title}` : r.title,
-      })),
-    ];
-  }, [rounds]);
 
   // Fetch submission failure records
   const fetchFailures = useCallback(async () => {
@@ -203,17 +191,21 @@ export default function SubmissionFailuresPage() {
               />
             </div>
             <div className="w-full md:w-72">
-              <SearchableDropdown
-                options={roundOptions}
+              <select
+                className="w-full h-10 px-3 py-2 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 value={roundId}
-                onChange={(id) => {
-                  setRoundId(id || '');
+                onChange={(e) => {
+                  setRoundId(e.target.value);
                   setPage(1);
                 }}
-                placeholder="ทุกรอบรับสมัคร"
-                emptyText="ไม่พบรอบรับสมัคร"
-                className="w-full"
-              />
+              >
+                <option value="">ทุกรอบรับสมัคร</option>
+                {rounds.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.roundCode ? `[${r.roundCode}] ${r.title}` : r.title}
+                  </option>
+                ))}
+              </select>
             </div>
             {(search || roundId) && (
               <Button
@@ -317,13 +309,21 @@ export default function SubmissionFailuresPage() {
           )}
 
           {/* Pagination */}
-          {!loading && total > pageSize && (
+          {!loading && total > 0 && (
             <div className="p-4 border-t border-slate-200">
               <Pagination
                 currentPage={page}
                 pageSize={pageSize}
                 totalItems={total}
                 onPageChange={(p) => setPage(p)}
+                onPageSizeChange={(newSize) => {
+                  setPageSize(newSize);
+                  setPage(1);
+                }}
+                pageSizeOptions={[10, 20, 50, 100]}
+                showPageSizeSelector
+                showResultCount
+                resultLabel="รายการ"
               />
             </div>
           )}
