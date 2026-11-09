@@ -75,7 +75,7 @@ export default function SubmissionFailuresPage() {
     const fetchRounds = async () => {
       try {
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
-        const token = localStorage.getItem('token');
+        const token = localStorage.getItem('adminToken');
         const res = await fetch(`${apiUrl}/admin/rounds`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
@@ -98,7 +98,7 @@ export default function SubmissionFailuresPage() {
     setError(null);
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
-      const token = localStorage.getItem('token');
+      const token = localStorage.getItem('adminToken');
       const params = new URLSearchParams({
         page: String(page),
         pageSize: String(pageSize),
