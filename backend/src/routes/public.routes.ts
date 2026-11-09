@@ -27,6 +27,7 @@ import { idempotencyMiddleware } from '../middlewares/idempotency.middleware';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
 import { honeypotMiddleware } from '../middlewares/honeypot.middleware';
 import { turnstileMiddleware } from '../middlewares/turnstile.middleware';
+import { submitFailureLoggerMiddleware } from '../middlewares/submit-failure.middleware';
 import { lookupApplication, getLookupRoundOptions } from '../services/applicant-lookup.service';
 import { getApplicationPdf } from '../lib/pdf.service';
 import { validateTextareaAnswer } from '../lib/textarea-validation';
@@ -599,6 +600,7 @@ async function insertApplicationWithRetry(
 publicRoutes.post('/applications/submit',
   honeypotMiddleware(),
   rateLimitMiddleware(),
+  submitFailureLoggerMiddleware(),
   idempotencyMiddleware(),
   // PR #3: Cloudflare Turnstile verification. Sits AFTER the cheap,
   // fast layers (honeypot, rate-limit, idempotency) so most bot traffic
