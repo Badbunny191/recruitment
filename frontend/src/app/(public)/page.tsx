@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import {
@@ -22,6 +22,7 @@ import {
   deadlinesToMarkHandled,
   effectivePhase,
   formatThaiDateTime,
+  isLoneLastCard,
   PHASE_STYLE,
   NEAR_DEADLINE_MS,
   type PublicRound,
@@ -350,6 +351,59 @@ function SectionHeading({
 }
 
 // =================================================================
+//  ผังการจัดการ์ดในกริด — กฎเดียวกันทั้ง section "กำลังเปิดรับสมัคร"
+//  และ "กำหนดเปิดรับสมัคร"
+//
+//    1 รอบ        → การ์ดใบเดียวกึ่งกลาง (max-w-3xl, mx-auto)
+//    2/4/… รอบ    → grid 2 คอลัมน์ตามเดิม (การ์ดเป็นลูกกริดตรง ๆ
+//                   เหมือนเดิมทุกไบต์ → ความสูงเท่ากันต่อแถวไม่เปลี่ยน)
+//    3/5/… รอบ    → แถวสุดท้ายเหลือใบเดียว → กึ่งกลาง "แต่ห้ามขยายขนาด"
+//                   กว้างเท่าการ์ดปกติทุกประการ (กฎ: มีมากกว่า 1 รอบ
+//                   การ์ดทุกใบต้องกว้างเท่ากัน)
+//
+//  ห้ามใช้ 3 คอลัมน์ (กล่องวันที่/countdown แคบเกิน) และห้ามแตะ
+//  component การ์ด — ครอบด้วย div เท่านั้น
+//
+//  เทคนิคกึ่งกลาง: auto margin (mx-auto) บน grid item ดูดพื้นที่
+//  ที่เหลือสองข้างตาม CSS Box Alignment (มีลำดับความสำคัญสูงกว่า
+//  justify-self) จึงกึ่งกลางแนวนอนได้แม้ grid ยังยืด item
+// =================================================================
+
+function renderRoundCards(
+  rounds: PublicRound[],
+  nowMs: number,
+  Card: ComponentType<{ round: PublicRound; nowMs: number }>,
+) {
+  return rounds.map((round, index) => {
+    if (isLoneLastCard(index, rounds.length)) {
+      // เคส 1 รอบ: กึ่งกลางด้วย max-w-3xl (การ์ดใบเดียวมีสิทธิ์ใหญ่พิเศษ)
+      //
+      // เคส n คี่ > 1: กึ่งกลางโดยไม่ขยายขนาด
+      //   - md:w-[calc((100%_-_20px)/2)] = กว้างเท่าคอลัมน์ปกติพอดี
+      //     (1fr ของกริด 2 คอลัมน์ gap-5 = (100% − 20px) / 2 — เลข 20px
+      //     ผูกกับ gap-5 ของกริดด้านล่าง ห้ามแก้แยกฝั่งเดียว)
+      //   - md:col-span-2 ทำให้ grid area เป็นแถวเต็ม mx-auto จึงกึ่งกลาง
+      //     ของหน้าได้ (เคส 1 รอบกริดเป็นคอลัมน์เดียว การ span 2 จะสร้าง
+      //     implicit track เกินจำเป็น จึงใส่เฉพาะ n > 1)
+      //   - mobile: w-full เท่านั้น (คลาส md:* ไม่ทำงาน) = เหมือนเดิม
+      return (
+        <div
+          key={round.id}
+          className={
+            rounds.length > 1
+              ? 'mx-auto w-full md:w-[calc((100%_-_20px)/2)] md:col-span-2'
+              : 'mx-auto w-full max-w-3xl'
+          }
+        >
+          <Card round={round} nowMs={nowMs} />
+        </div>
+      );
+    }
+    return <Card key={round.id} round={round} nowMs={nowMs} />;
+  });
+}
+
+// =================================================================
 //  Page
 // =================================================================
 
@@ -476,7 +530,9 @@ export default function HomePage() {
       {/* ============================================================
           PRIMARY — กำลังเปิดรับสมัคร (มีเฉพาะรอบที่สมัครได้จริง)
           จำนวนรอบอยู่ในหัวข้อ ("กำลังเปิดรับสมัคร 2 รอบ") ไม่ใช่ badge ลอย
-          การ์ด: 1 รอบ = เต็มความกว้าง, 2+ รอบ = grid 2 คอลัมน์บน desktop
+          การ์ด: 1 รอบ = กึ่งกลาง (max-w-3xl), 2+ รอบ = grid 2 คอลัมน์
+          บน desktop — จำนวนคี่ใบสุดท้ายกึ่งกลางไม่ขยายขนาด
+          (renderRoundCards)
           ============================================================ */}
       <section aria-labelledby="open-rounds-heading">
         <SectionHeading
@@ -519,9 +575,7 @@ export default function HomePage() {
           </div>
         ) : (
           <div className={`grid gap-5 ${openLive.length > 1 ? 'md:grid-cols-2' : ''}`}>
-            {openLive.map((round) => (
-              <OpenRoundCard key={round.id} round={round} nowMs={nowMs} />
-            ))}
+            {renderRoundCards(openLive, nowMs, OpenRoundCard)}
           </div>
         )}
       </section>
@@ -537,9 +591,7 @@ export default function HomePage() {
             description="ประกาศแล้ว รอวันเปิดรับสมัคร"
           />
           <div className={`grid gap-5 ${upcoming.length > 1 ? 'md:grid-cols-2' : ''}`}>
-            {upcoming.map((round) => (
-              <UpcomingRoundCard key={round.id} round={round} nowMs={nowMs} />
-            ))}
+            {renderRoundCards(upcoming, nowMs, UpcomingRoundCard)}
           </div>
         </section>
       )}

@@ -26,6 +26,7 @@ import {
   deadlinesToMarkHandled,
   collectDeadlines,
   effectivePhase,
+  isLoneLastCard,
   CLOSED_COUNTDOWN_TEXT,
   MIN_REFETCH_INTERVAL_MS,
   MAX_REFRESH_DELAY_MS,
@@ -611,6 +612,44 @@ test('P6: วันที่อ่านไม่ได้ → คง phase เ�
 test('P7: ข้อความปิดรับสมัครใช้ค่าคงที่เดียวกันทั้งระบบ', () => {
   assertEqual(CLOSED_COUNTDOWN_TEXT, 'ปิดรับสมัครแล้ว');
   assertEqual(formatCountdown(0), CLOSED_COUNTDOWN_TEXT);
+});
+
+// ========== 11. isLoneLastCard (กติกาการ์ดกึ่งกลาง) ==========
+
+test('L1: 1 รอบ → ใบเดียวคือใบสุดท้ายที่โดด (กึ่งกลาง)', () => {
+  assertEqual(isLoneLastCard(0, 1), true);
+});
+
+test('L2: 2 รอบ → ไม่มีใบที่โดด (grid เต็มแถว)', () => {
+  assertEqual(isLoneLastCard(0, 2), false);
+  assertEqual(isLoneLastCard(1, 2), false);
+});
+
+test('L3: 3 รอบ → ใบที่ 3 (index 2) โดด, ใบแรกไม่โดด', () => {
+  assertEqual(isLoneLastCard(0, 3), false);
+  assertEqual(isLoneLastCard(1, 3), false);
+  assertEqual(isLoneLastCard(2, 3), true);
+});
+
+test('L4: 4/6 รอบ (เลขคู่) → ไม่มีใบที่โดด', () => {
+  for (let total = 4; total <= 6; total += 2) {
+    for (let i = 0; i < total; i++) {
+      assertEqual(isLoneLastCard(i, total), false, `total=${total} index=${i}`);
+    }
+  }
+});
+
+test('L5: 5 รอบ → ใบที่ 5 (index 4) โดด, ที่เหลือไม่โดด', () => {
+  assertEqual(isLoneLastCard(0, 5), false);
+  assertEqual(isLoneLastCard(1, 5), false);
+  assertEqual(isLoneLastCard(2, 5), false);
+  assertEqual(isLoneLastCard(3, 5), false);
+  assertEqual(isLoneLastCard(4, 5), true);
+});
+
+test('L6: index เกินขอบเขต → false (ไม่ throw)', () => {
+  assertEqual(isLoneLastCard(3, 3), false);
+  assertEqual(isLoneLastCard(-1, 3), false);
 });
 
 // ========== SUMMARY ==========
