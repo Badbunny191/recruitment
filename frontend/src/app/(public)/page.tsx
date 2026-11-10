@@ -60,6 +60,7 @@ const EMPTY: PublicRoundsPayload = {
   upcoming: [],
   closed: [],
   serverOffsetMs: 0,
+  serverTimeKnown: false,
 };
 
 // =================================================================

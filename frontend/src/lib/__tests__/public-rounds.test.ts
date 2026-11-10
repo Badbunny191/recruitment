@@ -18,6 +18,10 @@ import {
   computeCountdown,
   formatCountdown,
   formatThaiDateTime,
+  formatThaiClock,
+  formatThaiCloseTime,
+  formatCountdownMmSs,
+  deadlineBannerState,
   toEpochMs,
   PHASE_STYLE,
   planRefresh,
@@ -30,6 +34,8 @@ import {
   CLOSED_COUNTDOWN_TEXT,
   MIN_REFETCH_INTERVAL_MS,
   MAX_REFRESH_DELAY_MS,
+  CLOCK_DISPLAY_THRESHOLD_MS,
+  DEADLINE_WARNING_THRESHOLD_MS,
 } from '../public-rounds';
 
 // ========== TEST RUNNER ==========
@@ -650,6 +656,90 @@ test('L5: 5 รอบ → ใบที่ 5 (index 4) โดด, ที่เห
 test('L6: index เกินขอบเขต → false (ไม่ throw)', () => {
   assertEqual(isLoneLastCard(3, 3), false);
   assertEqual(isLoneLastCard(-1, 3), false);
+});
+
+// ========== SYSTEM CLOCK — เวลาระบบใต้ countdown / banner หน้าฟอร์ม ==========
+
+test('CK1: formatThaiClock — HH:MM เวลาไทย + NBSP ผูก "น."', () => {
+  const ms = bkk(2026, 11, 10, 15, 42);
+  assertEqual(formatThaiClock(ms), '15:42\u00A0น.');
+  // รองรับทุกทรงเดียวกับ toEpochMs (ISO string / unix seconds)
+  assertEqual(formatThaiClock(new Date(ms).toISOString()), '15:42\u00A0น.');
+  assertEqual(formatThaiClock(Math.floor(ms / 1000)), '15:42\u00A0น.');
+});
+
+test('CK2: formatThaiClock seconds — HH:MM:SS', () => {
+  // bkk() ไม่รับวินาที — บวก 8 วิ เอง
+  const withSec = bkk(2026, 11, 10, 16, 25) + 8 * 1000;
+  assertEqual(formatThaiClock(withSec, { seconds: true }), '16:25:08\u00A0น.');
+  assertEqual(formatThaiClock(withSec), '16:25\u00A0น.');
+});
+
+test('CK3: formatThaiClock — ข้ามเที่ยงคืนเวลาไทย + ค่าอ่านไม่ได้', () => {
+  assertEqual(formatThaiClock(bkk(2026, 11, 11, 0, 5)), '00:05\u00A0น.');
+  assertEqual(formatThaiClock(null), 'ไม่กำหนด');
+  assertEqual(formatThaiClock('abc'), 'ไม่กำหนด');
+});
+
+test('CK4: formatCountdownMmSs — "04:52" (MM:SS ของ 5 นาทีสุดท้ายบน banner)', () => {
+  assertEqual(formatCountdownMmSs(4 * MINUTE + 52 * 1000), '04:52');
+  // เติมศูนย์หน้าครบทั้งสองหลัก
+  assertEqual(formatCountdownMmSs(59 * 1000), '00:59');
+  assertEqual(formatCountdownMmSs(999), '00:00'); // < 1 วิ → floor
+  assertEqual(formatCountdownMmSs(1000), '00:01'); // 1 วิพอดี
+  assertEqual(formatCountdownMmSs(5 * MINUTE), '05:00'); // ขอบบนของโซน final
+  assertEqual(formatCountdownMmSs(45 * MINUTE), '45:00'); // ใช้นอกโซนก็ยังถูก
+  assertEqual(formatCountdownMmSs(0), '00:00');
+  assertEqual(formatCountdownMmSs(-1), '00:00');
+  assertEqual(formatCountdownMmSs(NaN), '00:00');
+});
+
+test('CK5: deadlineBannerState — boundary 60/59/15/5/0 นาที', () => {
+  assertEqual(deadlineBannerState(60 * MINUTE), 'info');
+  assertEqual(deadlineBannerState(59 * MINUTE), 'info');
+  // 15:00 พอดี → warning ("น้อยกว่าหรือเท่ากับ 15 นาที")
+  assertEqual(deadlineBannerState(15 * MINUTE), 'warning');
+  assertEqual(deadlineBannerState(15 * MINUTE + 1), 'info');
+  // 5:00 พอดี → final ("น้อยกว่าหรือเท่ากับ 5 นาที")
+  assertEqual(deadlineBannerState(5 * MINUTE), 'final');
+  assertEqual(deadlineBannerState(5 * MINUTE + 1), 'warning');
+  // 0 / ติดลบ → closed, เกิน 1 ชม. → hidden, NaN → hidden
+  assertEqual(deadlineBannerState(0), 'closed');
+  assertEqual(deadlineBannerState(-1000), 'closed');
+  assertEqual(deadlineBannerState(60 * MINUTE + 1), 'hidden');
+  assertEqual(deadlineBannerState(NaN), 'hidden');
+  // ค่าคงที่ต้องสอดคล้องกัน (1 ชม. > 15 นาที)
+  assertTrue(CLOCK_DISPLAY_THRESHOLD_MS > DEADLINE_WARNING_THRESHOLD_MS);
+});
+
+test('CK6: formatThaiCloseTime — วันเดียวกัน → "เวลา HH:MM น."', () => {
+  const close = bkk(2026, 11, 10, 16, 30);
+  const now = bkk(2026, 11, 10, 15, 42);
+  assertEqual(formatThaiCloseTime(close, now), 'เวลา 16:30\u00A0น.');
+});
+
+test('CK7: formatThaiCloseTime — ข้ามเที่ยงคืน → มีวันที่กำกับ', () => {
+  const close = bkk(2026, 11, 11, 0, 30);
+  const now = bkk(2026, 11, 10, 23, 30);
+  assertEqual(formatThaiCloseTime(close, now), '11 พ.ย. เวลา 00:30\u00A0น.');
+  // now อ่านไม่ได้ → ไม่มีวันที่ (ยังแสดงเวลาได้)
+  assertEqual(formatThaiCloseTime(close, null), 'เวลา 00:30\u00A0น.');
+  assertEqual(formatThaiCloseTime(null, now), 'ไม่กำหนด');
+});
+
+test('CK8: parseRoundsResponse — serverTimeKnown แยก "มีจริง" ออกจาก fallback', () => {
+  const now = 1_000_000;
+  // มี serverTime → known=true, offset ถูกต้อง
+  const a = parseRoundsResponse({ serverTime: now + 500, data: [] }, now);
+  assertEqual(a.serverTimeKnown, true);
+  assertEqual(a.serverOffsetMs, 500);
+  // ไม่มี serverTime (shape เก่า/แคช) → known=false, offset 0 (พฤติกรรมเดิมคงเดิม)
+  const b = parseRoundsResponse({ data: [] }, now);
+  assertEqual(b.serverTimeKnown, false);
+  assertEqual(b.serverOffsetMs, 0);
+  // serverTime ไม่ใช่ number → known=false (ห้ามแสดงนาฬิกา)
+  const c = parseRoundsResponse({ serverTime: 'x', data: [] }, now);
+  assertEqual(c.serverTimeKnown, false);
 });
 
 // ========== SUMMARY ==========
