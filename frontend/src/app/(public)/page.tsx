@@ -22,12 +22,16 @@ import {
   deadlinesToMarkHandled,
   effectivePhase,
   formatThaiDateTime,
+  formatThaiClock,
+  systemClockMode,
+  toEpochMs,
   isLoneLastCard,
   PHASE_STYLE,
   NEAR_DEADLINE_MS,
   type PublicRound,
   type PublicRoundsPayload,
   type RoundPhase,
+  type SystemClockMode,
 } from '@/lib/public-rounds';
 
 // =================================================================
@@ -60,6 +64,7 @@ const EMPTY: PublicRoundsPayload = {
   upcoming: [],
   closed: [],
   serverOffsetMs: 0,
+  serverTimeKnown: false,
 };
 
 // =================================================================
@@ -88,16 +93,28 @@ function CountdownBlock({
   phase,
   round,
   nowMs,
+  serverTimeKnown,
 }: {
   phase: RoundPhase;
   round: PublicRound;
   nowMs: number;
+  /** false = response ไม่มี serverTime (fallback นาฬิกาเครื่อง) → ห้ามแสดงนาฬิกา */
+  serverTimeKnown: boolean;
 }) {
   // phase ที่ใช้แสดงผล — ลดระดับได้เมื่อเลย deadline ไปแล้วแต่ snapshot ยังเก่า
   // (กันการ์ดขัดกันเอง: badge "เปิดรับสมัคร" + countdown "ปิดรับสมัครแล้ว")
   const shownPhase = effectivePhase(phase, round, nowMs);
   const cd = computeCountdown(shownPhase, round, nowMs);
   if (!cd) return null;
+
+  // เวลาระบบ — แสดงใต้ countdown เฉพาะรอบ OPEN ที่เหลือ <= 1 ชม. (นาที)
+  // และ <= 5 นาที (วินาที) — โซนเดียวกับที่ผู้สมัครเริ่มตัดสินใจด้วยเวลาจริง
+  // รอบ UPCOMING ไม่แสดง (ข้อร้องเรียนทั้งหมดเกี่ยวกับ "ปิดรับสมัคร")
+  // ⚠️ ปิดแล้ว/ค่าไม่รู้เรื่อง = hidden (systemClockMode) — ห้ามแสดงนาฬิกา
+  const clockMode: SystemClockMode =
+    shownPhase === 'OPEN' && serverTimeKnown
+      ? systemClockMode((toEpochMs(round.closeDate) ?? Infinity) - nowMs)
+      : 'hidden';
 
   // ปิดแล้ว = สถานะ ไม่ใช่การนับถอยหลัง → โทนสีกลาง ไม่เร่งเร้า
   const isClosed = cd.closed;
@@ -133,6 +150,12 @@ function CountdownBlock({
       <p className="mt-1 text-lg font-bold leading-tight tabular-nums">
         {cd.text || '—'}
       </p>
+      {clockMode !== 'hidden' && (
+        <p className="mt-1.5 flex items-center gap-1 text-xs font-medium tabular-nums opacity-80">
+          <ClockIcon className="h-3 w-3 shrink-0" aria-hidden="true" />
+          <span>เวลาระบบ {formatThaiClock(nowMs, { seconds: clockMode === 'seconds' })}</span>
+        </p>
+      )}
     </div>
   );
 }
@@ -169,7 +192,7 @@ function ThaiDateTime({ value }: { value: PublicRound['closeDate'] }) {
 //    3. สมัครตรงไหน    → ปุ่ม CTA เต็มความกว้าง
 // =================================================================
 
-function OpenRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) {
+function OpenRoundCard({ round, nowMs, serverTimeKnown }: { round: PublicRound; nowMs: number; serverTimeKnown: boolean }) {
   return (
     // โครงการ์ด: หัวการ์ด (ชื่อรอบ) โตตามยาวของข้อความ ส่วนที่เหลือยึดขอบล่าง
     // → เนื้อหาหลัก + ปุ่มอยู่ระดับเดียวกันทุกการ์ดใน grid แม้ชื่อรอบจะ
@@ -203,7 +226,7 @@ function OpenRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) 
               <ThaiDateTime value={round.closeDate} />
             </p>
           </div>
-          <CountdownBlock phase="OPEN" round={round} nowMs={nowMs} />
+          <CountdownBlock phase="OPEN" round={round} nowMs={nowMs} serverTimeKnown={serverTimeKnown} />
         </div>
 
         {/* วันเปิดรับสมัคร — ลดความเด่นลงเพราะรอบเปิดอยู่แล้ว */}
@@ -228,7 +251,7 @@ function OpenRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) 
 //  การ์ดรอบที่ยังไม่เปิด — บอกวันเปิดให้ชัด แต่ยังกดสมัครไม่ได้
 // =================================================================
 
-function UpcomingRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) {
+function UpcomingRoundCard({ round, nowMs, serverTimeKnown }: { round: PublicRound; nowMs: number; serverTimeKnown: boolean }) {
   // ถ้าเลย openDate ไปแล้ว (snapshot ยังเก่า) → phase เปลี่ยนเป็น OPEN
   // badge ต้องไม่บอก "ยังไม่เปิดรับสมัคร" ทั้งที่เปิดแล้ว
   const shownPhase = effectivePhase('UPCOMING', round, nowMs);
@@ -261,7 +284,7 @@ function UpcomingRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number
               <ThaiDateTime value={round.openDate} />
             </p>
           </div>
-          <CountdownBlock phase="UPCOMING" round={round} nowMs={nowMs} />
+          <CountdownBlock phase="UPCOMING" round={round} nowMs={nowMs} serverTimeKnown={serverTimeKnown} />
         </div>
       </div>
 
@@ -372,7 +395,8 @@ function SectionHeading({
 function renderRoundCards(
   rounds: PublicRound[],
   nowMs: number,
-  Card: ComponentType<{ round: PublicRound; nowMs: number }>,
+  Card: ComponentType<{ round: PublicRound; nowMs: number; serverTimeKnown: boolean }>,
+  serverTimeKnown: boolean,
 ) {
   return rounds.map((round, index) => {
     if (isLoneLastCard(index, rounds.length)) {
@@ -395,11 +419,11 @@ function renderRoundCards(
               : 'mx-auto w-full max-w-3xl'
           }
         >
-          <Card round={round} nowMs={nowMs} />
+          <Card round={round} nowMs={nowMs} serverTimeKnown={serverTimeKnown} />
         </div>
       );
     }
-    return <Card key={round.id} round={round} nowMs={nowMs} />;
+    return <Card key={round.id} round={round} nowMs={nowMs} serverTimeKnown={serverTimeKnown} />;
   });
 }
 
@@ -575,7 +599,7 @@ export default function HomePage() {
           </div>
         ) : (
           <div className={`grid gap-5 ${openLive.length > 1 ? 'md:grid-cols-2' : ''}`}>
-            {renderRoundCards(openLive, nowMs, OpenRoundCard)}
+            {renderRoundCards(openLive, nowMs, OpenRoundCard, payload.serverTimeKnown)}
           </div>
         )}
       </section>
@@ -591,7 +615,7 @@ export default function HomePage() {
             description="ประกาศแล้ว รอวันเปิดรับสมัคร"
           />
           <div className={`grid gap-5 ${upcoming.length > 1 ? 'md:grid-cols-2' : ''}`}>
-            {renderRoundCards(upcoming, nowMs, UpcomingRoundCard)}
+            {renderRoundCards(upcoming, nowMs, UpcomingRoundCard, payload.serverTimeKnown)}
           </div>
         </section>
       )}

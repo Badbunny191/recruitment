@@ -280,7 +280,17 @@ publicRoutes.get('/rounds/:id/schema', async (c) => {
   // the timezone math.
   const gate = evaluateRound(round);
   if (!gate.ok) {
-    return c.json({ success: false, error: gate.message, reason: gate.reason, status: round.status }, 403);
+    // serverTime = เวลาเซิร์ฟเวอร์ ณ ขณะรับคำขอ / closeDate = กำหนดปิดของรอบ
+    // หน้า error state ของ /apply ใช้แสดงหลักฐานเวลาเมื่อถูกปฏิเสธเพราะปิดรับสมัคร
+    // (ข้อมูล public อยู่แล้ว — closeDate แสดงบนหน้าแรกทุกการ์ด)
+    return c.json({
+      success: false,
+      error: gate.message,
+      reason: gate.reason,
+      status: round.status,
+      serverTime: Date.now(),
+      closeDate: round.closeDate,
+    }, 403);
   }
 
   // Sprint 4: Fetch sections (ordered) for sectioned layout
@@ -323,7 +333,10 @@ publicRoutes.get('/rounds/:id/detail', async (c) => {
 
   if (!round) return c.json({ success: false, error: 'ไม่พบรอบรับสมัคร' }, 404);
 
-  return c.json({ success: true, data: round });
+  // serverTime — epoch ms ของเซิร์ฟเวอร์ ณ ขณะสร้าง response
+  // หน้า /apply ใช้คำนวณ offset กับนาฬิกาเครื่อง (แบบเดียวกับ /rounds/active)
+  // เพื่อแสดง banner "เหลือเวลารับสมัครอีก" ที่อิงเวลา server แม้เครื่องผู้ใช้เพี้ยน
+  return c.json({ success: true, data: round, serverTime: Date.now() });
 });
 
 /**
@@ -640,7 +653,17 @@ publicRoutes.post('/applications/submit',
   // the system clock.
   const gate = evaluateRound(round);
   if (!gate.ok) {
-    return c.json({ success: false, error: gate.message, reason: gate.reason, status: round.status }, 403);
+    // serverTime = เวลาเซิร์ฟเวอร์ ณ ขณะรับคำขอ (หลักฐาน "ขณะได้รับคำขอ" ที่
+    // หน้า review แสดงเมื่อ submit โดนปฏิเสธเพราะปิดรับสมัคร) + closeDate
+    // เพื่อไม่ให้ฝั่ง client ต้อง fetch เพิ่ม — ข้อมูล public อยู่แล้ว
+    return c.json({
+      success: false,
+      error: gate.message,
+      reason: gate.reason,
+      status: round.status,
+      serverTime: Date.now(),
+      closeDate: round.closeDate,
+    }, 403);
   }
 
   // Get template field mappings (fieldId -> pdfMappingKey)

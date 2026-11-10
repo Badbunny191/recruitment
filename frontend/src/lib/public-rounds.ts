@@ -34,6 +34,12 @@ export interface PublicRoundsPayload {
   closed: PublicRound[];
   /** offset (ms) ที่ต้องบวกกับ Date.now() เพื่อให้ได้เวลาเซิร์ฟเวอร์ */
   serverOffsetMs: number;
+  /**
+   * true = serverOffsetMs มาจาก serverTime จริงของ backend
+   * false = fallback (response ไม่มี serverTime — offset ถูกบังคับเป็น 0)
+   * กรณี false ห้ามแสดง "เวลาระบบ" เด็ดขาด (จะกลายเป็นเวลาเครื่องผู้ใช้)
+   */
+  serverTimeKnown: boolean;
 }
 
 // =============================================================
@@ -79,18 +85,19 @@ export const toEpochMs = (value: string | number | Date | null | undefined): num
 /** non-breaking space (U+00A0) */
 const NBSP = '\u00A0';
 
+const THAI_MONTHS = [
+  'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
+  'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.',
+];
+
 export const formatThaiDateTime = (
   value: string | number | Date | null | undefined,
 ): string => {
   const ms = toEpochMs(value);
   if (ms === null) return 'ไม่กำหนด';
   const d = new Date(ms + BANGKOK_OFFSET_MS);
-  const months = [
-    'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
-    'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.',
-  ];
   const day = d.getUTCDate();
-  const month = months[d.getUTCMonth()];
+  const month = THAI_MONTHS[d.getUTCMonth()];
   const year = d.getUTCFullYear() + 543;
   const hh = String(d.getUTCHours()).padStart(2, '0');
   const mm = String(d.getUTCMinutes()).padStart(2, '0');
@@ -155,6 +162,112 @@ export const formatCountdown = (ms: number): string => {
   }
 
   return `${minutes} นาที`;
+};
+
+// =============================================================
+//  System Clock — "เวลาระบบ" ใต้ countdown / บน banner หน้าฟอร์ม
+// =============================================================
+
+/**
+ * หน้าต่างแสดง "เวลาระบบ" = เหลือ <= 1 ชั่วโมง
+ *
+ * เหตุผลที่ไม่ใช่ 5 นาที: ผู้สมัครเริ่มตัดสินใจด้วยเวลาจริงตั้งแต่ ~30-60
+ * นาทีก่อนปิด และ formatCountdown เองก็เปลี่ยนไปแสดงระดับนาทีเมื่อเหลือ
+ * <1 ชม. อยู่แล้ว — นาฬิกาจึงเริ่มมีความหมายที่จุดเดียวกัน
+ */
+export const CLOCK_DISPLAY_THRESHOLD_MS = 60 * 60 * 1000;
+
+/** เกณฑ์ warning บน banner หน้าฟอร์ม (ให้เวลาเผื่ออัปโหลดเอกสาร) */
+export const DEADLINE_WARNING_THRESHOLD_MS = 15 * 60 * 1000;
+
+export type SystemClockMode = 'hidden' | 'minutes' | 'seconds';
+
+/**
+ * โหมดนาฬิกาที่ควรแสดง ณ เวลาคงเหลือ remainingMs
+ *
+ *   hidden   → เหลือ > 1 ชม. / ปิดแล้ว / ค่าไม่รู้เรื่อง
+ *   minutes  → 5 นาที < เหลือ <= 1 ชม. → "15:42 น." (HH:MM)
+ *              tick ยังเดิน 30 วิ — ถ้าแสดงวินาทีจะกระโดดทีละ ~30 วิ
+ *              จนดูพัง จึงแสดงแค่ระดับนาที
+ *   seconds  → 0 < เหลือ <= 5 นาที → "15:42:17 น."
+ *              (ช่วงนี้ nearDeadline เปิด tick 1 วิ อยู่แล้ว วินาทีเดินจริง)
+ */
+export const systemClockMode = (remainingMs: number): SystemClockMode => {
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return 'hidden';
+  if (remainingMs <= SECONDS_DISPLAY_THRESHOLD_MS) return 'seconds';
+  if (remainingMs <= CLOCK_DISPLAY_THRESHOLD_MS) return 'minutes';
+  return 'hidden';
+};
+
+/** สถานะ banner deadline บนหน้าฟอร์มสมัคร */
+export type DeadlineBannerState = 'hidden' | 'info' | 'warning' | 'final' | 'closed';
+
+/**
+ *   hidden  → เหลือ > 1 ชม. (หน้าฟอร์มเงียบ ไม่สร้างความเครียด)
+ *   info    → 15 นาที < เหลือ <= 1 ชม.   "เหลืออีก 48 นาที / ปิดอัตโนมัติ 16:30 น."
+ *   warning → 5 นาที < เหลือ <= 15 นาที  "ตรวจสอบข้อมูลและส่งก่อน 16:30 น."
+ *   final   → 0 < เหลือ <= 5 นาที       countdown วินาที + เวลาระบบวินาที
+ *   closed  → เหลือ <= 0                   "ปิดรับสมัครแล้ว" (ไม่มีนาฬิกา)
+ */
+export const deadlineBannerState = (remainingMs: number): DeadlineBannerState => {
+  if (!Number.isFinite(remainingMs)) return 'hidden';
+  if (remainingMs <= 0) return 'closed';
+  if (remainingMs <= SECONDS_DISPLAY_THRESHOLD_MS) return 'final';
+  if (remainingMs <= DEADLINE_WARNING_THRESHOLD_MS) return 'warning';
+  if (remainingMs <= CLOCK_DISPLAY_THRESHOLD_MS) return 'info';
+  return 'hidden';
+};
+
+/**
+ * "15:42 น." / "15:42:17 น." — เวลาไทย (UTC+7) ไม่ขึ้นกับ timezone เครื่อง
+ *
+ * ใช้แนวเดียวกับ formatThaiDateTime: อ่านจาก UTC แล้วบวก BANGKOK_OFFSET_MS
+ * (ห้าม toLocaleTimeString — จะตาม timezone ของเครื่องผู้ใช้)
+ * NBSP ผูก "น." กันตกบรรทัดเหมือนเดิม
+ */
+export const formatThaiClock = (
+  value: string | number | Date | null | undefined,
+  opts: { seconds?: boolean } = {},
+): string => {
+  const ms = toEpochMs(value);
+  if (ms === null) return 'ไม่กำหนด';
+  const d = new Date(ms + BANGKOK_OFFSET_MS);
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  if (opts.seconds) {
+    const ss = String(d.getUTCSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss}${NBSP}น.`;
+  }
+  return `${hh}:${mm}${NBSP}น.`;
+};
+
+/**
+ * เวลาปิดที่เอ่ยถึงในประโยค (banner หน้าฟอร์ม / error state)
+ *   วันเดียวกัน (เวลาไทย ณ nowValue) → "เวลา 16:30 น."
+ *   ต่างวัน → "11 พ.ย. เวลา 00:30 น." กันสับสนว่าปิดวันไหน
+ *
+ * nowValue ควรเป็นเวลา server ที่วัดเอง (เช่น serverTime ของ response)
+ * เพื่อให้การเทียบ "วันเดียวกัน" อิงนาฬิกาเดียวกับเวลาที่แสดง
+ */
+export const formatThaiCloseTime = (
+  closeValue: string | number | Date | null | undefined,
+  nowValue: string | number | Date | null | undefined,
+): string => {
+  const closeMs = toEpochMs(closeValue);
+  if (closeMs === null) return 'ไม่กำหนด';
+  const nowMs = toEpochMs(nowValue);
+  const d = new Date(closeMs + BANGKOK_OFFSET_MS);
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  const time = `${hh}:${mm}${NBSP}น.`;
+  if (nowMs === null) return `เวลา ${time}`;
+  const n = new Date(nowMs + BANGKOK_OFFSET_MS);
+  const sameDay =
+    d.getUTCFullYear() === n.getUTCFullYear() &&
+    d.getUTCMonth() === n.getUTCMonth() &&
+    d.getUTCDate() === n.getUTCDate();
+  if (sameDay) return `เวลา ${time}`;
+  return `${d.getUTCDate()} ${THAI_MONTHS[d.getUTCMonth()]} เวลา ${time}`;
 };
 
 /**
@@ -450,7 +563,12 @@ export const parseRoundsResponse = (
   json: any,
   nowMs: number,
 ): PublicRoundsPayload => {
-  const serverTime = typeof json?.serverTime === 'number' ? json.serverTime : nowMs;
+  // ⚠️ serverTimeKnown — ต้องแยก "มี serverTime จริง" ออกจาก "fallback"
+  // เดิม fallback (shape เก่า/แคช) บังคับ offset = 0 ซึ่งมาจากนาฬิกาเครื่อง
+  // ผู้เรียกที่แสดง "เวลาระบบ" ต้องรู้เพื่อซ่อนนาฬิกาในกรณีนั้น
+  const serverTimeKnown =
+    typeof json?.serverTime === 'number' && Number.isFinite(json.serverTime);
+  const serverTime = serverTimeKnown ? json.serverTime : nowMs;
   const serverOffsetMs = serverTime - nowMs;
 
   const groups = json?.groups;
@@ -460,6 +578,7 @@ export const parseRoundsResponse = (
       upcoming: groups.upcoming,
       closed: groups.closed,
       serverOffsetMs,
+      serverTimeKnown,
     };
   }
 
@@ -500,5 +619,5 @@ export const parseRoundsResponse = (
   upcoming.sort(byOpen);
   closed.sort(byCloseDesc);
 
-  return { open, upcoming, closed, serverOffsetMs };
+  return { open, upcoming, closed, serverOffsetMs, serverTimeKnown };
 };

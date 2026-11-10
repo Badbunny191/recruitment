@@ -19,6 +19,7 @@ import {
 } from '@/lib/otherOption';
 import { attachmentDisplayName } from '@/lib/filename';
 import { buildAttachmentViewUrl, buildAttachmentUrlFromPath } from '@/lib/attachment-url';
+import { DeadlineServerTimeEvidence } from '@/components/DeadlineServerTimeEvidence';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 
@@ -62,6 +63,13 @@ function ReviewContent() {
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // ⏰ หลักฐานเวลาเมื่อ submit โดนปฏิเสธเพราะปิดรับสมัครแล้ว (403 ALREADY_CLOSED)
+  // serverTime = เวลาที่ server วัดเอง ณ ขณะรับคำขอ / closeDate = กำหนดปิดของรอบ
+  // ทั้งคู่มาจาก body ของ response ที่โดนปฏิเสธ — ไม่รู้ = undefined (ซ่อนบรรทัดนั้น)
+  const [closedEvidence, setClosedEvidence] = useState<{
+    closeDate?: string | number;
+    serverTime?: number;
+  } | null>(null);
   // PR #3: Cloudflare Turnstile token. Captured from the widget
   // callback. Stays null until the user passes verification. The submit
   // button is disabled while the widget is enabled AND this is null;
@@ -425,6 +433,19 @@ function ReviewContent() {
         // (Turnstile failure). The backend is intentionally opaque so
         // bots can't tell which one tripped.
         setSubmitError((result?.error ?? 'การยืนยันตัวตนไม่สำเร็จ') + refSuffix);
+        // ⏰ ปิดรับสมัครแล้ว → เก็บหลักฐานเวลา (จาก response เดียวกัน) ไปแสดง
+        // ใต้ข้อความ error — ลดข้อโต้แย้ง "เครื่องผมยังไม่ถึงเวลา"
+        if (result?.reason === 'ALREADY_CLOSED') {
+          setClosedEvidence({
+            closeDate: result?.closeDate ?? undefined,
+            serverTime:
+              typeof result?.serverTime === 'number' && Number.isFinite(result.serverTime)
+                ? result.serverTime
+                : undefined,
+          });
+        } else {
+          setClosedEvidence(null);
+        }
         // If Turnstile is enabled, the token may have been spent —
         // clear it so the user knows to verify again before retrying.
         if (turnstileEnabled) {
@@ -740,6 +761,12 @@ function ReviewContent() {
               <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-800">
                 {submitError}
               </div>
+            )}
+            {closedEvidence && (
+              <DeadlineServerTimeEvidence
+                closeValue={closedEvidence.closeDate ?? null}
+                requestServerTime={closedEvidence.serverTime}
+              />
             )}
           </CardContent>
           <CardFooter className="flex flex-col-reverse md:flex-row gap-3 md:justify-between">

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useForm, Controller, SubmitHandler, useWatch } from 'react-hook-form';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
@@ -12,6 +12,17 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { FileUpload, UploadedFileMeta } from '@/components/FileUpload';
 import { ApplyBackBar } from '@/components/ApplyBackBar';
 import { ApplyResetBar } from '@/components/ApplyResetBar';
+import { ApplyDeadlineBanner } from '@/components/ApplyDeadlineBanner';
+import { DeadlineServerTimeEvidence } from '@/components/DeadlineServerTimeEvidence';
+import {
+  CLOCK_DISPLAY_THRESHOLD_MS,
+  deadlineBannerState,
+  deadlinesToMarkHandled,
+  planDeadlineTimer,
+  shouldRefetchOnEvent,
+  toEpochMs,
+  type DeadlineBannerState,
+} from '@/lib/public-rounds';
 import { attachmentDisplayName } from '@/lib/filename';
 import { SearchableDropdown } from '@/components/SearchableDropdown';
 import {
@@ -188,7 +199,15 @@ function FormInner() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   // Round lifecycle gate (DRAFT/CLOSED => 403 from /schema and /submit).
   // When set, the page shows a friendly error card instead of the form.
-  const [roundError, setRoundError] = useState<{ message: string; status: string } | null>(null);
+  const [roundError, setRoundError] = useState<{
+    message: string;
+    status: string;
+    reason?: string;
+    /** epoch ms ที่ server วัดเอง ณ ขณะรับคำขอ (จาก body ของ 403) — ไม่รู้ = undefined */
+    serverTime?: number;
+    /** กำหนดปิดของรอบจาก body ของ 403 (fallback เมื่อ /detail หาไม่ได้) */
+    closeDate?: string | number;
+  } | null>(null);
 
   // ✅ 404 gate — round id ไม่มีอยู่จริง (URL ถูกแก้เอง / roundId มั่ว / ถูกลบ):
   // /schema ตอบ 404 เมื่อ set flag นี้ หน้าต้อง render Error State เต็มรูปแบบ
@@ -318,6 +337,14 @@ function FormInner() {
           setRoundError({
             message: body?.error ?? 'ขณะนี้ยังไม่เปิดรับสมัคร',
             status: body?.status ?? 'DRAFT',
+            reason: typeof body?.reason === 'string' ? body.reason : undefined,
+            // หลักฐานเวลาจาก server เมื่อถูกปฏิเสธ — error card แสดงเมื่อ
+            // reason = ALREADY_CLOSED (เวลา ณ รับคำขอ + กำหนดปิดของรอบ)
+            serverTime:
+              typeof body?.serverTime === 'number' && Number.isFinite(body.serverTime)
+                ? body.serverTime
+                : undefined,
+            closeDate: body?.closeDate ?? undefined,
           });
           setLoading(false);
           return null; // signal: stop processing
@@ -456,29 +483,144 @@ function FormInner() {
   // DRAFT and CLOSED — unlike /rounds/active which filters ACTIVE only. The
   // page uses it for both the announcement block (ACTIVE) and the Error Page
   // (DRAFT/CLOSED).
-  useEffect(() => {
-    if (!roundId) return;
+  //
+  // ⏰ เวลาระบบบนหน้าฟอร์ม — loadDetail เรียกได้หลายครั้ง (mount / focus /
+  // กลับเข้าแท็บ / timer ใกล้ deadline) เพื่อให้ offset จาก serverTime สดเสมอ
+  // แม้เปิดฟอร์มทิ้งไว้นาน กลไกเดียวกับหน้าแรก (lib/public-rounds.ts):
+  //   - response มี serverTime → known=true, offset = serverTime - requestedAt
+  //   - response ไม่มี serverTime (backend เก่า/แคช) → known=false → ห้ามแสดง
+  //     banner/นาฬิกาเด็ดขาด (เวลาที่เหลือจะกลายเป็นเวลาเครื่องผู้ใช้)
+  const [serverClock, setServerClock] = useState<{ offsetMs: number; known: boolean }>({
+    offsetMs: 0,
+    known: false,
+  });
+  const lastDetailFetchAtRef = useRef<number | null>(null);
+  const detailInFlightRef = useRef(false);
+  const detailAbortRef = useRef<AbortController | null>(null);
+  const handledDeadlinesRef = useRef<number[]>([]);
+
+  const loadDetail = useCallback((opts: { silent?: boolean } = {}) => {
+    if (!roundId || detailInFlightRef.current) return;
+    detailInFlightRef.current = true;
+    detailAbortRef.current?.abort();
     const controller = new AbortController();
+    detailAbortRef.current = controller;
+    const requestedAt = Date.now();
     fetch(`${getApiUrl()}/public/rounds/${roundId}/detail`, { signal: controller.signal })
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
       .then((res) => {
-        // Response shape: { success: true, data: { id, title, positionLevel, status, openDate, closeDate, announcementTitle, ... } }
+        // Response shape: { success: true, data: { id, title, ..., closeDate }, serverTime }
         if (res && res.success && res.data) {
           setRoundInfo(res.data as RoundInfo);
-        } else {
+        } else if (!opts.silent) {
           setRoundInfo(null);
+        }
+        const known = typeof res?.serverTime === 'number' && Number.isFinite(res.serverTime);
+        setServerClock({ offsetMs: known ? res.serverTime - requestedAt : 0, known });
+        lastDetailFetchAtRef.current = requestedAt;
+        // จำ deadline ที่เลยไปแล้วว่า "จัดการแล้ว" — กัน timer ยิงซ้ำไม่รู้จบ
+        // (แบบเดียวกับหน้าแรก: deadline หนึ่งตัว → refetch หนึ่งครั้ง)
+        const closeMs = toEpochMs((res?.data as RoundInfo | undefined)?.closeDate);
+        if (closeMs !== null) {
+          handledDeadlinesRef.current = deadlinesToMarkHandled(requestedAt, [closeMs]);
         }
       })
       .catch((err) => {
         if (err?.name === 'AbortError') return;
         console.warn('Failed to load round detail:', err);
-        setRoundInfo(null);
+        // silent refresh ล้ม → คงข้อมูลเดิมที่แสดงอยู่ (ดีกว่าหน้าว่าง)
+        if (!opts.silent) setRoundInfo(null);
+      })
+      .finally(() => {
+        detailInFlightRef.current = false;
       });
-    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getApiUrl อ่าน env var ล้วน ไม่มี state
   }, [roundId]);
+
+  // โหลดครั้งแรก + abort เมื่อ roundId เปลี่ยน / unmount (พฤติกรรมเดิม)
+  useEffect(() => {
+    if (!roundId) return;
+    loadDetail();
+    return () => {
+      detailAbortRef.current?.abort();
+      // เคลียร์ flag ทันทีเพื่อให้ loadDetail ของ roundId ใหม่ไม่โดน guard บล็อก
+      // (aborted request จะรัน finally ช้ากว่า effect ถัดไปหนึ่ง microtask)
+      detailInFlightRef.current = false;
+    };
+  }, [roundId, loadDetail]);
+
+  // ── กลับเข้าแท็บ / focus → offset อาจเก่า (แบบเดียวกับหน้าแรก, throttle 15 วิ) ──
+  useEffect(() => {
+    const refreshIfDue = () => {
+      if (shouldRefetchOnEvent(Date.now(), lastDetailFetchAtRef.current)) {
+        loadDetail({ silent: true });
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshIfDue();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', refreshIfDue);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', refreshIfDue);
+    };
+  }, [loadDetail]);
+
+  // ── timer ตื่นที่ deadline (เพดาน 5 นาที) → silent refetch ให้ offset สดเสมอ ──
+  // กลไกเดียวกับหน้าแรก: แม้เปิดฟอร์มทิ้งไว้หลายชั่วโมง offset จะไม่ค้าง
+  // (deadline ที่เลยไปแล้วถูก mark "จัดการแล้ว" ใน loadDetail — ไม่ยิงซ้ำ)
+  const closeEpoch = useMemo(
+    () => (roundInfo?.closeDate ? toEpochMs(roundInfo.closeDate) : null),
+    [roundInfo],
+  );
+  useEffect(() => {
+    if (closeEpoch === null) return;
+    const { delayMs } = planDeadlineTimer(
+      Date.now(),
+      [closeEpoch],
+      handledDeadlinesRef.current,
+    );
+    if (delayMs === null) return;
+    const id = setTimeout(() => loadDetail({ silent: true }), delayMs);
+    return () => clearTimeout(id);
+  }, [closeEpoch, loadDetail, serverClock]);
+
+  // ── เวลาอ้างอิง server สำหรับ banner (นาฬิกาเครื่อง + offset จาก /detail) ──
+  // remainingMs คำนวณ ณ render — re-render จาก tick/refresh เท่านั้น (ไม่มี polling)
+  const [tick, setTick] = useState(0);
+  void tick; // re-render ผ่าน setTick เท่านั้น
+  const remainingMs =
+    closeEpoch !== null && serverClock.known
+      ? closeEpoch - (Date.now() + serverClock.offsetMs)
+      : null;
+  const bannerState: DeadlineBannerState =
+    remainingMs !== null ? deadlineBannerState(remainingMs) : 'hidden';
+
+  // เดินนาฬิกาเฉพาะเมื่อ banner แสดง: 30 วิ (ระดับนาที) / 1 วิ (วินาที 5 นาทีสุดท้าย)
+  // ตอนซ่อน (>1 ชม.) ตั้ง timer ตื่น ณ เหลือ 1 ชม. พอดี — banner โผล่ตรงเวลา
+  // แม้ผู้ใช้ไม่มี event ใดเลย (แท็บค้างอ่านฟอร์มยาว ๆ)
+  // ปิดแล้ว → ข้อความ static ไม่ต้องเดินนาฬิกา
+  useEffect(() => {
+    if (closeEpoch === null || !serverClock.known) return;
+    if (bannerState === 'hidden' || bannerState === 'closed') {
+      if (bannerState !== 'hidden') return;
+      const wakeDelay =
+        closeEpoch - CLOCK_DISPLAY_THRESHOLD_MS + 1_000 - (Date.now() + serverClock.offsetMs);
+      if (wakeDelay <= 0) return; // ไม่ควรเกิด (hidden ⇒ remaining > 1 ชม.) — กัน edge
+      const id = setTimeout(() => setTick((t) => t + 1), wakeDelay);
+      return () => clearTimeout(id);
+    }
+    const interval = bannerState === 'final' ? 1_000 : 30_000;
+    const id = setInterval(() => setTick((t) => t + 1), interval);
+    return () => clearInterval(id);
+  }, [closeEpoch, serverClock, bannerState]);
+
+  // เวลา server ณ render ปัจจุบัน — อิง offset จาก /detail (ไม่ใช่ browser time ลอย ๆ)
+  const deadlineNowMs = Date.now() + serverClock.offsetMs;
 
   // =========================================================================
   //  PR #2 — Draft restoration
@@ -1412,6 +1554,15 @@ function FormInner() {
               {roundError.message}
             </div>
 
+            {/* ⏰ หลักฐานเวลา — เมื่อถูกปฏิเสธเพราะปิดรับสมัคร: กำหนดปิด +
+                เวลาของระบบ ณ ขณะรับคำขอ (server วัดเอง ไม่ใช่เวลาเครื่องผู้ใช้) */}
+            {roundError.reason === 'ALREADY_CLOSED' && (
+              <DeadlineServerTimeEvidence
+                closeValue={roundInfo?.closeDate ?? roundError.closeDate ?? null}
+                requestServerTime={roundError.serverTime}
+              />
+            )}
+
             <p className="text-sm text-slate-500">
               หากคุณคิดว่าเป็นข้อผิดพลาด กรุณาติดต่อเจ้าหน้าที่
             </p>
@@ -1458,6 +1609,20 @@ function FormInner() {
               <span className="whitespace-pre-line">{roundInfo.remark}</span>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ⏰ Deadline banner — แสดงเฉพาะเมื่อเหลือ <= 1 ชม. (อิง serverTime จาก /detail)
+          ซ่อนเมื่อ: ไกลกว่า 1 ชม. / serverTime ไม่รู้ (fallback นาฬิกาเครื่อง)
+          ปิดแล้วระหว่างกรอก → แสดง "ปิดรับสมัครแล้ว" แทน (ไม่มีนาฬิกา) */}
+      {bannerState !== 'hidden' && closeEpoch !== null && (
+        <div className="mb-4">
+          <ApplyDeadlineBanner
+            state={bannerState}
+            remainingMs={remainingMs}
+            closeMs={closeEpoch}
+            nowMs={deadlineNowMs}
+          />
         </div>
       )}
 
