@@ -20,7 +20,7 @@ import {
   formatThaiDateTime,
   formatThaiClock,
   formatThaiCloseTime,
-  systemClockMode,
+  formatCountdownMmSs,
   deadlineBannerState,
   toEpochMs,
   PHASE_STYLE,
@@ -681,20 +681,17 @@ test('CK3: formatThaiClock — ข้ามเที่ยงคืนเวล�
   assertEqual(formatThaiClock('abc'), 'ไม่กำหนด');
 });
 
-test('CK4: systemClockMode — boundary 1 ชม. / 15 นาที / 5 นาที / 0', () => {
-  // เหลือ = 60:00 พอดี → minutes ("น้อยกว่าหรือเท่ากับ 1 ชั่วโมง")
-  assertEqual(systemClockMode(60 * MINUTE), 'minutes');
-  assertEqual(systemClockMode(59 * MINUTE), 'minutes');
-  assertEqual(systemClockMode(15 * MINUTE), 'minutes');
-  // เหลือ = 5:00 พอดี → seconds ("น้อยกว่าหรือเท่ากับ 5 นาที")
-  assertEqual(systemClockMode(5 * MINUTE), 'seconds');
-  assertEqual(systemClockMode(4 * MINUTE), 'seconds');
-  // เกิน 1 ชม. / ปิดแล้ว / ค่าไม่รู้เรื่อง → hidden (ห้ามแสดงนาฬิกา)
-  assertEqual(systemClockMode(60 * MINUTE + 1), 'hidden');
-  assertEqual(systemClockMode(5 * 60 * MINUTE), 'hidden');
-  assertEqual(systemClockMode(0), 'hidden');
-  assertEqual(systemClockMode(-1), 'hidden');
-  assertEqual(systemClockMode(NaN), 'hidden');
+test('CK4: formatCountdownMmSs — "04:52" (MM:SS ของ 5 นาทีสุดท้ายบน banner)', () => {
+  assertEqual(formatCountdownMmSs(4 * MINUTE + 52 * 1000), '04:52');
+  // เติมศูนย์หน้าครบทั้งสองหลัก
+  assertEqual(formatCountdownMmSs(59 * 1000), '00:59');
+  assertEqual(formatCountdownMmSs(999), '00:00'); // < 1 วิ → floor
+  assertEqual(formatCountdownMmSs(1000), '00:01'); // 1 วิพอดี
+  assertEqual(formatCountdownMmSs(5 * MINUTE), '05:00'); // ขอบบนของโซน final
+  assertEqual(formatCountdownMmSs(45 * MINUTE), '45:00'); // ใช้นอกโซนก็ยังถูก
+  assertEqual(formatCountdownMmSs(0), '00:00');
+  assertEqual(formatCountdownMmSs(-1), '00:00');
+  assertEqual(formatCountdownMmSs(NaN), '00:00');
 });
 
 test('CK5: deadlineBannerState — boundary 60/59/15/5/0 นาที', () => {

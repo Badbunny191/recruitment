@@ -1,18 +1,16 @@
 // @ts-nocheck — tsx run-time; keep simple, no project type plumbing
 /**
- * Public home page — "เวลาระบบ" ใต้ countdown (component-level)
+ * Public home page — regression: ห้ามแสดง "เวลาระบบ" ทุกช่วงเวลา
  * =====================================================================
- * รัน component จริง (app/(public)/page.tsx) บน happy-dom พิสูจน์ว่า:
+ * Decision 2026-11-11: ผู้สมัครสนใจ "เหลือเวลาอีกเท่าไร" มากกว่า
+ * "ตอนนี้กี่โมง" — เวลาระบบถูกถอนออกจากหน้าแรกทั้งหมด (คงเหลือเฉพาะ
+ * countdown เดิม) test นี้พิสูจน์ว่า:
  *
- *   C1: เหลือ ~45 นาที + มี serverTime → แสดง "เวลาระบบ HH:MM น." (ไม่มีวินาที)
- *       และ countdown เดิมยังแสดง (regression)
- *   C2: เหลือ ~3 นาที → "เวลาระบบ HH:MM:SS น." (ระดับวินาที)
- *   C3: เหลือ ~5 ชั่วโมง → ไม่แสดงนาฬิกา (แสดงผลเหมือนเดิม)
- *   C4: รอบปิดแล้ว → ไม่มีนาฬิกา
- *   C5: payload ไม่มี serverTime (fallback) → ไม่แสดงนาฬิกา แม้เหลือ <1 ชม.
- *       (กันแสดงเวลาเครื่องผู้ใช้แล้วติดป้าย "เวลาระบบ")
+ *   N1: เหลือ > 1 ชั่วโมง  → ไม่มี "เวลาระบบ" + countdown เดิมครบ
+ *   N2: เหลือ < 1 ชั่วโมง  → ไม่มี "เวลาระบบ" + countdown เดิมครบ
+ *   N3: เหลือ < 5 นาที     → ไม่มี "เวลาระบบ" (วินาทีอยู่ใน countdown เดิม)
  *
- * Run: npx tsx --tsconfig tsconfig.test.json src/app/__tests__/public-home-system-clock.test.tsx
+ * Run: npx tsx --tsconfig tsconfig.test.json src/app/__tests__/public-home-no-system-clock.test.tsx
  */
 
 // ---------- happy-dom environment — ต้องตั้งก่อน import React ----------
@@ -90,12 +88,8 @@ const MINUTE = 60 * 1000;
 
 // ---------- fetch stub ----------
 function installFetch(handler: (url: string, callIndex: number) => any) {
-  const calls: string[] = [];
   globalAny.fetch = async (url: string) => {
-    const u = String(url);
-    calls.push(u);
-    const handled = await handler(u, calls.length - 1);
-    if (handled === 'PENDING') return new Promise(() => {});
+    const handled = await handler(String(url), 0);
     const { status, body } = handled;
     return {
       ok: status >= 200 && status < 300,
@@ -104,7 +98,6 @@ function installFetch(handler: (url: string, callIndex: number) => any) {
       clone() { return this; },
     };
   };
-  return calls;
 }
 
 // ---------- round fixtures ----------
@@ -121,18 +114,16 @@ function roundFixture(id: string, openMs: number, closeMs: number) {
   };
 }
 
-/** body ของ GET /public/rounds/active — serverTime ใส่/ไม่ใส่ได้ (ทดสอบ fallback) */
-function payloadBody(groups: { open?: any[]; upcoming?: any[]; closed?: any[] }, withServerTime = true) {
-  const body: any = {
+function payloadBody(groups: { open?: any[]; upcoming?: any[]; closed?: any[] }) {
+  return {
     data: groups.open ?? [],
     groups: {
       open: groups.open ?? [],
       upcoming: groups.upcoming ?? [],
       closed: groups.closed ?? [],
     },
+    serverTime: Date.now(),
   };
-  if (withServerTime) body.serverTime = Date.now();
-  return body;
 }
 
 // ---------- render helper ----------
@@ -163,65 +154,47 @@ async function renderHome() {
 
 void (async () => {
 
-await test('C1: เหลือ ~45 นาที + serverTime → เวลาระบบ HH:MM (ไม่มีวินาที) + countdown เดิมยังอยู่', async () => {
-  const closeMs = Date.now() + 45 * MINUTE;
-  installFetch(() => ({ status: 200, body: payloadBody({ open: [roundFixture('r45', Date.now() - 60 * MINUTE, closeMs)] }) }));
+await test('N1: เหลือ ~5 ชั่วโมง → ไม่มี "เวลาระบบ" + countdown เดิมครบ', async () => {
+  installFetch(() => ({
+    status: 200,
+    body: payloadBody({ open: [roundFixture('r5h', Date.now() - 60 * MINUTE, Date.now() + 5 * 60 * MINUTE)] }),
+  }));
   const view = await renderHome();
   try {
     const t = view.text();
-    assert(/เวลาระบบ \d{2}:\d{2}\u00A0น\./.test(t), `expected "เวลาระบบ HH:MM น." in: ${t.slice(0, 400)}`);
-    assertFalse(/\d{2}:\d{2}:\d{2}\u00A0น\./.test(t), 'HH:MM window must NOT show seconds');
-    assert(t.includes('เหลือเวลาสมัครอีก'), 'countdown must still render (regression)');
-  } finally {
-    await view.unmount();
-  }
-});
-
-await test('C2: เหลือ ~3 นาที → เวลาระบบ HH:MM:SS (ระดับวินาที)', async () => {
-  const closeMs = Date.now() + 3 * MINUTE;
-  installFetch(() => ({ status: 200, body: payloadBody({ open: [roundFixture('r3', Date.now() - 60 * MINUTE, closeMs)] }) }));
-  const view = await renderHome();
-  try {
-    const t = view.text();
-    assert(/เวลาระบบ \d{2}:\d{2}:\d{2}\u00A0น\./.test(t), `expected seconds clock in: ${t.slice(0, 400)}`);
-  } finally {
-    await view.unmount();
-  }
-});
-
-await test('C3: เหลือ ~5 ชั่วโมง → ไม่แสดงนาฬิกา (แสดงผลเหมือนเดิม)', async () => {
-  const closeMs = Date.now() + 5 * 60 * MINUTE;
-  installFetch(() => ({ status: 200, body: payloadBody({ open: [roundFixture('r5h', Date.now() - 60 * MINUTE, closeMs)] }) }));
-  const view = await renderHome();
-  try {
-    const t = view.text();
-    assertFalse(/เวลาระบบ \d/.test(t), `clock must be hidden: ${t.slice(0, 400)}`);
+    assertFalse(/เวลาระบบ \d/.test(t), 'clock must NOT appear (remaining > 1 hr)');
     assert(t.includes('เหลือเวลาสมัครอีก'), 'countdown must still render');
   } finally {
     await view.unmount();
   }
 });
 
-await test('C4: รอบปิดแล้ว → ไม่มีนาฬิกา', async () => {
-  const closeMs = Date.now() - 2 * 24 * 60 * MINUTE;
-  installFetch(() => ({ status: 200, body: payloadBody({ closed: [roundFixture('rclosed', Date.now() - 9 * 24 * 60 * MINUTE, closeMs)] }) }));
+await test('N2: เหลือ ~45 นาที → ไม่มี "เวลาระบบ" + countdown เดิมครบ', async () => {
+  installFetch(() => ({
+    status: 200,
+    body: payloadBody({ open: [roundFixture('r45', Date.now() - 60 * MINUTE, Date.now() + 45 * MINUTE)] }),
+  }));
   const view = await renderHome();
   try {
     const t = view.text();
-    assertFalse(/เวลาระบบ \d/.test(t), 'closed round must NOT show clock');
+    assertFalse(/เวลาระบบ \d/.test(t), 'clock must NOT appear (remaining < 1 hr)');
+    assertFalse(/\d{2}:\d{2}:\d{2}\u00A0น\./.test(t), 'no HH:MM:SS clock anywhere on home');
+    assert(t.includes('เหลือเวลาสมัครอีก'), 'countdown must still render');
   } finally {
     await view.unmount();
   }
 });
 
-await test('C5: payload ไม่มี serverTime (fallback) → ไม่แสดงนาฬิกา แม้เหลือ <1 ชม.', async () => {
-  const closeMs = Date.now() + 45 * MINUTE;
-  installFetch(() => ({ status: 200, body: payloadBody({ open: [roundFixture('rnof', Date.now() - 60 * MINUTE, closeMs)] }, false) }));
+await test('N3: เหลือ ~3 นาที → ไม่มี "เวลาระบบ" (วินาทีอยู่ใน countdown เดิม)', async () => {
+  installFetch(() => ({
+    status: 200,
+    body: payloadBody({ open: [roundFixture('r3', Date.now() - 60 * MINUTE, Date.now() + 3 * MINUTE)] }),
+  }));
   const view = await renderHome();
   try {
     const t = view.text();
-    assertFalse(/เวลาระบบ \d/.test(t), 'fallback (no serverTime) must NOT show clock');
-    assert(t.includes('เหลือเวลาสมัครอีก'), 'countdown must still render');
+    assertFalse(/เวลาระบบ \d/.test(t), 'clock must NOT appear (remaining < 5 min)');
+    assert(/เหลือเวลาสมัครอีก/.test(t) && /\d+ วินาที/.test(t), 'seconds countdown must still render');
   } finally {
     await view.unmount();
   }

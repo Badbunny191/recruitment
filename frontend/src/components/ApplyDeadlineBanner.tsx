@@ -2,24 +2,28 @@ import { ClockIcon } from './ui/icons';
 import {
   CLOSED_COUNTDOWN_TEXT,
   formatCountdown,
-  formatThaiClock,
+  formatCountdownMmSs,
   formatThaiCloseTime,
   type DeadlineBannerState,
 } from '@/lib/public-rounds';
 
 /**
- * Deadline banner บนหน้าฟอร์มสมัคร — แสดงเฉพาะเมื่อเหลือ <= 1 ชั่วโมง
+ * Deadline banner — "เหลือเวลารับสมัครอีก" (ไม่มีนาฬิการะบบ)
  * =====================================================================
- * ผู้สมัครกรอกฟอร์ม + อัปโหลดเอกสารกินเวลา 10-30+ นาที แต่เดิมฟอร์มที่
- * เปิดอยู่ไม่แสดงข้อมูลเวลาคงเหลือใด ๆ — ผู้ใช้รู้ตัวอีกทีตอน submit
- * โดน 403 ปิดรับสมัคร (gate ฝั่ง server ปิดสนิทอยู่แล้ว หน้าฟอร์มจึงมี
- * หน้าที่เตือนให้ทัน ไม่ใช่ปล่อยให้ gate ตัดสินแทน)
+ * ผู้สมัครสนใจ "เหลือเวลาอีกเท่าไร" มากกว่า "ตอนนี้กี่โมง" (decision
+ * 2026-11-11 หลังทดสอบจริง) — banner จึงแสดงเฉพาะ countdown + เวลาปิด
+ * และ "เวลาระบบ" คงเหลือเฉพาะ error evidence block เป็นหลักฐาน
+ *
+ * แสดง 2 ที่:
+ *   - หน้า /apply (context="apply")      ด้านบนฟอร์ม
+ *   - หน้า /apply/review (context="review") เหนือปุ่ม "ยืนยันส่งใบสมัคร"
+ *     (จุดสำคัญที่สุด — ผู้ใช้กำลังจะกดส่ง ต้องรู้ก่อนว่าเวลาเหลือเท่าไร)
  *
  * สถานะ (deadlineBannerState):
  *   info    → 15 นาที < เหลือ <= 1 ชม.   โทนสงบ (amber) บอกเวลาปิด
- *   warning → 5 นาที < เหลือ <= 15 นาที  เร่งเตือน (orange)
- *   final   → 0 < เหลือ <= 5 นาที        countdown วินาที + เวลาระบบวินาที
- *   closed  → เหลือ <= 0                   "ปิดรับสมัครแล้ว" — ไม่มีนาฬิกา
+ *   warning → 5 นาที < เหลือ <= 15 นาที  เร่งเตือน (orange) ข้อความต่างกันตามหน้า
+ *   final   → 0 < เหลือ <= 5 นาที        ตัวเลข MM:SS ใหญ่ (review ใหญ่กว่า)
+ *   closed  → เหลือ <= 0                   "ปิดรับสมัครแล้ว"
  *   hidden  → ผู้เรียกไม่ควร render component นี้เลย (กันลืม: คืน null)
  *
  * เวลาทั้งหมดอิง server time (ผู้เรียกส่ง nowMs = นาฬิกาเครื่อง + offset
@@ -31,12 +35,15 @@ export function ApplyDeadlineBanner({
   remainingMs,
   closeMs,
   nowMs,
+  context = 'apply',
 }: {
   state: DeadlineBannerState;
   remainingMs: number | null;
   closeMs: number | null;
   /** เวลา server ปัจจุบัน (นาฬิกาเครื่อง + offset) — ใช้เทียบ "วันเดียวกัน" */
   nowMs: number;
+  /** apply = หน้าฟอร์ม, review = หน้าตรวจสอบก่อนส่ง (สลับข้อความ/ขนาด) */
+  context?: 'apply' | 'review';
 }) {
   if (state === 'hidden') return null;
 
@@ -58,6 +65,9 @@ export function ApplyDeadlineBanner({
   }
 
   if (state === 'final') {
+    // ตัวเลข MM:SS — สัญลักษณ์นาฬิกาถอยหลังอ่านเร็วกว่าข้อความในช่วงเร่งด่วน
+    // review = จุดตัดสินใจสุดท้ายก่อนกดส่ง → ใหญ่กว่าสถานะอื่นชัดเจน
+    const numberClass = context === 'review' ? 'text-3xl' : 'text-2xl';
     return (
       <div
         role="alert"
@@ -67,12 +77,8 @@ export function ApplyDeadlineBanner({
           <span aria-hidden="true">⚠️</span>
           เหลือเวลารับสมัครอีก
         </p>
-        <p className="mt-1 text-2xl font-bold leading-tight tabular-nums">
-          {remainingMs !== null ? formatCountdown(remainingMs) : '—'}
-        </p>
-        <p className="mt-1.5 flex items-center gap-1 text-xs font-medium tabular-nums">
-          <ClockIcon className="h-3 w-3 shrink-0" aria-hidden="true" />
-          <span>เวลาระบบ {formatThaiClock(nowMs, { seconds: true })}</span>
+        <p className={`mt-1 font-bold leading-none tabular-nums ${numberClass}`}>
+          {remainingMs !== null ? formatCountdownMmSs(remainingMs) : '00:00'}
         </p>
       </div>
     );
@@ -88,9 +94,15 @@ export function ApplyDeadlineBanner({
           <span aria-hidden="true">⚠️</span>
           เหลือเวลารับสมัครอีก {remainingMs !== null ? formatCountdown(remainingMs) : '—'}
         </p>
-        <p className="mt-0.5 text-orange-800">
-          กรุณาตรวจสอบข้อมูลและส่งใบสมัคร ก่อน{closeMs !== null ? formatThaiCloseTime(closeMs, nowMs) : '—'}
-        </p>
+        {context === 'review' ? (
+          <p className="mt-0.5 text-orange-800">
+            กรุณาตรวจสอบข้อมูลให้เรียบร้อย ก่อนกดยืนยันส่งใบสมัคร
+          </p>
+        ) : (
+          <p className="mt-0.5 text-orange-800">
+            กรุณาตรวจสอบข้อมูลให้ครบถ้วน ก่อน{closeMs !== null ? formatThaiCloseTime(closeMs, nowMs) : '—'}
+          </p>
+        )}
       </div>
     );
   }
@@ -106,7 +118,7 @@ export function ApplyDeadlineBanner({
         เหลือเวลารับสมัครอีก {remainingMs !== null ? formatCountdown(remainingMs) : '—'}
       </p>
       <p className="mt-0.5 text-amber-800">
-        ระบบจะปิดรับสมัครอัตโนมัติ {closeMs !== null ? formatThaiCloseTime(closeMs, nowMs) : '—'} ตามเวลาระบบ
+        ระบบจะปิดรับสมัครอัตโนมัติ {closeMs !== null ? formatThaiCloseTime(closeMs, nowMs) : '—'}
       </p>
     </div>
   );

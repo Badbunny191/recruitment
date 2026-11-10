@@ -2,18 +2,21 @@
 /**
  * ApplyDeadlineBanner + DeadlineServerTimeEvidence (component-level)
  * ===================================================================
- * Banner บนหน้าฟอร์มสมัครแสดงเฉพาะเมื่อเหลือ <= 1 ชม. และ error state
- * แสดงหลักฐานเวลาเมื่อถูกปฏิเสธเพราะปิดรับสมัคร — ทดสอบ markup จริง:
+ * Banner "เหลือเวลารับสมัครอีก" (ไม่มีนาฬิการะบบ — decision 2026-11-11)
+ * แสดง 2 ที่: หน้าฟอร์ม (context=apply) และหน้า review เหนือปุ่มยืนยัน
+ * (context=review) — ทดสอบ markup จริง:
  *
- *   B1. info (48 นาที)     → ข้อความ + เวลาปิด + โทนสงบ (amber, role=status)
- *   B2. warning (14 นาที)  → ข้อความเร่ง + "ก่อนเวลา" + role=alert
- *   B3. final (4:52)       → countdown วินาที + "เวลาระบบ" ระดับวินาที
- *   B4. closed             → "ปิดรับสมัครแล้ว" และห้ามมีนาฬิกา
- *   B5. hidden             → null (ไม่ render อะไรเลย)
- *   E1. evidence ครบ       → กำหนดปิด + เวลาของระบบขณะได้รับคำขอ + นโยบาย
- *   E2. evidence ไม่มี serverTime → ซ่อนบรรทัดนาฬิกา แต่ยังมีกำหนดปิด+นโยบาย
+ *   B1. info apply (48 นาที)     → ข้อความ + เวลาปิด + โทนสงบ (role=status)
+ *   B2. warning apply (14 นาที)  → "ตรวจสอบข้อมูลให้ครบถ้วน ก่อนเวลา …"
+ *   B3. final apply (4:52)       → ตัวเลข "04:52" ใหญ่ + ห้ามมีนาฬิการะบบ
+ *   B4. closed                   → "ปิดรับสมัครแล้ว" ไม่มีตัวเลข/นาฬิกา
+ *   B5. hidden                   → null
+ *   B6. warning review (14 นาที) → "ตรวจสอบข้อมูลให้เรียบร้อย ก่อนกดยืนยันส่งใบสมัคร"
+ *   B7. final review (4:52)      → "04:52" ตัวเลขใหญ่กว่า apply (text-3xl)
+ *   B8. info review (48 นาที)    → ข้อความเดียวกับ apply
+ *   E1-E3. evidence block (คงเดิม — จุดเดียวที่แสดง "เวลาระบบ")
  *
- * Run: node --import tsx src/lib/__tests__/apply-deadline-banner.test.tsx
+ * Run: npx tsx --tsconfig tsconfig.test.json src/lib/__tests__/apply-deadline-banner.test.tsx
  */
 
 // @ts-nocheck
@@ -49,105 +52,105 @@ function assertFalse(cond: any, msg = '') {
   if (cond) throw new Error(msg || 'expected false');
 }
 
-function markup(element: React.ReactElement): string {
-  return renderToStaticMarkup(element);
-}
-
-// ========== FIXTURES ==========
-
-const BKK = 7 * 60 * 60 * 1000;
-const MINUTE = 60 * 1000;
-// ปิด 16:30 น. (เวลาไทย) วันที่ 10 พ.ย. 2026
-const CLOSE_1630 = Date.UTC(2026, 10, 10, 9, 30); // 16:30 ICT = 09:30 UTC
-// เวลา server ณ render — 15:42:07 น.
-const NOW_1542 = Date.UTC(2026, 10, 10, 8, 42, 7); // 15:42:07 ICT = 08:42:07 UTC
-
-// =============================================================================
-
-void (async () => {
-
-await test('B1: info (48 นาที) — ข้อความสงบ + เวลาปิด + ไม่มีนาฬิกาวินาที', () => {
-  const html = markup(
-    React.createElement(ApplyDeadlineBanner, {
-      state: 'info',
-      remainingMs: 48 * MINUTE,
-      closeMs: CLOSE_1630,
-      nowMs: NOW_1542,
-    }),
-  );
-  assert(html.includes('เหลือเวลารับสมัครอีก 48 นาที'), `missing countdown: ${html}`);
-  assert(html.includes('ระบบจะปิดรับสมัครอัตโนมัติ'), 'missing auto-close line');
-  assert(html.includes('16:30\u00A0น.'), 'missing close time');
-  assert(html.includes('ตามเวลาระบบ'), 'missing "ตามเวลาระบบ"');
-  assert(html.includes('amber-50'), 'info tone must be calm amber');
-  assert(html.includes('role="status"'), 'info is not an alert');
-  assertFalse(/เวลาระบบ \d/.test(html), 'info state must NOT show live clock');
-});
-
-await test('B2: warning (14 นาที) — เร่งเตือน + "ก่อนเวลา" + role=alert', () => {
-  const html = markup(
-    React.createElement(ApplyDeadlineBanner, {
-      state: 'warning',
-      remainingMs: 14 * MINUTE,
-      closeMs: CLOSE_1630,
-      nowMs: NOW_1542,
-    }),
-  );
-  assert(html.includes('เหลือเวลารับสมัครอีก 14 นาที'), `missing countdown: ${html}`);
-  assert(html.includes('กรุณาตรวจสอบข้อมูลและส่งใบสมัคร'), 'missing action line');
-  assert(html.includes('ก่อนเวลา 16:30\u00A0น.'), 'missing "ก่อนเวลา" + close time');
-  assert(html.includes('orange-50'), 'warning tone must be orange');
-  assert(html.includes('role="alert"'), 'warning must be an alert');
-  assertFalse(/เวลาระบบ \d/.test(html), 'warning state must NOT show live clock');
-});
-
-await test('B3: final (4 นาที 52 วินาที) — countdown วินาที + เวลาระบบวินาที', () => {
-  const html = markup(
-    React.createElement(ApplyDeadlineBanner, {
-      state: 'final',
-      remainingMs: 4 * MINUTE + 52 * 1000,
-      closeMs: CLOSE_1630,
-      nowMs: NOW_1542,
-    }),
-  );
-  assert(html.includes('เหลือเวลารับสมัครอีก'), 'missing label');
-  assert(html.includes('4 นาที 52 วินาที'), `missing seconds countdown: ${html}`);
-  assert(html.includes('เวลาระบบ 15:42:07\u00A0น.'), 'missing system clock with seconds');
-});
-
-await test('B4: closed — "ปิดรับสมัครแล้ว" และห้ามมีนาฬิกา/ตัวเลข countdown', () => {
-  const html = markup(
-    React.createElement(ApplyDeadlineBanner, {
-      state: 'closed',
-      remainingMs: -1000,
-      closeMs: CLOSE_1630,
-      nowMs: NOW_1542,
-    }),
-  );
-  assert(html.includes('ปิดรับสมัครแล้ว'), `missing closed text: ${html}`);
-  assertFalse(/เวลาระบบ \d/.test(html), 'closed must NOT show clock');
-  assertFalse(/\d+ วินาที/.test(html), 'closed must NOT show countdown');
-});
-
-await test('B5: hidden — ไม่ render อะไรเลย', () => {
-  const html = markup(
-    React.createElement(ApplyDeadlineBanner, {
-      state: 'hidden',
-      remainingMs: 5 * 60 * MINUTE,
-      closeMs: CLOSE_1630,
-      nowMs: NOW_1542,
-    }),
-  );
-  assertEqual(html, '', 'hidden must render nothing');
-});
-
 function assertEqual(actual: any, expected: any, msg = '') {
   if (actual !== expected) {
     throw new Error(`${msg} expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
   }
 }
 
-await test('E1: evidence ครบ — กำหนดปิด + เวลาของระบบขณะได้รับคำขอ + นโยบาย', () => {
+function markup(element: React.ReactElement): string {
+  return renderToStaticMarkup(element);
+}
+
+// ========== FIXTURES ==========
+
+const MINUTE = 60 * 1000;
+// ปิด 16:30 น. (เวลาไทย) วันที่ 10 พ.ย. 2026
+const CLOSE_1630 = Date.UTC(2026, 10, 10, 9, 30); // 16:30 ICT = 09:30 UTC
+// เวลา server ณ render — 15:42:07 น.
+const NOW_1542 = Date.UTC(2026, 10, 10, 8, 42, 7); // 15:42:07 ICT = 08:42:07 UTC
+
+const banner = (props: any) =>
+  markup(React.createElement(ApplyDeadlineBanner, {
+    remainingMs: null,
+    closeMs: CLOSE_1630,
+    nowMs: NOW_1542,
+    ...props,
+  }));
+
+// =============================================================================
+
+void (async () => {
+
+await test('B1: info apply (48 นาที) — ข้อความสงบ + เวลาปิด + ไม่มีนาฬิกา', () => {
+  const html = banner({ state: 'info', remainingMs: 48 * MINUTE });
+  assert(html.includes('เหลือเวลารับสมัครอีก 48 นาที'), `missing countdown: ${html}`);
+  assert(html.includes('ระบบจะปิดรับสมัครอัตโนมัติ'), 'missing auto-close line');
+  assert(html.includes('16:30\u00A0น.'), 'missing close time');
+  assert(html.includes('amber-50'), 'info tone must be calm amber');
+  assert(html.includes('role="status"'), 'info is not an alert');
+  assertFalse(/เวลาระบบ \d/.test(html), 'banner must NOT show system clock');
+});
+
+await test('B2: warning apply (14 นาที) — "ตรวจสอบข้อมูลให้ครบถ้วน ก่อนเวลา …"', () => {
+  const html = banner({ state: 'warning', remainingMs: 14 * MINUTE });
+  assert(html.includes('เหลือเวลารับสมัครอีก 14 นาที'), `missing countdown: ${html}`);
+  assert(html.includes('กรุณาตรวจสอบข้อมูลให้ครบถ้วน'), 'missing action line');
+  assert(html.includes('ก่อนเวลา 16:30\u00A0น.'), 'missing "ก่อนเวลา" + close time');
+  assert(html.includes('orange-50'), 'warning tone must be orange');
+  assert(html.includes('role="alert"'), 'warning must be an alert');
+  assertFalse(/เวลาระบบ \d/.test(html), 'banner must NOT show system clock');
+});
+
+await test('B3: final apply (4:52) — ตัวเลข "04:52" ใหญ่ + ห้ามมีนาฬิกา', () => {
+  const html = banner({ state: 'final', remainingMs: 4 * MINUTE + 52 * 1000 });
+  assert(html.includes('เหลือเวลารับสมัครอีก'), 'missing label');
+  assert(html.includes('04:52'), `missing MM:SS countdown: ${html}`);
+  assertFalse(/นาที 52 วินาที/.test(html), 'final uses MM:SS, not spelled-out text');
+  assertFalse(/เวลาระบบ \d/.test(html), 'final must NOT show system clock');
+  assert(html.includes('text-2xl'), 'final number must be large (text-2xl)');
+});
+
+await test('B4: closed — "ปิดรับสมัครแล้ว" และห้ามมีนาฬิกา/ตัวเลข countdown', () => {
+  const html = banner({ state: 'closed', remainingMs: -1000 });
+  assert(html.includes('ปิดรับสมัครแล้ว'), `missing closed text: ${html}`);
+  assertFalse(/เวลาระบบ \d/.test(html), 'closed must NOT show clock');
+  assertFalse(/\d+ วินาที/.test(html), 'closed must NOT show countdown');
+  assertFalse(/\d{2}:\d{2}/.test(html), 'closed must NOT show MM:SS');
+});
+
+await test('B5: hidden — ไม่ render อะไรเลย', () => {
+  const html = banner({ state: 'hidden', remainingMs: 5 * 60 * MINUTE });
+  assertEqual(html, '', 'hidden must render nothing');
+});
+
+await test('B6: warning review (14 นาที) — "ตรวจสอบข้อมูลให้เรียบร้อย ก่อนกดยืนยันส่งใบสมัคร"', () => {
+  const html = banner({ state: 'warning', remainingMs: 14 * MINUTE, context: 'review' });
+  assert(html.includes('เหลือเวลารับสมัครอีก 14 นาที'), `missing countdown: ${html}`);
+  assert(html.includes('กรุณาตรวจสอบข้อมูลให้เรียบร้อย'), 'missing review action line');
+  assert(html.includes('ก่อนกดยืนยันส่งใบสมัคร'), 'missing "ก่อนกดยืนยันส่งใบสมัคร"');
+  assertFalse(/ก่อนเวลา/.test(html), 'review warning must NOT mention close time');
+  assert(html.includes('orange-50'), 'warning tone must be orange');
+  assertFalse(/เวลาระบบ \d/.test(html), 'banner must NOT show system clock');
+});
+
+await test('B7: final review (4:52) — "04:52" ใหญ่กว่าสถานะอื่น (text-3xl)', () => {
+  const html = banner({ state: 'final', remainingMs: 4 * MINUTE + 52 * 1000, context: 'review' });
+  assert(html.includes('เหลือเวลารับสมัครอีก'), 'missing label');
+  assert(html.includes('04:52'), `missing MM:SS countdown: ${html}`);
+  assert(html.includes('text-3xl'), 'review final number must be larger (text-3xl)');
+  assertFalse(/เวลาระบบ \d/.test(html), 'final must NOT show system clock');
+});
+
+await test('B8: info review (48 นาที) — ข้อความเดียวกับ apply', () => {
+  const html = banner({ state: 'info', remainingMs: 48 * MINUTE, context: 'review' });
+  assert(html.includes('เหลือเวลารับสมัครอีก 48 นาที'), 'missing countdown');
+  assert(html.includes('ระบบจะปิดรับสมัครอัตโนมัติ'), 'missing auto-close line');
+  assert(html.includes('16:30\u00A0น.'), 'missing close time');
+  assertFalse(/เวลาระบบ \d/.test(html), 'banner must NOT show system clock');
+});
+
+await test('E1: evidence ครบ — กำหนดปิด + เวลาของระบบขณะได้รับคำขอ + นโยบาย (คงเดิม)', () => {
   const html = markup(
     React.createElement(DeadlineServerTimeEvidence, {
       closeValue: CLOSE_1630,

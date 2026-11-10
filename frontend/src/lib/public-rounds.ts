@@ -165,49 +165,32 @@ export const formatCountdown = (ms: number): string => {
 };
 
 // =============================================================
-//  System Clock — "เวลาระบบ" ใต้ countdown / บน banner หน้าฟอร์ม
+//  Deadline Banner — "เหลือเวลารับสมัครอีก" บนหน้าฟอร์ม/review
+//  (เวลาระบบถูกถอนออกจาก UI ทุกหน้าตาม decision 2026-11-11 —
+//   ผู้สมัครสนใจ "เหลือเวลาอีกเท่าไร" มากกว่า "ตอนนี้กี่โมง"
+//   เวลาระบบคงเหลือเฉพาะ error evidence block เป็นหลักฐาน)
 // =============================================================
 
 /**
- * หน้าต่างแสดง "เวลาระบบ" = เหลือ <= 1 ชั่วโมง
- *
- * เหตุผลที่ไม่ใช่ 5 นาที: ผู้สมัครเริ่มตัดสินใจด้วยเวลาจริงตั้งแต่ ~30-60
- * นาทีก่อนปิด และ formatCountdown เองก็เปลี่ยนไปแสดงระดับนาทีเมื่อเหลือ
- * <1 ชม. อยู่แล้ว — นาฬิกาจึงเริ่มมีความหมายที่จุดเดียวกัน
+ * หน้าต่างแสดง banner deadline = เหลือ <= 1 ชั่วโมง
+ * (ผู้สมัครเริ่มตัดสินใจด้วยเวลาจริงตั้งแต่ ~30-60 นาทีก่อนปิด
+ *  และ formatCountdown เองก็เปลี่ยนไปแสดงระดับนาทีเมื่อเหลือ
+ *  <1 ชม. อยู่แล้ว — banner จึงเริ่มมีความหมายที่จุดเดียวกัน)
  */
 export const CLOCK_DISPLAY_THRESHOLD_MS = 60 * 60 * 1000;
 
-/** เกณฑ์ warning บน banner หน้าฟอร์ม (ให้เวลาเผื่ออัปโหลดเอกสาร) */
+/** เกณฑ์ warning บน banner (ให้เวลาเผื่อตรวจทาน/อัปโหลดเอกสาร) */
 export const DEADLINE_WARNING_THRESHOLD_MS = 15 * 60 * 1000;
 
-export type SystemClockMode = 'hidden' | 'minutes' | 'seconds';
-
-/**
- * โหมดนาฬิกาที่ควรแสดง ณ เวลาคงเหลือ remainingMs
- *
- *   hidden   → เหลือ > 1 ชม. / ปิดแล้ว / ค่าไม่รู้เรื่อง
- *   minutes  → 5 นาที < เหลือ <= 1 ชม. → "15:42 น." (HH:MM)
- *              tick ยังเดิน 30 วิ — ถ้าแสดงวินาทีจะกระโดดทีละ ~30 วิ
- *              จนดูพัง จึงแสดงแค่ระดับนาที
- *   seconds  → 0 < เหลือ <= 5 นาที → "15:42:17 น."
- *              (ช่วงนี้ nearDeadline เปิด tick 1 วิ อยู่แล้ว วินาทีเดินจริง)
- */
-export const systemClockMode = (remainingMs: number): SystemClockMode => {
-  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return 'hidden';
-  if (remainingMs <= SECONDS_DISPLAY_THRESHOLD_MS) return 'seconds';
-  if (remainingMs <= CLOCK_DISPLAY_THRESHOLD_MS) return 'minutes';
-  return 'hidden';
-};
-
-/** สถานะ banner deadline บนหน้าฟอร์มสมัคร */
+/** สถานะ banner deadline บนหน้าฟอร์มสมัคร / หน้า review */
 export type DeadlineBannerState = 'hidden' | 'info' | 'warning' | 'final' | 'closed';
 
 /**
- *   hidden  → เหลือ > 1 ชม. (หน้าฟอร์มเงียบ ไม่สร้างความเครียด)
+ *   hidden  → เหลือ > 1 ชม. (หน้าเงียบ ไม่สร้างความเครียด)
  *   info    → 15 นาที < เหลือ <= 1 ชม.   "เหลืออีก 48 นาที / ปิดอัตโนมัติ 16:30 น."
- *   warning → 5 นาที < เหลือ <= 15 นาที  "ตรวจสอบข้อมูลและส่งก่อน 16:30 น."
- *   final   → 0 < เหลือ <= 5 นาที       countdown วินาที + เวลาระบบวินาที
- *   closed  → เหลือ <= 0                   "ปิดรับสมัครแล้ว" (ไม่มีนาฬิกา)
+ *   warning → 5 นาที < เหลือ <= 15 นาที  "ตรวจสอบข้อมูลก่อนส่ง"
+ *   final   → 0 < เหลือ <= 5 นาที       ตัวเลข MM:SS ใหญ่
+ *   closed  → เหลือ <= 0                   "ปิดรับสมัครแล้ว"
  */
 export const deadlineBannerState = (remainingMs: number): DeadlineBannerState => {
   if (!Number.isFinite(remainingMs)) return 'hidden';
@@ -219,11 +202,25 @@ export const deadlineBannerState = (remainingMs: number): DeadlineBannerState =>
 };
 
 /**
+ * "04:52" — MM:SS ของ countdown 5 นาทีสุดท้ายบน banner
+ * (สัญลักษณ์นาฬิกาถอยหลังอ่านเร็วกว่า "4 นาที 52 วินาที" ในช่วงเร่งด่วน)
+ * ค่าที่ไม่ใช่ตัวเลข/ติดลบ → "00:00" (ผู้เรียกควรแสดงสถานะ closed แทนอยู่แล้ว)
+ */
+export const formatCountdownMmSs = (ms: number): string => {
+  if (!Number.isFinite(ms) || ms <= 0) return '00:00';
+  const totalSec = Math.floor(ms / 1000);
+  const mm = String(Math.floor(totalSec / 60)).padStart(2, '0');
+  const ss = String(totalSec % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
+};
+
+/**
  * "15:42 น." / "15:42:17 น." — เวลาไทย (UTC+7) ไม่ขึ้นกับ timezone เครื่อง
  *
  * ใช้แนวเดียวกับ formatThaiDateTime: อ่านจาก UTC แล้วบวก BANGKOK_OFFSET_MS
  * (ห้าม toLocaleTimeString — จะตาม timezone ของเครื่องผู้ใช้)
- * NBSP ผูก "น." กันตกบรรทัดเหมือนเดิม
+ * ปัจจุบันเหลือผู้ใช้เดียว: error evidence block ("เวลาของระบบขณะได้รับคำขอ")
+ * — เวลาระบบบน UI ปกติถูกถอนออกแล้ว
  */
 export const formatThaiClock = (
   value: string | number | Date | null | undefined,

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/components/ui/card';
@@ -20,6 +20,16 @@ import {
 import { attachmentDisplayName } from '@/lib/filename';
 import { buildAttachmentViewUrl, buildAttachmentUrlFromPath } from '@/lib/attachment-url';
 import { DeadlineServerTimeEvidence } from '@/components/DeadlineServerTimeEvidence';
+import { ApplyDeadlineBanner } from '@/components/ApplyDeadlineBanner';
+import {
+  CLOCK_DISPLAY_THRESHOLD_MS,
+  deadlineBannerState,
+  deadlinesToMarkHandled,
+  planDeadlineTimer,
+  shouldRefetchOnEvent,
+  toEpochMs,
+  type DeadlineBannerState,
+} from '@/lib/public-rounds';
 
 type FieldType = 'TEXT' | 'TEXTAREA' | 'DROPDOWN' | 'RADIO' | 'FILE' | 'NUMBER' | 'CHECKBOX' | 'DATE' | 'MASTER_DATA';
 
@@ -173,15 +183,36 @@ function ReviewContent() {
   // =========================================================================
   //  Load round identity (title + positionLevel) for the success-page record
   // =========================================================================
-  // Parallel to the schema fetch above but intentionally independent: the
-  // schema powers the review UI, this powers the sessionStorage record the
-  // success page reads. A failure here is fail-soft — the record is still
-  // written with empty roundTitle/positionLevel (the success page hides
-  // those rows), and submission is never blocked by this fetch.
-  useEffect(() => {
-    if (!draft) return;
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
+  //  Parallel to the schema fetch above but intentionally independent: the
+  //  schema powers the review UI, this powers the sessionStorage record the
+  //  success page reads. A failure here is fail-soft — the record is still
+  //  written with empty roundTitle/positionLevel (the success page hides
+  //  those rows), and submission is never blocked by this fetch.
+  //
+  //  ⏰ Deadline banner (เหนือปุ่ม "ยืนยันส่งใบสมัคร") — response เดียวกัน
+  //  ให้ serverTime (ตัวตั้ง offset) + closeDate (เป้า countdown):
+  //  - known=false (ไม่มี serverTime / fetch ล้ม) → ห้ามแสดง banner เด็ดขาด
+  //  - loadDetail เรียกซ้ำได้ (mount / focus / กลับเข้าแท็บ / timer ใกล้ปิด)
+  //    กลไกเดียวกับหน้า /apply กัน offset ค้างเมื่อเปิดหน้าทิ้งไว้นาน
+  // =========================================================================
+  const [serverClock, setServerClock] = useState<{ offsetMs: number; known: boolean }>({
+    offsetMs: 0,
+    known: false,
+  });
+  const [closeEpoch, setCloseEpoch] = useState<number | null>(null);
+  const lastDetailFetchAtRef = useRef<number | null>(null);
+  const detailInFlightRef = useRef(false);
+  const detailAbortRef = useRef<AbortController | null>(null);
+  const handledDeadlinesRef = useRef<number[]>([]);
+
+  const loadDetail = useCallback((opts: { silent?: boolean } = {}) => {
+    if (!draft || detailInFlightRef.current) return;
+    detailInFlightRef.current = true;
+    detailAbortRef.current?.abort();
     const controller = new AbortController();
+    detailAbortRef.current = controller;
+    const requestedAt = Date.now();
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787/api/v1';
     fetch(`${apiUrl}/public/rounds/${draft.roundId}/detail`, { signal: controller.signal })
       .then((res) => res.json())
       .then((res: any) => {
@@ -191,13 +222,99 @@ function ReviewContent() {
             title: String(d.title ?? ''),
             positionLevel: String(d.positionLevel ?? ''),
           });
+          const closeMs = toEpochMs(d.closeDate);
+          setCloseEpoch(closeMs);
+          // จำ deadline ที่เลยไปแล้วว่า "จัดการแล้ว" — กัน timer ยิงซ้ำไม่รู้จบ
+          if (closeMs !== null) {
+            handledDeadlinesRef.current = deadlinesToMarkHandled(requestedAt, [closeMs]);
+          }
         }
+        const known = typeof res?.serverTime === 'number' && Number.isFinite(res.serverTime);
+        setServerClock({ offsetMs: known ? res.serverTime - requestedAt : 0, known });
+        lastDetailFetchAtRef.current = requestedAt;
       })
       .catch(() => {
-        // fail-soft: ข้อมูลเสริมของหน้า success — เงียบไว้ (submit ไม่เกี่ยว)
+        // fail-soft: ข้อมูลเสริมของหน้า success + banner — เงียบไว้ (submit ไม่เกี่ยว)
+        // silent refresh ล้ม → คงข้อมูลเดิมที่แสดงอยู่
+      })
+      .finally(() => {
+        detailInFlightRef.current = false;
       });
-    return () => controller.abort();
   }, [draft]);
+
+  // โหลดครั้งแรกเมื่อ draft พร้อม + abort เมื่อ draft เปลี่ยน / unmount
+  useEffect(() => {
+    if (!draft) return;
+    loadDetail();
+    return () => {
+      detailAbortRef.current?.abort();
+      // เคลียร์ flag ทันทีเพื่อให้ loadDetail ครั้งถัดไปไม่โดน guard บล็อก
+      detailInFlightRef.current = false;
+    };
+  }, [draft, loadDetail]);
+
+  // ── กลับเข้าแท็บ / focus → offset อาจเก่า (แบบเดียวกับหน้าแรก, throttle 15 วิ) ──
+  useEffect(() => {
+    const refreshIfDue = () => {
+      if (shouldRefetchOnEvent(Date.now(), lastDetailFetchAtRef.current)) {
+        loadDetail({ silent: true });
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshIfDue();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', refreshIfDue);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', refreshIfDue);
+    };
+  }, [loadDetail]);
+
+  // ── timer ตื่นที่ deadline (เพดาน 5 นาที) → silent refetch ให้ offset สดเสมอ ──
+  useEffect(() => {
+    if (closeEpoch === null) return;
+    const { delayMs } = planDeadlineTimer(
+      Date.now(),
+      [closeEpoch],
+      handledDeadlinesRef.current,
+    );
+    if (delayMs === null) return;
+    const id = setTimeout(() => loadDetail({ silent: true }), delayMs);
+    return () => clearTimeout(id);
+  }, [closeEpoch, loadDetail, serverClock]);
+
+  // ── เวลาอ้างอิง server สำหรับ banner (นาฬิกาเครื่อง + offset จาก /detail) ──
+  // remainingMs คำนวณ ณ render — re-render จาก tick/refresh เท่านั้น (ไม่มี polling)
+  const [tick, setTick] = useState(0);
+  void tick; // re-render ผ่าน setTick เท่านั้น
+  const remainingMs =
+    closeEpoch !== null && serverClock.known
+      ? closeEpoch - (Date.now() + serverClock.offsetMs)
+      : null;
+  const bannerState: DeadlineBannerState =
+    remainingMs !== null ? deadlineBannerState(remainingMs) : 'hidden';
+
+  // เดินนาฬิกาเฉพาะเมื่อ banner แสดง: 30 วิ (ระดับนาที) / 1 วิ (วินาที 5 นาทีสุดท้าย)
+  // ตอนซ่อน (>1 ชม.) ตั้ง timer ตื่น ณ เหลือ 1 ชม. พอดี — banner โผล่ตรงเวลา
+  // ปิดแล้ว → ข้อความ static ไม่ต้องเดินนาฬิกา
+  useEffect(() => {
+    if (closeEpoch === null || !serverClock.known) return;
+    if (bannerState === 'hidden' || bannerState === 'closed') {
+      if (bannerState !== 'hidden') return;
+      const wakeDelay =
+        closeEpoch - CLOCK_DISPLAY_THRESHOLD_MS + 1_000 - (Date.now() + serverClock.offsetMs);
+      if (wakeDelay <= 0) return; // ไม่ควรเกิด (hidden ⇒ remaining > 1 ชม.) — กัน edge
+      const id = setTimeout(() => setTick((t) => t + 1), wakeDelay);
+      return () => clearTimeout(id);
+    }
+    const interval = bannerState === 'final' ? 1_000 : 30_000;
+    const id = setInterval(() => setTick((t) => t + 1), interval);
+    return () => clearInterval(id);
+  }, [closeEpoch, serverClock, bannerState]);
+
+  // เวลา server ณ render ปัจจุบัน — อิง offset จาก /detail (ไม่ใช่ browser time ลอย ๆ)
+  const deadlineNowMs = Date.now() + serverClock.offsetMs;
 
   // Mobile breakpoint detection — we collapse sections on narrow viewports
   // so the long review page stays navigable on phones.
@@ -766,6 +883,19 @@ function ReviewContent() {
               <DeadlineServerTimeEvidence
                 closeValue={closedEvidence.closeDate ?? null}
                 requestServerTime={closedEvidence.serverTime}
+              />
+            )}
+
+            {/* ⏰ Deadline banner — เหนือปุ่ม "ยืนยันส่งใบสมัคร" (จุดตัดสินใจสุดท้าย)
+                แสดงเฉพาะเหลือ <= 1 ชม. อิง serverTime จาก /detail
+                ไม่มีนาฬิการะบบ — แสดงแค่ countdown + เวลาปิด */}
+            {bannerState !== 'hidden' && closeEpoch !== null && (
+              <ApplyDeadlineBanner
+                state={bannerState}
+                remainingMs={remainingMs}
+                closeMs={closeEpoch}
+                nowMs={deadlineNowMs}
+                context="review"
               />
             )}
           </CardContent>
