@@ -9,7 +9,7 @@ import { authMiddleware, adminOnlyMiddleware } from '../middlewares/auth.middlew
 import { auditMiddleware, setAuditPayload, writeLoginAudit } from '../middlewares/audit.middleware';
 import { writeAudit, writeAuditBatch } from '../services/audit.service';
 import { rateLimitMiddleware } from '../middlewares/rate-limit.middleware';
-import { handleApplicationStatusChange, buildAuditPayload } from '../lib/change-tracking';
+import { handleApplicationStatusChange, buildAuditPayload, buildRoundCreatePayload } from '../lib/change-tracking';
 import { getApplicationPdf } from '../lib/pdf.service';
 import { invalidatePdfCacheForRound, invalidatePdfCacheForFieldMaster } from '../lib/pdf-cache-invalidation';
 import {
@@ -1884,6 +1884,24 @@ adminRoutes.post('/rounds', adminOnlyMiddleware, auditMiddleware('RECRUITMENT_RO
     applicationPattern,
     roundCode,
   });
+
+  // ── Audit trail ของ CREATE (2026-11-10) ─────────────────────────────────
+  // เดิม: path '/rounds' ไม่มี :id → auditMiddleware ตั้ง entityId = 'BULK/NEW'
+  //       และ route ไม่ได้ setAuditPayload → payload = NULL
+  //       ⇒ audit log บอกได้แค่ว่า "มีคนสร้างอะไรบางอย่าง" ไม่มีชื่อรอบ/รหัส/
+  //         ช่วงเวลา → ตอบคำถามย้อนหลังไม่ได้ และ resolve ชื่อ entity ไม่ได้
+  // ตอนนี้: ชี้ entityId ไปที่รอบที่เพิ่งสร้าง + เก็บ snapshot ที่ระบุตัวรอบได้
+  c.set('auditEntityId', id);
+  setAuditPayload(c, buildRoundCreatePayload({
+    id,
+    title: data.title,
+    roundCode,
+    positionLevel: data.positionLevel,
+    openDate: data.openDate,
+    closeDate: data.closeDate,
+    status: data.status,
+  }));
+
   return c.json({ success: true, id }, 201);
 });
 
@@ -2067,8 +2085,11 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
       title: round.title,
       positionLevel: round.positionLevel,
       status: round.status,
-      openDate: round.openDate ? new Date(round.openDate as any).toLocaleDateString('th-TH') : null,
-      closeDate: round.closeDate ? new Date(round.closeDate as any).toLocaleDateString('th-TH') : null,
+      // ⚠️ ส่ง Date ดิบเข้าไป — formatValue จะจัดรูปเป็น "6 พ.ย. 2569 16:29"
+      // (เดิมเรียก toLocaleDateString('th-TH') ที่นี่ → เหลือแค่วันที่ ทำให้
+      //  การเลื่อนปิดรับสมัคร 16:29 → 16:31 วันเดียวกันไม่มี diff ใน audit)
+      openDate: round.openDate,
+      closeDate: round.closeDate,
       // R10 - สะท้อนการเปลี่ยน numbering settings ใน audit (มี diff เมื่อ request ส่งค่ามา)
       ...(data.roundCode !== undefined ? { roundCode: round.roundCode } : {}),
       ...(data.applicationPattern !== undefined ? { applicationPattern: round.applicationPattern } : {}),
@@ -2079,8 +2100,8 @@ adminRoutes.patch('/rounds/:id', adminOnlyMiddleware, auditMiddleware('RECRUITME
       status: data.status,
       // undefined (ไม่ได้ส่ง) ต้องผ่านเข้า computeChanges เป็น undefined ตรง ๆ —
       // coerce เป็น null แล้วจะกลายเป็น false diff "วันเดิม → (ว่าง)" ทุกครั้งที่ PATCH ไม่ส่งวันที่
-      openDate: data.openDate == null ? data.openDate : new Date(data.openDate * 1000).toLocaleDateString('th-TH'),
-      closeDate: data.closeDate == null ? data.closeDate : new Date(data.closeDate * 1000).toLocaleDateString('th-TH'),
+      openDate: data.openDate == null ? data.openDate : new Date(data.openDate * 1000),
+      closeDate: data.closeDate == null ? data.closeDate : new Date(data.closeDate * 1000),
       ...(data.roundCode !== undefined ? { roundCode: normalizedRoundCode ?? data.roundCode } : {}),
       ...(data.applicationPattern !== undefined ? { applicationPattern: data.applicationPattern } : {}),
     },

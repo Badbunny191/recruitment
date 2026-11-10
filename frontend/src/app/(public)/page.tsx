@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import {
@@ -16,8 +16,14 @@ import {
 import {
   parseRoundsResponse,
   computeCountdown,
+  collectDeadlines,
+  planDeadlineTimer,
+  shouldRefetchOnEvent,
+  deadlinesToMarkHandled,
+  effectivePhase,
   formatThaiDateTime,
   PHASE_STYLE,
+  NEAR_DEADLINE_MS,
   type PublicRound,
   type PublicRoundsPayload,
   type RoundPhase,
@@ -34,14 +40,17 @@ import {
 //  → ไม่มีทางมีรอบที่ปิดแล้วอยู่ใน section นี้อีก
 // =================================================================
 
-/** เดินนาฬิกาทุก 30 วิ ให้ countdown ขยับโดยไม่ re-render ถี่เกินไป */
-const useTick = (): number => {
-  const [tick, setTick] = useState(0);
+/** เดินนาฬิกา: ปกติ 30 วิ / ใกล้ปิด (< 5 นาที) 1 วิ เพื่อให้วินาทีขยับจริง */
+const TICK_NORMAL_MS = 30_000;
+const TICK_NEAR_DEADLINE_MS = 1_000;
+
+const useTick = (nearDeadline: boolean): number => {
+  const [, setTick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 30_000);
+    const interval = nearDeadline ? TICK_NEAR_DEADLINE_MS : TICK_NORMAL_MS;
+    const id = setInterval(() => setTick((t) => t + 1), interval);
     return () => clearInterval(id);
-  }, []);
-  void tick;
+  }, [nearDeadline]);
   return Date.now();
 };
 
@@ -83,18 +92,26 @@ function CountdownBlock({
   round: PublicRound;
   nowMs: number;
 }) {
-  const cd = computeCountdown(phase, round, nowMs);
+  // phase ที่ใช้แสดงผล — ลดระดับได้เมื่อเลย deadline ไปแล้วแต่ snapshot ยังเก่า
+  // (กันการ์ดขัดกันเอง: badge "เปิดรับสมัคร" + countdown "ปิดรับสมัครแล้ว")
+  const shownPhase = effectivePhase(phase, round, nowMs);
+  const cd = computeCountdown(shownPhase, round, nowMs);
   if (!cd) return null;
 
-  const tone =
-    phase === 'UPCOMING'
+  // ปิดแล้ว = สถานะ ไม่ใช่การนับถอยหลัง → โทนสีกลาง ไม่เร่งเร้า
+  const isClosed = cd.closed;
+
+  const tone = isClosed
+    ? 'bg-slate-50 border-slate-200 text-slate-700'
+    : phase === 'UPCOMING'
       ? 'bg-amber-50 border-amber-200 text-amber-900'
       : cd.urgent
         ? 'bg-rose-50 border-rose-200 text-rose-900'
         : 'bg-emerald-50 border-emerald-200 text-emerald-900';
 
-  const iconTone =
-    phase === 'UPCOMING'
+  const iconTone = isClosed
+    ? 'text-slate-500'
+    : phase === 'UPCOMING'
       ? 'text-amber-600'
       : cd.urgent
         ? 'text-rose-600'
@@ -103,8 +120,14 @@ function CountdownBlock({
   return (
     <div className={`rounded-lg border px-3.5 py-3 ${tone}`}>
       <div className="flex items-center gap-2">
-        <ClockIcon className={`h-4 w-4 shrink-0 ${iconTone}`} />
-        <span className="text-xs font-medium opacity-80">{cd.label}</span>
+        {isClosed ? (
+          <LockIcon className={`h-4 w-4 shrink-0 ${iconTone}`} />
+        ) : (
+          <ClockIcon className={`h-4 w-4 shrink-0 ${iconTone}`} />
+        )}
+        {!isClosed && (
+          <span className="text-xs font-medium opacity-80">{cd.label}</span>
+        )}
       </div>
       <p className="mt-1 text-lg font-bold leading-tight tabular-nums">
         {cd.text || '—'}
@@ -205,6 +228,9 @@ function OpenRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) 
 // =================================================================
 
 function UpcomingRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number }) {
+  // ถ้าเลย openDate ไปแล้ว (snapshot ยังเก่า) → phase เปลี่ยนเป็น OPEN
+  // badge ต้องไม่บอก "ยังไม่เปิดรับสมัคร" ทั้งที่เปิดแล้ว
+  const shownPhase = effectivePhase('UPCOMING', round, nowMs);
   return (
     // โครงเดียวกับ OpenRoundCard — ชื่อรอบโตด้านบน เนื้อหาหลักยึดขอบล่าง
     <article className="flex flex-col rounded-lg border border-amber-200 bg-white shadow-sm">
@@ -212,7 +238,7 @@ function UpcomingRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number
         <h3 className="text-base font-semibold leading-snug text-slate-800">
           {round.title}
         </h3>
-        <PhaseBadge phase="UPCOMING" />
+        <PhaseBadge phase={shownPhase} />
       </div>
 
       <div className="flex flex-1 flex-col justify-end gap-4 px-5 pt-5">
@@ -239,16 +265,25 @@ function UpcomingRoundCard({ round, nowMs }: { round: PublicRound; nowMs: number
       </div>
 
       <div className="px-5 pb-5 pt-4">
-        <Button
-          size="lg"
-          variant="secondary"
-          className="w-full gap-2"
-          disabled
-          aria-disabled="true"
-        >
-          <LockIcon className="h-4 w-4" />
-          ยังไม่เปิดรับสมัคร
-        </Button>
+        {shownPhase === 'OPEN' ? (
+          <Link href={`/apply?id=${round.id}`} className="block">
+            <Button variant="brand" size="lg" className="w-full gap-2 text-base font-semibold">
+              สมัครเข้ารับการคัดเลือก
+              <ArrowRightIcon className="h-4 w-4" />
+            </Button>
+          </Link>
+        ) : (
+          <Button
+            size="lg"
+            variant="secondary"
+            className="w-full gap-2"
+            disabled
+            aria-disabled="true"
+          >
+            <LockIcon className="h-4 w-4" />
+            ยังไม่เปิดรับสมัคร
+          </Button>
+        )}
       </div>
     </article>
   );
@@ -322,32 +357,119 @@ export default function HomePage() {
   const [payload, setPayload] = useState<PublicRoundsPayload>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
-  const tick = useTick();
 
-  useEffect(() => {
+  // เวลาที่ยิงสำเร็จครั้งล่าสุด (ms) — ใช้ throttle การ refetch
+  const lastFetchAtRef = useRef<number | null>(null);
+  // กัน overlapping request (focus + visibility + timer มาพร้อมกัน)
+  const inFlightRef = useRef(false);
+  // deadline ที่ดึงข้อมูลใหม่ไปแล้วหลังเลยเวลา — กัน timer ยิงซ้ำไม่รู้จบ
+  const handledDeadlinesRef = useRef<number[]>([]);
+
+  /**
+   * โหลดข้อมูลรอบ — เรียกได้หลายครั้ง (mount / focus / กลับเข้าแท็บ / timer)
+   *
+   * `silent` = ไม่แตะ loading/failed: การ refresh เบื้องหลังต้องไม่ทำให้
+   * การ์ดที่แสดงอยู่กระพริบเป็น skeleton หรือทับด้วย error state
+   * (ถ้า refresh ล้ม ผู้ใช้ยังเห็นข้อมูลเดิมซึ่งดีกว่าหน้า error)
+   */
+  const loadRounds = useCallback((opts: { silent?: boolean } = {}) => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     const requestedAt = Date.now();
 
     fetch(`${apiUrl}/public/rounds/active`)
       .then((res) => res.json())
       .then((json) => {
-        setPayload(parseRoundsResponse(json, requestedAt));
+        const parsed = parseRoundsResponse(json, requestedAt);
+        setPayload(parsed);
+        lastFetchAtRef.current = requestedAt;
+        // บันทึก deadline ที่เลยเวลาแล้วว่า "จัดการแล้ว" — กัน timer ยิงซ้ำ
+        // (ถ้าเซิร์ฟเวอร์ยังคืนรอบเดิม การแสดงผลใช้ effectivePhase จัดการแทน)
+        handledDeadlinesRef.current = deadlinesToMarkHandled(
+          requestedAt,
+          collectDeadlines(parsed),
+        );
+        setFailed(false);
         setLoading(false);
       })
       .catch(() => {
-        setFailed(true);
-        setLoading(false);
+        if (!opts.silent) {
+          setFailed(true);
+          setLoading(false);
+        }
+      })
+      .finally(() => {
+        inFlightRef.current = false;
       });
   }, []);
 
+  // ── 1) โหลดครั้งแรก ────────────────────────────────────────────────
+  useEffect(() => {
+    loadRounds();
+  }, [loadRounds]);
+
+  // ── 2) กลับเข้าแท็บ / หน้าต่างได้ focus → ข้อมูลอาจเก่า ─────────────
+  // ไม่ poll: ยิงเฉพาะตอนมีสัญญาณว่าผู้ใช้กำลังดูอยู่จริง
+  // คำถามเดียวที่ต้องตอบ: พ้น throttle หรือยัง (ไม่เกี่ยวกับ deadline)
+  useEffect(() => {
+    const refreshIfDue = () => {
+      if (shouldRefetchOnEvent(Date.now(), lastFetchAtRef.current)) {
+        loadRounds({ silent: true });
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshIfDue();
+    };
+
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', refreshIfDue);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', refreshIfDue);
+    };
+  }, [loadRounds]);
+
+  // ── 3) timer ตื่นที่ deadline ถัดไป ────────────────────────────────
+  // ผู้ใช้ที่จ้องหน้าอยู่จะเห็น badge เปลี่ยนเองตอนรอบปิด/เปิด
+  // โดยไม่ต้อง poll ตลอด (ตั้ง timer ใหม่ทุกครั้งที่ payload เปลี่ยน)
+  // handledDeadlines กันการยิงซ้ำไม่รู้จบเมื่อ backend ยังคืนรอบเดิม
+  useEffect(() => {
+    const { delayMs } = planDeadlineTimer(
+      Date.now(),
+      collectDeadlines(payload),
+      handledDeadlinesRef.current,
+    );
+    if (delayMs === null) return;
+    const id = setTimeout(() => loadRounds({ silent: true }), delayMs);
+    return () => clearTimeout(id);
+  }, [payload, loadRounds]);
+
   // เวลาอ้างอิง = นาฬิกาเครื่อง + offset ของเซิร์ฟเวอร์
   // → countdown ตรงกับเวลาจริงแม้เครื่องผู้ใช้ตั้งเวลาเพี้ยน
+  const serverNowMs = Date.now() + payload.serverOffsetMs;
+
+  // ใกล้ปิด (< 5 นาที) → เดินนาฬิกาทุก 1 วิ เพื่อให้วินาทีขยับจริง
+  const nearDeadline = useMemo(
+    () => collectDeadlines(payload).some((d) => d - serverNowMs <= NEAR_DEADLINE_MS),
+    [payload, serverNowMs],
+  );
+
+  const tick = useTick(nearDeadline);
+
   const nowMs = useMemo(
     () => tick + payload.serverOffsetMs,
     [tick, payload.serverOffsetMs],
   );
 
   const { open, upcoming, closed } = payload;
+
+  // รอบที่เลย closeDate แล้วแต่ยังอยู่ใน groups.open (snapshot ยังไม่ refresh)
+  // → ไม่แสดงในหัวข้อ "กำลังเปิดรับสมัคร" อีก เพราะสมัครไม่ได้จริงแล้ว
+  const openLive = open.filter((r) => effectivePhase('OPEN', r, nowMs) === 'OPEN');
+  const justClosed = open.length - openLive.length;
 
   return (
     <div className="mx-auto max-w-5xl space-y-10 px-4 py-8">
@@ -360,7 +482,7 @@ export default function HomePage() {
         <SectionHeading
           id="open-rounds-heading"
           tone="primary"
-          title={open.length > 0 ? `กำลังเปิดรับสมัคร ${open.length} รอบ` : 'กำลังเปิดรับสมัคร'}
+          title={openLive.length > 0 ? `กำลังเปิดรับสมัคร ${openLive.length} รอบ` : 'กำลังเปิดรับสมัคร'}
           description="เลือกรอบที่ต้องการแล้วสมัครออนไลน์ได้ทันที"
         />
 
@@ -380,18 +502,24 @@ export default function HomePage() {
               กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่อีกครั้ง
             </p>
           </div>
-        ) : open.length === 0 ? (
+        ) : openLive.length === 0 ? (
           <div className="rounded-lg border border-slate-200 bg-white p-10 text-center">
-            <p className="font-medium text-slate-700">ขณะนี้ยังไม่มีรอบที่เปิดรับสมัคร</p>
+            <p className="font-medium text-slate-700">
+              {justClosed > 0
+                ? 'ปิดรับสมัครแล้ว'
+                : 'ขณะนี้ยังไม่มีรอบที่เปิดรับสมัคร'}
+            </p>
             <p className="mt-1 text-sm text-slate-500">
-              {upcoming.length > 0
-                ? 'ดูกำหนดการเปิดรับสมัครรอบถัดไปได้ด้านล่าง'
-                : 'กรุณาติดตามประกาศจากสำนักงานฯ อีกครั้ง'}
+              {justClosed > 0
+                ? 'รอบที่เปิดอยู่เพิ่งปิดรับสมัคร ระบบกำลังอัปเดตรายการ'
+                : upcoming.length > 0
+                  ? 'ดูกำหนดการเปิดรับสมัครรอบถัดไปได้ด้านล่าง'
+                  : 'กรุณาติดตามประกาศจากสำนักงานฯ อีกครั้ง'}
             </p>
           </div>
         ) : (
-          <div className={`grid gap-5 ${open.length > 1 ? 'md:grid-cols-2' : ''}`}>
-            {open.map((round) => (
+          <div className={`grid gap-5 ${openLive.length > 1 ? 'md:grid-cols-2' : ''}`}>
+            {openLive.map((round) => (
               <OpenRoundCard key={round.id} round={round} nowMs={nowMs} />
             ))}
           </div>
