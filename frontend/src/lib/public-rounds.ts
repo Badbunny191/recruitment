@@ -102,29 +102,59 @@ export const formatThaiDateTime = (
 // =============================================================
 
 export interface Countdown {
-  /** "เหลือเวลาสมัครอีก" | "เปิดรับสมัครในอีก" */
+  /** "เหลือเวลาสมัครอีก" | "เปิดรับสมัครในอีก" | "" (ปิดแล้ว) */
   label: string;
-  /** "2 วัน 13 ชั่วโมง" */
+  /** "2 วัน 13 ชั่วโมง" | "4 นาที 52 วินาที" | "ปิดรับสมัครแล้ว" */
   text: string;
   /** true = เร่งด่วน (เหลือ < 24 ชม.) ใช้ปรับสีการ์ด */
   urgent: boolean;
+  /** true = รอบนี้เลยกำหนดปิดแล้ว — แสดงเป็นสถานะ ไม่ใช่การนับถอยหลัง */
+  closed: boolean;
 }
 
+/** ข้อความเมื่อเลยกำหนดปิดแล้ว — ใช้ที่เดียวทั้งระบบ */
+export const CLOSED_COUNTDOWN_TEXT = 'ปิดรับสมัครแล้ว';
+
+/** ช่วงเวลาที่ต้องแสดง "วินาที" (5 นาทีสุดท้าย) */
+const SECONDS_DISPLAY_THRESHOLD_MS = 5 * 60 * 1000;
+
 /**
- * จัดรูปช่วงเวลาเป็นข้อความสั้น — เอา 2 หน่วยใหญ่ที่สุด
- * ค่าที่ <= 0 คืน 'น้อยกว่า 1 นาที' ไม่ใช่ null
- * (เดิมคืน null ทำให้ countdown หายทั้งที่ badge ยังบอกว่าเปิดรับสมัคร)
+ * จัดรูปช่วงเวลาเป็นข้อความสั้น
+ *
+ *   >= 1 วัน        → "2 วัน 13 ชั่วโมง"   (2 หน่วยใหญ่)
+ *   >= 1 ชั่วโมง    → "5 ชั่วโมง 20 นาที"
+ *   >= 5 นาที       → "45 นาที"
+ *   <  5 นาที       → "4 นาที 52 วินาที" / "1 นาที 15 วินาที" / "23 วินาที"
+ *   <= 0            → "ปิดรับสมัครแล้ว"
+ *
+ * ⚠️ ช่วง 5 นาทีสุดท้ายคือช่วงที่ผู้ใช้ตัดสินใจจริง — เดิมยุบทั้ง 59 วินาที
+ *    สุดท้ายเป็น "น้อยกว่า 1 นาที" (และค้างข้อความเดิมต่อแม้เลยกำหนดไปแล้ว)
+ *    ทำให้ช่วงสำคัญที่สุดไม่มีข้อมูลที่มีประโยชน์เลย
+ *
+ * ค่าที่ไม่ใช่ตัวเลข (NaN/Infinity) ถือว่า "ไม่รู้เวลา" → คืน '' ให้ผู้เรียก
+ * แสดง '—' เอง (ไม่โกหกว่าเปิดอยู่หรือปิดแล้ว)
  */
 export const formatCountdown = (ms: number): string => {
-  if (!Number.isFinite(ms) || ms <= 0) return 'น้อยกว่า 1 นาที';
+  if (!Number.isFinite(ms)) return '';
+  if (ms <= 0) return CLOSED_COUNTDOWN_TEXT;
+
   const totalSec = Math.floor(ms / 1000);
   const days = Math.floor(totalSec / 86400);
   const hours = Math.floor((totalSec % 86400) / 3600);
   const minutes = Math.floor((totalSec % 3600) / 60);
+  const seconds = totalSec % 60;
+
   if (days > 0) return `${days} วัน ${hours} ชั่วโมง`;
   if (hours > 0) return `${hours} ชั่วโมง ${minutes} นาที`;
-  if (minutes > 0) return `${minutes} นาที`;
-  return 'น้อยกว่า 1 นาที';
+
+  // 5 นาทีสุดท้าย — ต้องเห็นวินาทีที่ขยับจริง
+  if (ms < SECONDS_DISPLAY_THRESHOLD_MS) {
+    if (minutes > 0) return `${minutes} นาที ${seconds} วินาที`;
+    // กัน edge: totalSec = 0 แต่ ms > 0 (เหลือ < 1 วินาที) → ยังไม่ปิด
+    return seconds > 0 ? `${seconds} วินาที` : '1 วินาที';
+  }
+
+  return `${minutes} นาที`;
 };
 
 /**
@@ -137,6 +167,10 @@ export const formatCountdown = (ms: number): string => {
  * คืน null เฉพาะกรณีที่ **ไม่ควรมี countdown จริง ๆ** เท่านั้น
  * ถ้า phase = OPEN แต่หา closeDate ไม่ได้ → คืน label ไว้โดยไม่มีตัวเลข
  * (ดีกว่าปล่อยให้ badge เปิดรับสมัครแล้วเงียบ)
+ *
+ * ⚠️ phase มาจาก snapshot ที่โหลดไว้ — ระหว่างที่ยังไม่ refetch รอบที่เลย
+ *    closeDate ไปแล้วจะยังเป็น OPEN อยู่ ค่าที่คืนจึงต้องบอกความจริงว่า
+ *    "ปิดรับสมัครแล้ว" (closed = true) ไม่ใช่ค้างที่ "น้อยกว่า 1 นาที"
  */
 export const computeCountdown = (
   phase: RoundPhase,
@@ -152,15 +186,209 @@ export const computeCountdown = (
   const label = phase === 'OPEN' ? 'เหลือเวลาสมัครอีก' : 'เปิดรับสมัครในอีก';
 
   if (target === null) {
-    return { label, text: '', urgent: false };
+    return { label, text: '', urgent: false, closed: false };
   }
 
   const remaining = target - nowMs;
+  const closed = remaining <= 0;
+
   return {
     label,
     text: formatCountdown(remaining),
     urgent: phase === 'OPEN' && remaining > 0 && remaining < 24 * 60 * 60 * 1000,
+    closed,
   };
+};
+
+// =============================================================
+//  ความสดของข้อมูล (staleness)
+// =============================================================
+
+/**
+ * หน้าแรกโหลด /public/rounds/active ครั้งเดียวตอน mount — ถ้าเปิดแท็บทิ้งไว้
+ * badge "เปิดรับสมัคร" / groups.open / countdown จะค้างไม่จำกัดเวลา
+ * แม้รอบจะปิดจริงไปแล้ว (backend จะปฏิเสธตอนกดสมัคร) = UI โกหกผู้ใช้
+ *
+ * ทางเลือกที่พิจารณา
+ * ------------------
+ *   1. polling ทุก N วินาที           → สิ้นเปลือง quota/แบต เต็มที่ตลอดเวลา
+ *                                       แม้ผู้ใช้ไม่ได้ดูหน้า (แท็บ background)
+ *   2. refetch ตอน focus เท่านั้น      → พลาดเคสที่ผู้ใช้ "จ้องอยู่" ตอนรอบปิด
+ *                                       (แท็บ active แต่ไม่มีการโฟกัสใหม่)
+ *   3. near-deadline refresh เท่านั้น  → ต้องรู้ deadline ล่วงหน้า + พลาดเคส
+ *                                       admin เปลี่ยน closeDate ระหว่างเปิดหน้า
+ *   4. visibilitychange + focus +      → ครอบคลุมทั้ง "กลับมาดู" และ "จ้องอยู่"
+ *      near-deadline timer               โดยยิง network เฉพาะเมื่อจำเป็น
+ *
+ * เลือก (4) — สมดุลที่สุด: ไม่มี network เลยเมื่อไม่มีอะไรเปลี่ยน และมี
+ * timer ตัวเดียวที่ทำงานเฉพาะช่วงใกล้ปิด (ใกล้ deadline = ต้องแม่น)
+ */
+
+/** ระยะที่ถือว่า "ใกล้ปิด" — ใช้ปรับความถี่ของ tick (ไม่ใช่ของ network) */
+export const NEAR_DEADLINE_MS = 5 * 60 * 1000;
+
+/** เพดานการรอ timer — กัน timer ยาวเกินไปเมื่อ deadline ไกล */
+export const MAX_REFRESH_DELAY_MS = 5 * 60 * 1000;
+
+/** กันการยิงซ้ำถี่ ๆ (focus + visibilitychange มาพร้อมกัน) */
+export const MIN_REFETCH_INTERVAL_MS = 15 * 1000;
+
+/** ตื่นหลัง deadline เล็กน้อย เพื่อให้ฝั่งเซิร์ฟเวอร์เลยเวลาไปแล้วจริง */
+const DEADLINE_GRACE_MS = 1 * 1000;
+
+export interface RefreshPlan {
+  /** true = ควรยิง fetch เลยตอนนี้ */
+  refetch: boolean;
+  /** ms ที่ควรตั้ง timer ไว้ (null = ไม่ต้องตั้ง) */
+  delayMs: number | null;
+  /** เหตุผล — ใช้ debug/อธิบาย ไม่ใช่ logic */
+  reason: 'first-load' | 'throttled' | 'deadline-passed' | 'next-deadline' | 'idle';
+}
+
+/**
+ * ผู้ใช้กลับมาดูหน้า (focus / visibilitychange) — ควรยิง fetch ไหม
+ *
+ * คำถามนี้มีคำตอบเดียว: **พ้น throttle หรือยัง** ไม่เกี่ยวกับ deadline
+ * (ถ้าเอา deadline มาผสม จะได้บั๊กตรงข้าม: ผู้ใช้กดกลับเข้าแท็บแล้วหน้า
+ *  ไม่ยอมดึงข้อมูลใหม่เพราะ "ยังไม่ถึง deadline")
+ */
+export const shouldRefetchOnEvent = (
+  nowMs: number,
+  lastFetchAt: number | null,
+): boolean => {
+  if (lastFetchAt === null) return true;
+  return nowMs - lastFetchAt >= MIN_REFETCH_INTERVAL_MS;
+};
+
+/**
+ * ควรตั้ง timer ไว้ตื่นเมื่อไร เพื่อให้หน้าที่จ้องอยู่เปลี่ยนสถานะเอง
+ *
+ *   - ไม่มี deadline เลย                          → null (ไม่ต้องตั้ง)
+ *   - มี deadline ในอนาคต                         → ตื่นที่ deadline นั้น
+ *                                                   (ไม่เกินเพดาน)
+ *   - มี deadline ที่เลยไปแล้วแต่ยังไม่เคยจัดการ  → 0 (ยิงเดี๋ยวนี้)
+ *
+ * ⚠️ `handled` = deadline ที่ดึงข้อมูลใหม่ไปแล้วหลังมันเลยเวลา
+ *    จำเป็นมาก: ถ้า backend ยังคืนรอบเดิมใน groups.open (เช่น business rule
+ *    หรือ clock skew) แล้วเราไม่จำว่า "จัดการแล้ว" → timer จะยิงซ้ำ 0ms
+ *    ไม่มีที่สิ้นสุด = ยิง API รัว ๆ ใส่เซิร์ฟเวอร์
+ *    deadline หนึ่งตัว → refetch หนึ่งครั้ง เท่านั้น
+ */
+export const planDeadlineTimer = (
+  nowMs: number,
+  deadlines: number[],
+  handled: readonly number[] = [],
+): { delayMs: number | null; reason: RefreshPlan['reason'] } => {
+  const handledSet = new Set(handled);
+  const valid = deadlines.filter((d) => Number.isFinite(d));
+
+  // deadline ที่เลยไปแล้วและยังไม่เคยจัดการ → ต้องดึงใหม่ทันที
+  if (valid.some((d) => d <= nowMs && !handledSet.has(d))) {
+    return { delayMs: 0, reason: 'deadline-passed' };
+  }
+
+  const future = valid.filter((d) => d > nowMs);
+  if (future.length === 0) {
+    return { delayMs: null, reason: 'idle' };
+  }
+
+  const untilNext = Math.min(...future) - nowMs;
+  return {
+    delayMs: Math.min(untilNext + DEADLINE_GRACE_MS, MAX_REFRESH_DELAY_MS),
+    reason: 'next-deadline',
+  };
+};
+
+/**
+ * deadline ที่ควรบันทึกว่า "จัดการแล้ว" หลังดึงข้อมูลสำเร็จ
+ * = deadline ที่เลยเวลามาแล้ว ณ ตอนที่ได้ payload มา
+ *
+ * เหตุผล: เราเพิ่งได้ข้อมูลสดจากเซิร์ฟเวอร์แล้ว ถ้าเซิร์ฟเวอร์ยังบอกว่า
+ * รอบนี้เปิดอยู่ ก็ไม่ใช่หน้าที่ของหน้านี้ที่จะไปเถียง — แค่แสดงผลตาม
+ * effectivePhase (ซึ่งจะบอกว่าปิดแล้ว) และรอ event ถัดไป
+ */
+export const deadlinesToMarkHandled = (
+  nowMs: number,
+  deadlines: number[],
+): number[] => deadlines.filter((d) => Number.isFinite(d) && d <= nowMs);
+
+/**
+ * ตัดสินแบบครบวงจร (event + timer) — ใช้เมื่อต้องการคำตอบเดียว
+ * ผู้เรียกส่วนใหญ่ใช้สองฟังก์ชันข้างบนแยกกันชัดกว่า
+ */
+export const planRefresh = (
+  nowMs: number,
+  lastFetchAt: number | null,
+  deadlines: number[],
+): RefreshPlan => {
+  if (lastFetchAt === null) {
+    return { refetch: true, delayMs: null, reason: 'first-load' };
+  }
+
+  const throttleRemaining = MIN_REFETCH_INTERVAL_MS - (nowMs - lastFetchAt);
+  if (throttleRemaining > 0) {
+    return { refetch: false, delayMs: throttleRemaining, reason: 'throttled' };
+  }
+
+  const timer = planDeadlineTimer(nowMs, deadlines);
+  if (timer.reason === 'deadline-passed') {
+    return { refetch: true, delayMs: null, reason: 'deadline-passed' };
+  }
+  return { refetch: false, delayMs: timer.delayMs, reason: timer.reason };
+};
+
+/**
+ * deadline ที่ต้องเฝ้าจาก payload ปัจจุบัน
+ *   OPEN     → closeDate (badge ต้องเปลี่ยนเป็นปิดเมื่อถึงเวลา)
+ *   UPCOMING → openDate  (badge ต้องเปลี่ยนเป็นเปิดเมื่อถึงเวลา)
+ * CLOSED ไม่ต้องเฝ้า (จบแล้ว)
+ */
+export const collectDeadlines = (payload: PublicRoundsPayload): number[] => {
+  const out: number[] = [];
+  for (const r of payload.open) {
+    const t = toEpochMs(r.closeDate);
+    if (t !== null) out.push(t);
+  }
+  for (const r of payload.upcoming) {
+    const t = toEpochMs(r.openDate);
+    if (t !== null) out.push(t);
+  }
+  return out;
+};
+
+/**
+ * phase ที่ใช้ **แสดงผล** ณ เวลาปัจจุบัน — ไม่ใช่ phase ที่ใช้จัดกลุ่ม
+ *
+ * ทำไมต้องมี: ระหว่างที่ snapshot ยังไม่ถูก refetch รอบที่เลย closeDate ไปแล้ว
+ * ยังอยู่ใน groups.open → badge จะบอก "เปิดรับสมัคร" ขณะที่ countdown
+ * บอก "ปิดรับสมัครแล้ว" = การ์ดขัดกันเอง (คลาสบั๊กเดียวกับที่ไฟล์นี้เคยแก้)
+ *
+ * กติกาเดียวกับ backend (round-visibility.ts resolveRoundPhase):
+ *   OPEN     + now >  closeDate → CLOSED
+ *   UPCOMING + now >= openDate  → OPEN
+ * ขอบเขต inclusive เหมือนกัน (now === closeDate ยัง OPEN)
+ *
+ * ⚠️ เป็นการ "ลดระดับ" เท่านั้น (OPEN→CLOSED, UPCOMING→OPEN)
+ *    ห้ามอัปเกรด CLOSED→OPEN — ถ้า backend บอกปิดแล้ว ต้องเชื่อ backend
+ *    และไม่แตะการจัดกลุ่ม (รอบยังอยู่ section เดิมจนกว่า refetch จะเสร็จ
+ *    ซึ่งเกิดภายในไม่กี่วินาทีจาก timer ที่ deadline)
+ */
+export const effectivePhase = (
+  phase: RoundPhase,
+  round: Pick<PublicRound, 'openDate' | 'closeDate'>,
+  nowMs: number,
+): RoundPhase => {
+  if (phase === 'OPEN') {
+    const close = toEpochMs(round.closeDate);
+    if (close !== null && nowMs > close) return 'CLOSED';
+    return 'OPEN';
+  }
+  if (phase === 'UPCOMING') {
+    const open = toEpochMs(round.openDate);
+    if (open !== null && nowMs >= open) return 'OPEN';
+    return 'UPCOMING';
+  }
+  return phase;
 };
 
 // =============================================================

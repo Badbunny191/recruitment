@@ -5,6 +5,8 @@
  * for audit log display.
  */
 
+import { toEpochMs } from './round-visibility';
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -147,9 +149,58 @@ const ACTIVE_LABELS: Record<string, string> = {
   '0': 'ปิดใช้งาน',
 };
 
+// =============================================================================
+// Date/Time Formatters (audit)
+// =============================================================================
+
+const THAI_MONTHS_SHORT = [
+  'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
+  'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.',
+];
+
+/** Asia/Bangkok = UTC+7 (ค่าคงที่ — ไม่พึ่ง timezone ของเครื่อง/Worker) */
+const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+/**
+ * แปลงวันที่ของ entity → ข้อความสำหรับ audit payload (เวลาไทย + พ.ศ.)
+ *
+ *   "6 พ.ย. 2569 16:30"
+ *
+ * ⚠️ ต้องมี **นาที** เสมอ — นี่คือหัวใจของ fix นี้
+ *    เดิม PATCH /admin/rounds/:id ใช้ toLocaleDateString('th-TH') ซึ่งเก็บ
+ *    แค่วันที่ → การเลื่อนปิดรับสมัคร 16:29 → 16:31 ในวันเดียวกันได้
+ *    oldValue === newValue → computeChanges ข้าม → **ไม่มี diff ใน audit เลย**
+ *    (เหตุการณ์ที่สำคัญที่สุดของรอบหนึ่ง ๆ หายไปจาก log)
+ *
+ * ใช้ fixed offset + getUTC* แทน local getters เพราะ Worker รันที่ UTC
+ * (pattern เดียวกับ pdf-renderer.service.ts formatThaiDate)
+ *
+ * ค่าที่อ่านไม่ได้ (null / '' / ขยะ) → null เพื่อให้ computeChanges
+ * มองเป็น "ไม่มีค่า" ไม่ใช่ "ค่าว่างที่เปลี่ยน"
+ */
+export function formatAuditDateTime(value: unknown): string | null {
+  const ms = toEpochMs(value as any);
+  if (ms === null) return null;
+  const d = new Date(ms + BANGKOK_OFFSET_MS);
+  const day = d.getUTCDate();
+  const month = THAI_MONTHS_SHORT[d.getUTCMonth()];
+  const year = d.getUTCFullYear() + 543;
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${day} ${month} ${year} ${hh}:${mm}`;
+}
+
+/** field ที่เก็บ "วันเวลา" ของ entity — ต้อง format ด้วย formatAuditDateTime */
+const DATETIME_FIELDS = new Set(['openDate', 'closeDate']);
+
 export function formatValue(field: string, value: any): string | null {
   if (value === null || value === undefined) return null;
-  
+
+  // Date/time fields — ต้องเห็นนาที (ดู formatAuditDateTime)
+  if (DATETIME_FIELDS.has(field)) {
+    return formatAuditDateTime(value);
+  }
+
   // Boolean fields
   if (field === 'isActive' || field === 'isRequired' || field === 'isPublished' || field === 'isArchived') {
     const boolVal = typeof value === 'boolean' ? value : (value === '1' || value === 'true');
@@ -204,6 +255,13 @@ export function computeChanges(
 
     // Skip if values are the same (also covers false===false, 0===0, ''==='')
     if (oldVal === newVal) continue;
+
+    // ⚠️ Date objects: `===` เทียบ reference ไม่ใช่ instant → Date สองตัวที่
+    //    เป็นเวลาเดียวกันจะไม่เท่ากัน (ได้ false diff ทุกครั้งที่ PATCH ส่งวันที่เดิม)
+    //    เทียบด้วย getTime() แทน — และถ้าเท่ากันจริงให้ข้าม
+    if (oldVal instanceof Date && newVal instanceof Date) {
+      if (oldVal.getTime() === newVal.getTime()) continue;
+    }
 
     changes.push({
       field: key,
@@ -283,6 +341,44 @@ export function buildAuditPayload(
 // =============================================================================
 // Special Entity Handlers
 // =============================================================================
+
+/**
+ * Payload สำหรับ CREATE ที่ entityId มาจาก route ไม่ใช่ path param
+ *
+ * ปัญหาเดิม (POST /admin/rounds): auditMiddleware อ่าน param('id') ไม่ได้
+ * (path คือ '/rounds' ไม่มี :id) → entityId = sentinel 'BULK/NEW' และ
+ * route ไม่ได้ setAuditPayload เลย → payload = NULL
+ *
+ * ผลคือ audit log ของการสร้างรอบบอกได้แค่ว่า "มีใครสร้างอะไรบางอย่าง"
+ * ไม่มีชื่อรอบ ไม่มีรหัส ไม่มีช่วงเวลาเปิด/ปิด → ตอบคำถามย้อนหลังไม่ได้
+ *
+ * payload นี้เก็บค่าที่ "ตัดสินตัวตนของรอบ" ไว้ครบ:
+ *   roundId, title, roundCode, positionLevel, openDate, closeDate, status
+ * (วันที่เก็บเป็นเวลาไทยพร้อมนาที ผ่าน formatValue)
+ */
+export interface RoundCreateSnapshot {
+  id: string;
+  title: string;
+  roundCode: string | null;
+  positionLevel: string;
+  openDate: unknown;
+  closeDate: unknown;
+  status: string | null;
+}
+
+export function buildRoundCreatePayload(
+  round: RoundCreateSnapshot,
+): Record<string, any> {
+  return {
+    roundId: round.id,
+    title: round.title,
+    roundCode: round.roundCode,
+    positionLevel: round.positionLevel,
+    openDate: formatValue('openDate', round.openDate),
+    closeDate: formatValue('closeDate', round.closeDate),
+    status: round.status,
+  };
+}
 
 /**
  * Handler for APPLICATION status changes.

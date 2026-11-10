@@ -20,6 +20,15 @@ import {
   formatThaiDateTime,
   toEpochMs,
   PHASE_STYLE,
+  planRefresh,
+  planDeadlineTimer,
+  shouldRefetchOnEvent,
+  deadlinesToMarkHandled,
+  collectDeadlines,
+  effectivePhase,
+  CLOSED_COUNTDOWN_TEXT,
+  MIN_REFETCH_INTERVAL_MS,
+  MAX_REFRESH_DELAY_MS,
 } from '../public-rounds';
 
 // ========== TEST RUNNER ==========
@@ -220,7 +229,7 @@ test('C3: CLOSED → ไม่มี countdown', () => {
   assertEqual(cd, null);
 });
 
-test('C4: OPEN + now === closeDate พอดี → ยังมี countdown (ไม่หาย)', () => {
+test('C4: OPEN + now === closeDate พอดี → ยังนับอยู่ (ขอบเขต inclusive เท่า backend)', () => {
   // นี่คือเคสที่ทำให้ badge บอก "เปิดรับสมัคร" แต่ countdown หายในโค้ดเดิม
   const close = bkk(2026, 11, 30, 16, 30);
   const r = round('r', {
@@ -229,15 +238,34 @@ test('C4: OPEN + now === closeDate พอดี → ยังมี countdown (�
   });
   const cd = computeCountdown('OPEN', r, close);
   assertTrue(cd !== null, 'ต้องไม่คืน null');
-  assertEqual(cd.text, 'น้อยกว่า 1 นาที');
+  assertEqual(cd.text, 'ปิดรับสมัครแล้ว');
+  assertEqual(cd.closed, true, 'ต้องบอกว่าปิดแล้ว ไม่ใช่ค้างที่ "น้อยกว่า 1 นาที"');
 });
 
-test('C5: OPEN + เหลือ 30 วินาที → "น้อยกว่า 1 นาที" ไม่ใช่ null', () => {
+test('C5: OPEN + เหลือ 30 วินาที → "30 วินาที" (เห็นวินาทีจริง)', () => {
   const close = bkk(2026, 11, 30, 16, 30);
   const r = round('r', { closeDate: new Date(close).toISOString() });
   const cd = computeCountdown('OPEN', r, close - 30_000);
   assertTrue(cd !== null);
-  assertEqual(cd.text, 'น้อยกว่า 1 นาที');
+  assertEqual(cd.text, '30 วินาที');
+  assertEqual(cd.closed, false);
+});
+
+test('C5b: OPEN + เหลือ 4 นาที 52 วินาที → แสดงวินาที', () => {
+  const close = bkk(2026, 11, 30, 16, 30);
+  const r = round('r', { closeDate: new Date(close).toISOString() });
+  const cd = computeCountdown('OPEN', r, close - (4 * MINUTE + 52_000));
+  assertEqual(cd.text, '4 นาที 52 วินาที');
+});
+
+test('C5c: OPEN + เลย closeDate ไปแล้ว (snapshot ยังเก่า) → closed = true', () => {
+  const close = bkk(2026, 11, 30, 16, 30);
+  const r = round('r', { closeDate: new Date(close).toISOString() });
+  const cd = computeCountdown('OPEN', r, close + 60_000);
+  assertTrue(cd !== null, 'ยังคืน object เพื่อให้การ์ดบอกว่าปิดแล้ว');
+  assertEqual(cd.text, 'ปิดรับสมัครแล้ว');
+  assertEqual(cd.closed, true);
+  assertEqual(cd.urgent, false, 'ปิดแล้วต้องไม่ถูกจัดเป็น urgent');
 });
 
 test('C6: OPEN + เหลือ < 24 ชม. → urgent = true', () => {
@@ -304,10 +332,48 @@ test('F3: 45 นาที', () => {
   assertEqual(formatCountdown(45 * MINUTE), '45 นาที');
 });
 
-test('F4: 0 / ค่าลบ / NaN → "น้อยกว่า 1 นาที" (ไม่คืน null)', () => {
-  assertEqual(formatCountdown(0), 'น้อยกว่า 1 นาที');
-  assertEqual(formatCountdown(-1000), 'น้อยกว่า 1 นาที');
-  assertEqual(formatCountdown(NaN), 'น้อยกว่า 1 นาที');
+test('F4: 0 / ค่าลบ → "ปิดรับสมัครแล้ว" (ไม่ใช่ "น้อยกว่า 1 นาที" ที่ค้างอยู่)', () => {
+  assertEqual(formatCountdown(0), 'ปิดรับสมัครแล้ว');
+  assertEqual(formatCountdown(-1000), 'ปิดรับสมัครแล้ว');
+});
+
+test('F5: NaN / Infinity → "" (ไม่รู้เวลา ห้ามเดาว่าเปิดหรือปิด)', () => {
+  assertEqual(formatCountdown(NaN), '');
+  assertEqual(formatCountdown(Infinity), '');
+});
+
+test('F6: 5 นาทีสุดท้าย → แสดงวินาทีจริง (4:52)', () => {
+  assertEqual(formatCountdown(4 * MINUTE + 52_000), '4 นาที 52 วินาที');
+});
+
+test('F7: 1 นาที 15 วินาที', () => {
+  assertEqual(formatCountdown(1 * MINUTE + 15_000), '1 นาที 15 วินาที');
+});
+
+test('F8: 23 วินาที (ไม่มีนาที)', () => {
+  assertEqual(formatCountdown(23_000), '23 วินาที');
+});
+
+test('F9: 1 วินาทีสุดท้าย', () => {
+  assertEqual(formatCountdown(1_000), '1 วินาที');
+});
+
+test('F10: เหลือ < 1 วินาที (แต่ยังไม่ปิด) → "1 วินาที" ไม่ใช่ "ปิดรับสมัครแล้ว"', () => {
+  assertEqual(formatCountdown(400), '1 วินาที');
+});
+
+test('F11: ขอบ 5 นาที → ยังเป็นรูปแบบนาที (45 นาที / 5 นาที)', () => {
+  assertEqual(formatCountdown(5 * MINUTE), '5 นาที');
+  assertEqual(formatCountdown(5 * MINUTE - 1000), '4 นาที 59 วินาที');
+});
+
+test('F12: 59 วินาที → "59 วินาที" (เดิมคือ "น้อยกว่า 1 นาที")', () => {
+  assertEqual(formatCountdown(59_000), '59 วินาที');
+});
+
+test('F13: 1 ชั่วโมงขึ้นไปยังเป็นรูปแบบเดิม (ไม่ regress)', () => {
+  assertEqual(formatCountdown(HOUR), '1 ชั่วโมง 0 นาที');
+  assertEqual(formatCountdown(DAY), '1 วัน 0 ชั่วโมง');
 });
 
 // ========== 5. วันที่ไทย ==========
@@ -366,6 +432,185 @@ test('S1: ป้าย 3 phase ที่หน้าแรกใช้', () => {
   assertEqual(PHASE_STYLE.OPEN.label, 'เปิดรับสมัคร');
   assertEqual(PHASE_STYLE.UPCOMING.label, 'ยังไม่เปิดรับสมัคร');
   assertEqual(PHASE_STYLE.CLOSED.label, 'ปิดรับสมัครแล้ว');
+});
+
+// ========== 8. planRefresh (ความสดของข้อมูล) ==========
+
+test('R1: ยังไม่เคยโหลด → refetch ทันที', () => {
+  const plan = planRefresh(1000, null, []);
+  assertEqual(plan.refetch, true);
+  assertEqual(plan.reason, 'first-load');
+});
+
+test('R2: เพิ่งโหลดไป (< 15 วิ) → ไม่ refetch แม้มี event (throttle)', () => {
+  const now = 1_000_000;
+  const plan = planRefresh(now, now - 5_000, []);
+  assertEqual(plan.refetch, false);
+  assertEqual(plan.reason, 'throttled');
+  assertEqual(plan.delayMs, MIN_REFETCH_INTERVAL_MS - 5_000);
+});
+
+test('R3: ผ่าน 15 วิไปแล้ว ไม่มี deadline → ไม่ refetch และไม่ตั้ง timer (ไม่มี polling)', () => {
+  const now = 1_000_000;
+  const plan = planRefresh(now, now - 60_000, []);
+  assertEqual(plan.refetch, false);
+  assertEqual(plan.delayMs, null);
+  assertEqual(plan.reason, 'idle');
+});
+
+test('R4 (fail-when-no-fix): deadline เลยไปแล้วแต่ snapshot ยังมี → refetch ทันที', () => {
+  // หัวใจของ bug: รอบปิดไปแล้ว 5 นาที แต่ payload ยังบอกว่าเปิด
+  const now = 1_000_000;
+  const plan = planRefresh(now, now - 60_000, [now - 5 * 60_000]);
+  assertEqual(plan.refetch, true);
+  assertEqual(plan.reason, 'deadline-passed');
+});
+
+test('R5: deadline เลยไปแล้วแต่ยัง throttle → เลื่อนออกไป ไม่ยิงรัว', () => {
+  const now = 1_000_000;
+  const plan = planRefresh(now, now - 3_000, [now - 1_000]);
+  assertEqual(plan.refetch, false);
+  assertEqual(plan.reason, 'throttled');
+  assertTrue(plan.delayMs !== null && plan.delayMs > 0, 'ต้องตั้ง timer ไปยิงหลังพ้น throttle');
+});
+
+test('R6: deadline ในอนาคตไกล → ตั้ง timer ไว้ที่ deadline (ไม่เกินเพดาน)', () => {
+  const now = 1_000_000;
+  const deadline = now + 2 * 60 * 60_000; // อีก 2 ชั่วโมง
+  const plan = planRefresh(now, now - 60_000, [deadline]);
+  assertEqual(plan.refetch, false);
+  assertEqual(plan.reason, 'next-deadline');
+  assertTrue(plan.delayMs !== null, 'ต้องมี timer');
+  assertTrue(plan.delayMs <= MAX_REFRESH_DELAY_MS, `ต้องไม่เกินเพดาน (ได้ ${plan.delayMs})`);
+});
+
+test('R7: deadline อีก 30 วิ → timer ตื่นที่ deadline ไม่ใช่ 30 วิ + เพดาน', () => {
+  const now = 1_000_000;
+  const plan = planRefresh(now, now - 60_000, [now + 30_000]);
+  assertTrue(plan.delayMs !== null);
+  assertTrue(plan.delayMs <= 31_000, `ต้องตื่นใกล้ deadline (ได้ ${plan.delayMs}ms)`);
+});
+
+test('R8: deadline หลายตัว → เลือกตัวที่ใกล้ที่สุด', () => {
+  const now = 1_000_000;
+  const plan = planRefresh(now, now - 60_000, [now + 3 * 60 * 60_000, now + 60_000, now + 10 * 60_000]);
+  assertTrue(plan.delayMs !== null);
+  assertTrue(plan.delayMs <= 61_000, `ต้องอิง deadline ที่ใกล้ที่สุด (ได้ ${plan.delayMs}ms)`);
+});
+
+test('R9: deadline เพี้ยน (NaN) ถูกตัดทิ้ง ไม่ทำให้ timer พัง', () => {
+  const now = 1_000_000;
+  const plan = planRefresh(now, now - 60_000, [NaN, Infinity]);
+  assertEqual(plan.refetch, false);
+  assertEqual(plan.delayMs, null);
+  assertEqual(plan.reason, 'idle');
+});
+
+test('R10 (anti-loop): deadline ที่จัดการแล้ว → ไม่ตั้ง timer ซ้ำไม่รู้จบ', () => {
+  const now = 1_000_000;
+  const passed = now - 60_000;
+  // ยังไม่จัดการ → ต้องยิงเดี๋ยวนี้
+  assertEqual(planDeadlineTimer(now, [passed]).delayMs, 0);
+  // จัดการแล้ว → ต้องไม่ตั้ง timer อีก (เดิมจะยิง 0ms ไม่มีที่สิ้นสุด)
+  const after = planDeadlineTimer(now, [passed], [passed]);
+  assertEqual(after.delayMs, null);
+  assertEqual(after.reason, 'idle');
+});
+
+test('R11 (anti-loop): ยังมี deadline ในอนาคตอีกตัว → ยังตั้ง timer ต่อ', () => {
+  const now = 1_000_000;
+  const passed = now - 60_000;
+  const future = now + 60_000;
+  const plan = planDeadlineTimer(now, [passed, future], [passed]);
+  assertTrue(plan.delayMs !== null, 'ต้องยังตั้ง timer สำหรับ deadline ที่ยังไม่ถึง');
+  assertTrue(plan.delayMs <= 61_000, `ต้องอิง deadline ในอนาคต (ได้ ${plan.delayMs})`);
+});
+
+test('R12: deadlinesToMarkHandled เลือกเฉพาะที่เลยเวลาแล้ว', () => {
+  const now = 1_000_000;
+  const passed = now - 1_000;
+  const future = now + 1_000;
+  const handled = deadlinesToMarkHandled(now, [passed, future]);
+  assertEqual(handled.length, 1);
+  assertEqual(handled[0], passed);
+});
+
+test('R13: shouldRefetchOnEvent ไม่ผูกกับ deadline (กดกลับแท็บต้องได้ดึงใหม่)', () => {
+  const now = 1_000_000;
+  assertEqual(shouldRefetchOnEvent(now, null), true, 'ยังไม่เคยโหลด');
+  assertEqual(shouldRefetchOnEvent(now, now - 1_000), false, 'ติด throttle');
+  assertEqual(shouldRefetchOnEvent(now, now - 20_000), true, 'พ้น throttle');
+});
+
+// ========== 9. collectDeadlines ==========
+
+test('D1: เก็บ closeDate ของ OPEN + openDate ของ UPCOMING (ไม่เก็บ CLOSED)', () => {
+  const openClose = bkk(2026, 11, 30, 16, 30);
+  const upOpen = bkk(2026, 12, 15, 9, 0);
+  const payload = {
+    open: [round('o1', { closeDate: new Date(openClose).toISOString() })],
+    upcoming: [round('u1', { openDate: new Date(upOpen).toISOString() })],
+    closed: [round('c1', { closeDate: new Date(bkk(2026, 10, 1)).toISOString() })],
+    serverOffsetMs: 0,
+  };
+  const ds = collectDeadlines(payload);
+  assertEqual(ds.length, 2);
+  assertTrue(ds.includes(openClose), 'ต้องมี closeDate ของรอบที่เปิด');
+  assertTrue(ds.includes(upOpen), 'ต้องมี openDate ของรอบที่จะเปิด');
+});
+
+test('D2: วันที่อ่านไม่ได้ → ข้าม ไม่ throw', () => {
+  const payload = {
+    open: [round('o1', { closeDate: null })],
+    upcoming: [],
+    closed: [],
+    serverOffsetMs: 0,
+  };
+  assertEqual(collectDeadlines(payload).length, 0);
+});
+
+// ========== 10. effectivePhase (กันการ์ดขัดกันเอง) ==========
+
+test('P1 (fail-when-no-fix): OPEN + เลย closeDate → CLOSED (badge ต้องไม่บอกว่าเปิด)', () => {
+  const close = bkk(2026, 11, 30, 16, 30);
+  const r = round('r', { closeDate: new Date(close).toISOString() });
+  assertEqual(effectivePhase('OPEN', r, close + 1), 'CLOSED');
+});
+
+test('P2: OPEN + now === closeDate → ยัง OPEN (inclusive เท่า backend)', () => {
+  const close = bkk(2026, 11, 30, 16, 30);
+  const r = round('r', { closeDate: new Date(close).toISOString() });
+  assertEqual(effectivePhase('OPEN', r, close), 'OPEN');
+});
+
+test('P3: UPCOMING + ถึง openDate แล้ว → OPEN', () => {
+  const open = bkk(2026, 12, 15, 9, 0);
+  const r = round('r', { openDate: new Date(open).toISOString() });
+  assertEqual(effectivePhase('UPCOMING', r, open), 'OPEN');
+});
+
+test('P4: UPCOMING + ยังไม่ถึง openDate → UPCOMING', () => {
+  const open = bkk(2026, 12, 15, 9, 0);
+  const r = round('r', { openDate: new Date(open).toISOString() });
+  assertEqual(effectivePhase('UPCOMING', r, open - 1000), 'UPCOMING');
+});
+
+test('P5: CLOSED จาก backend → ห้ามอัปเกรดกลับเป็น OPEN แม้เวลาดูเหมือนยังไม่ปิด', () => {
+  // backend ตัดสินแล้ว (เช่น status = CLOSED ด้วยมือ) — ต้องเชื่อ backend
+  const close = bkk(2026, 11, 30, 16, 30);
+  const r = round('r', { closeDate: new Date(close).toISOString() });
+  assertEqual(effectivePhase('CLOSED', r, close - 60_000), 'CLOSED');
+});
+
+test('P6: วันที่อ่านไม่ได้ → คง phase เดิม (ไม่เดา)', () => {
+  const r = round('r', { openDate: null, closeDate: null });
+  assertEqual(effectivePhase('OPEN', r, 1_000_000), 'OPEN');
+  assertEqual(effectivePhase('UPCOMING', r, 1_000_000), 'UPCOMING');
+});
+
+test('P7: ข้อความปิดรับสมัครใช้ค่าคงที่เดียวกันทั้งระบบ', () => {
+  assertEqual(CLOSED_COUNTDOWN_TEXT, 'ปิดรับสมัครแล้ว');
+  assertEqual(formatCountdown(0), CLOSED_COUNTDOWN_TEXT);
 });
 
 // ========== SUMMARY ==========
